@@ -1,0 +1,298 @@
+package domain
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+const SchemaVersion uint32 = 1
+
+const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+type EventType string
+
+const (
+	EventRunCreated                   EventType = "run_created"
+	EventRunStarted                   EventType = "run_started"
+	EventRunResumed                   EventType = "run_resumed"
+	EventRunCancelRequested           EventType = "run_cancel_requested"
+	EventRunCompleted                 EventType = "run_completed"
+	EventRunFailed                    EventType = "run_failed"
+	EventRunCancelled                 EventType = "run_cancelled"
+	EventTurnOpened                   EventType = "turn_opened"
+	EventTurnClosed                   EventType = "turn_closed"
+	EventModelRequestStarted          EventType = "model_request_started"
+	EventModelResponseFinished        EventType = "model_response_finished"
+	EventModelRequestFailed           EventType = "model_request_failed"
+	EventToolCallProposed             EventType = "tool_call_proposed"
+	EventVerificationCommandProposed  EventType = "verification_command_proposed"
+	EventPolicyDecided                EventType = "policy_decided"
+	EventApprovalRequested            EventType = "approval_requested"
+	EventApprovalGranted              EventType = "approval_granted"
+	EventApprovalDenied               EventType = "approval_denied"
+	EventOperationStarted             EventType = "operation_started"
+	EventOperationSucceeded           EventType = "operation_succeeded"
+	EventOperationFailed              EventType = "operation_failed"
+	EventOperationCancelled           EventType = "operation_cancelled"
+	EventOperationReconciled          EventType = "operation_reconciled"
+	EventToolResultAppended           EventType = "tool_result_appended"
+	EventAssistantMessageAppended     EventType = "assistant_message_appended"
+	EventVerificationFeedbackAppended EventType = "verification_feedback_appended"
+	EventVerificationStarted          EventType = "verification_started"
+	EventVerificationFinished         EventType = "verification_finished"
+)
+
+type Event struct {
+	SchemaVersion uint32          `json:"schema_version"`
+	EventID       string          `json:"event_id"`
+	RunID         RunID           `json:"run_id"`
+	WorkspaceHash string          `json:"workspace_hash"`
+	Seq           uint64          `json:"seq"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	Type          EventType       `json:"type"`
+	TurnID        *TurnID         `json:"turn_id,omitempty"`
+	OperationID   *OperationID    `json:"operation_id,omitempty"`
+	AttemptID     *AttemptID      `json:"attempt_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
+	PrevHash      string          `json:"prev_hash"`
+	EventHash     string          `json:"event_hash"`
+}
+
+type EventDraft struct {
+	EventID       string
+	RunID         RunID
+	WorkspaceHash string
+	OccurredAt    time.Time
+	Type          EventType
+	TurnID        *TurnID
+	OperationID   *OperationID
+	AttemptID     *AttemptID
+	Payload       json.RawMessage
+}
+
+// payloadSchemas is deliberately closed for V0. Hash-chain integrity proves
+// bytes were not changed; this additional check proves those bytes still mean
+// something the current reducer understands. Fields listed here are the
+// union of the frozen V0 envelope fields and the concrete implementation's
+// evidence fields. payload_version is required on every stored payload.
+var payloadSchemas = map[EventType]map[string]struct{}{
+	EventRunCreated: {
+		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "budget": {},
+	},
+	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
+	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},
+	EventRunCancelRequested: {
+		"payload_version": {}, "cause": {}, "expected_terminal": {}, "budget_dimension": {}, "signal_or_budget_dimension": {},
+	},
+	EventRunCompleted: {"payload_version": {}, "final_response": {}, "final_response_ref": {}, "verification_seq": {}},
+	EventRunFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "reason": {}, "reason_ref": {}, "budget_dimension": {}},
+	EventRunCancelled: {"payload_version": {}, "cause": {}, "evidence_ref": {}},
+	EventTurnOpened:   {"payload_version": {}, "turn": {}, "turn_index": {}},
+	EventTurnClosed:   {"payload_version": {}, "outcome": {}, "model_response_ref": {}},
+	EventModelRequestStarted: {
+		"payload_version": {}, "provider": {}, "model": {}, "request_ref": {}, "retry_index": {},
+	},
+	EventModelResponseFinished: {"payload_version": {}, "text": {}, "tool_calls": {}, "usage": {}, "response_ref": {}, "semantic_event_count": {}},
+	EventModelRequestFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "retryable": {}, "semantic_event_count": {}, "reason_ref": {}},
+	EventToolCallProposed:      {"payload_version": {}, "call_id": {}, "tool_name": {}, "spec_version": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}},
+	EventVerificationCommandProposed: {
+		"payload_version": {}, "verification_id": {}, "command_index": {}, "tool_name": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}, "plan_ref": {},
+	},
+	EventPolicyDecided:     {"payload_version": {}, "effect": {}, "rule": {}, "rule_id": {}, "fingerprint": {}, "summary": {}, "reason": {}, "summary_or_reason": {}},
+	EventApprovalRequested: {"payload_version": {}, "fingerprint": {}, "summary": {}, "rule": {}, "rule_id": {}, "workspace_observation": {}},
+	EventApprovalGranted:   {"payload_version": {}, "fingerprint": {}, "actor": {}},
+	EventApprovalDenied:    {"payload_version": {}, "fingerprint": {}, "actor": {}, "reason": {}, "stop_cause": {}},
+	EventOperationStarted: {
+		"payload_version": {}, "tool_name": {}, "kind": {}, "side_effect_class": {}, "mutation_barrier": {}, "request_ref": {}, "planned_path": {}, "planned_before": {}, "planned_after": {},
+	},
+	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "exit_or_after_observation": {}, "duration_ms": {}},
+	EventOperationFailed:    {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "error_class": {}, "after_observation": {}, "duration_ms": {}},
+	EventOperationCancelled: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "cause": {}, "confirmed_stopped": {}},
+	EventOperationReconciled: {
+		"payload_version": {}, "verdict": {}, "actor": {}, "note": {}, "evidence": {}, "evidence_ref": {}, "workspace_observation": {},
+	},
+	EventToolResultAppended:           {"payload_version": {}, "ok": {}, "code": {}, "data": {}, "preview": {}, "truncated": {}, "bytes": {}, "sha256": {}, "result_ref": {}, "is_error": {}},
+	EventAssistantMessageAppended:     {"payload_version": {}, "text": {}, "message_ref": {}},
+	EventVerificationFeedbackAppended: {"payload_version": {}, "text": {}},
+	EventVerificationStarted: {
+		"payload_version": {}, "verification_id": {}, "plan_ref": {}, "last_mutation_seq": {}, "commands_fingerprint": {}, "workspace_observation": {},
+	},
+	EventVerificationFinished: {"payload_version": {}, "verification_id": {}, "ok": {}, "evidence_ref": {}, "verified_mutation_seq": {}, "workspace_observation": {}},
+}
+
+func NewEvent(draft EventDraft, seq uint64, prevHash string) (Event, error) {
+	if draft.RunID == "" {
+		return Event{}, fmt.Errorf("event run id is required")
+	}
+	if draft.EventID == "" {
+		draft.EventID = NewID("evt")
+	}
+	if draft.OccurredAt.IsZero() {
+		draft.OccurredAt = time.Now().UTC()
+	}
+	if prevHash == "" {
+		prevHash = GenesisHash
+	}
+	payload, err := normalizePayload(draft.Type, draft.Payload)
+	if err != nil {
+		return Event{}, err
+	}
+	event := Event{
+		SchemaVersion: SchemaVersion,
+		EventID:       draft.EventID,
+		RunID:         draft.RunID,
+		WorkspaceHash: draft.WorkspaceHash,
+		Seq:           seq,
+		OccurredAt:    draft.OccurredAt.UTC(),
+		Type:          draft.Type,
+		TurnID:        draft.TurnID,
+		OperationID:   draft.OperationID,
+		AttemptID:     draft.AttemptID,
+		Payload:       payload,
+		PrevHash:      prevHash,
+	}
+	hash, err := ComputeEventHash(event)
+	if err != nil {
+		return Event{}, err
+	}
+	event.EventHash = hash
+	return event, nil
+}
+
+func ComputeEventHash(event Event) (string, error) {
+	prevHash, err := hex.DecodeString(event.PrevHash)
+	if err != nil {
+		return "", fmt.Errorf("decode previous event hash: %w", err)
+	}
+	if len(prevHash) != sha256.Size {
+		return "", fmt.Errorf("previous event hash must decode to %d bytes", sha256.Size)
+	}
+	var body bytes.Buffer
+	body.WriteString("go-agent-event-v1\x00")
+	writeUint32(&body, event.SchemaVersion)
+	writeString(&body, event.EventID)
+	writeString(&body, string(event.RunID))
+	writeString(&body, event.WorkspaceHash)
+	writeUint64(&body, event.Seq)
+	writeString(&body, event.OccurredAt.UTC().Format(time.RFC3339Nano))
+	writeString(&body, string(event.Type))
+	writeNullable(&body, event.TurnID)
+	writeNullable(&body, event.OperationID)
+	writeNullable(&body, event.AttemptID)
+	writeBytes(&body, event.Payload)
+	writeBytes(&body, prevHash)
+	sum := sha256.Sum256(body.Bytes())
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func VerifyChain(events []Event) error {
+	previous := GenesisHash
+	for index, event := range events {
+		expectedSeq := uint64(index + 1)
+		if event.SchemaVersion != SchemaVersion {
+			return fmt.Errorf("event %d has unsupported schema version %d", event.Seq, event.SchemaVersion)
+		}
+		if err := validatePayload(event.Type, event.Payload); err != nil {
+			return fmt.Errorf("event %d payload: %w", event.Seq, err)
+		}
+		if event.Seq != expectedSeq {
+			return fmt.Errorf("event sequence mismatch: got %d want %d", event.Seq, expectedSeq)
+		}
+		if event.PrevHash != previous {
+			return fmt.Errorf("event %d previous hash mismatch", event.Seq)
+		}
+		actual, err := ComputeEventHash(event)
+		if err != nil {
+			return fmt.Errorf("hash event %d: %w", event.Seq, err)
+		}
+		if actual != event.EventHash {
+			return fmt.Errorf("event %d hash mismatch", event.Seq)
+		}
+		previous = event.EventHash
+	}
+	return nil
+}
+
+func normalizePayload(eventType EventType, raw json.RawMessage) (json.RawMessage, error) {
+	object := make(map[string]json.RawMessage)
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) != 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if err := json.Unmarshal(trimmed, &object); err != nil {
+			return nil, fmt.Errorf("event payload must be an object: %w", err)
+		}
+		if object == nil {
+			return nil, fmt.Errorf("event payload must be an object")
+		}
+	}
+	if _, exists := object["payload_version"]; !exists {
+		object["payload_version"] = json.RawMessage("1")
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("encode event payload: %w", err)
+	}
+	if err := validatePayload(eventType, encoded); err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+func validatePayload(eventType EventType, raw json.RawMessage) error {
+	allowed, known := payloadSchemas[eventType]
+	if !known {
+		return fmt.Errorf("unknown event type %q", eventType)
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		if err == nil {
+			err = fmt.Errorf("payload must be an object")
+		}
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	var version uint32
+	value, present := object["payload_version"]
+	if !present || json.Unmarshal(value, &version) != nil || version != SchemaVersion {
+		return fmt.Errorf("unsupported or missing payload_version")
+	}
+	for field := range object {
+		if _, allowed := allowed[field]; !allowed {
+			return fmt.Errorf("unknown field %q for %s", field, eventType)
+		}
+	}
+	return nil
+}
+
+func writeUint32(buffer *bytes.Buffer, value uint32) {
+	var encoded [4]byte
+	binary.BigEndian.PutUint32(encoded[:], value)
+	writeBytes(buffer, encoded[:])
+}
+
+func writeUint64(buffer *bytes.Buffer, value uint64) {
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], value)
+	writeBytes(buffer, encoded[:])
+}
+
+func writeString(buffer *bytes.Buffer, value string) { writeBytes(buffer, []byte(value)) }
+
+func writeBytes(buffer *bytes.Buffer, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	buffer.Write(length[:])
+	buffer.Write(value)
+}
+
+func writeNullable[T ~string](buffer *bytes.Buffer, value *T) {
+	if value == nil {
+		writeBytes(buffer, []byte{0})
+		return
+	}
+	writeBytes(buffer, append([]byte{1}, []byte(string(*value))...))
+}
