@@ -1,0 +1,19 @@
+# Project planning, discussions, and delivery-process artifacts stay local.
+/docs/
+/.vidt/
+
+# macOS and Go build/test outputs.
+.DS_Store
+**/.DS_Store
+/bin/
+/dist/
+/cairn
+*.test
+*.out
+coverage.out
+
+# Local editor and temporary files.
+.idea/
+.vscode/
+*.swp
+*.tmp
