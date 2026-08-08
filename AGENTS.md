@@ -31,6 +31,7 @@
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验、fingerprint 与测试。写入和命令的默认策略都是 `ask`。
 - 对已 started 但未记录终态的 workspace/process Operation，使用 `cairn resume --resolve` 对账；不得盲目重试。`doctor` 必须保持只读。
+- `cmd/` 与 `internal/` 的生产 Go 代码中，每个 `type`、顶层函数和方法都必须在声明紧邻位置写简明中文注释，说明职责以及关键输入/输出、状态变化或安全约束；测试函数和显而易见的匿名字段除外。
 
 ## 高风险文件
 
