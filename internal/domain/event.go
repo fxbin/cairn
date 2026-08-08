@@ -14,6 +14,7 @@ const SchemaVersion uint32 = 1
 
 const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
+// EventType 标识事件日志中可回放的事件种类。
 type EventType string
 
 const (
@@ -47,6 +48,7 @@ const (
 	EventVerificationFinished         EventType = "verification_finished"
 )
 
+// Event 是已规范化、串入哈希链且可持久化的领域事件。
 type Event struct {
 	SchemaVersion uint32          `json:"schema_version"`
 	EventID       string          `json:"event_id"`
@@ -63,6 +65,7 @@ type Event struct {
 	EventHash     string          `json:"event_hash"`
 }
 
+// EventDraft 保存创建事件前的业务字段，不包含序号与哈希。
 type EventDraft struct {
 	EventID       string
 	RunID         RunID
@@ -75,11 +78,8 @@ type EventDraft struct {
 	Payload       json.RawMessage
 }
 
-// payloadSchemas is deliberately closed for V0. Hash-chain integrity proves
-// bytes were not changed; this additional check proves those bytes still mean
-// something the current reducer understands. Fields listed here are the
-// union of the frozen V0 envelope fields and the concrete implementation's
-// evidence fields. payload_version is required on every stored payload.
+// payloadSchemas 在 V0 中刻意封闭；除验证哈希链完整性外，还保证当前
+// reducer 能理解每一个持久化字段。每个 payload 都必须包含 payload_version。
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
 		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "budget": {},
@@ -125,6 +125,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventVerificationFinished: {"payload_version": {}, "verification_id": {}, "ok": {}, "evidence_ref": {}, "verified_mutation_seq": {}, "workspace_observation": {}},
 }
 
+// NewEvent 规范化草稿 payload，并生成带前序哈希的不可变事件。
 func NewEvent(draft EventDraft, seq uint64, prevHash string) (Event, error) {
 	if draft.RunID == "" {
 		return Event{}, fmt.Errorf("event run id is required")
@@ -164,6 +165,7 @@ func NewEvent(draft EventDraft, seq uint64, prevHash string) (Event, error) {
 	return event, nil
 }
 
+// ComputeEventHash 按冻结的二进制字段顺序计算事件 SHA-256 哈希。
 func ComputeEventHash(event Event) (string, error) {
 	prevHash, err := hex.DecodeString(event.PrevHash)
 	if err != nil {
@@ -190,6 +192,7 @@ func ComputeEventHash(event Event) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// VerifyChain 验证事件序号、payload schema 与前后哈希引用组成的完整链。
 func VerifyChain(events []Event) error {
 	previous := GenesisHash
 	for index, event := range events {
@@ -218,6 +221,7 @@ func VerifyChain(events []Event) error {
 	return nil
 }
 
+// normalizePayload 补齐版本字段并将事件 payload 规整为受限 JSON 对象。
 func normalizePayload(eventType EventType, raw json.RawMessage) (json.RawMessage, error) {
 	object := make(map[string]json.RawMessage)
 	trimmed := bytes.TrimSpace(raw)
@@ -242,6 +246,7 @@ func normalizePayload(eventType EventType, raw json.RawMessage) (json.RawMessage
 	return encoded, nil
 }
 
+// validatePayload 拒绝未知事件种类、版本不符或 schema 外的 payload 字段。
 func validatePayload(eventType EventType, raw json.RawMessage) error {
 	allowed, known := payloadSchemas[eventType]
 	if !known {
@@ -268,20 +273,24 @@ func validatePayload(eventType EventType, raw json.RawMessage) error {
 	return nil
 }
 
+// writeUint32 将 uint32 以固定大端格式写入哈希输入缓冲区。
 func writeUint32(buffer *bytes.Buffer, value uint32) {
 	var encoded [4]byte
 	binary.BigEndian.PutUint32(encoded[:], value)
 	writeBytes(buffer, encoded[:])
 }
 
+// writeUint64 将 uint64 以固定大端格式写入哈希输入缓冲区。
 func writeUint64(buffer *bytes.Buffer, value uint64) {
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], value)
 	writeBytes(buffer, encoded[:])
 }
 
+// writeString 将字符串作为带长度前缀的字节序列写入缓冲区。
 func writeString(buffer *bytes.Buffer, value string) { writeBytes(buffer, []byte(value)) }
 
+// writeBytes 将字节序列及其 uint64 长度前缀写入缓冲区。
 func writeBytes(buffer *bytes.Buffer, value []byte) {
 	var length [8]byte
 	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
@@ -289,6 +298,7 @@ func writeBytes(buffer *bytes.Buffer, value []byte) {
 	buffer.Write(value)
 }
 
+// writeNullable 使用存在标记编码可空字符串派生类型。
 func writeNullable[T ~string](buffer *bytes.Buffer, value *T) {
 	if value == nil {
 		writeBytes(buffer, []byte{0})

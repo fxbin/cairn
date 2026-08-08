@@ -18,12 +18,14 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// Client 将 OpenAI-compatible Chat Completions SSE 响应适配为 Provider 端口。
 type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
 }
 
+// ProviderError 保留提供方失败分类、HTTP 状态、重试信息与原始原因。
 type ProviderError struct {
 	Kind       string
 	StatusCode int
@@ -32,6 +34,7 @@ type ProviderError struct {
 	Cause      error
 }
 
+// Error 返回包含提供方分类和可选 HTTP 状态的错误文本。
 func (err *ProviderError) Error() string {
 	if err.StatusCode != 0 {
 		return fmt.Sprintf("provider %s (%d): %v", err.Kind, err.StatusCode, err.Cause)
@@ -39,8 +42,10 @@ func (err *ProviderError) Error() string {
 	return fmt.Sprintf("provider %s: %v", err.Kind, err.Cause)
 }
 
+// Unwrap 暴露底层 HTTP、传输或解析错误。
 func (err *ProviderError) Unwrap() error { return err.Cause }
 
+// Stream 以最多三次无语义输出的可重试请求转发模型流事件。
 func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	if emit == nil {
 		return errors.New("provider emit callback is required")
@@ -77,6 +82,7 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 	return errors.New("provider retry loop exited unexpectedly")
 }
 
+// streamOnce 发起一次 SSE 请求，并报告是否已收到不可安全重试的语义输出。
 func (client Client) streamOnce(ctx context.Context, endpoint string, body []byte, emit func(ports.ModelEvent) error) (bool, error) {
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -113,6 +119,7 @@ func (client Client) streamOnce(ctx context.Context, endpoint string, body []byt
 	return semantic, err
 }
 
+// retryAfter 解析 Retry-After 的秒数或 HTTP 日期，无法解析时返回零。
 func retryAfter(value string, now time.Time) time.Duration {
 	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds >= 0 {
 		return time.Duration(seconds) * time.Second
@@ -123,6 +130,7 @@ func retryAfter(value string, now time.Time) time.Duration {
 	return 0
 }
 
+// chatCompletionsURL 验证绝对 HTTP(S) 基地址并拼接 Chat Completions 路径。
 func chatCompletionsURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -135,6 +143,7 @@ func chatCompletionsURL(baseURL string) (string, error) {
 	return parsed.String(), nil
 }
 
+// decodeStream 解析 SSE data 帧，累计工具调用片段并按端口事件顺序转发。
 func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEvent) error) error {
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
@@ -229,6 +238,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 	return nil
 }
 
+// chatRequest 是 OpenAI-compatible Chat Completions 的流式请求载荷。
 type chatRequest struct {
 	Model         string          `json:"model"`
 	Messages      []openAIMessage `json:"messages"`
@@ -237,6 +247,7 @@ type chatRequest struct {
 	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
 }
 
+// openAIMessage 是提供方 API 中的单条会话消息。
 type openAIMessage struct {
 	Role       string           `json:"role"`
 	Content    string           `json:"content,omitempty"`
@@ -244,32 +255,38 @@ type openAIMessage struct {
 	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
+// openAIToolCall 是提供方 API 采用 function 类型封装的工具调用。
 type openAIToolCall struct {
 	ID       string             `json:"id"`
 	Type     string             `json:"type"`
 	Function openAIFunctionCall `json:"function"`
 }
 
+// openAIFunctionCall 保存工具调用的名称与 JSON 字符串实参。
 type openAIFunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
+// streamOptions 请求流响应额外返回 token 使用量。
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
+// openAITool 是提供方 API 的 function 工具包装。
 type openAITool struct {
 	Type     string         `json:"type"`
 	Function openAIFunction `json:"function"`
 }
 
+// openAIFunction 描述提供方 API 中可调用函数的 schema。
 type openAIFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
+// toOpenAITools 将 Cairn 固定工具定义转换为提供方请求格式。
 func toOpenAITools(specs []ports.ToolSpec) []openAITool {
 	tools := make([]openAITool, 0, len(specs))
 	for _, spec := range specs {
@@ -278,6 +295,7 @@ func toOpenAITools(specs []ports.ToolSpec) []openAITool {
 	return tools
 }
 
+// toOpenAIMessages 将端口消息转换为提供方 API 消息格式。
 func toOpenAIMessages(messages []ports.Message) []openAIMessage {
 	converted := make([]openAIMessage, 0, len(messages))
 	for _, message := range messages {
@@ -290,37 +308,44 @@ func toOpenAIMessages(messages []ports.Message) []openAIMessage {
 	return converted
 }
 
+// chatChunk 是 SSE data 帧中可包含增量内容和用量的响应片段。
 type chatChunk struct {
 	Choices []choice      `json:"choices"`
 	Usage   *usagePayload `json:"usage"`
 }
 
+// choice 封装提供方返回的一个增量候选项。
 type choice struct {
 	Delta delta `json:"delta"`
 }
 
+// delta 保存候选项新增的文本和工具调用碎片。
 type delta struct {
 	Content   string             `json:"content"`
 	ToolCalls []toolCallFragment `json:"tool_calls"`
 }
 
+// toolCallFragment 是流式工具调用在单帧内的局部字段。
 type toolCallFragment struct {
 	Index    int              `json:"index"`
 	ID       string           `json:"id"`
 	Function functionFragment `json:"function"`
 }
 
+// functionFragment 是流式函数名称和实参字符串的局部字段。
 type functionFragment struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
+// usagePayload 是提供方返回的 token 用量字段。
 type usagePayload struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// toolCallAccumulator 按索引拼接跨 SSE 帧到达的工具调用片段。
 type toolCallAccumulator struct {
 	Index     int
 	ID        string
@@ -328,6 +353,7 @@ type toolCallAccumulator struct {
 	Arguments []byte
 }
 
+// orderedToolCalls 校验完整工具调用并按提供方索引恢复稳定顺序。
 func orderedToolCalls(calls map[int]*toolCallAccumulator) ([]*toolCallAccumulator, error) {
 	ordered := make([]*toolCallAccumulator, 0, len(calls))
 	for _, call := range calls {
@@ -340,6 +366,7 @@ func orderedToolCalls(calls map[int]*toolCallAccumulator) ([]*toolCallAccumulato
 	return ordered, nil
 }
 
+// statusKind 将 HTTP 状态码归类为稳定的提供方错误种类。
 func statusKind(statusCode int) string {
 	switch {
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:

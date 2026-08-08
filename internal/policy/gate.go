@@ -1,5 +1,4 @@
-// Package policy decides whether a proposed side effect is allowed, denied, or
-// requires a single human approval.
+// Package policy 决定提议的副作用是允许、拒绝还是需要一次人工审批。
 package policy
 
 import (
@@ -13,6 +12,7 @@ import (
 	"github.com/fxbin/cairn/internal/tools"
 )
 
+// Effect 是策略判定的三种可能结果。
 type Effect string
 
 const (
@@ -21,6 +21,7 @@ const (
 	Ask   Effect = "ask"
 )
 
+// Gate 保存副作用策略、受保护路径和 patch 规划器。
 type Gate struct {
 	WriteMode      Effect
 	ExecMode       Effect
@@ -28,6 +29,7 @@ type Gate struct {
 	Patch          tools.ApplyPatch
 }
 
+// Decision 是可持久化的策略结论及其审批绑定信息。
 type Decision struct {
 	Effect               Effect
 	RuleID               string
@@ -36,6 +38,7 @@ type Decision struct {
 	WorkspaceObservation string
 }
 
+// New 解析策略模式并复制受保护路径，构造副作用决策门。
 func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch) (*Gate, error) {
 	write, err := parseEffect(writeMode, Ask)
 	if err != nil {
@@ -48,6 +51,7 @@ func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch)
 	return &Gate{WriteMode: write, ExecMode: exec, ProtectedPaths: append([]string(nil), protected...), Patch: patch}, nil
 }
 
+// Decide 对模型提议的固定工具调用作出策略判定，并为审批生成绑定指纹。
 func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error) {
 	switch toolName {
 	case "list_files", "read_file", "search_text":
@@ -95,9 +99,8 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 	}
 }
 
-// DecideVerification derives a distinct approval fingerprint for a fixed
-// verification plan. A command that happens to have the same argv as a model
-// tool cannot consume or inherit this approval.
+// DecideVerification 为冻结验证计划生成独立审批指纹；即使 argv 相同，模型工具
+// 命令也不能消费或继承该审批。
 func (gate *Gate) DecideVerification(raw json.RawMessage, planRef string, commandIndex int, configFingerprint string) (Decision, error) {
 	decision, err := gate.Decide("exec_command", raw)
 	if err != nil || decision.Effect == Deny {
@@ -106,10 +109,8 @@ func (gate *Gate) DecideVerification(raw json.RawMessage, planRef string, comman
 	return gate.DecideVerificationWithObservation(raw, planRef, commandIndex, configFingerprint, decision.WorkspaceObservation)
 }
 
-// DecideVerificationWithObservation binds a frozen verification operation to
-// the verifier's whole-workspace observation. Model command approvals retain
-// their tool-visible observation; verification integrity must instead observe
-// every non-volatile repository path.
+// DecideVerificationWithObservation 将冻结验证操作绑定到 verifier 的全工作区
+// 观察值；模型命令仍使用工具视图，而验证完整性必须覆盖每个非 volatile 路径。
 func (gate *Gate) DecideVerificationWithObservation(raw json.RawMessage, planRef string, commandIndex int, configFingerprint, observation string) (Decision, error) {
 	decision, err := gate.Decide("exec_command", raw)
 	if err != nil || decision.Effect == Deny {
@@ -132,6 +133,7 @@ func (gate *Gate) DecideVerificationWithObservation(raw json.RawMessage, planRef
 	return decision, nil
 }
 
+// parseEffect 解析可选策略字符串，并在缺省时返回指定的保守默认值。
 func parseEffect(value string, fallback Effect) (Effect, error) {
 	if value == "" {
 		return fallback, nil
@@ -143,6 +145,7 @@ func parseEffect(value string, fallback Effect) (Effect, error) {
 	return effect, nil
 }
 
+// patchFingerprint 为确定性 patch 计划计算审批绑定摘要。
 func patchFingerprint(plan tools.PatchPlan) string {
 	return fingerprint("apply_patch", struct {
 		Version string `json:"version"`
@@ -153,6 +156,7 @@ func patchFingerprint(plan tools.PatchPlan) string {
 	}{Version: "v1", Path: plan.Path, Mode: plan.Mode, Before: plan.BeforeHash, After: plan.AfterHash})
 }
 
+// execFingerprint 将命令实参和执行前工作区观察值绑定为审批摘要。
 func execFingerprint(arguments tools.ExecArguments, observation string) string {
 	return fingerprint("exec_command", struct {
 		Version              string            `json:"version"`
@@ -169,6 +173,7 @@ func execFingerprint(arguments tools.ExecArguments, observation string) string {
 	})
 }
 
+// fingerprint 对命名 JSON 载荷计算稳定 SHA-256 引用。
 func fingerprint(name string, value any) string {
 	encoded, err := json.Marshal(struct {
 		Name  string `json:"name"`
@@ -181,6 +186,7 @@ func fingerprint(name string, value any) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+// matchesProtected 判断候选路径是否命中受保护路径、glob 或其子路径。
 func matchesProtected(candidate, protected string) bool {
 	protected = strings.Trim(strings.ReplaceAll(protected, "\\", "/"), "/")
 	candidate = strings.Trim(strings.ReplaceAll(candidate, "\\", "/"), "/")

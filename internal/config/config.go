@@ -1,4 +1,4 @@
-// Package config loads Cairn's small, non-secret repository configuration.
+// Package config 读取 Cairn 小型、不可包含密钥的仓库配置。
 package config
 
 import (
@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config 汇集一次 Cairn 运行的全部非敏感配置。
 type Config struct {
 	Version      int                `yaml:"version"`
 	Provider     ProviderConfig     `yaml:"provider"`
@@ -27,6 +28,7 @@ type Config struct {
 	Cancellation CancellationConfig `yaml:"cancellation"`
 }
 
+// ProviderConfig 配置兼容 OpenAI API 的模型提供方。
 type ProviderConfig struct {
 	BaseURL        string `yaml:"base_url"`
 	Model          string `yaml:"model"`
@@ -34,6 +36,7 @@ type ProviderConfig struct {
 	RequestTimeout string `yaml:"request_timeout"`
 }
 
+// WorkspaceConfig 限制模型工具可读取和检索的工作区范围。
 type WorkspaceConfig struct {
 	Ignore         []string `yaml:"ignore"`
 	MaxReadBytes   int64    `yaml:"max_read_bytes"`
@@ -41,6 +44,7 @@ type WorkspaceConfig struct {
 	MaxSearchBytes int64    `yaml:"max_search_bytes"`
 }
 
+// BudgetConfig 定义运行在轮次、工具、token、时间和成本上的硬上限。
 type BudgetConfig struct {
 	MaxTurns        int     `yaml:"max_turns"`
 	MaxToolCalls    int     `yaml:"max_tool_calls"`
@@ -50,23 +54,25 @@ type BudgetConfig struct {
 	MaxCostUSD      float64 `yaml:"max_cost_usd"`
 }
 
-// PricingConfig is intentionally opt-in. A cost budget is invalid until both
-// reported-token prices are explicit, so Cairn never silently enforces a
-// fictional cost estimate.
+// PricingConfig 必须显式启用；只有输入与输出 token 价格都给出时，成本预算
+// 才合法，Cairn 不会静默采用虚构的成本估计。
 type PricingConfig struct {
 	InputTokenUSD  float64 `yaml:"input_token_usd"`
 	OutputTokenUSD float64 `yaml:"output_token_usd"`
 }
 
+// OutputConfig 限制事件预览和证据制品的体积。
 type OutputConfig struct {
 	MaxPreviewBytes  int `yaml:"max_preview_bytes"`
 	MaxArtifactBytes int `yaml:"max_artifact_bytes"`
 }
 
+// CancellationConfig 配置终止子进程前的优雅等待时间。
 type CancellationConfig struct {
 	TerminateGrace string `yaml:"terminate_grace"`
 }
 
+// PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
 type PolicyConfig struct {
 	Write          string   `yaml:"write"`
 	Exec           string   `yaml:"exec"`
@@ -74,11 +80,13 @@ type PolicyConfig struct {
 	EnvAllow       []string `yaml:"env_allowlist"`
 }
 
+// VerificationConfig 描述完成前必须执行的固定验收命令。
 type VerificationConfig struct {
 	VolatilePaths []string              `yaml:"volatile_paths"`
 	Commands      []VerificationCommand `yaml:"commands"`
 }
 
+// VerificationCommand 是独立于模型提议的受控验证命令。
 type VerificationCommand struct {
 	Argv           []string          `yaml:"argv"`
 	CWD            string            `yaml:"cwd"`
@@ -87,6 +95,7 @@ type VerificationCommand struct {
 	Env            map[string]string `yaml:"env"`
 }
 
+// Overrides 保存由环境变量或 CLI 提供的可控运行时覆盖项。
 type Overrides struct {
 	BaseURL         string
 	Model           string
@@ -99,6 +108,7 @@ type Overrides struct {
 	MaxCostUSD      float64
 }
 
+// Defaults 返回安全优先的 V0 默认配置，写入和进程执行都要求审批。
 func Defaults() Config {
 	return Config{
 		Version:   1,
@@ -115,6 +125,7 @@ func Defaults() Config {
 	}
 }
 
+// Load 合并默认值、严格 YAML、环境变量与显式覆盖项，并校验最终配置。
 func Load(path string, overrides Overrides) (Config, error) {
 	config := Defaults()
 	if path != "" {
@@ -139,6 +150,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 	return config, nil
 }
 
+// Validate 验证配置版本、限额、时长、策略与验证命令的安全约束。
 func Validate(config Config) error {
 	if config.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", config.Version)
@@ -204,10 +216,12 @@ func Validate(config Config) error {
 	return nil
 }
 
+// validPolicyEffect 判断策略效果是否属于 allow、deny 或 ask。
 func validPolicyEffect(value string) bool {
 	return value == "allow" || value == "deny" || value == "ask"
 }
 
+// validEnvironmentKey 验证环境变量名称的可移植字符集。
 func validEnvironmentKey(key string) bool {
 	if key == "" {
 		return false
@@ -220,15 +234,18 @@ func validEnvironmentKey(key string) bool {
 	return true
 }
 
+// sensitiveEnvironmentKey 判断环境变量名是否暗示包含凭据。
 func sensitiveEnvironmentKey(key string) bool {
 	key = strings.ToLower(key)
 	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
 }
 
+// RequestTimeout 解析模型请求超时配置。
 func (config Config) RequestTimeout() (time.Duration, error) {
 	return time.ParseDuration(config.Provider.RequestTimeout)
 }
 
+// WallTime 解析并确保运行总时长预算为正数。
 func (config Config) WallTime() (time.Duration, error) {
 	duration, err := time.ParseDuration(config.Budget.MaxWallTime)
 	if err != nil {
@@ -240,6 +257,7 @@ func (config Config) WallTime() (time.Duration, error) {
 	return duration, nil
 }
 
+// TerminateGrace 解析并确保进程终止宽限期为正数。
 func (config Config) TerminateGrace() (time.Duration, error) {
 	duration, err := time.ParseDuration(config.Cancellation.TerminateGrace)
 	if err != nil {
@@ -251,7 +269,7 @@ func (config Config) TerminateGrace() (time.Duration, error) {
 	return duration, nil
 }
 
-// Fingerprint identifies the frozen, non-secret configuration for a run.
+// Fingerprint 生成可写入事件日志的冻结非敏感配置摘要。
 func (config Config) Fingerprint() string {
 	encoded, err := json.Marshal(config)
 	if err != nil {
@@ -261,8 +279,10 @@ func (config Config) Fingerprint() string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+// DefaultPath 返回工作区内的默认配置文件路径。
 func DefaultPath(workspace string) string { return filepath.Join(workspace, ".agent", "config.yaml") }
 
+// applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中。
 func applyEnvironment(config *Config) {
 	if value := os.Getenv("AGENT_BASE_URL"); value != "" {
 		config.Provider.BaseURL = value
@@ -303,6 +323,7 @@ func applyEnvironment(config *Config) {
 	}
 }
 
+// applyOverrides 应用已经由 CLI 解析完成的显式非零覆盖项。
 func applyOverrides(config *Config, overrides Overrides) {
 	if overrides.BaseURL != "" {
 		config.Provider.BaseURL = overrides.BaseURL

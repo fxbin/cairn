@@ -14,14 +14,17 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// ApplyPatch 是经审批后执行确定性单文件改写的副作用工具。
 type ApplyPatch struct{ Workspace Workspace }
 
+// Replacement 描述一次必须恰好匹配指定次数的文本替换。
 type Replacement struct {
 	Old        string `json:"old"`
 	New        string `json:"new"`
 	Occurrence int    `json:"occurrence"`
 }
 
+// PatchArguments 是模型请求的单文件改写参数。
 type PatchArguments struct {
 	Path           string        `json:"path"`
 	Mode           string        `json:"mode"`
@@ -30,6 +33,7 @@ type PatchArguments struct {
 	Replacements   []Replacement `json:"replacements,omitempty"`
 }
 
+// PatchPlan 是审批与执行共用的确定性改写计划及前后摘要。
 type PatchPlan struct {
 	Path       string
 	Mode       string
@@ -40,12 +44,15 @@ type PatchPlan struct {
 	Exists     bool
 }
 
+// SideEffect 声明 ApplyPatch 会改变工作区内容。
 func (tool ApplyPatch) SideEffect() SideEffectClass { return SideEffectWorkspace }
 
+// Spec 返回 apply_patch 的受限 JSON 参数定义。
 func (tool ApplyPatch) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "apply_patch", Description: "Apply a deterministic, single-file patch after approval.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","mode"],"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","update","delete"]},"expected_sha256":{"type":"string"},"content":{"type":"string"},"replacements":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["old","new","occurrence"],"properties":{"old":{"type":"string"},"new":{"type":"string"},"occurrence":{"type":"integer","minimum":1}}}}}}`)}
 }
 
+// Plan 在不写入文件的前提下校验参数并计算确定性的改写前后状态。
 func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 	arguments := PatchArguments{}
 	if err := decodeArguments(raw, &arguments); err != nil {
@@ -108,6 +115,7 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 	return plan, nil
 }
 
+// Execute 按计划原子地创建、更新或删除单个文件，并校验写后摘要。
 func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if err := ctx.Err(); err != nil {
 		return Failure("cancelled", err.Error())
@@ -177,6 +185,7 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 	}{Path: plan.Path, BeforeHash: plan.BeforeHash, AfterHash: plan.AfterHash}, "updated "+plan.Path, int64(len(actual)), plan.AfterHash, false)
 }
 
+// applyReplacements 仅在每段旧文本出现次数与声明值一致时执行替换。
 func applyReplacements(content []byte, replacements []Replacement) ([]byte, error) {
 	updated := string(content)
 	for _, replacement := range replacements {
@@ -192,17 +201,20 @@ func applyReplacements(content []byte, replacements []Replacement) ([]byte, erro
 	return []byte(updated), nil
 }
 
+// sha256Reference 生成带 sha256: 前缀的内容摘要引用。
 func sha256Reference(content []byte) string {
 	digest := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+// sameSHA256 忽略大小写和可选前缀，比较两个非空 SHA-256 摘要。
 func sameSHA256(candidate, expected string) bool {
 	candidate = strings.TrimPrefix(strings.ToLower(candidate), "sha256:")
 	expected = strings.TrimPrefix(strings.ToLower(expected), "sha256:")
 	return candidate != "" && candidate == expected
 }
 
+// syncDirectory 同步目录元数据，增强原子重命名后的耐久性。
 func syncDirectory(directory string) error {
 	handle, err := os.Open(directory)
 	if err != nil {

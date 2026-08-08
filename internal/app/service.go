@@ -1,4 +1,4 @@
-// Package app assembles the CLI-facing Cairn use cases.
+// Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
 package app
 
 import (
@@ -28,18 +28,25 @@ import (
 )
 
 var (
-	ErrActiveRun        = errors.New("workspace already has an active run")
+	// ErrActiveRun 表示同一工作区已有尚未终态的运行。
+	ErrActiveRun = errors.New("workspace already has an active run")
+	// ErrWaitingReconcile 表示悬而未决的副作用必须由人工先对账。
 	ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
-	ErrConfigDrift      = errors.New("frozen config fingerprint does not match current configuration")
-	ErrStateCorrupt     = errors.New("run state is corrupt")
+	// ErrConfigDrift 表示当前配置与运行创建时冻结的配置不一致。
+	ErrConfigDrift = errors.New("frozen config fingerprint does not match current configuration")
+	// ErrStateCorrupt 表示事件日志或制品引用无法通过完整性校验。
+	ErrStateCorrupt = errors.New("run state is corrupt")
 )
 
+// EventSink 接收已成功持久化、可供 CLI 流式输出的领域事件。
 type EventSink func(domain.Event)
 
+// Service 组合应用层用例所需的可替换 Provider 构造器。
 type Service struct {
 	NewProvider func(config.Config) (ports.Provider, error)
 }
 
+// RunOptions 描述启动一次全新 Agent 运行所需的输入与依赖。
 type RunOptions struct {
 	Task      string
 	Workspace string
@@ -48,11 +55,13 @@ type RunOptions struct {
 	OnEvent   EventSink
 }
 
+// RunResult 返回运行标识与可呈现的最终回复。
 type RunResult struct {
 	ID       domain.RunID
 	Response string
 }
 
+// ResumeOptions 描述恢复既有运行与可选审批决定所需的输入。
 type ResumeOptions struct {
 	RunID     domain.RunID
 	Workspace string
@@ -62,6 +71,7 @@ type ResumeOptions struct {
 	OnEvent   EventSink
 }
 
+// ReconcileOptions 描述人工记录悬而未决副作用判定的输入。
 type ReconcileOptions struct {
 	RunID       domain.RunID
 	OperationID domain.OperationID
@@ -74,9 +84,8 @@ type ReconcileOptions struct {
 	OnEvent     EventSink
 }
 
-// AbortOptions stops a running Run that has no uncertain external operation.
-// A dangling workspace/process operation must instead be reconciled with the
-// explicit abort_run verdict, preserving the evidence boundary.
+// AbortOptions 用于停止不存在不确定外部操作的运行；悬而未决的工作区或进程
+// 操作必须以显式 abort_run 判定对账，保留证据边界。
 type AbortOptions struct {
 	RunID     domain.RunID
 	Reason    string
@@ -86,11 +95,13 @@ type AbortOptions struct {
 	OnEvent   EventSink
 }
 
+// InspectResult 包含当前投影以及按需附带的完整事件列表。
 type InspectResult struct {
 	Projection domain.RunProjection `json:"projection"`
 	Events     []domain.Event       `json:"events,omitempty"`
 }
 
+// Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop。
 func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
@@ -203,6 +214,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 	return RunResult{ID: result.RunID, Response: result.Response}, nil
 }
 
+// Inspect 只读加载指定运行，验证完整性后返回投影与可选事件历史。
 func (service Service) Inspect(ctx context.Context, workspacePath, stateDir string, config config.Config, runID domain.RunID, includeEvents bool) (InspectResult, error) {
 	_, hash, err := workspaceFor(workspacePath, config)
 	if err != nil {
@@ -234,6 +246,7 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 	return result, nil
 }
 
+// Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunResult, error) {
 	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -323,9 +336,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 	return RunResult{ID: result.RunID, Response: result.Response}, nil
 }
 
-// Reconcile writes the human verdict for an operation whose external effect
-// began but whose terminal event was never persisted. It never re-executes the
-// original command or patch.
+// Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (RunResult, error) {
 	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -497,9 +508,8 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	return RunResult{ID: result.RunID, Response: result.Response}, nil
 }
 
-// Abort terminates a non-dangling run without starting any model, tool, or
-// verifier work. It is intentionally separate from Reconcile: uncertainty
-// about an already-started side effect can only be resolved through a verdict.
+// Abort 在不启动模型、工具或 verifier 的情况下终止非悬挂运行；已经开始的副作用
+// 所具有的不确定性只能通过 Reconcile 的判定解决。
 func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResult, error) {
 	if strings.TrimSpace(options.Reason) == "" {
 		return RunResult{}, errors.New("abort reason is required")
@@ -579,6 +589,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 	return RunResult{ID: options.RunID}, nil
 }
 
+// Doctor 以只读模式验证工作区对应日志和制品引用的完整性。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, config config.Config) error {
 	_, hash, err := workspaceFor(workspacePath, config)
 	if err != nil {
@@ -598,6 +609,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	return nil
 }
 
+// provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。
 func (service Service) provider(configuration config.Config) (ports.Provider, error) {
 	if service.NewProvider != nil {
 		return service.NewProvider(configuration)
@@ -612,6 +624,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	return openaicompat.Client{BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv), HTTPClient: &http.Client{Timeout: timeout}}, nil
 }
 
+// workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。
 func workspaceFor(root string, configuration config.Config) (tools.Workspace, string, error) {
 	if root == "" {
 		current, err := os.Getwd()
@@ -628,6 +641,7 @@ func workspaceFor(root string, configuration config.Config) (tools.Workspace, st
 	return workspace, "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
+// openJournal 打开指定工作区的可写 SQLite 事件日志。
 func openJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	if stateDir == "" {
 		stateDir = defaultStateDir()
@@ -636,6 +650,7 @@ func openJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	return sqlite.Open(filepath.Join(directory, "runs.db"))
 }
 
+// openArtifactStore 打开指定工作区的脱敏内容寻址制品库。
 func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfig) (*artifact.Store, error) {
 	if stateDir == "" {
 		stateDir = defaultStateDir()
@@ -648,6 +663,7 @@ func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfi
 	return store, nil
 }
 
+// checkArtifactReferences 验证日志 payload 引用的每一个制品文件及其摘要。
 func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, stateDir, workspaceHash string) error {
 	if stateDir == "" {
 		stateDir = defaultStateDir()
@@ -676,6 +692,7 @@ func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, state
 	return nil
 }
 
+// checkArtifactReference 验证单个制品引用的格式、存在性和内容摘要。
 func checkArtifactReference(root string, reference artifact.Ref) error {
 	digest := strings.TrimPrefix(reference.SHA256, "sha256:")
 	if len(digest) != sha256.Size*2 {
@@ -695,6 +712,7 @@ func checkArtifactReference(root string, reference artifact.Ref) error {
 	return nil
 }
 
+// openReadOnlyJournal 打开指定工作区的不可写 SQLite 事件日志。
 func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	if stateDir == "" {
 		stateDir = defaultStateDir()
@@ -703,6 +721,7 @@ func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error
 	return sqlite.OpenReadOnly(filepath.Join(directory, "runs.db"))
 }
 
+// acquireWorkspaceLock 为指定工作区获取进程级排他锁。
 func acquireWorkspaceLock(stateDir, workspaceHash string) (*lock.Lock, error) {
 	if stateDir == "" {
 		stateDir = defaultStateDir()
@@ -710,6 +729,7 @@ func acquireWorkspaceLock(stateDir, workspaceHash string) (*lock.Lock, error) {
 	return lock.Acquire(filepath.Join(stateDir, "workspaces", workspaceHash, "run.lock"))
 }
 
+// defaultStateDir 按当前操作系统约定返回 Cairn 本地状态目录。
 func defaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -724,6 +744,7 @@ func defaultStateDir() string {
 	return filepath.Join(home, ".local", "state", "cairn")
 }
 
+// encode 将事件 payload 序列化并在写入前执行 JSON 脱敏。
 func encode(value any) json.RawMessage {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -732,6 +753,7 @@ func encode(value any) json.RawMessage {
 	return append(json.RawMessage(nil), artifact.RedactJSON(encoded)...)
 }
 
+// requireMatchingConfig 确保当前运行配置与创建事件中冻结的指纹一致。
 func requireMatchingConfig(events []domain.Event, configuration config.Config) error {
 	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
 		return errors.New("run is missing run_created event")
@@ -748,6 +770,7 @@ func requireMatchingConfig(events []domain.Event, configuration config.Config) e
 	return nil
 }
 
+// patchObservation 返回目标文件当前摘要或 absent，用于人工 patch 对账。
 func patchObservation(workspace tools.Workspace, relativePath string) (string, error) {
 	path, _, err := workspace.Resolve(relativePath)
 	if err != nil {
@@ -764,6 +787,7 @@ func patchObservation(workspace tools.Workspace, relativePath string) (string, e
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
+// verificationCommands 将配置中的固定验收命令转换为 Agent 可执行计划。
 func verificationCommands(configuration config.VerificationConfig) ([]agent.VerificationCommand, error) {
 	commands := make([]agent.VerificationCommand, 0, len(configuration.Commands))
 	for index, command := range configuration.Commands {
@@ -788,6 +812,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 	return commands, nil
 }
 
+// configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink) agent.Loop {
 	return agent.Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate,
@@ -801,6 +826,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 	}
 }
 
+// runBudgetContext 将运行创建时刻与墙钟预算组合为统一截止上下文。
 func runBudgetContext(ctx context.Context, createdAt time.Time, configuration config.Config) (context.Context, context.CancelFunc, error) {
 	wallTime, err := configuration.WallTime()
 	if err != nil {
@@ -810,6 +836,7 @@ func runBudgetContext(ctx context.Context, createdAt time.Time, configuration co
 	return budgetContext, cancel, nil
 }
 
+// expiredWallBudgetContext 返回已过期上下文，供持久化墙钟预算耗尽事件使用。
 func expiredWallBudgetContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
 }

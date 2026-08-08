@@ -1,5 +1,4 @@
-// Package artifact provides durable, content-addressed storage for redacted
-// evidence. Artifacts are evidence, never a secret vault.
+// Package artifact 提供经脱敏的内容寻址证据存储；制品只用于留证，不是密钥保管库。
 package artifact
 
 import (
@@ -14,6 +13,7 @@ import (
 	"strings"
 )
 
+// Ref 是可持久化的制品引用及供用户查看的截断预览。
 type Ref struct {
 	SHA256           string `json:"sha256"`
 	Bytes            int64  `json:"bytes"`
@@ -21,6 +21,7 @@ type Ref struct {
 	TruncatedPreview string `json:"truncated_preview"`
 }
 
+// Store 管理本地制品目录、预览上限和单个制品大小上限。
 type Store struct {
 	Root        string
 	PreviewSize int
@@ -33,6 +34,7 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{12,}`),
 }
 
+// New 创建仅当前用户可读写的制品根目录。
 func New(root string, previewSize int) (*Store, error) {
 	if root == "" {
 		return nil, fmt.Errorf("artifact root is required")
@@ -49,6 +51,7 @@ func New(root string, previewSize int) (*Store, error) {
 	return &Store{Root: root, PreviewSize: previewSize, MaxBytes: 10 * 1024 * 1024}, nil
 }
 
+// Redact 按已知凭据模式替换文本中可能泄露的敏感值。
 func Redact(content []byte) []byte {
 	clean := string(content)
 	for _, pattern := range secretPatterns {
@@ -65,8 +68,7 @@ func Redact(content []byte) []byte {
 	return []byte(clean)
 }
 
-// RedactJSON preserves valid JSON where possible and replaces values of
-// credential-like keys before applying text-pattern redaction.
+// RedactJSON 优先保留有效 JSON 结构并清除凭据式键的值，再执行文本脱敏。
 func RedactJSON(content []byte) []byte {
 	var value any
 	if err := json.Unmarshal(content, &value); err != nil {
@@ -80,6 +82,7 @@ func RedactJSON(content []byte) []byte {
 	return Redact(encoded)
 }
 
+// scrubJSON 递归替换敏感键及字符串叶子节点中的凭据内容。
 func scrubJSON(value *any, key string) {
 	if sensitiveKey(key) {
 		*value = "[REDACTED]"
@@ -101,11 +104,13 @@ func scrubJSON(value *any, key string) {
 	}
 }
 
+// sensitiveKey 判断规范化后的 JSON 键是否可能承载凭据。
 func sensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
 	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
 }
 
+// Put 脱敏后按内容哈希原子写入制品，并返回稳定引用。
 func (store *Store) Put(content []byte, mediaType string) (Ref, error) {
 	redacted := Redact(content)
 	if store.MaxBytes > 0 && len(redacted) > store.MaxBytes {
@@ -157,6 +162,7 @@ func (store *Store) Put(content []byte, mediaType string) (Ref, error) {
 	return store.ref(hexDigest, int64(len(redacted)), mediaType, redacted), nil
 }
 
+// ref 由已写入的内容生成带长度受限预览的制品引用。
 func (store *Store) ref(digest string, bytes int64, mediaType string, content []byte) Ref {
 	preview := content
 	if len(preview) > store.PreviewSize {
@@ -165,6 +171,7 @@ func (store *Store) ref(digest string, bytes int64, mediaType string, content []
 	return Ref{SHA256: "sha256:" + digest, Bytes: bytes, MediaType: mediaType, TruncatedPreview: string(preview)}
 }
 
+// syncDirectory 同步目录元数据，使原子重命名后的制品更可靠地落盘。
 func syncDirectory(directory string) error {
 	handle, err := os.Open(directory)
 	if err != nil {

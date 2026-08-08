@@ -9,6 +9,7 @@ import (
 	"github.com/fxbin/cairn/internal/cli"
 )
 
+// main 建立可取消根上下文，并将两次中断分别映射为优雅取消和强制退出。
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -18,8 +19,7 @@ func main() {
 	go func() {
 		<-signals
 		cancel()
-		// The first signal is persisted by the Loop. A second interrupt is an
-		// explicit request to stop waiting for graceful cleanup.
+		// 第一次信号由 Loop 持久化为取消；第二次表示不再等待优雅清理。
 		<-signals
 		os.Exit(130)
 	}()

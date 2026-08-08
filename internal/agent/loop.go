@@ -1,4 +1,4 @@
-// Package agent contains the serial, single-writer agent loop.
+// Package agent 包含串行、单写入者的 Agent 执行循环。
 package agent
 
 import (
@@ -19,18 +19,22 @@ import (
 	"github.com/fxbin/cairn/internal/tools"
 )
 
+// ErrTurnBudgetExceeded 表示运行耗尽了允许的模型轮次。
 var ErrTurnBudgetExceeded = errors.New("turn budget exhausted")
 
-// BudgetExceededError identifies the durable limit that stopped a run. It
-// unwraps to ErrTurnBudgetExceeded for compatibility with existing callers.
+// BudgetExceededError 标识导致运行停止的持久化预算维度；为兼容调用方，
+// 它会解包为 ErrTurnBudgetExceeded。
 type BudgetExceededError struct{ Dimension string }
 
+// Error 返回耗尽预算维度的稳定错误文本。
 func (err *BudgetExceededError) Error() string {
 	return fmt.Sprintf("budget exhausted: %s", err.Dimension)
 }
 
+// Unwrap 使预算错误可被 errors.Is 识别为轮次预算耗尽。
 func (err *BudgetExceededError) Unwrap() error { return ErrTurnBudgetExceeded }
 
+// WaitingApprovalError 表示运行在尚未启动副作用前等待人工决定。
 type WaitingApprovalError struct {
 	RunID       domain.RunID
 	OperationID domain.OperationID
@@ -38,26 +42,31 @@ type WaitingApprovalError struct {
 	Summary     string
 }
 
+// Error 返回等待审批操作及其绑定指纹。
 func (err *WaitingApprovalError) Error() string {
 	return fmt.Sprintf("approval required for %s (%s)", err.OperationID, err.Fingerprint)
 }
 
+// PolicyDeniedError 表示策略明确拒绝了模型提议的操作。
 type PolicyDeniedError struct{ Summary string }
 
+// Error 返回被拒绝操作的策略摘要。
 func (err *PolicyDeniedError) Error() string { return "policy denied: " + err.Summary }
 
-// VerificationFailureError is durable feedback for a failed fixed verification
-// command. It is deliberately not a terminal run error: the model may repair
-// the workspace within the remaining turn budget.
+// VerificationFailureError 是固定验证命令失败的持久化反馈；它不是终态错误，
+// 模型仍可在剩余轮次中修复工作区。
 type VerificationFailureError struct {
 	CommandID string
 	Feedback  string
 }
 
+// Error 返回可反馈给模型的验证失败信息。
 func (err *VerificationFailureError) Error() string { return err.Feedback }
 
+// EventSink 接收 Loop 已成功追加到日志的领域事件。
 type EventSink func(domain.Event)
 
+// Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
 	Journal           ports.Journal
 	Provider          ports.Provider
@@ -73,19 +82,21 @@ type Loop struct {
 	InputTokenUSD     float64
 	OutputTokenUSD    float64
 	Verification      []VerificationCommand
-	// VerificationWorkspace is intentionally distinct from the tool workspace:
-	// ordinary workspace.ignore entries must not hide verifier side effects.
+	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
+	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace
 	Artifacts             *artifact.Store
 	OnEvent               EventSink
 	SystemPrompt          string
 }
 
+// VerificationCommand 是 Loop 在完成前按配置执行的冻结命令。
 type VerificationCommand struct {
 	ID        string
 	Arguments json.RawMessage
 }
 
+// verificationPlan 是持久化为制品并绑定审批的验证计划快照。
 type verificationPlan struct {
 	Version             string                `json:"version"`
 	VerificationID      string                `json:"verification_id"`
@@ -95,6 +106,7 @@ type verificationPlan struct {
 	Commands            []VerificationCommand `json:"commands"`
 }
 
+// RunInput 是启动或恢复 Loop 所需的运行标识、任务与恢复事实。
 type RunInput struct {
 	RunID             domain.RunID
 	Task              string
@@ -104,28 +116,33 @@ type RunInput struct {
 	ResumeObservation string
 }
 
+// Result 返回 Loop 完成或暂停后的运行标识与最终回复。
 type Result struct {
 	RunID    domain.RunID
 	Response string
 }
 
+// modelResponsePayload 是写入 model_response_finished 事件的响应内容。
 type modelResponsePayload struct {
 	Text      string           `json:"text"`
 	ToolCalls []ports.ToolCall `json:"tool_calls,omitempty"`
 	Usage     *ports.Usage     `json:"usage,omitempty"`
 }
 
+// modelRequestPayload 是写入模型请求事件的可审计提供方信息。
 type modelRequestPayload struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 }
 
+// toolCallPayload 是写入工具提议事件的模型调用事实。
 type toolCallPayload struct {
 	CallID    string          `json:"call_id"`
 	ToolName  string          `json:"tool_name"`
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// operationPayload 是工具操作开始或终态事件的可回放证据字段。
 type operationPayload struct {
 	ToolName        string        `json:"tool_name"`
 	SideEffectClass string        `json:"side_effect_class,omitempty"`
@@ -137,6 +154,7 @@ type operationPayload struct {
 	ResultRef       *artifact.Ref `json:"result_ref,omitempty"`
 }
 
+// Run 从当前事件投影继续执行模型轮次、工具与验证，直至终态或可恢复暂停。
 func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
@@ -285,6 +303,7 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 	return loop.persistBudgetExceeded(ctx, &projection, input, "turns")
 }
 
+// persistCancellation 关闭待审批状态和当前轮次，并把取消原因持久化为终态事件。
 func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID *domain.TurnID) (Result, error) {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return loop.persistBudgetExceeded(ctx, projection, input, "wall_time")
@@ -320,6 +339,7 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 	return Result{RunID: input.RunID}, context.Canceled
 }
 
+// persistBudgetExceeded 将触发的预算维度及失败状态追加到事件日志。
 func (loop *Loop) persistBudgetExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, dimension string) (Result, error) {
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
@@ -351,6 +371,7 @@ func (loop *Loop) persistBudgetExceeded(ctx context.Context, projection *domain.
 	return Result{RunID: input.RunID}, &BudgetExceededError{Dimension: dimension}
 }
 
+// commitContext 派生保留调用方值但不受运行取消影响的短暂持久化上下文。
 func (loop *Loop) commitContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
@@ -358,6 +379,7 @@ func (loop *Loop) commitContext(ctx context.Context) (context.Context, context.C
 // appendResume records an invocation only at a recovery boundary where there
 // is no unresolved overlay. In particular, an invalid approval must not leave
 // a misleading run_resumed event behind.
+// appendResume 在恢复前记录调用标识、来源序号和 verifier 工作区观察值。
 func (loop *Loop) appendResume(ctx context.Context, projection *domain.RunProjection, input *RunInput) error {
 	if input.ResumeInvocation == "" {
 		return nil
@@ -379,9 +401,8 @@ func (loop *Loop) appendResume(ctx context.Context, projection *domain.RunProjec
 	return nil
 }
 
-// cancelPendingApproval closes the approval overlay before a terminal stop.
-// The decision is explicitly system-originated: it consumes no human grant,
-// starts no operation, and leaves an auditable reason for replay.
+// cancelPendingApproval 在终止前关闭审批覆盖层；它明确由系统发起，不会消费
+// 人工授权或启动操作，但会留下可回放的审计原因。
 func (loop *Loop) cancelPendingApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, cause string) error {
 	if projection.PendingApproval == nil {
 		return nil
@@ -399,15 +420,14 @@ func (loop *Loop) cancelPendingApproval(ctx context.Context, projection *domain.
 	}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: "approval closed while the run was stopping", StopCause: cause})})
 }
 
-// Approval is the explicit, single-use decision supplied by `cairn resume`.
+// Approval 是 cairn resume 提供的显式、一次性审批决定。
 type Approval struct {
 	Fingerprint string
 	Approve     bool
 	Reason      string
 }
 
-// Resume continues a run paused before a model tool was started. It never
-// reuses an approval for another fingerprint and never restarts an operation.
+// Resume 继续在模型工具启动前暂停的运行；它绝不为其他指纹复用审批，也不重启已开始操作。
 func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
@@ -680,6 +700,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 	return loop.Run(ctx, input)
 }
 
+// resumeFinalModelResponse 在恢复时重新处理已完成模型响应的最终回复或工具调用。
 func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, response modelResponsePayload, events []domain.Event) (Result, error) {
 	if !hasAssistantMessage(events, turnID) {
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: mustJSON(domain.AssistantMessagePayload{Text: response.Text})}); err != nil {
@@ -705,6 +726,7 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 	return Result{RunID: input.RunID, Response: response.Text}, nil
 }
 
+// completedModelResponseForTurn 查找指定轮次已持久化的完整模型响应。
 func completedModelResponseForTurn(events []domain.Event, turnID domain.TurnID) (modelResponsePayload, bool) {
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
@@ -717,6 +739,7 @@ func completedModelResponseForTurn(events []domain.Event, turnID domain.TurnID) 
 	return modelResponsePayload{}, false
 }
 
+// hasAnyToolProposal 判断模型响应中的任一工具调用是否已经被提议并持久化。
 func hasAnyToolProposal(events []domain.Event, calls []ports.ToolCall) bool {
 	callIDs := make(map[string]struct{}, len(calls))
 	for _, call := range calls {
@@ -736,6 +759,7 @@ func hasAnyToolProposal(events []domain.Event, calls []ports.ToolCall) bool {
 	return false
 }
 
+// hasAssistantMessage 判断指定轮次是否已写入用户可见的助手消息。
 func hasAssistantMessage(events []domain.Event, turnID domain.TurnID) bool {
 	for _, event := range events {
 		if event.Type == domain.EventAssistantMessageAppended && event.TurnID != nil && *event.TurnID == turnID {
@@ -745,6 +769,7 @@ func hasAssistantMessage(events []domain.Event, turnID domain.TurnID) bool {
 	return false
 }
 
+// resumeDecision 为已提议操作重建策略判定，并保留验证计划的独立审批边界。
 func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool) (policy.Decision, error) {
 	if verificationProposal {
 		planSHA := ""
@@ -771,6 +796,7 @@ func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.Too
 // expireApproval records that a one-shot approval no longer describes the
 // current workspace, then lets the model make a new decision from durable
 // tool/verification feedback. The old command is never started.
+// expireApproval 将过期或不匹配的审批转换为可审计拒绝，而不执行关联操作。
 func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verificationProposal bool, _ policy.Decision) (Result, error) {
 	reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
@@ -804,6 +830,7 @@ func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProj
 	return loop.Run(ctx, input)
 }
 
+// failCurrentTurn 持久化当前轮次失败和运行失败，返回原始失败原因。
 func (loop *Loop) failCurrentTurn(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, cause error) (Result, error) {
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
 		return Result{RunID: input.RunID}, err
@@ -816,6 +843,7 @@ func (loop *Loop) failCurrentTurn(ctx context.Context, projection *domain.RunPro
 	return Result{RunID: input.RunID}, cause
 }
 
+// incompleteModelAttempt 查找请求已开始但未持久化终态的模型尝试。
 func incompleteModelAttempt(events []domain.Event) (domain.AttemptID, domain.TurnID, bool) {
 	pending := make(map[domain.AttemptID]domain.TurnID)
 	for _, event := range events {
@@ -840,6 +868,7 @@ func incompleteModelAttempt(events []domain.Event) (domain.AttemptID, domain.Tur
 	return latest, turn, latest != ""
 }
 
+// proposedToolCall 从事件历史恢复某操作对应的工具调用。
 func proposedToolCall(events []domain.Event, operationID domain.OperationID) (ports.ToolCall, bool) {
 	for _, event := range events {
 		if event.Type != domain.EventToolCallProposed || event.OperationID == nil || *event.OperationID != operationID {
@@ -854,6 +883,7 @@ func proposedToolCall(events []domain.Event, operationID domain.OperationID) (po
 	return ports.ToolCall{}, false
 }
 
+// proposedVerificationCommand 从事件历史恢复某操作对应的验证命令提议。
 func proposedVerificationCommand(events []domain.Event, operationID domain.OperationID) (verificationProposalPayload, bool) {
 	for _, event := range events {
 		if event.Type != domain.EventVerificationCommandProposed || event.OperationID == nil || *event.OperationID != operationID {
@@ -868,6 +898,7 @@ func proposedVerificationCommand(events []domain.Event, operationID domain.Opera
 	return verificationProposalPayload{}, false
 }
 
+// messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文。
 func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) []ports.Message {
 	task := fallbackTask
 	proposals := make(map[domain.OperationID]ports.ToolCall)
@@ -945,6 +976,7 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 	return messages
 }
 
+// runVerification 创建并执行冻结验证计划，任何失败都会反馈给后续模型轮次。
 func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
 	if projection.LastMutationSeq != 0 && len(loop.Verification) == 0 {
 		return errors.New("workspace changed but no verification commands are configured")
@@ -973,6 +1005,7 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 	return loop.runVerificationCommands(ctx, projection, input, turnID, verificationID, planRef, 0)
 }
 
+// createVerificationPlan 冻结验证命令及配置指纹，并将计划作为脱敏制品保存。
 func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq uint64) (verificationPlan, *artifact.Ref, error) {
 	commands, err := json.Marshal(loop.Verification)
 	if err != nil {
@@ -1001,6 +1034,7 @@ func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq 
 	return plan, &ref, nil
 }
 
+// runVerificationCommands 从指定索引顺序执行冻结计划中的验证命令。
 func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *artifact.Ref, startIndex int) error {
 	for index := startIndex; index < len(loop.Verification); index++ {
 		if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
@@ -1043,6 +1077,7 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 	return loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: true})})
 }
 
+// verificationProposalPayload 是验证命令提议事件的可回放载荷。
 type verificationProposalPayload struct {
 	VerificationID string          `json:"verification_id"`
 	CommandIndex   int             `json:"command_index"`
@@ -1050,6 +1085,7 @@ type verificationProposalPayload struct {
 	Arguments      json.RawMessage `json:"arguments"`
 }
 
+// policyDecisionDraft 将策略决定编码为可追加的领域事件草稿。
 func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision policy.Decision) domain.EventDraft {
 	return domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 		Effect      string `json:"effect"`
@@ -1059,6 +1095,7 @@ func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domai
 	}{Effect: string(decision.Effect), Rule: decision.RuleID, Fingerprint: decision.Fingerprint, Summary: decision.Summary})}
 }
 
+// approvalRequestedDraft 将待审批操作编码为可追加的领域事件草稿。
 func approvalRequestedDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision policy.Decision) domain.EventDraft {
 	return domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
@@ -1067,6 +1104,7 @@ func approvalRequestedDraft(input RunInput, turnID domain.TurnID, operationID do
 	}{Fingerprint: decision.Fingerprint, Summary: decision.Summary, Rule: decision.RuleID})}
 }
 
+// executeVerificationCommand 在策略授权后执行单条冻结验证命令并记录证据。
 func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, command VerificationCommand) error {
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
 		return err
@@ -1130,6 +1168,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	return &VerificationFailureError{CommandID: command.ID, Feedback: feedback}
 }
 
+// verificationObservation 返回 verifier 视图的稳定摘要，用于绑定命令审批。
 func (loop *Loop) verificationObservation() (string, error) {
 	if loop.VerificationWorkspace.Root != "" {
 		return loop.VerificationWorkspace.Observation()
@@ -1140,6 +1179,7 @@ func (loop *Loop) verificationObservation() (string, error) {
 	return loop.Gate.Patch.Workspace.Observation()
 }
 
+// executeTool 在策略、审批和日志授权后执行一次模型提议的固定工具调用。
 func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, call ports.ToolCall) (tools.Result, error) {
 	if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) {
 		return tools.Result{}, errors.New("model returned invalid tool call")
@@ -1229,17 +1269,20 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	return result, nil
 }
 
+// collectedResponse 汇集一次流式模型响应的文本、工具调用与 token 用量。
 type collectedResponse struct {
 	Text      string
 	ToolCalls []ports.ToolCall
 	Usage     *ports.Usage
 }
 
+// budgetUsage 保存从持久化响应中累计的输入与输出 token。
 type budgetUsage struct {
 	InputTokens  int
 	OutputTokens int
 }
 
+// add 将单次模型 token 用量累加到运行总量。
 func (usage *budgetUsage) add(value *ports.Usage) {
 	if value == nil {
 		return
@@ -1248,6 +1291,7 @@ func (usage *budgetUsage) add(value *ports.Usage) {
 	usage.OutputTokens += value.CompletionTokens
 }
 
+// budgetUsageFromEvents 从已持久化模型响应事件重建累计 token 消耗。
 func budgetUsageFromEvents(events []domain.Event) budgetUsage {
 	var usage budgetUsage
 	for _, event := range events {
@@ -1262,6 +1306,7 @@ func budgetUsageFromEvents(events []domain.Event) budgetUsage {
 	return usage
 }
 
+// responseBudgetExceeded 检查 token 和显式定价成本是否超过配置上限。
 func (loop *Loop) responseBudgetExceeded(usage budgetUsage) *BudgetExceededError {
 	if loop.MaxInputTokens > 0 && usage.InputTokens > loop.MaxInputTokens {
 		return &BudgetExceededError{Dimension: "input_tokens"}
@@ -1275,10 +1320,12 @@ func (loop *Loop) responseBudgetExceeded(usage budgetUsage) *BudgetExceededError
 	return nil
 }
 
+// cost 按显式输入、输出单价计算累计 token 的美元成本。
 func (usage budgetUsage) cost(inputRate, outputRate float64) float64 {
 	return float64(usage.InputTokens)*inputRate + float64(usage.OutputTokens)*outputRate
 }
 
+// ensureToolBudget 统计已启动操作，并在达到上限时拒绝新工具执行。
 func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) error {
 	if loop.MaxToolCalls <= 0 {
 		return nil
@@ -1299,6 +1346,7 @@ func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) erro
 	return nil
 }
 
+// callModel 调用 Provider 并严格收集一个以 Done 结束的有效流式响应。
 func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (collectedResponse, error) {
 	var response collectedResponse
 	done := false
@@ -1336,6 +1384,7 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 	return response, nil
 }
 
+// append 以当前投影序号追加事件、应用投影并向外部 sink 广播。
 func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, draft domain.EventDraft) error {
 	event, err := loop.Journal.Append(ctx, projection.LastSeq, draft)
 	if err != nil {
@@ -1350,6 +1399,7 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 	return nil
 }
 
+// prompt 返回显式系统提示词，或提供安全工具使用的默认提示词。
 func (loop *Loop) prompt() string {
 	if strings.TrimSpace(loop.SystemPrompt) != "" {
 		return loop.SystemPrompt
@@ -1357,6 +1407,7 @@ func (loop *Loop) prompt() string {
 	return "You are Cairn, a careful coding agent. Use the supplied tools for repository facts. Return a concise final answer when the task is answered."
 }
 
+// mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。
 func mustJSON(value any) json.RawMessage {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -1365,6 +1416,7 @@ func mustJSON(value any) json.RawMessage {
 	return append(json.RawMessage(nil), artifact.RedactJSON(encoded)...)
 }
 
+// containsSecretJSON 通过比较脱敏前后 JSON 判断载荷是否含有敏感内容。
 func containsSecretJSON(raw json.RawMessage) bool {
 	var value any
 	if json.Unmarshal(raw, &value) != nil {
@@ -1377,6 +1429,7 @@ func containsSecretJSON(raw json.RawMessage) bool {
 	return !bytes.Equal(canonical, artifact.RedactJSON(canonical))
 }
 
+// freshApprovalDecision 为曾被不确定副作用对账过的同一动作强制重新人工审批。
 func freshApprovalDecision(projection domain.RunProjection, decision policy.Decision) policy.Decision {
 	if decision.Effect == policy.Allow && projection.RequiresFreshApproval(decision.Fingerprint) {
 		decision.Effect = policy.Ask
@@ -1386,6 +1439,7 @@ func freshApprovalDecision(projection domain.RunProjection, decision policy.Deci
 	return decision
 }
 
+// resultPayload 将工具结果包装为事件载荷，并在可用时持久化脱敏制品引用。
 func (loop *Loop) resultPayload(toolName string, result tools.Result) (operationPayload, error) {
 	payload := operationPayload{ToolName: toolName, Result: result}
 	if loop.Artifacts == nil {
@@ -1403,6 +1457,7 @@ func (loop *Loop) resultPayload(toolName string, result tools.Result) (operation
 	return payload, nil
 }
 
+// redactToolResult 清除工具结果预览和 JSON 数据中可能泄露的凭据。
 func redactToolResult(result tools.Result) tools.Result {
 	result.Preview = string(artifact.Redact([]byte(result.Preview)))
 	if len(result.Data) != 0 {

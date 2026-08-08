@@ -11,6 +11,7 @@ import (
 	"strings"
 )
 
+// Workspace 是经过规范化和边界检查的工具可见文件系统视图。
 type Workspace struct {
 	Root           string
 	ignored        map[string]struct{}
@@ -19,22 +20,20 @@ type Workspace struct {
 	MaxSearchBytes int64
 }
 
+// NewWorkspace 创建供模型工具使用的工作区视图，并应用工具级忽略项。
 func NewWorkspace(root string, ignored []string, maxReadBytes int64, maxSearchFiles int, maxSearchBytes int64) (Workspace, error) {
 	return newWorkspace(root, ignored, maxReadBytes, maxSearchFiles, maxSearchBytes, true)
 }
 
-// NewObservationWorkspace creates the whole-workspace view used by the
-// verifier. Unlike model tools, this view must not inherit workspace.ignore:
-// a tool-only convenience such as node_modules cannot hide verifier-induced
-// writes. Only Cairn's own state, Git metadata, sensitive paths, and the
-// explicitly configured volatile paths remain excluded.
+// NewObservationWorkspace 创建 verifier 使用的全工作区视图。它不继承
+// workspace.ignore，避免 node_modules 等工具便利项掩盖验证命令的写入；
+// 仅排除 Cairn 状态、Git 元数据、敏感路径和显式 volatile 路径。
 func NewObservationWorkspace(root string, volatile []string) (Workspace, error) {
 	return newWorkspace(root, volatile, 1, 1, 1, false)
 }
 
-// ObservationView derives a verifier view from an already-canonical tool
-// workspace. It cannot fail, which keeps dependency assembly fail-closed
-// without reopening or recanonicalizing a path between policy setup and use.
+// ObservationView 从已规范化的工具视图派生 verifier 视图；它不会失败，
+// 从而避免策略配置与使用之间重新打开或重新规范化路径。
 func (workspace Workspace) ObservationView(volatile []string) Workspace {
 	ignored := map[string]struct{}{".git": {}, ".agent": {}, ".cairn": {}}
 	for _, entry := range volatile {
@@ -46,6 +45,7 @@ func (workspace Workspace) ObservationView(volatile []string) Workspace {
 	return Workspace{Root: workspace.Root, ignored: ignored, MaxReadBytes: workspace.MaxReadBytes, MaxSearchFiles: workspace.MaxSearchFiles, MaxSearchBytes: workspace.MaxSearchBytes}
 }
 
+// newWorkspace 执行工作区路径规范化、目录确认、容量默认值和忽略集构建。
 func newWorkspace(root string, ignored []string, maxReadBytes int64, maxSearchFiles int, maxSearchBytes int64, includeToolDefaults bool) (Workspace, error) {
 	if root == "" {
 		return Workspace{}, errors.New("workspace path is required")
@@ -88,6 +88,7 @@ func newWorkspace(root string, ignored []string, maxReadBytes int64, maxSearchFi
 	return Workspace{Root: canonical, ignored: ignoreSet, MaxReadBytes: maxReadBytes, MaxSearchFiles: maxSearchFiles, MaxSearchBytes: maxSearchBytes}, nil
 }
 
+// Resolve 将工作区相对路径解析为物理路径和规范相对路径，并拒绝越界及逃逸符号链接。
 func (workspace Workspace) Resolve(relative string) (string, string, error) {
 	if relative == "" {
 		relative = "."
@@ -112,6 +113,7 @@ func (workspace Workspace) Resolve(relative string) (string, string, error) {
 	return candidate, filepath.ToSlash(relativePath), nil
 }
 
+// Ignore 判断路径是否因敏感性或工作区忽略规则而不可被工具访问。
 func (workspace Workspace) Ignore(relative string) bool {
 	if sensitivePath(relative) {
 		return true
@@ -124,15 +126,14 @@ func (workspace Workspace) Ignore(relative string) bool {
 	return false
 }
 
+// sensitivePath 判断路径名是否可能包含环境变量或凭据。
 func sensitivePath(relative string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(relative)))
 	return base == ".env" || strings.HasPrefix(base, ".env.") || strings.Contains(base, "credential")
 }
 
-// Observation returns a stable digest for this workspace view. Callers choose
-// the view deliberately: model approvals use NewWorkspace, while verifier
-// integrity uses NewObservationWorkspace so tool-only ignores cannot mask a
-// test command changing the repository.
+// Observation 计算当前视图的稳定摘要。模型审批使用 NewWorkspace，而
+// verifier 使用 NewObservationWorkspace，确保工具级忽略不能掩盖测试写入。
 func (workspace Workspace) Observation() (string, error) {
 	entries := make([]string, 0)
 	err := filepath.WalkDir(workspace.Root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -186,6 +187,7 @@ func (workspace Workspace) Observation() (string, error) {
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
+// walk 在工作区边界和忽略规则内遍历 start，并跳过符号链接实体。
 func (workspace Workspace) walk(start string, visit func(path string, entry os.DirEntry, relative string) error) error {
 	root, rootRelative, err := workspace.Resolve(start)
 	if err != nil {

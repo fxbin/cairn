@@ -1,4 +1,4 @@
-// Package cli provides the narrow command-line boundary for Cairn.
+// Package cli 提供 Cairn 的窄命令行边界与稳定退出码。
 package cli
 
 import (
@@ -28,16 +28,19 @@ const (
 	ExitCorrupt   = 8
 )
 
+// Command 保存 CLI 依赖及标准输出、错误输出目标。
 type Command struct {
 	Service app.Service
 	Stdout  io.Writer
 	Stderr  io.Writer
 }
 
+// Run 使用默认 Command 执行一组 CLI 参数并返回进程退出码。
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return Command{Stdout: stdout, Stderr: stderr}.Run(ctx, args)
 }
 
+// Run 分派顶级命令，并为缺失输出目标填充标准流。
 func (command Command) Run(ctx context.Context, args []string) int {
 	if command.Stdout == nil {
 		command.Stdout = os.Stdout
@@ -68,6 +71,7 @@ func (command Command) Run(ctx context.Context, args []string) int {
 	}
 }
 
+// resume 解析恢复、审批、对账或中止参数，并调用相应应用用例。
 func (command Command) resume(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("resume", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -182,9 +186,8 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	return ExitOK
 }
 
-// normalizeResumeArguments keeps the run ID positional while allowing callers
-// to place it before flags, as shown in the public CLI contract. The standard
-// flag package otherwise stops parsing at the first positional argument.
+// normalizeResumeArguments 保持运行 ID 为位置参数，同时允许按公开 CLI 契约将
+// 它放在 flags 之前；标准 flag 包会在第一个位置参数处停止解析。
 func normalizeResumeArguments(arguments []string) []string {
 	return normalizeFlagsThenPositionals(arguments, map[string]struct{}{
 		"--workspace": {}, "--state-dir": {}, "--config": {}, "--approve": {},
@@ -192,6 +195,7 @@ func normalizeResumeArguments(arguments []string) []string {
 	})
 }
 
+// normalizeRunArguments 允许 run 的唯一任务位置参数出现在 flags 之前。
 func normalizeRunArguments(arguments []string) []string {
 	return normalizeFlagsThenPositionals(arguments, map[string]struct{}{
 		"--workspace": {}, "--state-dir": {}, "--config": {}, "--base-url": {}, "--model": {},
@@ -200,6 +204,7 @@ func normalizeRunArguments(arguments []string) []string {
 	})
 }
 
+// normalizeFlagsThenPositionals 将 flags 与其值移动到位置参数之前以兼容 flag 包。
 func normalizeFlagsThenPositionals(arguments []string, valueFlags map[string]struct{}) []string {
 	flags := make([]string, 0, len(arguments))
 	positionals := make([]string, 0, 1)
@@ -222,6 +227,7 @@ func normalizeFlagsThenPositionals(arguments []string, valueFlags map[string]str
 	return append(flags, positionals...)
 }
 
+// run 解析一次新 Agent 运行的参数，转交应用层并输出最终结果。
 func (command Command) run(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("run", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -279,6 +285,7 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	return ExitOK
 }
 
+// exitFor 将领域和应用错误映射为公开稳定的 CLI 退出码。
 func exitFor(err error) int {
 	var waiting *agent.WaitingApprovalError
 	if errors.As(err, &waiting) {
@@ -303,6 +310,7 @@ func exitFor(err error) int {
 	return ExitFailed
 }
 
+// inspect 查询指定运行的投影，并可选择输出其完整事件历史。
 func (command Command) inspect(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -339,6 +347,7 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 	return ExitOK
 }
 
+// doctor 执行不改变状态的 Journal 与制品库完整性诊断。
 func (command Command) doctor(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -365,6 +374,7 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	return ExitOK
 }
 
+// loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。
 func (command Command) loadConfig(workspace, configuredPath string, overrides config.Overrides) (config.Config, error) {
 	if workspace == "" {
 		current, err := os.Getwd()
@@ -379,6 +389,7 @@ func (command Command) loadConfig(workspace, configuredPath string, overrides co
 	return config.Load(configuredPath, overrides)
 }
 
+// usage 向错误输出写入 CLI 使用说明与退出码语义。
 func (command Command) usage() {
 	fmt.Fprint(command.Stderr, `Cairn — an event-sourced coding agent
 
@@ -394,6 +405,7 @@ Exit status:
 `)
 }
 
+// writeJSON 将值编码为一行 JSON；编码失败时不向 stdout 泄露部分数据。
 func writeJSON(writer io.Writer, value any) {
 	encoded, err := json.Marshal(value)
 	if err != nil {

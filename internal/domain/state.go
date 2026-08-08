@@ -6,6 +6,7 @@ import (
 	"fmt"
 )
 
+// RunState 表示一次 Agent 运行在回放状态机中的生命周期阶段。
 type RunState string
 
 const (
@@ -17,6 +18,7 @@ const (
 	RunCancelled  RunState = "cancelled"
 )
 
+// RunProjection 是由事件序列重放得到的当前运行状态与恢复依据。
 type RunProjection struct {
 	ID                     RunID
 	Task                   string
@@ -37,6 +39,7 @@ type RunProjection struct {
 	operations             map[OperationID]*operationRecord
 }
 
+// operationState 记录单个工具操作在投议、授权与终态之间的内部迁移。
 type operationState string
 
 const (
@@ -49,6 +52,7 @@ const (
 	operationTerminal        operationState = "terminal"
 )
 
+// operationRecord 记录回放时验证操作合法性所需的最小内部事实。
 type operationRecord struct {
 	state              operationState
 	toolResultAppended bool
@@ -56,12 +60,14 @@ type operationRecord struct {
 	requiresToolResult bool
 }
 
+// PendingApproval 描述等待人工确认的副作用操作。
 type PendingApproval struct {
 	OperationID OperationID
 	Fingerprint string
 	Summary     string
 }
 
+// PendingOperation 描述已启动但尚未持久化终态的外部操作。
 type PendingOperation struct {
 	ID              OperationID
 	ToolName        string
@@ -72,27 +78,33 @@ type PendingOperation struct {
 	PlannedAfter    string
 }
 
+// RunCreatedPayload 是 run_created 事件的可回放业务字段。
 type RunCreatedPayload struct {
 	Task      string `json:"task"`
 	Workspace string `json:"workspace"`
 }
 
+// TurnClosedPayload 表示一次推理轮次的关闭结果。
 type TurnClosedPayload struct {
 	Outcome string `json:"outcome"`
 }
 
+// AssistantMessagePayload 保存模型输出给用户的文本。
 type AssistantMessagePayload struct {
 	Text string `json:"text"`
 }
 
+// VerificationFinishedPayload 记录一次验证是否通过。
 type VerificationFinishedPayload struct {
 	OK bool `json:"ok"`
 }
 
+// RunCompletedPayload 保存已完成运行的最终回复。
 type RunCompletedPayload struct {
 	FinalResponse string `json:"final_response"`
 }
 
+// Replay 先校验哈希链，再按顺序应用事件得到运行投影。
 func Replay(events []Event) (RunProjection, error) {
 	if err := VerifyChain(events); err != nil {
 		return RunProjection{}, err
@@ -106,6 +118,7 @@ func Replay(events []Event) (RunProjection, error) {
 	return projection, nil
 }
 
+// Apply 将单个合法事件应用到投影，并拒绝非法状态迁移。
 func (projection *RunProjection) Apply(event Event) error {
 	if event.Seq != projection.LastSeq+1 {
 		return fmt.Errorf("apply event sequence %d after %d", event.Seq, projection.LastSeq)
@@ -368,20 +381,19 @@ func (projection *RunProjection) Apply(event Event) error {
 	return nil
 }
 
+// Terminal 报告运行是否已经进入不可继续的终态。
 func (projection RunProjection) Terminal() bool {
 	return projection.State == RunCompleted || projection.State == RunFailed || projection.State == RunCancelled
 }
 
-// RequiresFreshApproval returns true when the same action fingerprint was
-// previously reconciled after an uncertain external side effect. Replaying an
-// operation never grants permission to execute it again.
+// RequiresFreshApproval 在同一指纹曾因不确定副作用被对账后返回 true；
+// 回放历史绝不能再次授予执行权限。
 func (projection RunProjection) RequiresFreshApproval(fingerprint string) bool {
 	_, exists := projection.reconciledFingerprints[fingerprint]
 	return fingerprint != "" && exists
 }
 
-// Phase is the externally visible recovery phase. A dangling side-effecting
-// operation is deliberately not silently retried after replay.
+// Phase 返回对外可见的恢复阶段；悬而未决的副作用操作不会在回放后被静默重试。
 func (projection RunProjection) Phase() string {
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return "waiting_reconcile"

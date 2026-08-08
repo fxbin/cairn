@@ -18,12 +18,14 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// ExecCommand 是仅在工作区内按 argv 启动并可整体取消的进程工具。
 type ExecCommand struct {
 	Workspace Workspace
 	EnvAllow  map[string]struct{}
 	Grace     time.Duration
 }
 
+// ExecArguments 是 exec_command 的受限执行参数。
 type ExecArguments struct {
 	Argv           []string          `json:"argv"`
 	CWD            string            `json:"cwd"`
@@ -32,12 +34,15 @@ type ExecArguments struct {
 	Env            map[string]string `json:"env"`
 }
 
+// SideEffect 声明 ExecCommand 会产生进程级副作用。
 func (tool ExecCommand) SideEffect() SideEffectClass { return SideEffectProcess }
 
+// Spec 返回 exec_command 的受限 JSON 参数定义。
 func (tool ExecCommand) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
 }
 
+// Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令，并终止整个进程组。
 func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result {
 	arguments, err := ParseExecArguments(raw)
 	if err != nil {
@@ -109,9 +114,8 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	return Success(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
 }
 
-// ParseExecArguments validates command arguments and fills the same defaults
-// used by the executor. Policy code uses it before approving a command so an
-// approval always binds to the command that will actually be executed.
+// ParseExecArguments 校验命令参数并填充与执行器相同的默认值；策略层在审批前
+// 调用它，确保审批始终绑定到将被实际执行的命令。
 func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
 	arguments := ExecArguments{CWD: ".", TimeoutMS: 120_000, MaxOutputBytes: 256 * 1024}
 	if err := decodeArguments(raw, &arguments); err != nil {
@@ -131,6 +135,7 @@ func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
 	return arguments, nil
 }
 
+// validateEnvironment 拒绝未被 EnvAllow 明确允许的环境变量覆盖。
 func (tool ExecCommand) validateEnvironment(environment map[string]string) error {
 	for key := range environment {
 		if _, allowed := tool.EnvAllow[key]; !allowed {
@@ -140,6 +145,7 @@ func (tool ExecCommand) validateEnvironment(environment map[string]string) error
 	return nil
 }
 
+// mergedEnvironment 从允许继承的环境变量与显式覆盖构造确定性的进程环境。
 func mergedEnvironment(allowed map[string]struct{}, overrides map[string]string) []string {
 	values := make(map[string]string)
 	for key := range allowed {
@@ -162,6 +168,7 @@ func mergedEnvironment(allowed map[string]struct{}, overrides map[string]string)
 	return result
 }
 
+// commandOutcome 将命令等待错误转换为退出码和可选终止信号。
 func commandOutcome(err error) (int, string) {
 	if err == nil {
 		return 0, ""
@@ -180,12 +187,14 @@ func commandOutcome(err error) (int, string) {
 	return status.ExitStatus(), ""
 }
 
+// limitedBuffer 收集子进程输出，并在到达上限后仍向调用者报告完整写入长度。
 type limitedBuffer struct {
 	buffer    bytes.Buffer
 	limit     int
 	truncated bool
 }
 
+// Write 最多保留限制内的内容，并标记被截断的后续输出。
 func (buffer *limitedBuffer) Write(content []byte) (int, error) {
 	remaining := buffer.limit - buffer.buffer.Len()
 	if remaining > 0 {
@@ -201,9 +210,13 @@ func (buffer *limitedBuffer) Write(content []byte) (int, error) {
 	return len(content), nil
 }
 
+// String 返回当前已保留的输出文本。
 func (buffer *limitedBuffer) String() string { return buffer.buffer.String() }
-func (buffer *limitedBuffer) Len() int       { return buffer.buffer.Len() }
 
+// Len 返回当前已保留的输出字节数。
+func (buffer *limitedBuffer) Len() int { return buffer.buffer.Len() }
+
+// stringResult 将结果编码为长度受限的 JSON 预览文本。
 func stringResult(value any) string {
 	encoded, _ := json.Marshal(value)
 	if len(encoded) > 1024 {

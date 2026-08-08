@@ -17,12 +17,15 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
+// ErrConflict 表示追加时观察到的日志头序号与调用方预期不一致。
 var ErrConflict = errors.New("journal conflict")
 
+// Journal 将追加式领域事件持久化在单连接 SQLite 数据库中。
 type Journal struct {
 	db *sql.DB
 }
 
+// Open 创建或打开可写日志，并在首次打开时执行受校验的 schema 迁移。
 func Open(path string) (*Journal, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("journal path is required")
@@ -44,10 +47,8 @@ func Open(path string) (*Journal, error) {
 	return journal, nil
 }
 
-// OpenReadOnly opens an existing journal without creating its parent
-// directory, running migrations, or allowing SQLite to repair state. It is
-// used by doctor so a diagnostic command cannot turn a missing or corrupt
-// state directory into a new source of truth.
+// OpenReadOnly 打开既有日志但不创建目录、不迁移也不修复 SQLite 状态，
+// 以保证 doctor 等诊断命令不能把缺失或损坏的状态变成新的事实来源。
 func OpenReadOnly(path string) (*Journal, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("journal path is required")
@@ -73,8 +74,10 @@ func OpenReadOnly(path string) (*Journal, error) {
 	return &Journal{db: db}, nil
 }
 
+// Close 关闭 SQLite 连接并释放相关资源。
 func (journal *Journal) Close() error { return journal.db.Close() }
 
+// migrate 配置 SQLite 的耐久性选项并以校验和保护 V1 schema 迁移。
 func (journal *Journal) migrate(ctx context.Context) error {
 	statements := []string{
 		"PRAGMA journal_mode = WAL",
@@ -149,6 +152,7 @@ func (journal *Journal) migrate(ctx context.Context) error {
 	return nil
 }
 
+// Append 在单个事务中校验日志头并追加带哈希的领域事件。
 func (journal *Journal) Append(ctx context.Context, expectedSeq uint64, draft domain.EventDraft) (domain.Event, error) {
 	transaction, err := journal.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -192,6 +196,7 @@ func (journal *Journal) Append(ctx context.Context, expectedSeq uint64, draft do
 	return event, nil
 }
 
+// Load 按序号升序读取指定运行的全部持久化事件。
 func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.Event, error) {
 	rows, err := journal.db.QueryContext(ctx, `SELECT schema_version, event_id, run_id, workspace_hash, seq, occurred_at, event_type,
 		turn_id, operation_id, attempt_id, payload_json, prev_hash, event_hash
@@ -226,6 +231,7 @@ func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.
 	return events, nil
 }
 
+// NonTerminalRuns 重放工作区对应的运行，并筛出可恢复的非终态投影。
 func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash string) ([]domain.RunProjection, error) {
 	rows, err := journal.db.QueryContext(ctx, "SELECT DISTINCT run_id FROM events WHERE workspace_hash = ?", workspaceHash)
 	if err != nil {
@@ -260,6 +266,7 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	return results, nil
 }
 
+// Check 同时执行 SQLite 快速完整性检查和所有事件哈希链校验。
 func (journal *Journal) Check(ctx context.Context) error {
 	var result string
 	if err := journal.db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
@@ -296,9 +303,7 @@ func (journal *Journal) Check(ctx context.Context) error {
 	return nil
 }
 
-// RunIDs returns the immutable set of runs stored by this journal. The
-// application uses it for read-only integrity checks that span event payload
-// references and the adjacent artifact store.
+// RunIDs 返回日志内运行标识符的有序集合，供应用层跨事件 payload 与制品库进行只读完整性检查。
 func (journal *Journal) RunIDs(ctx context.Context) ([]domain.RunID, error) {
 	rows, err := journal.db.QueryContext(ctx, "SELECT DISTINCT run_id FROM events ORDER BY run_id")
 	if err != nil {
@@ -319,6 +324,7 @@ func (journal *Journal) RunIDs(ctx context.Context) ([]domain.RunID, error) {
 	return runIDs, nil
 }
 
+// nullableID 将可选领域标识转换为 SQLite 可接受的 NULL 或字符串。
 func nullableID[T ~string](value *T) any {
 	if value == nil {
 		return nil
@@ -326,6 +332,7 @@ func nullableID[T ~string](value *T) any {
 	return string(*value)
 }
 
+// optionalTurnID 将 SQLite 可空字符串还原为可选轮次标识。
 func optionalTurnID(value sql.NullString) *domain.TurnID {
 	if !value.Valid {
 		return nil
@@ -334,6 +341,7 @@ func optionalTurnID(value sql.NullString) *domain.TurnID {
 	return &id
 }
 
+// optionalOperationID 将 SQLite 可空字符串还原为可选操作标识。
 func optionalOperationID(value sql.NullString) *domain.OperationID {
 	if !value.Valid {
 		return nil
@@ -342,6 +350,7 @@ func optionalOperationID(value sql.NullString) *domain.OperationID {
 	return &id
 }
 
+// optionalAttemptID 将 SQLite 可空字符串还原为可选尝试标识。
 func optionalAttemptID(value sql.NullString) *domain.AttemptID {
 	if !value.Valid {
 		return nil
