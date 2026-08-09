@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -31,6 +32,47 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
 	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 {
 		t.Fatalf("loop context = %#v", loop)
+	}
+}
+
+func TestExecToolForAppliesSandboxConfiguration(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := config.Defaults()
+	configuration.Sandbox.Backend = "docker"
+	configuration.Sandbox.DockerImage = "alpine:3.21"
+	configuration.Sandbox.MaxPIDs = 48
+	tool, err := execToolFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tool.Backend != tools.ExecBackendDocker || tool.DockerImage != "alpine:3.21" || tool.DockerMaxPIDs != 48 {
+		t.Fatalf("exec tool = %#v", tool)
+	}
+}
+
+func TestServiceRejectsInvalidDockerSandboxBeforeProviderOrDoctorStateAccess(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Sandbox.Backend = "docker"
+	providerCalled := false
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		providerCalled = true
+		return finalProvider{}, nil
+	}}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	if _, err := service.Run(context.Background(), RunOptions{Task: "answer", Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
+		t.Fatalf("run error = %v", err)
+	}
+	if providerCalled {
+		t.Fatal("provider was constructed before sandbox validation")
+	}
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: domain.NewRunID(), Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
+		t.Fatalf("resume error = %v", err)
+	}
+	if err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
+		t.Fatalf("doctor error = %v", err)
 	}
 }
 

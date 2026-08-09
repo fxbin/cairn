@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,11 +21,24 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// ExecBackend 标识 exec_command 的实际进程执行边界。
+type ExecBackend string
+
+const (
+	// ExecBackendHost 在宿主机工作区内直接启动经过审批的 argv。
+	ExecBackendHost ExecBackend = "host"
+	// ExecBackendDocker 在显式指定的 Docker 容器内启动经过审批的 argv。
+	ExecBackendDocker ExecBackend = "docker"
+)
+
 // ExecCommand 是仅在工作区内按 argv 启动并可整体取消的进程工具。
 type ExecCommand struct {
-	Workspace Workspace
-	EnvAllow  map[string]struct{}
-	Grace     time.Duration
+	Workspace     Workspace
+	EnvAllow      map[string]struct{}
+	Grace         time.Duration
+	Backend       ExecBackend
+	DockerImage   string
+	DockerMaxPIDs int
 }
 
 // ExecArguments 是 exec_command 的受限执行参数。
@@ -43,7 +58,8 @@ func (tool ExecCommand) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace. Use a workspace-relative cwd; /workspace is accepted as the workspace root alias.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","description":"Workspace-relative directory; /workspace denotes its root."},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
 }
 
-// Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令，并终止整个进程组。
+// Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令；Docker 后端
+// 不可用或配置无效时失败关闭，绝不会降级为宿主机执行。
 func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result {
 	arguments, err := ParseExecArguments(raw)
 	if err != nil {
@@ -52,7 +68,7 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	if err := tool.validateEnvironment(arguments.Env); err != nil {
 		return Failure("invalid", err.Error())
 	}
-	workingDirectory, _, err := tool.Workspace.Resolve(arguments.CWD)
+	workingDirectory, relativeCWD, err := tool.Workspace.Resolve(arguments.CWD)
 	if err != nil {
 		return Failure("invalid_path", err.Error())
 	}
@@ -60,12 +76,137 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	if err != nil || !info.IsDir() {
 		return Failure("invalid_path", "cwd must be a workspace directory")
 	}
-	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
-	defer cancel()
+	switch tool.executionBackend() {
+	case ExecBackendHost:
+		return tool.executeHost(ctx, arguments, workingDirectory)
+	case ExecBackendDocker:
+		return tool.executeDocker(ctx, arguments, relativeCWD)
+	default:
+		return Failure("invalid_backend", "exec sandbox backend must be host or docker")
+	}
+}
+
+// executionBackend 将零值工具保持为兼容的宿主机后端；实际配置必须在装配层严格校验。
+func (tool ExecCommand) executionBackend() ExecBackend {
+	if tool.Backend == "" {
+		return ExecBackendHost
+	}
+	return tool.Backend
+}
+
+// executeHost 以受限环境和独立进程组运行宿主机 argv。
+func (tool ExecCommand) executeHost(ctx context.Context, arguments ExecArguments, workingDirectory string) Result {
 	command := exec.Command(arguments.Argv[0], arguments.Argv[1:]...)
 	command.Dir = workingDirectory
 	command.Env = mergedEnvironment(tool.EnvAllow, arguments.Env)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return tool.runCommand(ctx, arguments, ExecBackendHost, command, nil)
+}
+
+// executeDocker 以固定安全选项运行 Docker；二进制、镜像或 daemon 不可用时该路径
+// 只返回失败，不会触发原始 argv 的宿主机执行。
+func (tool ExecCommand) executeDocker(ctx context.Context, arguments ExecArguments, relativeCWD string) Result {
+	if err := tool.validateDockerConfiguration(); err != nil {
+		return Failure("invalid_backend", err.Error())
+	}
+	if strings.Contains(tool.Workspace.Root, ",") {
+		return Failure("invalid_path", "docker sandbox does not support a workspace path containing a comma")
+	}
+	dockerBinary, err := exec.LookPath("docker")
+	if err != nil {
+		return Failure("sandbox_unavailable", fmt.Sprintf("docker sandbox is unavailable: %v", err))
+	}
+	containerName := dockerContainerName()
+	command := tool.dockerCommand(dockerBinary, arguments, relativeCWD, containerName)
+	return tool.runCommand(ctx, arguments, ExecBackendDocker, command, func() {
+		tool.removeDockerContainer(dockerBinary, containerName)
+	})
+}
+
+// validateDockerConfiguration 复核工具直连场景的 Docker 配置，避免绕过 Config 校验。
+func (tool ExecCommand) validateDockerConfiguration() error {
+	if tool.DockerImage == "" || tool.DockerImage != strings.TrimSpace(tool.DockerImage) || strings.HasPrefix(tool.DockerImage, "-") || strings.ContainsAny(tool.DockerImage, " \t\r\n\x00") {
+		return errors.New("docker sandbox requires a valid docker image")
+	}
+	if tool.dockerPIDLimit() < 1 || tool.dockerPIDLimit() > 1024 {
+		return errors.New("docker sandbox max pids must be between 1 and 1024")
+	}
+	return nil
+}
+
+// dockerPIDLimit 为零值内部工具提供保守默认值；配置层仍要求显式的正数。
+func (tool ExecCommand) dockerPIDLimit() int {
+	if tool.DockerMaxPIDs == 0 {
+		return 64
+	}
+	return tool.DockerMaxPIDs
+}
+
+// dockerRunArguments 构造无网络、只读根文件系统且仅挂载规范工作区的 Docker argv。
+func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD, containerName string) []string {
+	containerCWD := "/workspace"
+	if relativeCWD != "." {
+		containerCWD = path.Join(containerCWD, filepath.ToSlash(relativeCWD))
+	}
+	command := []string{
+		"run", "--rm", "--name", containerName,
+		"--pull", "never",
+		"--network", "none",
+		"--read-only",
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--pids-limit", strconv.Itoa(tool.dockerPIDLimit()),
+		"--mount", "type=bind,src=" + tool.Workspace.Root + ",dst=/workspace",
+		"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+		"--workdir", containerCWD,
+	}
+	keys := make([]string, 0, len(arguments.Env))
+	for key := range arguments.Env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		command = append(command, "--env", key+"="+arguments.Env[key])
+	}
+	// 只提供容器内部临时目录，避免只读根文件系统让常见编译器把缓存写回宿主机。
+	command = append(command, "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp")
+	command = append(command, tool.DockerImage)
+	return append(command, arguments.Argv...)
+}
+
+// dockerCommand 创建不继承宿主机环境的 Docker CLI 进程；容器环境仅由
+// dockerRunArguments 中明确编码的 arguments.Env 提供。
+func (tool ExecCommand) dockerCommand(dockerBinary string, arguments ExecArguments, relativeCWD, containerName string) *exec.Cmd {
+	command := exec.Command(dockerBinary, tool.dockerRunArguments(arguments, relativeCWD, containerName)...)
+	command.Dir = tool.Workspace.Root
+	command.Env = []string{}
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return command
+}
+
+// dockerContainerName 返回仅由本进程控制的短生命周期容器名称，供超时清理使用。
+func dockerContainerName() string {
+	return fmt.Sprintf("cairn-%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
+// removeDockerContainer 在 docker run 客户端被取消后尽力删除指定容器；清理失败
+// 不会改变已经产生的命令结果，但 --rm 仍可覆盖正常退出路径。
+func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string) {
+	cleanupTimeout := tool.Grace
+	if cleanupTimeout <= 0 {
+		cleanupTimeout = 2 * time.Second
+	}
+	cleanupContext, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	command := exec.CommandContext(cleanupContext, dockerBinary, "rm", "--force", containerName)
+	command.Env = []string{}
+	_ = command.Run()
+}
+
+// runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
+func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func()) Result {
+	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
+	defer cancel()
 	stdout := &limitedBuffer{limit: arguments.MaxOutputBytes}
 	stderr := &limitedBuffer{limit: arguments.MaxOutputBytes}
 	command.Stdout = stdout
@@ -94,10 +235,14 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 			waitErr = <-finished
 		}
 	}
+	if cancelled && cleanup != nil {
+		cleanup()
+	}
 	duration := time.Since(started).Milliseconds()
 	exitCode, signal := commandOutcome(waitErr)
 	data := struct {
 		Argv         []string `json:"argv"`
+		Backend      string   `json:"backend"`
 		CWD          string   `json:"cwd"`
 		ExitCode     int      `json:"exit_code"`
 		Signal       string   `json:"signal,omitempty"`
@@ -105,7 +250,7 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 		Stdout       string   `json:"stdout"`
 		Stderr       string   `json:"stderr"`
 		OutputCapped bool     `json:"output_capped"`
-	}{Argv: arguments.Argv, CWD: filepath.ToSlash(arguments.CWD), ExitCode: exitCode, Signal: signal, DurationMS: duration, Stdout: stdout.String(), Stderr: stderr.String(), OutputCapped: stdout.truncated || stderr.truncated}
+	}{Argv: arguments.Argv, Backend: string(backend), CWD: filepath.ToSlash(arguments.CWD), ExitCode: exitCode, Signal: signal, DurationMS: duration, Stdout: stdout.String(), Stderr: stderr.String(), OutputCapped: stdout.truncated || stderr.truncated}
 	if cancelled {
 		return Result{Code: "cancelled", Preview: stringResult(data), Truncated: data.OutputCapped, Bytes: int64(stdout.Len() + stderr.Len())}
 	}
@@ -154,8 +299,18 @@ func (tool ExecCommand) validateEnvironment(environment map[string]string) error
 		if _, allowed := tool.EnvAllow[key]; !allowed {
 			return fmt.Errorf("environment variable %q is not allowed", key)
 		}
+		if sensitiveEnvironmentKey(key) {
+			return fmt.Errorf("environment variable %q is secret-like and cannot be exposed to a command", key)
+		}
 	}
 	return nil
+}
+
+// sensitiveEnvironmentKey 拒绝名称暗示包含 API 凭据的环境变量，作为 Config
+// 校验之外的工具层兜底，防止直接构造 ExecCommand 时泄露密钥。
+func sensitiveEnvironmentKey(key string) bool {
+	key = strings.ToLower(key)
+	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
 }
 
 // mergedEnvironment 从允许继承的环境变量与显式覆盖构造确定性的进程环境。

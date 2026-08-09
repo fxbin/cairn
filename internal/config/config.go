@@ -27,6 +27,7 @@ type Config struct {
 	Pricing      PricingConfig      `yaml:"pricing"`
 	Output       OutputConfig       `yaml:"output"`
 	Cancellation CancellationConfig `yaml:"cancellation"`
+	Sandbox      SandboxConfig      `yaml:"sandbox"`
 }
 
 // ProviderConfig 配置兼容 OpenAI API 的模型提供方。
@@ -80,6 +81,14 @@ type CancellationConfig struct {
 	TerminateGrace string `yaml:"terminate_grace"`
 }
 
+// SandboxConfig 决定 exec_command 使用宿主机还是受限 Docker 容器；Docker
+// 后端必须显式指定已存在的镜像，不能隐式回退到宿主机执行。
+type SandboxConfig struct {
+	Backend     string `yaml:"backend"`
+	DockerImage string `yaml:"docker_image"`
+	MaxPIDs     int    `yaml:"max_pids"`
+}
+
 // PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
 type PolicyConfig struct {
 	Write          string   `yaml:"write"`
@@ -131,6 +140,7 @@ func Defaults() Config {
 		Verification: VerificationConfig{VolatilePaths: []string{".cache", "tmp/test-results"}},
 		Output:       OutputConfig{MaxPreviewBytes: 16 * 1024, MaxArtifactBytes: 10 * 1024 * 1024},
 		Cancellation: CancellationConfig{TerminateGrace: "5s"},
+		Sandbox:      SandboxConfig{Backend: "host", MaxPIDs: 64},
 	}
 }
 
@@ -194,6 +204,9 @@ func Validate(config Config) error {
 	if _, err := config.TerminateGrace(); err != nil {
 		return fmt.Errorf("cancellation.terminate_grace: %w", err)
 	}
+	if err := validateSandbox(config.Sandbox); err != nil {
+		return err
+	}
 	if config.Budget.MaxCostUSD > 0 && (config.Pricing.InputTokenUSD <= 0 || config.Pricing.OutputTokenUSD <= 0) {
 		return fmt.Errorf("budget.max_cost_usd requires explicit positive pricing token rates")
 	}
@@ -226,6 +239,31 @@ func Validate(config Config) error {
 		}
 	}
 	return nil
+}
+
+// validateSandbox 验证执行后端配置，避免 Docker 参数将镜像名称解释成额外选项，
+// 并为容器进程数设置有限上限。
+func validateSandbox(sandbox SandboxConfig) error {
+	if sandbox.MaxPIDs < 1 || sandbox.MaxPIDs > 1024 {
+		return fmt.Errorf("sandbox.max_pids must be between 1 and 1024")
+	}
+	switch sandbox.Backend {
+	case "host":
+		if sandbox.DockerImage != "" {
+			return fmt.Errorf("sandbox.docker_image is only valid when sandbox.backend is docker")
+		}
+		return nil
+	case "docker":
+		if sandbox.DockerImage == "" {
+			return fmt.Errorf("sandbox.docker_image is required when sandbox.backend is docker")
+		}
+		if sandbox.DockerImage != strings.TrimSpace(sandbox.DockerImage) || strings.HasPrefix(sandbox.DockerImage, "-") || strings.ContainsAny(sandbox.DockerImage, " \t\r\n\x00") {
+			return fmt.Errorf("sandbox.docker_image is invalid")
+		}
+		return nil
+	default:
+		return fmt.Errorf("sandbox.backend must be host or docker")
+	}
 }
 
 // validPolicyEffect 判断策略效果是否属于 allow、deny 或 ask。

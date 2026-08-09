@@ -110,6 +110,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
+	execTool, err := execToolFor(workspace, options.Config)
+	if err != nil {
+		return RunResult{}, err
+	}
 	journal, err := openJournal(options.StateDir, hash)
 	if err != nil {
 		return RunResult{}, err
@@ -175,15 +179,6 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 		options.OnEvent(second)
 	}
 	patchTool := tools.ApplyPatch{Workspace: workspace}
-	environmentAllow := make(map[string]struct{}, len(options.Config.Policy.EnvAllow))
-	for _, key := range options.Config.Policy.EnvAllow {
-		environmentAllow[key] = struct{}{}
-	}
-	grace, err := options.Config.TerminateGrace()
-	if err != nil {
-		return RunResult{}, err
-	}
-	execTool := tools.ExecCommand{Workspace: workspace, EnvAllow: environmentAllow, Grace: grace}
 	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
 	if err != nil {
 		return RunResult{}, err
@@ -252,6 +247,10 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 	if err != nil {
 		return RunResult{}, err
 	}
+	execTool, err := execToolFor(workspace, options.Config)
+	if err != nil {
+		return RunResult{}, err
+	}
 	journal, err := openJournal(options.StateDir, hash)
 	if err != nil {
 		return RunResult{}, err
@@ -291,15 +290,6 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 		return RunResult{}, err
 	}
 	patchTool := tools.ApplyPatch{Workspace: workspace}
-	environmentAllow := make(map[string]struct{}, len(options.Config.Policy.EnvAllow))
-	for _, key := range options.Config.Policy.EnvAllow {
-		environmentAllow[key] = struct{}{}
-	}
-	grace, err := options.Config.TerminateGrace()
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
-	}
-	execTool := tools.ExecCommand{Workspace: workspace, EnvAllow: environmentAllow, Grace: grace}
 	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
 	if err != nil {
 		return RunResult{}, err
@@ -339,6 +329,10 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (RunResult, error) {
 	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return RunResult{}, err
+	}
+	execTool, err := execToolFor(workspace, options.Config)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -466,15 +460,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, err
 	}
 	patchTool := tools.ApplyPatch{Workspace: workspace}
-	environmentAllow := make(map[string]struct{}, len(options.Config.Policy.EnvAllow))
-	for _, key := range options.Config.Policy.EnvAllow {
-		environmentAllow[key] = struct{}{}
-	}
-	grace, err := options.Config.TerminateGrace()
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
-	}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, tools.ExecCommand{Workspace: workspace, EnvAllow: environmentAllow, Grace: grace})
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -591,8 +577,11 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, config config.Config) error {
-	_, hash, err := workspaceFor(workspacePath, config)
+	workspace, hash, err := workspaceFor(workspacePath, config)
 	if err != nil {
+		return err
+	}
+	if _, err := execToolFor(workspace, config); err != nil {
 		return err
 	}
 	journal, err := openReadOnlyJournal(stateDir, hash)
@@ -639,6 +628,30 @@ func workspaceFor(root string, configuration config.Config) (tools.Workspace, st
 	}
 	digest := sha256.Sum256([]byte(workspace.Root))
 	return workspace, "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+// execToolFor 以同一份冻结配置装配 Run、Resume、Reconcile 与 Doctor 使用的
+// 命令工具；Docker 后端只携带显式镜像和有限 PID 配额。
+func execToolFor(workspace tools.Workspace, configuration config.Config) (tools.ExecCommand, error) {
+	if err := config.Validate(configuration); err != nil {
+		return tools.ExecCommand{}, err
+	}
+	environmentAllow := make(map[string]struct{}, len(configuration.Policy.EnvAllow))
+	for _, key := range configuration.Policy.EnvAllow {
+		environmentAllow[key] = struct{}{}
+	}
+	grace, err := configuration.TerminateGrace()
+	if err != nil {
+		return tools.ExecCommand{}, err
+	}
+	return tools.ExecCommand{
+		Workspace:     workspace,
+		EnvAllow:      environmentAllow,
+		Grace:         grace,
+		Backend:       tools.ExecBackend(configuration.Sandbox.Backend),
+		DockerImage:   configuration.Sandbox.DockerImage,
+		DockerMaxPIDs: configuration.Sandbox.MaxPIDs,
+	}, nil
 }
 
 // openJournal 打开指定工作区的可写 SQLite 事件日志。

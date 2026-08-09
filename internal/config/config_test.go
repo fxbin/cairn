@@ -104,3 +104,41 @@ func TestDefaultsEnableBoundedContextCompaction(t *testing.T) {
 		t.Fatal("zero context summary limit was accepted")
 	}
 }
+
+func TestValidateSandboxRequiresAnExplicitValidDockerConfiguration(t *testing.T) {
+	configuration := Defaults()
+	if configuration.Sandbox.Backend != "host" || configuration.Sandbox.DockerImage != "" || configuration.Sandbox.MaxPIDs < 1 {
+		t.Fatalf("sandbox defaults = %#v", configuration.Sandbox)
+	}
+	configuration.Sandbox.Backend = "docker"
+	if err := Validate(configuration); err == nil {
+		t.Fatal("docker backend without image was accepted")
+	}
+	configuration.Sandbox.DockerImage = "-unsafe-image"
+	if err := Validate(configuration); err == nil {
+		t.Fatal("option-like docker image was accepted")
+	}
+	configuration.Sandbox.DockerImage = "alpine:3.21"
+	configuration.Sandbox.MaxPIDs = 0
+	if err := Validate(configuration); err == nil {
+		t.Fatal("unbounded docker pids were accepted")
+	}
+	configuration.Sandbox.MaxPIDs = 64
+	if err := Validate(configuration); err != nil {
+		t.Fatalf("valid docker sandbox rejected: %v", err)
+	}
+	configuration.Sandbox.Backend = "host"
+	if err := Validate(configuration); err == nil {
+		t.Fatal("host backend with dormant docker image was accepted")
+	}
+}
+
+func TestFingerprintChangesWhenSandboxChanges(t *testing.T) {
+	configuration := Defaults()
+	before := configuration.Fingerprint()
+	configuration.Sandbox.Backend = "docker"
+	configuration.Sandbox.DockerImage = "alpine:3.21"
+	if before == configuration.Fingerprint() {
+		t.Fatal("sandbox configuration was omitted from fingerprint")
+	}
+}

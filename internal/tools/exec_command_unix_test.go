@@ -5,8 +5,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExecCommandUsesArgvAndEnforcesEnvironmentAllowlist(t *testing.T) {
@@ -51,5 +55,118 @@ func TestExecCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/usr/bin/env"]}`))
 	if !result.OK || strings.Contains(result.Preview, "CAIRN_SHOULD_NOT_LEAK") || strings.Contains(result.Preview, "private-value") {
 		t.Fatalf("environment isolation failed: %#v", result)
+	}
+}
+
+func TestExecCommandDockerBuildsRestrictedInvocationWithoutHostEnvironment(t *testing.T) {
+	t.Setenv("AGENT_API_KEY", "must-not-reach-docker")
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{Workspace: workspace, Backend: ExecBackendDocker, DockerImage: "alpine:3.21", DockerMaxPIDs: 37}
+	arguments, err := ParseExecArguments(json.RawMessage(`{"argv":["/bin/echo","hello"],"cwd":"/workspace/subdir","env":{"LANG":"C"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := tool.dockerCommand("/fake/docker", arguments, "subdir", "cairn-test")
+	joined := strings.Join(command.Args, "\n")
+	for _, required := range []string{
+		"--pull\nnever", "--network\nnone", "--read-only", "--cap-drop\nALL", "--security-opt\nno-new-privileges",
+		"--pids-limit\n37", "--mount\ntype=bind,src=" + workspace.Root + ",dst=/workspace", "--workdir\n/workspace/subdir",
+		"--env\nLANG=C", "alpine:3.21", "/bin/echo\nhello",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("docker args missing %q: %q", required, command.Args)
+		}
+	}
+	if strings.Count(joined, "--mount") != 1 || strings.Contains(joined, "must-not-reach-docker") || strings.Contains(joined, "AGENT_API_KEY") {
+		t.Fatalf("docker bind/environment boundary = %q", command.Args)
+	}
+	if command.Dir != workspace.Root || command.Env == nil || len(command.Env) != 0 {
+		t.Fatalf("docker client inherited host state: dir=%q env=%#v", command.Dir, command.Env)
+	}
+}
+
+func TestExecCommandDockerFailsClosedWhenDockerIsUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(workspace.Root, "host-command-ran")
+	tool := ExecCommand{Workspace: workspace, Backend: ExecBackendDocker, DockerImage: "alpine:3.21", DockerMaxPIDs: 64}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/usr/bin/touch","host-command-ran"]}`))
+	if result.OK || result.Code != "sandbox_unavailable" {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("docker fallback executed host argv: %v", err)
+	}
+}
+
+func TestExecCommandRejectsExplicitSecretLikeEnvironmentBeforeDockerLaunch(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{
+		Workspace:     workspace,
+		EnvAllow:      map[string]struct{}{"AGENT_API_KEY": {}},
+		Backend:       ExecBackendDocker,
+		DockerImage:   "alpine:3.21",
+		DockerMaxPIDs: 64,
+	}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/echo","never-runs"],"env":{"AGENT_API_KEY":"secret"}}`))
+	if result.OK || result.Code != "invalid" || !strings.Contains(result.Preview, "secret-like") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestExecCommandDockerTimeoutAttemptsContainerCleanup(t *testing.T) {
+	directory := t.TempDir()
+	cleanupMarker := filepath.Join(directory, "cleanup")
+	dockerPath := filepath.Join(directory, "docker")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"run\" ]; then\n" +
+		"  trap 'exit 0' TERM\n" +
+		"  while true; do /bin/sleep 1; done\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"rm\" ]; then\n" +
+		"  printf '%s' \"$*\" > \"" + cleanupMarker + "\"\n" +
+		"fi\n"
+	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{Workspace: workspace, Backend: ExecBackendDocker, DockerImage: "alpine:3.21", DockerMaxPIDs: 64, Grace: 100 * time.Millisecond}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/echo","never-runs"],"timeout_ms":25}`))
+	if result.OK || result.Code != "cancelled" {
+		t.Fatalf("result = %#v", result)
+	}
+	content, err := os.ReadFile(cleanupMarker)
+	if err != nil || !strings.HasPrefix(string(content), "rm --force cairn-") {
+		t.Fatalf("cleanup = %q, %v", content, err)
+	}
+}
+
+func TestExecCommandDockerRuntimeWithExplicitLocalImage(t *testing.T) {
+	image := os.Getenv("CAIRN_DOCKER_TEST_IMAGE")
+	if image == "" {
+		t.Skip("set CAIRN_DOCKER_TEST_IMAGE to an already-local image to exercise Docker runtime")
+	}
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{Workspace: workspace, Backend: ExecBackendDocker, DockerImage: image, DockerMaxPIDs: 64}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/sh","-c","printf sandbox-ok"],"timeout_ms":5000}`))
+	if !result.OK || !strings.Contains(result.Preview, "sandbox-ok") {
+		t.Fatalf("runtime result = %#v", result)
 	}
 }

@@ -18,6 +18,7 @@
 - `internal/agent/`：串行单写入者 Loop，负责模型调用、审批、工具、预算、取消、恢复与验证。
 - `internal/app/`：装配 Provider、Journal、工具、Policy、Artifact Store 和工作区锁，提供运行、恢复、对账、中止、检查、诊断用例。
 - `internal/lock/`：工作区排他锁；当前 Unix 实现面向 Darwin/Linux。
+- `benchmarks/v0/tasks.yaml`：唯一受 Git 跟踪的公开基准任务合同；私有 verifier、运行结果与一次性工作区不进入版本库。
 - `test/integration/`、`test/e2e/`、`test/fault/`：分别覆盖真实 HTTP/SQLite 集成、四个离线 fixture 和故障边界。
 
 ## 开发约束
@@ -28,6 +29,7 @@
 - 所有工作区路径通过 `tools.Workspace.Resolve`。不得绕过工作区边界或跟随逃出工作区的符号链接。
 - `apply_patch` 是确定性的单文件操作：更新/删除绑定已有 SHA-256，写入采用临时文件、同步与原子重命名。
 - `exec_command` 只接受 argv，不经 shell；它受工作区、环境白名单、输出/超时上限和进程组取消保护。
+- `sandbox.backend` 可选 `host` 或 `docker`；使用 Docker 时必须指定本地已有镜像，并以无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载失败关闭执行。不得在 Docker 不可用时回退到宿主机。
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验、fingerprint 与测试。写入和命令的默认策略都是 `ask`。
 - 对已 started 但未记录终态的 workspace/process Operation，使用 `cairn resume --resolve` 对账；不得盲目重试。`doctor` 必须保持只读。
@@ -58,5 +60,6 @@ go test ./test/e2e -tags=e2e -count=1
 ## Git 与本地文件
 
 - `docs/` 和 `.vidt/` 是本地规划/流程产物，必须保持忽略且不提交。
+- `benchmarks/v0/tasks.yaml` 是公开、可审计的任务合同，必须提交；`benchmarks/v0/private/`、`results/` 和 `workspaces/` 可能含私有 verifier、结果或临时仓库，必须保持忽略。公开任务合同不得包含答案 oracle、凭据或私有验证逻辑。
 - 根目录 `cairn`、`.DS_Store`、测试产物和编辑器临时文件也已被 `.gitignore` 排除。
 - 新提交使用：`<type>(<scope>): <中文说明>`。一个提交只表达一个可审计意图。
