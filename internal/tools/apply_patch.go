@@ -17,7 +17,7 @@ import (
 // ApplyPatch 是经审批后执行确定性单文件改写的副作用工具。
 type ApplyPatch struct{ Workspace Workspace }
 
-// Replacement 描述一次必须恰好匹配指定次数的文本替换。
+// Replacement 描述一次必须恰好匹配指定次数的文本替换；省略 Occurrence 时安全地按一次处理。
 type Replacement struct {
 	Old        string `json:"old"`
 	New        string `json:"new"`
@@ -49,7 +49,7 @@ func (tool ApplyPatch) SideEffect() SideEffectClass { return SideEffectWorkspace
 
 // Spec 返回 apply_patch 的受限 JSON 参数定义。
 func (tool ApplyPatch) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "apply_patch", Description: "Apply a deterministic, single-file patch after approval.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","mode"],"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","update","delete"]},"expected_sha256":{"type":"string"},"content":{"type":"string"},"replacements":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["old","new","occurrence"],"properties":{"old":{"type":"string"},"new":{"type":"string"},"occurrence":{"type":"integer","minimum":1}}}}}}`)}
+	return ports.ToolSpec{Name: "apply_patch", Description: "Apply a deterministic, single-file patch after approval. A replacement without occurrence must match exactly once.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","mode"],"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","update","delete"]},"expected_sha256":{"type":"string"},"content":{"type":"string"},"replacements":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["old","new"],"properties":{"old":{"type":"string"},"new":{"type":"string"},"occurrence":{"type":"integer","minimum":1}}}}}}`)}
 }
 
 // Plan 在不写入文件的前提下校验参数并计算确定性的改写前后状态。
@@ -185,16 +185,20 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 	}{Path: plan.Path, BeforeHash: plan.BeforeHash, AfterHash: plan.AfterHash}, "updated "+plan.Path, int64(len(actual)), plan.AfterHash, false)
 }
 
-// applyReplacements 仅在每段旧文本出现次数与声明值一致时执行替换。
+// applyReplacements 仅在每段旧文本出现次数与声明值一致时执行替换；缺省次数按一次校验。
 func applyReplacements(content []byte, replacements []Replacement) ([]byte, error) {
 	updated := string(content)
 	for _, replacement := range replacements {
-		if replacement.Old == "" || replacement.Occurrence < 1 {
+		occurrence := replacement.Occurrence
+		if occurrence == 0 {
+			occurrence = 1
+		}
+		if replacement.Old == "" || occurrence < 1 {
 			return nil, errors.New("each replacement requires non-empty old text and occurrence >= 1")
 		}
 		count := strings.Count(updated, replacement.Old)
-		if count != replacement.Occurrence {
-			return nil, fmt.Errorf("replacement old text occurs %d time(s), want %d", count, replacement.Occurrence)
+		if count != occurrence {
+			return nil, fmt.Errorf("replacement old text occurs %d time(s), want %d", count, occurrence)
 		}
 		updated = strings.ReplaceAll(updated, replacement.Old, replacement.New)
 	}

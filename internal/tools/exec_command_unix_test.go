@@ -25,6 +25,22 @@ func TestExecCommandUsesArgvAndEnforcesEnvironmentAllowlist(t *testing.T) {
 	}
 }
 
+func TestExecCommandAcceptsWorkspaceAlias(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{Workspace: workspace}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/echo","hello"],"cwd":"/workspace"}`))
+	if !result.OK || !strings.Contains(result.Preview, `"cwd":"."`) {
+		t.Fatalf("result = %#v", result)
+	}
+	arguments, err := ParseExecArguments(json.RawMessage(`{"argv":["/usr/bin/true"],"cwd":"/workspace/subdir"}`))
+	if err != nil || arguments.CWD != "subdir" {
+		t.Fatalf("arguments = %#v, %v", arguments, err)
+	}
+}
+
 func TestExecCommandDoesNotInheritUnallowlistedEnvironment(t *testing.T) {
 	t.Setenv("CAIRN_SHOULD_NOT_LEAK", "private-value")
 	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)

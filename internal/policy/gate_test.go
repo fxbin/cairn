@@ -79,6 +79,10 @@ func TestExecApprovalFingerprintBindsNormalizedArgumentsAndWorkspaceObservation(
 	if err != nil || explicit.Fingerprint != defaulted.Fingerprint {
 		t.Fatalf("normalized decision=%#v default=%#v err=%v", explicit, defaulted, err)
 	}
+	workspaceAlias, err := gate.Decide("exec_command", json.RawMessage(`{"argv":["/usr/bin/true"],"cwd":"/workspace"}`))
+	if err != nil || workspaceAlias.Fingerprint != defaulted.Fingerprint {
+		t.Fatalf("workspace alias decision=%#v default=%#v err=%v", workspaceAlias, defaulted, err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("second"), 0o600); err != nil {
 		t.Fatal(err)
 	}

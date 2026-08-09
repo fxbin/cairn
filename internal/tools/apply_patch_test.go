@@ -36,3 +36,24 @@ func TestApplyPatchRequiresExactHashAndWritesAtomically(t *testing.T) {
 		t.Fatalf("content = %q, %v", content, err)
 	}
 }
+
+func TestApplyPatchDefaultsMissingOccurrenceToOneExactMatch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, []byte("one two"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ApplyPatch{Workspace: workspace}
+	result := tool.Execute(context.Background(), json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"`+sha256Reference([]byte("one two"))+`","replacements":[{"old":"one","new":"three"}]}`))
+	if !result.OK {
+		t.Fatalf("result = %#v", result)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || string(content) != "three two" {
+		t.Fatalf("content = %q, %v", content, err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,7 +40,7 @@ func (tool ExecCommand) SideEffect() SideEffectClass { return SideEffectProcess 
 
 // Spec 返回 exec_command 的受限 JSON 参数定义。
 func (tool ExecCommand) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
+	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace. Use a workspace-relative cwd; /workspace is accepted as the workspace root alias.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","description":"Workspace-relative directory; /workspace denotes its root."},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
 }
 
 // Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令，并终止整个进程组。
@@ -132,7 +133,19 @@ func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
 	if arguments.TimeoutMS < 1 || arguments.TimeoutMS > 3_600_000 || arguments.MaxOutputBytes < 1 || arguments.MaxOutputBytes > 1024*1024 {
 		return ExecArguments{}, errors.New("timeout_ms or max_output_bytes is outside its allowed range")
 	}
+	arguments.CWD = normalizeWorkspaceAlias(arguments.CWD)
 	return arguments, nil
+}
+
+// normalizeWorkspaceAlias 将模型常用的 /workspace 绝对别名收敛为受限的相对工作目录。
+func normalizeWorkspaceAlias(cwd string) string {
+	if cwd == "/workspace" {
+		return "."
+	}
+	if strings.HasPrefix(cwd, "/workspace/") {
+		return strings.TrimPrefix(cwd, "/workspace/")
+	}
+	return cwd
 }
 
 // validateEnvironment 拒绝未被 EnvAllow 明确允许的环境变量覆盖。
