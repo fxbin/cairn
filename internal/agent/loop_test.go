@@ -238,6 +238,16 @@ func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptExplainsDeterministicPatchBinding(t *testing.T) {
+	loop := Loop{}
+	prompt := loop.prompt()
+	for _, required := range []string{"read_file", "expected_sha256", "shell hash"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("default prompt omitted %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T) {
 	messages := []ports.Message{
 		{Role: "system", Content: "system"},

@@ -47,7 +47,7 @@ func (tool ListFiles) Spec() ports.ToolSpec {
 
 // Spec 返回 read_file 的受限 JSON 参数定义。
 func (tool ReadFile) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1048576}}}`)}
+	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. The result includes sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1048576}}}`)}
 }
 
 // Spec 返回 search_text 的受限 JSON 参数定义。

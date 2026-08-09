@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,16 @@ func TestApplyPatchDefaultsMissingOccurrenceToOneExactMatch(t *testing.T) {
 	content, err := os.ReadFile(path)
 	if err != nil || string(content) != "three two" {
 		t.Fatalf("content = %q, %v", content, err)
+	}
+}
+
+func TestApplyPatchSpecRequiresExpectedSHA256(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specification := (ApplyPatch{Workspace: workspace}).Spec()
+	if !strings.Contains(specification.Description, "expected_sha256") || !strings.Contains(string(specification.Parameters), `"required":["path","mode","expected_sha256"]`) {
+		t.Fatalf("apply_patch spec does not declare hash binding: %#v", specification)
 	}
 }

@@ -1449,7 +1449,7 @@ func (loop *Loop) prompt() string {
 	if strings.TrimSpace(loop.SystemPrompt) != "" {
 		return loop.SystemPrompt
 	}
-	return "You are Cairn, a careful coding agent. Use the supplied tools for repository facts. Start from task-scoped paths; avoid broad or repeated listings and rereading unchanged content. Once you have enough evidence, implement the smallest allowed fix, then let the fixed verification decide completion. Return a concise final answer only when the task is answered."
+	return "You are Cairn, a careful coding agent. Use the supplied tools for repository facts. Start from task-scoped paths; avoid broad or repeated listings and rereading unchanged content. Once you have enough evidence, implement the smallest allowed fix, then let the fixed verification decide completion. Before update/delete, use read_file and copy its exact sha256 into apply_patch.expected_sha256; do not invoke shell hash programs. If a patch is rejected, read fresh state and repair it before rerunning tests. Return a concise final answer only when the task is answered."
 }
 
 // mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。

@@ -49,7 +49,7 @@ func (tool ApplyPatch) SideEffect() SideEffectClass { return SideEffectWorkspace
 
 // Spec 返回 apply_patch 的受限 JSON 参数定义。
 func (tool ApplyPatch) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "apply_patch", Description: "Apply a deterministic, single-file patch after approval. A replacement without occurrence must match exactly once.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","mode"],"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","update","delete"]},"expected_sha256":{"type":"string"},"content":{"type":"string"},"replacements":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["old","new"],"properties":{"old":{"type":"string"},"new":{"type":"string"},"occurrence":{"type":"integer","minimum":1}}}}}}`)}
+	return ports.ToolSpec{Name: "apply_patch", Description: "Apply a deterministic, single-file patch after approval. expected_sha256 is required: for update/delete copy the exact sha256 returned by a fresh read_file; for create use absent. A replacement without occurrence must match exactly once.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","mode","expected_sha256"],"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["create","update","delete"]},"expected_sha256":{"type":"string","minLength":1},"content":{"type":"string"},"replacements":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["old","new"],"properties":{"old":{"type":"string"},"new":{"type":"string"},"occurrence":{"type":"integer","minimum":1}}}}}}`)}
 }
 
 // Plan 在不写入文件的前提下校验参数并计算确定性的改写前后状态。
