@@ -71,3 +71,27 @@ func TestRedactJSONReplacesCredentialValuesWithoutBreakingJSON(t *testing.T) {
 		t.Fatalf("redaction broke JSON: %v", err)
 	}
 }
+
+func TestRedactJSONPreservesTokenUsageAndBudgetCounters(t *testing.T) {
+	redacted := RedactJSON([]byte(`{"token":"very-secret","session_token":"also-secret","usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168},"budget":{"max_input_tokens":250000,"max_output_tokens":50000}}`))
+	if strings.Contains(string(redacted), "very-secret") || strings.Contains(string(redacted), "also-secret") {
+		t.Fatalf("redaction leaked credential: %s", redacted)
+	}
+	var decoded struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+		Budget struct {
+			MaxInputTokens  int `json:"max_input_tokens"`
+			MaxOutputTokens int `json:"max_output_tokens"`
+		} `json:"budget"`
+	}
+	if err := json.Unmarshal(redacted, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Usage.PromptTokens != 123 || decoded.Usage.CompletionTokens != 45 || decoded.Usage.TotalTokens != 168 || decoded.Budget.MaxInputTokens != 250000 || decoded.Budget.MaxOutputTokens != 50000 {
+		t.Fatalf("token facts were redacted: %#v", decoded)
+	}
+}

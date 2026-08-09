@@ -23,7 +23,7 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 		return messages, nil
 	}
 	before := loop.estimatePromptTokens(messages)
-	if before <= loop.ContextMaxPromptTokens {
+	if before <= loop.contextCompactionThreshold() {
 		return messages, nil
 	}
 	if projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
@@ -50,6 +50,17 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 		return nil, err
 	}
 	return compacted, nil
+}
+
+// contextCompactionThreshold 在模型的名义上下文上限前保留 20% 余量，吸收
+// 工具定义、JSON 编码与中英文 tokenizer 差异，避免临界请求消耗整轮输入预算。
+func (loop *Loop) contextCompactionThreshold() int {
+	reserve := loop.ContextMaxPromptTokens / 5
+	threshold := loop.ContextMaxPromptTokens - reserve
+	if threshold < 1 {
+		return 1
+	}
+	return threshold
 }
 
 // contextMessages 重新注入固定提示、原始任务和一条替代旧历史的检查点消息。

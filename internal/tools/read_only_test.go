@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +61,50 @@ func TestReadOnlyToolsRejectUnknownArguments(t *testing.T) {
 	result := (ListFiles{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"unexpected":true}`))
 	if result.OK || result.Code != "invalid" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestReadOnlyToolDefaultsBoundContextPayload(t *testing.T) {
+	root := t.TempDir()
+	for index := 0; index < defaultListResults+1; index++ {
+		path := filepath.Join(root, fmt.Sprintf("file-%03d.txt", index))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	content := strings.Repeat("x", defaultReadLimit+1)
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, int64(defaultReadLimit*2), 1000, 1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := (ListFiles{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"."}`))
+	if !listed.OK || !listed.Truncated {
+		t.Fatalf("list result = %#v", listed)
+	}
+	var files struct {
+		Files []string `json:"files"`
+	}
+	if err := json.Unmarshal(listed.Data, &files); err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Files) != defaultListResults {
+		t.Fatalf("default list length = %d, want %d", len(files.Files), defaultListResults)
+	}
+	read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"large.txt"}`))
+	if !read.OK || !read.Truncated {
+		t.Fatalf("read result = %#v", read)
+	}
+	var file struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(read.Data, &file); err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Content) != defaultReadLimit {
+		t.Fatalf("default read length = %d, want %d", len(file.Content), defaultReadLimit)
 	}
 }
 

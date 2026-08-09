@@ -227,6 +227,17 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 	}
 }
 
+func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
+	loop := Loop{ContextMaxPromptTokens: 50_000}
+	if got := loop.contextCompactionThreshold(); got != 40_000 {
+		t.Fatalf("threshold = %d, want 40000", got)
+	}
+	loop.ContextMaxPromptTokens = 1
+	if got := loop.contextCompactionThreshold(); got != 1 {
+		t.Fatalf("minimum threshold = %d, want 1", got)
+	}
+}
+
 func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T) {
 	messages := []ports.Message{
 		{Role: "system", Content: "system"},

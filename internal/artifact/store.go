@@ -104,10 +104,13 @@ func scrubJSON(value *any, key string) {
 	}
 }
 
-// sensitiveKey 判断规范化后的 JSON 键是否可能承载凭据。
+// sensitiveKey 判断规范化后的 JSON 键是否可能承载凭据；用量计数和预算上限
+// 虽然包含 tokens 字样，但属于审计与预算事实，必须保留。
 func sensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
+	return key == "token" || key == "apikey" || key == "api_key" ||
+		(strings.HasSuffix(key, "token") && !strings.HasSuffix(key, "tokens")) ||
+		strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "credential")
 }
 
 // Put 脱敏后按内容哈希原子写入制品，并返回稳定引用。

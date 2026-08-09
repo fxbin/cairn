@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	defaultListResults = 200
+	defaultListResults = 100
 	maximumListResults = 2000
-	defaultReadLimit   = 64 * 1024
+	defaultReadLimit   = 16 * 1024
 )
 
 // ListFiles 是列出工作区文件的只读工具。
