@@ -153,6 +153,93 @@ func TestLoopPersistsReadOnlyToolExecutionAndFinalResponse(t *testing.T) {
 	}
 }
 
+func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
+	root := t.TempDir()
+	marker := "FULL_TOOL_BODY_MUST_NOT_REACH_THE_NEXT_REQUEST"
+	content := strings.Repeat("padding-", 8_000) + marker
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 128*1024, 100, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_large", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "large file inspected"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	ctx := context.Background()
+	if _, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"inspect large file","workspace":"/workspace"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{
+		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_000, ContextMaxSummaryBytes: 1_024,
+	}
+	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "inspect large file", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "large file inspected" {
+		t.Fatalf("run = %#v, %v", result, err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("model requests = %d", len(provider.requests))
+	}
+	secondRequest := provider.requests[1].Messages
+	if len(secondRequest) != 3 || !strings.HasPrefix(secondRequest[2].Content, contextCheckpointPrefix) {
+		t.Fatalf("second request did not use a checkpoint: %#v", secondRequest)
+	}
+	if strings.Contains(secondRequest[2].Content, marker) {
+		t.Fatalf("checkpoint copied raw tool body: %q", secondRequest[2].Content)
+	}
+	events, err := journal.Load(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint domain.ContextCompactedPayload
+	seenCheckpoint := false
+	for _, event := range events {
+		if event.Type != domain.EventContextCompacted {
+			continue
+		}
+		if err := json.Unmarshal(event.Payload, &checkpoint); err != nil {
+			t.Fatal(err)
+		}
+		seenCheckpoint = true
+	}
+	if !seenCheckpoint || checkpoint.ThroughSeq == 0 || checkpoint.EstimatedTokensAfter >= checkpoint.EstimatedTokensBefore || strings.Contains(checkpoint.Summary, marker) {
+		t.Fatalf("invalid checkpoint = %#v", checkpoint)
+	}
+	rebuilt := loop.messagesFromEvents(events, "fallback")
+	if len(rebuilt) != 3 || rebuilt[2].Content != secondRequest[2].Content {
+		t.Fatalf("replayed context = %#v, want %#v", rebuilt, secondRequest)
+	}
+}
+
+func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T) {
+	messages := []ports.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+		{Role: "user", Content: contextCheckpointPrefix + "earlier decision: inspect config before changing it"},
+		{Role: "assistant", Content: "new finding: the config remains unchanged"},
+	}
+	summary := summarizeMessages(messages, 240)
+	if !strings.Contains(summary, "earlier decision") || !strings.Contains(summary, "new finding") {
+		t.Fatalf("summary did not preserve both checkpoint and recent fact: %q", summary)
+	}
+}
+
 func TestLoopFeedsPolicyDeniedToolCallBackToModelForRepair(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "answer.txt"), []byte("original"), 0o600); err != nil {

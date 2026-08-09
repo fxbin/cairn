@@ -16,11 +16,23 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/lock"
+	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	_ "modernc.org/sqlite"
 )
 
 type finalProvider struct{}
+
+func TestConfiguredLoopPassesContextLimits(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Context.AutoCompact = false
+	configuration.Context.MaxPromptTokens = 12_345
+	configuration.Context.MaxSummaryBytes = 6_789
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 {
+		t.Fatalf("loop context = %#v", loop)
+	}
+}
 
 func (finalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "done"}); err != nil {

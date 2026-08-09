@@ -23,6 +23,7 @@ type Config struct {
 	Policy       PolicyConfig       `yaml:"policy"`
 	Verification VerificationConfig `yaml:"verification"`
 	Budget       BudgetConfig       `yaml:"budget"`
+	Context      ContextConfig      `yaml:"context"`
 	Pricing      PricingConfig      `yaml:"pricing"`
 	Output       OutputConfig       `yaml:"output"`
 	Cancellation CancellationConfig `yaml:"cancellation"`
@@ -52,6 +53,13 @@ type BudgetConfig struct {
 	MaxOutputTokens int     `yaml:"max_output_tokens"`
 	MaxWallTime     string  `yaml:"max_wall_time"`
 	MaxCostUSD      float64 `yaml:"max_cost_usd"`
+}
+
+// ContextConfig 限制单次模型请求的可见历史，并控制自动压缩生成的检查点体积。
+type ContextConfig struct {
+	AutoCompact     bool `yaml:"auto_compact"`
+	MaxPromptTokens int  `yaml:"max_prompt_tokens"`
+	MaxSummaryBytes int  `yaml:"max_summary_bytes"`
 }
 
 // PricingConfig 必须显式启用；只有输入与输出 token 价格都给出时，成本预算
@@ -119,6 +127,7 @@ func Defaults() Config {
 			MaxTurns: 30, MaxToolCalls: 100, MaxInputTokens: 500_000,
 			MaxOutputTokens: 100_000, MaxWallTime: "30m",
 		},
+		Context:      ContextConfig{AutoCompact: true, MaxPromptTokens: 50_000, MaxSummaryBytes: 16 * 1024},
 		Verification: VerificationConfig{VolatilePaths: []string{".cache", "tmp/test-results"}},
 		Output:       OutputConfig{MaxPreviewBytes: 16 * 1024, MaxArtifactBytes: 10 * 1024 * 1024},
 		Cancellation: CancellationConfig{TerminateGrace: "5s"},
@@ -166,6 +175,9 @@ func Validate(config Config) error {
 	}
 	if config.Workspace.MaxReadBytes < 1 || config.Workspace.MaxSearchFiles < 1 || config.Workspace.MaxSearchBytes < 1 || config.Budget.MaxTurns < 1 || config.Budget.MaxToolCalls < 1 || config.Budget.MaxInputTokens < 1 || config.Budget.MaxOutputTokens < 1 {
 		return fmt.Errorf("workspace limits and budget limits must be positive")
+	}
+	if config.Context.MaxPromptTokens < 1 || config.Context.MaxSummaryBytes < 1 {
+		return fmt.Errorf("context limits must be positive")
 	}
 	if _, err := config.WallTime(); err != nil {
 		return fmt.Errorf("budget.max_wall_time: %w", err)

@@ -20,23 +20,25 @@ const (
 
 // RunProjection 是由事件序列重放得到的当前运行状态与恢复依据。
 type RunProjection struct {
-	ID                     RunID
-	Task                   string
-	Workspace              string
-	WorkspaceHash          string
-	WorkspaceObservation   string
-	State                  RunState
-	LastSeq                uint64
-	CurrentTurn            *TurnID
-	LastAssistantMessage   string
-	VerificationSucceeded  bool
-	LastVerificationSeq    uint64
-	LastMutationSeq        uint64
-	PendingApproval        *PendingApproval
-	PendingOperation       *PendingOperation
-	operationFingerprints  map[OperationID]string
-	reconciledFingerprints map[string]struct{}
-	operations             map[OperationID]*operationRecord
+	ID                      RunID
+	Task                    string
+	Workspace               string
+	WorkspaceHash           string
+	WorkspaceObservation    string
+	State                   RunState
+	LastSeq                 uint64
+	CurrentTurn             *TurnID
+	LastAssistantMessage    string
+	VerificationSucceeded   bool
+	LastVerificationSeq     uint64
+	LastMutationSeq         uint64
+	LastContextCompactSeq   uint64
+	ContextCompactedThrough uint64
+	PendingApproval         *PendingApproval
+	PendingOperation        *PendingOperation
+	operationFingerprints   map[OperationID]string
+	reconciledFingerprints  map[string]struct{}
+	operations              map[OperationID]*operationRecord
 }
 
 // operationState 记录单个工具操作在投议、授权与终态之间的内部迁移。
@@ -97,6 +99,15 @@ type AssistantMessagePayload struct {
 // VerificationFinishedPayload 记录一次验证是否通过。
 type VerificationFinishedPayload struct {
 	OK bool `json:"ok"`
+}
+
+// ContextCompactedPayload 保存一次可重放的对话检查点及其压缩范围。
+type ContextCompactedPayload struct {
+	ThroughSeq            uint64 `json:"through_seq"`
+	Summary               string `json:"summary"`
+	EstimatedTokensBefore int    `json:"estimated_units_before"`
+	EstimatedTokensAfter  int    `json:"estimated_units_after"`
+	Strategy              string `json:"strategy"`
 }
 
 // RunCompletedPayload 保存已完成运行的最终回复。
@@ -210,6 +221,19 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.VerificationSucceeded = payload.OK
 		projection.LastVerificationSeq = event.Seq
+	case EventContextCompacted:
+		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
+			return fmt.Errorf("context_compacted is not legal for run state %s", projection.State)
+		}
+		var payload ContextCompactedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("decode context compacted payload: %w", err)
+		}
+		if payload.ThroughSeq == 0 || payload.ThroughSeq >= event.Seq || payload.Summary == "" || payload.EstimatedTokensBefore < 1 || payload.EstimatedTokensAfter < 1 || payload.EstimatedTokensAfter > payload.EstimatedTokensBefore || payload.Strategy == "" {
+			return errors.New("context_compacted payload is incomplete")
+		}
+		projection.LastContextCompactSeq = event.Seq
+		projection.ContextCompactedThrough = payload.ThroughSeq
 	case EventOperationStarted:
 		if projection.State != RunRunning || projection.PendingOperation != nil {
 			return fmt.Errorf("operation_started is not legal for run state %s", projection.State)

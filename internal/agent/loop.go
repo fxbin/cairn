@@ -68,20 +68,23 @@ type EventSink func(domain.Event)
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
-	Journal           ports.Journal
-	Provider          ports.Provider
-	Tools             *tools.Registry
-	Gate              *policy.Gate
-	Model             string
-	ConfigFingerprint string
-	MaxTurns          int
-	MaxToolCalls      int
-	MaxInputTokens    int
-	MaxOutputTokens   int
-	MaxCostUSD        float64
-	InputTokenUSD     float64
-	OutputTokenUSD    float64
-	Verification      []VerificationCommand
+	Journal                ports.Journal
+	Provider               ports.Provider
+	Tools                  *tools.Registry
+	Gate                   *policy.Gate
+	Model                  string
+	ConfigFingerprint      string
+	MaxTurns               int
+	MaxToolCalls           int
+	MaxInputTokens         int
+	MaxOutputTokens        int
+	MaxCostUSD             float64
+	InputTokenUSD          float64
+	OutputTokenUSD         float64
+	ContextAutoCompact     bool
+	ContextMaxPromptTokens int
+	ContextMaxSummaryBytes int
+	Verification           []VerificationCommand
 	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
 	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace
@@ -180,6 +183,10 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 		return Result{}, fmt.Errorf("run %s is not runnable from state %s", input.RunID, projection.State)
 	}
 	messages := loop.messagesFromEvents(events, input.Task)
+	messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
+	if err != nil {
+		return Result{}, err
+	}
 	usage := budgetUsageFromEvents(events)
 	for turn := 0; turn < loop.MaxTurns; turn++ {
 		if ctx.Err() != nil {
@@ -242,6 +249,10 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 					if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
 						return Result{}, err
 					}
+					messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
+					if err != nil {
+						return Result{}, err
+					}
 					continue
 				}
 				_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
@@ -294,6 +305,10 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 			messages = append(messages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: string(encoded)})
 		}
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+			return Result{}, err
+		}
+		messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
+		if err != nil {
 			return Result{}, err
 		}
 	}
@@ -901,6 +916,7 @@ func proposedVerificationCommand(events []domain.Event, operationID domain.Opera
 // messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文。
 func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) []ports.Message {
 	task := fallbackTask
+	checkpoint, throughSeq := latestContextCheckpoint(events)
 	proposals := make(map[domain.OperationID]ports.ToolCall)
 	completedCalls := make(map[string]bool)
 	for _, event := range events {
@@ -913,6 +929,9 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		}
 	}
 	for _, event := range events {
+		if event.Seq <= throughSeq {
+			continue
+		}
 		switch event.Type {
 		case domain.EventToolCallProposed:
 			if event.OperationID == nil {
@@ -931,8 +950,11 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			}
 		}
 	}
-	messages := []ports.Message{{Role: "system", Content: loop.prompt()}, {Role: "user", Content: task}}
+	messages := loop.contextMessages(task, checkpoint)
 	for _, event := range events {
+		if event.Seq <= throughSeq {
+			continue
+		}
 		switch event.Type {
 		case domain.EventModelResponseFinished:
 			var payload modelResponsePayload
@@ -974,6 +996,23 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		}
 	}
 	return messages
+}
+
+// latestContextCheckpoint 返回最新有效检查点及其所替代历史的最后事件序号。
+func latestContextCheckpoint(events []domain.Event) (string, uint64) {
+	var summary string
+	var throughSeq uint64
+	for _, event := range events {
+		if event.Type != domain.EventContextCompacted {
+			continue
+		}
+		var payload domain.ContextCompactedPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Summary != "" && payload.ThroughSeq < event.Seq {
+			summary = payload.Summary
+			throughSeq = payload.ThroughSeq
+		}
+	}
+	return summary, throughSeq
 }
 
 // runVerification 创建并执行冻结验证计划，任何失败都会反馈给后续模型轮次。

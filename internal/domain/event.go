@@ -44,6 +44,7 @@ const (
 	EventToolResultAppended           EventType = "tool_result_appended"
 	EventAssistantMessageAppended     EventType = "assistant_message_appended"
 	EventVerificationFeedbackAppended EventType = "verification_feedback_appended"
+	EventContextCompacted             EventType = "context_compacted"
 	EventVerificationStarted          EventType = "verification_started"
 	EventVerificationFinished         EventType = "verification_finished"
 )
@@ -119,6 +120,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventToolResultAppended:           {"payload_version": {}, "ok": {}, "code": {}, "data": {}, "preview": {}, "truncated": {}, "bytes": {}, "sha256": {}, "result_ref": {}, "is_error": {}},
 	EventAssistantMessageAppended:     {"payload_version": {}, "text": {}, "message_ref": {}},
 	EventVerificationFeedbackAppended: {"payload_version": {}, "text": {}},
+	EventContextCompacted:             {"payload_version": {}, "through_seq": {}, "summary": {}, "estimated_units_before": {}, "estimated_units_after": {}, "strategy": {}},
 	EventVerificationStarted: {
 		"payload_version": {}, "verification_id": {}, "plan_ref": {}, "last_mutation_seq": {}, "commands_fingerprint": {}, "workspace_observation": {},
 	},

@@ -93,3 +93,14 @@ func TestValidateRejectsInvalidOutputAndCancellationLimits(t *testing.T) {
 		t.Fatal("invalid termination grace was accepted")
 	}
 }
+
+func TestDefaultsEnableBoundedContextCompaction(t *testing.T) {
+	configuration := Defaults()
+	if !configuration.Context.AutoCompact || configuration.Context.MaxPromptTokens < 1 || configuration.Context.MaxSummaryBytes < 1 {
+		t.Fatalf("context defaults = %#v", configuration.Context)
+	}
+	configuration.Context.MaxSummaryBytes = 0
+	if err := Validate(configuration); err == nil {
+		t.Fatal("zero context summary limit was accepted")
+	}
+}
