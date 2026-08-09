@@ -1221,10 +1221,16 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: tools.Failure("policy_denied", decision.Summary)})}); err != nil {
+		result := tools.Failure("policy_denied", decision.Summary)
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 			return tools.Result{}, err
 		}
-		return tools.Result{}, &PolicyDeniedError{Summary: decision.Summary}
+		// 策略拒绝不会执行副作用，但模型仍应得到可审计的失败结果，以便在剩余轮次中
+		// 修正参数或改用允许的方案；人工审批拒绝与验证计划拒绝仍保持终态语义。
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
+			return tools.Result{}, err
+		}
+		return result, nil
 	}
 	sideEffect := loop.Tools.SideEffect(call.Name)
 	startedPayload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}

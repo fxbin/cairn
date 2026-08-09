@@ -153,6 +153,58 @@ func TestLoopPersistsReadOnlyToolExecutionAndFinalResponse(t *testing.T) {
 	}
 }
 
+func TestLoopFeedsPolicyDeniedToolCallBackToModelForRepair(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "answer.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_bad_patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"answer.txt","mode":"update","replacements":[{"old":"original","new":"changed"}]}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "I will provide the required hash before retrying."}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	ctx := context.Background()
+	if _, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"repair arguments","workspace":"/workspace"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "repair arguments", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "I will provide the required hash before retrying." {
+		t.Fatalf("result = %#v, %v", result, err)
+	}
+	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "expected_sha256") {
+		t.Fatalf("repair feedback was not sent to model: %#v", provider.requests)
+	}
+	events, err := journal.Load(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenFailure, seenResult := false, false
+	for _, event := range events {
+		seenFailure = seenFailure || event.Type == domain.EventOperationFailed
+		seenResult = seenResult || event.Type == domain.EventToolResultAppended
+	}
+	if !seenFailure || !seenResult {
+		t.Fatalf("policy denial was not fully recorded: %#v", events)
+	}
+}
+
 func TestResumeClosesInterruptedModelAttemptBeforeNewCall(t *testing.T) {
 	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {
