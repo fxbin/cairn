@@ -193,14 +193,19 @@ func dockerContainerName() string {
 // 不会改变已经产生的命令结果，但 --rm 仍可覆盖正常退出路径。
 func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string) {
 	cleanupTimeout := tool.Grace
-	if cleanupTimeout <= 0 {
-		cleanupTimeout = 2 * time.Second
+	if cleanupTimeout < 3*time.Second {
+		cleanupTimeout = 3 * time.Second
 	}
-	cleanupContext, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
-	defer cancel()
-	command := exec.CommandContext(cleanupContext, dockerBinary, "rm", "--force", containerName)
-	command.Env = []string{}
-	_ = command.Run()
+	for attempt := 0; attempt < 2; attempt++ {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		command := exec.CommandContext(cleanupContext, dockerBinary, "rm", "--force", containerName)
+		command.Env = []string{}
+		err := command.Run()
+		cancel()
+		if err == nil {
+			return
+		}
+	}
 }
 
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
