@@ -41,6 +41,66 @@ type RunProjection struct {
 	operations              map[OperationID]*operationRecord
 }
 
+// ValidateDraft 在不改变当前投影的前提下校验一条待追加事件的 payload 与状态迁移。
+// 它让调用方能够在写入不可变 Journal 之前拒绝非法事件，避免留下不可回放的日志。
+func (projection RunProjection) ValidateDraft(draft EventDraft) error {
+	event, err := NewEvent(draft, projection.LastSeq+1, GenesisHash)
+	if err != nil {
+		return err
+	}
+	candidate := projection.clone()
+	return candidate.Apply(event)
+}
+
+// clone 复制投影及其内部可变映射，供写前校验模拟状态迁移使用。
+func (projection RunProjection) clone() RunProjection {
+	copyTurn := func(source *TurnID) *TurnID {
+		if source == nil {
+			return nil
+		}
+		value := *source
+		return &value
+	}
+	copyApproval := func(source *PendingApproval) *PendingApproval {
+		if source == nil {
+			return nil
+		}
+		value := *source
+		return &value
+	}
+	copyOperation := func(source *PendingOperation) *PendingOperation {
+		if source == nil {
+			return nil
+		}
+		value := *source
+		return &value
+	}
+	candidate := projection
+	candidate.CurrentTurn = copyTurn(projection.CurrentTurn)
+	candidate.PendingApproval = copyApproval(projection.PendingApproval)
+	candidate.PendingOperation = copyOperation(projection.PendingOperation)
+	if projection.operationFingerprints != nil {
+		candidate.operationFingerprints = make(map[OperationID]string, len(projection.operationFingerprints))
+		for id, fingerprint := range projection.operationFingerprints {
+			candidate.operationFingerprints[id] = fingerprint
+		}
+	}
+	if projection.reconciledFingerprints != nil {
+		candidate.reconciledFingerprints = make(map[string]struct{}, len(projection.reconciledFingerprints))
+		for fingerprint := range projection.reconciledFingerprints {
+			candidate.reconciledFingerprints[fingerprint] = struct{}{}
+		}
+	}
+	if projection.operations != nil {
+		candidate.operations = make(map[OperationID]*operationRecord, len(projection.operations))
+		for id, record := range projection.operations {
+			copyRecord := *record
+			candidate.operations[id] = &copyRecord
+		}
+	}
+	return candidate
+}
+
 // operationState 记录单个工具操作在投议、授权与终态之间的内部迁移。
 type operationState string
 

@@ -147,14 +147,15 @@ type toolCallPayload struct {
 
 // operationPayload 是工具操作开始或终态事件的可回放证据字段。
 type operationPayload struct {
-	ToolName        string        `json:"tool_name"`
-	SideEffectClass string        `json:"side_effect_class,omitempty"`
-	MutationBarrier bool          `json:"mutation_barrier,omitempty"`
-	PlannedPath     string        `json:"planned_path,omitempty"`
-	PlannedBefore   string        `json:"planned_before,omitempty"`
-	PlannedAfter    string        `json:"planned_after,omitempty"`
-	Result          any           `json:"result,omitempty"`
-	ResultRef       *artifact.Ref `json:"result_ref,omitempty"`
+	ToolName           string        `json:"tool_name"`
+	SideEffectClass    string        `json:"side_effect_class,omitempty"`
+	MutationBarrier    bool          `json:"mutation_barrier,omitempty"`
+	PlannedPath        string        `json:"planned_path,omitempty"`
+	PlannedBefore      string        `json:"planned_before,omitempty"`
+	PlannedAfter       string        `json:"planned_after,omitempty"`
+	Result             any           `json:"result,omitempty"`
+	ResultRef          *artifact.Ref `json:"result_ref,omitempty"`
+	ResultStorageError string        `json:"result_storage_error,omitempty"`
 }
 
 // Run 从当前事件投影继续执行模型轮次、工具与验证，直至终态或可恢复暂停。
@@ -693,10 +694,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		resultContext, cancel = loop.commitContext(ctx)
 		defer cancel()
 	}
-	payload, err := loop.resultPayload(call.Name, result)
-	if err != nil {
-		return Result{}, err
-	}
+	payload := loop.resultPayload(call.Name, result)
 	if err := loop.append(resultContext, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(payload)}); err != nil {
 		return Result{}, err
 	}
@@ -1182,10 +1180,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 			eventType = domain.EventOperationFailed
 		}
 	}
-	payload, err := loop.resultPayload("exec_command", result)
-	if err != nil {
-		return err
-	}
+	payload := loop.resultPayload("exec_command", result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return err
 	}
@@ -1298,10 +1293,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		resultContext, cancel = loop.commitContext(ctx)
 		defer cancel()
 	}
-	payload, err := loop.resultPayload(call.Name, result)
-	if err != nil {
-		return tools.Result{}, err
-	}
+	payload := loop.resultPayload(call.Name, result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return tools.Result{}, err
 	}
@@ -1431,12 +1423,15 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 
 // append 以当前投影序号追加事件、应用投影并向外部 sink 广播。
 func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, draft domain.EventDraft) error {
+	if err := projection.ValidateDraft(draft); err != nil {
+		return fmt.Errorf("validate %s after sequence %d: %w", draft.Type, projection.LastSeq, err)
+	}
 	event, err := loop.Journal.Append(ctx, projection.LastSeq, draft)
 	if err != nil {
 		return fmt.Errorf("append %s after sequence %d: %w", draft.Type, projection.LastSeq, err)
 	}
 	if err := projection.Apply(event); err != nil {
-		return err
+		return fmt.Errorf("apply prevalidated %s after sequence %d: %w", event.Type, projection.LastSeq, err)
 	}
 	if loop.OnEvent != nil {
 		loop.OnEvent(event)
@@ -1484,22 +1479,25 @@ func freshApprovalDecision(projection domain.RunProjection, decision policy.Deci
 	return decision
 }
 
-// resultPayload 将工具结果包装为事件载荷，并在可用时持久化脱敏制品引用。
-func (loop *Loop) resultPayload(toolName string, result tools.Result) (operationPayload, error) {
+// resultPayload 将工具结果包装为事件载荷，并尽力持久化脱敏制品引用。
+// 即使制品盘暂不可用，结果本身仍会写入事件以关闭已启动的操作，避免产生不可回放日志。
+func (loop *Loop) resultPayload(toolName string, result tools.Result) operationPayload {
 	payload := operationPayload{ToolName: toolName, Result: result}
 	if loop.Artifacts == nil {
-		return payload, nil
+		return payload
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return operationPayload{}, fmt.Errorf("encode %s result artifact: %w", toolName, err)
+		payload.ResultStorageError = "encode tool result artifact failed"
+		return payload
 	}
 	ref, err := loop.Artifacts.Put(encoded, "application/json")
 	if err != nil {
-		return operationPayload{}, fmt.Errorf("store %s result artifact: %w", toolName, err)
+		payload.ResultStorageError = "store tool result artifact failed"
+		return payload
 	}
 	payload.ResultRef = &ref
-	return payload, nil
+	return payload
 }
 
 // redactToolResult 清除工具结果预览和 JSON 数据中可能泄露的凭据。

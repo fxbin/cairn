@@ -111,9 +111,9 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventOperationStarted: {
 		"payload_version": {}, "tool_name": {}, "kind": {}, "side_effect_class": {}, "mutation_barrier": {}, "request_ref": {}, "planned_path": {}, "planned_before": {}, "planned_after": {},
 	},
-	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "exit_or_after_observation": {}, "duration_ms": {}},
-	EventOperationFailed:    {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "error_class": {}, "after_observation": {}, "duration_ms": {}},
-	EventOperationCancelled: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "cause": {}, "confirmed_stopped": {}},
+	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "exit_or_after_observation": {}, "duration_ms": {}},
+	EventOperationFailed:    {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "error_class": {}, "after_observation": {}, "duration_ms": {}},
+	EventOperationCancelled: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "cause": {}, "confirmed_stopped": {}},
 	EventOperationReconciled: {
 		"payload_version": {}, "verdict": {}, "actor": {}, "note": {}, "evidence": {}, "evidence_ref": {}, "workspace_observation": {},
 	},

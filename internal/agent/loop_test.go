@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -150,6 +151,106 @@ func TestLoopPersistsReadOnlyToolExecutionAndFinalResponse(t *testing.T) {
 	projection, err := domain.Replay(events)
 	if err != nil || projection.State != domain.RunCompleted {
 		t.Fatalf("projection = %#v, %v", projection, err)
+	}
+}
+
+func TestLoopKeepsReplayableJournalWhenResultArtifactStorageFails(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "answer.txt"), []byte(strings.Repeat("Cairn is event sourced. ", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.New(filepath.Join(t.TempDir(), "artifacts"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.MaxBytes = 1024
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"answer.txt"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "artifact fallback is durable"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "persist fallback")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Artifacts: store, Model: "fake", MaxTurns: 3}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "persist fallback", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted {
+		t.Fatalf("projection = %#v, %v", projection, err)
+	}
+	for _, event := range events {
+		if event.Type != domain.EventOperationSucceeded {
+			continue
+		}
+		var payload struct {
+			ResultRef          *artifact.Ref `json:"result_ref"`
+			ResultStorageError string        `json:"result_storage_error"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ResultRef != nil || payload.ResultStorageError == "" {
+			t.Fatalf("artifact fallback was not recorded: %s", event.Payload)
+		}
+		return
+	}
+	t.Fatal("missing successful read operation")
+}
+
+func TestLoopRejectsInvalidTurnCloseBeforeJournalWrite(t *testing.T) {
+	journal := memory.New()
+	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
+	drafts := []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: mustJSON(domain.RunCreatedPayload{Task: "reject invalid close", Workspace: "/workspace"})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: "read", ToolName: "read_file", Arguments: json.RawMessage(`{"path":"answer.txt"}`)})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
+			Effect string `json:"effect"`
+		}{Effect: "allow"})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "read_file", SideEffectClass: string(tools.SideEffectNone)})},
+	}
+	for expected, draft := range drafts {
+		if _, err := journal.Append(context.Background(), uint64(expected), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{Journal: journal}
+	err = loop.append(context.Background(), &projection, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
+	if err == nil || !strings.Contains(err.Error(), "turn_closed") {
+		t.Fatalf("invalid turn close error = %v", err)
+	}
+	events, err = journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != len(drafts) {
+		t.Fatalf("invalid turn close was persisted: %d events", len(events))
 	}
 }
 
