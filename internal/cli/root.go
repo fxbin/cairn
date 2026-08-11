@@ -121,17 +121,23 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "benchmark run requires --manifest for a local task contract")
 		return ExitUsage
 	}
+	paths, err := resolveLocalBenchmarkPaths(*manifestPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "resolve benchmark local paths:", err)
+		return ExitUsage
+	}
+	*manifestPath = paths.Manifest
 	if *resultsRoot == "" {
-		*resultsRoot = filepath.Join(root, "benchmarks", "v0", "results")
+		*resultsRoot = paths.Results
 	}
 	if *workspacesRoot == "" {
-		*workspacesRoot = filepath.Join(root, "benchmarks", "v0", "workspaces")
+		*workspacesRoot = paths.Workspaces
 	}
 	if *stateRoot == "" {
 		*stateRoot = filepath.Join(*resultsRoot, "state")
 	}
 	if *privateRoot == "" {
-		*privateRoot = filepath.Join(root, "benchmarks", "v0", "private")
+		*privateRoot = paths.Private
 	}
 	if *configPath == "" && !*prepareOnly {
 		fmt.Fprintln(command.Stderr, "benchmark run requires --config for a frozen non-secret provider configuration")
@@ -163,6 +169,30 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 		return ExitOK
 	}
 	return ExitFailed
+}
+
+// localBenchmarkPaths 保存本地任务合同及其相邻输出目录的绝对路径。
+type localBenchmarkPaths struct {
+	Manifest   string
+	Results    string
+	Workspaces string
+	Private    string
+}
+
+// resolveLocalBenchmarkPaths 根据任务合同位置派生本地结果、工作区和 verifier 目录。
+// 这样评测数据不会因 CLI 默认值重新写回 Cairn 仓库。
+func resolveLocalBenchmarkPaths(manifestPath string) (localBenchmarkPaths, error) {
+	manifest, err := filepath.Abs(manifestPath)
+	if err != nil {
+		return localBenchmarkPaths{}, err
+	}
+	root := filepath.Dir(manifest)
+	return localBenchmarkPaths{
+		Manifest:   manifest,
+		Results:    filepath.Join(root, "results"),
+		Workspaces: filepath.Join(root, "workspaces"),
+		Private:    filepath.Join(root, "private"),
+	}, nil
 }
 
 // resume 解析恢复、审批、对账或中止参数，并调用相应应用用例。

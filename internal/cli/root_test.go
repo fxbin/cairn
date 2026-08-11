@@ -62,6 +62,17 @@ func TestBenchmarkRunRequiresExplicitLocalManifest(t *testing.T) {
 	}
 }
 
+func TestResolveLocalBenchmarkPathsKeepsEvaluationDataOutsideRepository(t *testing.T) {
+	manifest := t.TempDir() + "/v0/tasks.yaml"
+	paths, err := resolveLocalBenchmarkPaths(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(paths.Manifest, "/v0/tasks.yaml") || !strings.HasSuffix(paths.Results, "/v0/results") || !strings.HasSuffix(paths.Workspaces, "/v0/workspaces") || !strings.HasSuffix(paths.Private, "/v0/private") {
+		t.Fatalf("paths=%#v", paths)
+	}
+}
+
 func TestResolveRequiresAuditableCLIArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
