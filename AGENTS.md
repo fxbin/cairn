@@ -18,7 +18,8 @@
 - `internal/agent/`：串行单写入者 Loop，负责模型调用、审批、工具、预算、取消、恢复与验证。
 - `internal/app/`：装配 Provider、Journal、工具、Policy、Artifact Store 和工作区锁，提供运行、恢复、对账、中止、检查、诊断用例。
 - `internal/lock/`：工作区排他锁；当前 Unix 实现面向 Darwin/Linux。
-- `benchmarks/v0/tasks.yaml`：唯一受 Git 跟踪的公开基准任务合同；私有 verifier、运行结果与一次性工作区不进入版本库。
+- `internal/benchmark/`：本地任务合同解析、独立 clone runner 与非敏感结果 schema；不处理模型训练或调参数据。
+- `benchmarks/`：个人本地评测任务、verifier、冻结配置、结果与一次性工作区；整个目录必须忽略且不得进入版本库。
 - `test/integration/`、`test/e2e/`、`test/fault/`：分别覆盖真实 HTTP/SQLite 集成、四个离线 fixture 和故障边界。
 
 ## 开发约束
@@ -30,6 +31,7 @@
 - `apply_patch` 是确定性的单文件操作：更新/删除绑定已有 SHA-256，写入采用临时文件、同步与原子重命名。
 - `exec_command` 只接受 argv，不经 shell；它受工作区、环境白名单、输出/超时上限和进程组取消保护。
 - `sandbox.backend` 可选 `host` 或 `docker`；使用 Docker 时必须指定本地已有镜像，并以无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载失败关闭执行。不得在 Docker 不可用时回退到宿主机。
+- `cairn benchmark run` 必须通过 `--manifest` 显式读取本地任务合同；每次尝试必须有新的 clone、任务专属 Docker 镜像、固定 verifier 和冻结配置。verifier patch 只能从忽略的本地目录注入，结果中只记录其摘要。
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验、fingerprint 与测试。写入和命令的默认策略都是 `ask`。
 - 对已 started 但未记录终态的 workspace/process Operation，使用 `cairn resume --resolve` 对账；不得盲目重试。`doctor` 必须保持只读。
@@ -60,6 +62,7 @@ go test ./test/e2e -tags=e2e -count=1
 ## Git 与本地文件
 
 - `docs/` 和 `.vidt/` 是本地规划/流程产物，必须保持忽略且不提交。
-- `benchmarks/v0/tasks.yaml` 是公开、可审计的任务合同，必须提交；`benchmarks/v0/private/`、`results/` 和 `workspaces/` 可能含私有 verifier、结果或临时仓库，必须保持忽略。公开任务合同不得包含答案 oracle、凭据或私有验证逻辑。
+- `benchmarks/` 的任务合同、配置、verifier、结果和工作区必须保持忽略，不得包含在提交、发布包或示例中。任务集只用于个人测评，不得作为模型训练语料或公开 holdout。
+- runner 的 clone 与 bootstrap 不能继承模型密钥、代理凭据或用户 HOME；如需代理，只能显式传入无凭据的 loopback HTTP 地址。
 - 根目录 `cairn`、`.DS_Store`、测试产物和编辑器临时文件也已被 `.gitignore` 排除。
 - 新提交使用：`<type>(<scope>): <中文说明>`。一个提交只表达一个可审计意图。

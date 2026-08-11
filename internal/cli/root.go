@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 )
@@ -61,6 +64,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.doctor(ctx, args[1:])
 	case "resume":
 		return command.resume(ctx, args[1:])
+	case "benchmark":
+		return command.benchmark(ctx, args[1:])
 	case "help", "--help", "-h":
 		command.usage()
 		return ExitOK
@@ -69,6 +74,95 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		command.usage()
 		return ExitUsage
 	}
+}
+
+// benchmark 分派由调用方显式指定的本地任务合同，执行准备或实际评测；它不接受任意 shell 命令。
+func (command Command) benchmark(ctx context.Context, arguments []string) int {
+	if len(arguments) == 0 || arguments[0] != "run" {
+		fmt.Fprintln(command.Stderr, "benchmark requires the run subcommand")
+		return ExitUsage
+	}
+	flags := flag.NewFlagSet("benchmark run", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	manifestPath := flags.String("manifest", "", "local benchmark task manifest (required)")
+	configPath := flags.String("config", "", "frozen non-secret benchmark config")
+	resultsRoot := flags.String("results-dir", "", "ignored benchmark results directory")
+	workspacesRoot := flags.String("workspaces-dir", "", "ignored disposable clone directory")
+	stateRoot := flags.String("state-dir", "", "ignored Cairn state directory")
+	privateRoot := flags.String("private-dir", "", "ignored private verifier directory")
+	cairnRoot := flags.String("cairn-root", "", "Cairn repository used to record the source revision")
+	attempts := flags.Int("attempts", 0, "attempts per selected task; defaults to the task contract")
+	prepareTimeout := flags.String("prepare-timeout", "10m", "maximum clone, verifier, and bootstrap time per attempt")
+	prepareProxy := flags.String("prepare-proxy", "", "credential-free loopback HTTP proxy for clone only")
+	prepareOnly := flags.Bool("prepare-only", false, "clone, checkout, and bootstrap without calling a model")
+	var taskIDs stringList
+	flags.Var(&taskIDs, "task", "local task ID to run; repeatable, defaults to all tasks")
+	if err := flags.Parse(arguments[1:]); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "benchmark run does not accept positional arguments")
+		return ExitUsage
+	}
+	prepareDuration, err := time.ParseDuration(*prepareTimeout)
+	if err != nil || prepareDuration <= 0 {
+		fmt.Fprintln(command.Stderr, "--prepare-timeout must be a positive duration")
+		return ExitUsage
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "resolve current directory:", err)
+		return ExitFailed
+	}
+	if *cairnRoot == "" {
+		*cairnRoot = root
+	}
+	if *manifestPath == "" {
+		fmt.Fprintln(command.Stderr, "benchmark run requires --manifest for a local task contract")
+		return ExitUsage
+	}
+	if *resultsRoot == "" {
+		*resultsRoot = filepath.Join(root, "benchmarks", "v0", "results")
+	}
+	if *workspacesRoot == "" {
+		*workspacesRoot = filepath.Join(root, "benchmarks", "v0", "workspaces")
+	}
+	if *stateRoot == "" {
+		*stateRoot = filepath.Join(*resultsRoot, "state")
+	}
+	if *privateRoot == "" {
+		*privateRoot = filepath.Join(root, "benchmarks", "v0", "private")
+	}
+	if *configPath == "" && !*prepareOnly {
+		fmt.Fprintln(command.Stderr, "benchmark run requires --config for a frozen non-secret provider configuration")
+		return ExitUsage
+	}
+	configuration := config.Defaults()
+	if *configPath != "" {
+		configuration, err = config.Load(*configPath, config.Overrides{})
+		if err != nil {
+			fmt.Fprintln(command.Stderr, "configuration error:", err)
+			return ExitUsage
+		}
+	}
+	pack, err := benchmark.LoadTaskPack(*manifestPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "benchmark manifest error:", err)
+		return ExitUsage
+	}
+	report, err := (benchmark.Runner{Service: command.Service}).Run(ctx, benchmark.RunOptions{Pack: pack, TaskIDs: taskIDs, Attempts: *attempts, Configuration: configuration, ResultsRoot: *resultsRoot, WorkspacesRoot: *workspacesRoot, StateRoot: *stateRoot, PrivateRoot: *privateRoot, CairnRoot: *cairnRoot, PrepareTimeout: prepareDuration, PrepareProxy: *prepareProxy, PrepareOnly: *prepareOnly})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "benchmark failed:", err)
+		return ExitFailed
+	}
+	if err := json.NewEncoder(command.Stdout).Encode(report); err != nil {
+		fmt.Fprintln(command.Stderr, "write benchmark report:", err)
+		return ExitFailed
+	}
+	if *prepareOnly || report.Passed() {
+		return ExitOK
+	}
+	return ExitFailed
 }
 
 // resume 解析恢复、审批、对账或中止参数，并调用相应应用用例。
@@ -398,11 +492,27 @@ Usage:
   cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--json]
   cairn inspect <run-id> [--workspace <path>] [--events] [--json]
   cairn doctor [--workspace <path>] [--state-dir <path>]
+  cairn benchmark run [--manifest <path>] --config <path> [--task <id>] [--attempts <n>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed
   5 cancelled   6 approval required   7 reconciliation required   8 state corrupt
 `)
+}
+
+// stringList 支持 repeatable --task 参数，同时保留传入任务 ID 的顺序。
+type stringList []string
+
+// String 返回 flag 包显示的任务 ID 列表。
+func (values *stringList) String() string { return strings.Join(*values, ",") }
+
+// Set 追加一个非空任务 ID；空值会在参数解析阶段失败。
+func (values *stringList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("task ID must not be empty")
+	}
+	*values = append(*values, value)
+	return nil
 }
 
 // writeJSON 将值编码为一行 JSON；编码失败时不向 stdout 泄露部分数据。

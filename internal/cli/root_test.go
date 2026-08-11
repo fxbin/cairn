@@ -47,10 +47,18 @@ func TestHelpMatchesSupportedCommandsAndExitContract(t *testing.T) {
 		t.Fatalf("help exit=%d", exit)
 	}
 	usage := stderr.String()
-	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn doctor", "0 completed", "8 state corrupt"} {
+	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn doctor", "cairn benchmark run", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
 		if !strings.Contains(usage, required) {
 			t.Fatalf("usage omitted %q: %s", required, usage)
 		}
+	}
+}
+
+func TestBenchmarkRunRequiresExplicitLocalManifest(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	if exit := command.Run(context.Background(), []string{"benchmark", "run", "--prepare-only"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --manifest") {
+		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
 	}
 }
 

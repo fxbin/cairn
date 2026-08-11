@@ -2,6 +2,11 @@
 /docs/
 /.vidt/
 
+# Benchmark task definitions, verifiers, configuration, evaluator output, and
+# disposable repositories are local-only research material. Do not commit any
+# content under this directory.
+/benchmarks/
+
 # macOS and Go build/test outputs.
 .DS_Store
 **/.DS_Store
