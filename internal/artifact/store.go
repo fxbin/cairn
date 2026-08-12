@@ -79,7 +79,10 @@ func RedactJSON(content []byte) []byte {
 	if err != nil {
 		return Redact(content)
 	}
-	return Redact(encoded)
+	// 已完成递归脱敏的 value 重新编码后必定仍是 JSON。此处不能再把它交给
+	// 面向任意文本的 Redact：源码字符串中的 credential-like 片段可能含有
+	// 反斜杠，文本替换会破坏 JSON 转义并使后续事件无法持久化。
+	return encoded
 }
 
 // scrubJSON 递归替换敏感键及字符串叶子节点中的凭据内容。

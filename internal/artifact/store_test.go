@@ -95,3 +95,22 @@ func TestRedactJSONPreservesTokenUsageAndBudgetCounters(t *testing.T) {
 		t.Fatalf("token facts were redacted: %#v", decoded)
 	}
 }
+
+func TestRedactJSONKeepsSourceLiteralWithCredentialLikeTextValid(t *testing.T) {
+	input := []byte(`{"data":{"content":"API_KEY = \\\"sk-abcdefghijklmnop\\\"\\n"}}`)
+	redacted := RedactJSON(input)
+	if strings.Contains(string(redacted), "sk-abcdefghijklmnop") || !strings.Contains(string(redacted), "[REDACTED]") {
+		t.Fatalf("redaction leaked credential-like source literal: %s", redacted)
+	}
+	var decoded struct {
+		Data struct {
+			Content string `json:"content"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(redacted, &decoded); err != nil {
+		t.Fatalf("redaction broke source-bearing JSON: %v; %s", err, redacted)
+	}
+	if !strings.Contains(decoded.Data.Content, "[REDACTED]") {
+		t.Fatalf("decoded source was not redacted: %q", decoded.Data.Content)
+	}
+}
