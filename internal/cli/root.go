@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,7 +75,7 @@ func (command Command) Run(ctx context.Context, args []string) int {
 	}
 }
 
-// benchmark 分派由调用方显式指定的本地任务合同，执行准备或实际评测；它不接受任意 shell 命令。
+// benchmark 分派由调用方显式指定的本地评测配置，执行准备或实际评测；它不接受任意 shell 命令。
 func (command Command) benchmark(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 || arguments[0] != "run" {
 		fmt.Fprintln(command.Stderr, "benchmark requires the run subcommand")
@@ -84,16 +83,17 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 	}
 	flags := flag.NewFlagSet("benchmark run", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
-	manifestPath := flags.String("manifest", "", "local benchmark task manifest (required)")
-	configPath := flags.String("config", "", "frozen non-secret benchmark config")
-	resultsRoot := flags.String("results-dir", "", "ignored benchmark results directory")
-	workspacesRoot := flags.String("workspaces-dir", "", "ignored disposable clone directory")
-	stateRoot := flags.String("state-dir", "", "ignored Cairn state directory")
-	privateRoot := flags.String("private-dir", "", "ignored private verifier directory")
+	localConfigPath := flags.String("local-config", "", "Git-ignored local benchmark configuration (required)")
+	manifestPath := flags.String("manifest", "", "override the local task manifest path")
+	configPath := flags.String("config", "", "override the frozen non-secret Agent configuration path")
+	resultsRoot := flags.String("results-dir", "", "override the ignored benchmark results directory")
+	workspacesRoot := flags.String("workspaces-dir", "", "override the ignored disposable clone directory")
+	stateRoot := flags.String("state-dir", "", "override the ignored Cairn state directory")
+	privateRoot := flags.String("private-dir", "", "override the ignored private verifier directory")
 	cairnRoot := flags.String("cairn-root", "", "Cairn repository used to record the source revision")
 	attempts := flags.Int("attempts", 0, "attempts per selected task; defaults to the task contract")
-	prepareTimeout := flags.String("prepare-timeout", "10m", "maximum clone, verifier, and bootstrap time per attempt")
-	prepareProxy := flags.String("prepare-proxy", "", "credential-free loopback HTTP proxy for clone only")
+	prepareTimeout := flags.String("prepare-timeout", "", "override maximum clone, verifier, and bootstrap time per attempt")
+	prepareProxy := flags.String("prepare-proxy", "", "override credential-free loopback HTTP proxy for clone only")
 	prepareOnly := flags.Bool("prepare-only", false, "clone, checkout, and bootstrap without calling a model")
 	var taskIDs stringList
 	flags.Var(&taskIDs, "task", "local task ID to run; repeatable, defaults to all tasks")
@@ -104,11 +104,6 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "benchmark run does not accept positional arguments")
 		return ExitUsage
 	}
-	prepareDuration, err := time.ParseDuration(*prepareTimeout)
-	if err != nil || prepareDuration <= 0 {
-		fmt.Fprintln(command.Stderr, "--prepare-timeout must be a positive duration")
-		return ExitUsage
-	}
 	root, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "resolve current directory:", err)
@@ -117,39 +112,54 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 	if *cairnRoot == "" {
 		*cairnRoot = root
 	}
-	if *manifestPath == "" {
-		fmt.Fprintln(command.Stderr, "benchmark run requires --manifest for a local task contract")
+	if *localConfigPath == "" {
+		fmt.Fprintln(command.Stderr, "benchmark run requires --local-config for Git-ignored local evaluation assets")
 		return ExitUsage
 	}
-	paths, err := resolveLocalBenchmarkPaths(*manifestPath)
+	localConfiguration, err := benchmark.LoadLocalConfig(*localConfigPath)
 	if err != nil {
-		fmt.Fprintln(command.Stderr, "resolve benchmark local paths:", err)
+		fmt.Fprintln(command.Stderr, "local benchmark configuration error:", err)
 		return ExitUsage
 	}
-	*manifestPath = paths.Manifest
+	if *manifestPath == "" {
+		*manifestPath = localConfiguration.Paths.Manifest
+	}
+	if *configPath == "" {
+		*configPath = localConfiguration.Paths.AgentConfig
+	}
 	if *resultsRoot == "" {
-		*resultsRoot = paths.Results
+		*resultsRoot = localConfiguration.Paths.ResultsDir
 	}
 	if *workspacesRoot == "" {
-		*workspacesRoot = paths.Workspaces
+		*workspacesRoot = localConfiguration.Paths.WorkspacesDir
 	}
 	if *stateRoot == "" {
-		*stateRoot = filepath.Join(*resultsRoot, "state")
+		*stateRoot = localConfiguration.Paths.StateDir
 	}
 	if *privateRoot == "" {
-		*privateRoot = paths.Private
+		*privateRoot = localConfiguration.Paths.PrivateDir
 	}
-	if *configPath == "" && !*prepareOnly {
-		fmt.Fprintln(command.Stderr, "benchmark run requires --config for a frozen non-secret provider configuration")
+	if *prepareTimeout == "" {
+		*prepareTimeout = localConfiguration.Execution.PrepareTimeout
+	}
+	if *prepareProxy == "" {
+		*prepareProxy = localConfiguration.Execution.PrepareProxy
+	}
+	prepareDuration, err := time.ParseDuration(*prepareTimeout)
+	if err != nil || prepareDuration <= 0 {
+		fmt.Fprintln(command.Stderr, "--prepare-timeout must be a positive duration")
 		return ExitUsage
 	}
-	configuration := config.Defaults()
-	if *configPath != "" {
-		configuration, err = config.Load(*configPath, config.Overrides{})
-		if err != nil {
-			fmt.Fprintln(command.Stderr, "configuration error:", err)
-			return ExitUsage
-		}
+	localAssets := append([]string{*localConfigPath}, localConfiguration.AssetPaths()...)
+	localAssets = append(localAssets, *manifestPath, *configPath, *resultsRoot, *workspacesRoot, *stateRoot, *privateRoot)
+	if err := benchmark.EnsureLocalAssetsIgnored(*cairnRoot, localAssets...); err != nil {
+		fmt.Fprintln(command.Stderr, "local benchmark asset boundary error:", err)
+		return ExitUsage
+	}
+	configuration, err := config.Load(*configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
 	}
 	pack, err := benchmark.LoadTaskPack(*manifestPath)
 	if err != nil {
@@ -169,30 +179,6 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 		return ExitOK
 	}
 	return ExitFailed
-}
-
-// localBenchmarkPaths 保存本地任务合同及其相邻输出目录的绝对路径。
-type localBenchmarkPaths struct {
-	Manifest   string
-	Results    string
-	Workspaces string
-	Private    string
-}
-
-// resolveLocalBenchmarkPaths 根据任务合同位置派生本地结果、工作区和 verifier 目录。
-// 这样评测数据不会因 CLI 默认值重新写回 Cairn 仓库。
-func resolveLocalBenchmarkPaths(manifestPath string) (localBenchmarkPaths, error) {
-	manifest, err := filepath.Abs(manifestPath)
-	if err != nil {
-		return localBenchmarkPaths{}, err
-	}
-	root := filepath.Dir(manifest)
-	return localBenchmarkPaths{
-		Manifest:   manifest,
-		Results:    filepath.Join(root, "results"),
-		Workspaces: filepath.Join(root, "workspaces"),
-		Private:    filepath.Join(root, "private"),
-	}, nil
 }
 
 // resume 解析恢复、审批、对账或中止参数，并调用相应应用用例。
@@ -522,7 +508,7 @@ Usage:
   cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--json]
   cairn inspect <run-id> [--workspace <path>] [--events] [--json]
   cairn doctor [--workspace <path>] [--state-dir <path>]
-  cairn benchmark run [--manifest <path>] --config <path> [--task <id>] [--attempts <n>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
+  cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed

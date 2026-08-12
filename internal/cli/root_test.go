@@ -47,29 +47,18 @@ func TestHelpMatchesSupportedCommandsAndExitContract(t *testing.T) {
 		t.Fatalf("help exit=%d", exit)
 	}
 	usage := stderr.String()
-	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn doctor", "cairn benchmark run", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
+	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn doctor", "cairn benchmark run", "--local-config <path>", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
 		if !strings.Contains(usage, required) {
 			t.Fatalf("usage omitted %q: %s", required, usage)
 		}
 	}
 }
 
-func TestBenchmarkRunRequiresExplicitLocalManifest(t *testing.T) {
+func TestBenchmarkRunRequiresExplicitLocalConfig(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
-	if exit := command.Run(context.Background(), []string{"benchmark", "run", "--prepare-only"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --manifest") {
+	if exit := command.Run(context.Background(), []string{"benchmark", "run", "--prepare-only"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --local-config") {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
-	}
-}
-
-func TestResolveLocalBenchmarkPathsKeepsEvaluationDataOutsideRepository(t *testing.T) {
-	manifest := t.TempDir() + "/v0/tasks.yaml"
-	paths, err := resolveLocalBenchmarkPaths(manifest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(paths.Manifest, "/v0/tasks.yaml") || !strings.HasSuffix(paths.Results, "/v0/results") || !strings.HasSuffix(paths.Workspaces, "/v0/workspaces") || !strings.HasSuffix(paths.Private, "/v0/private") {
-		t.Fatalf("paths=%#v", paths)
 	}
 }
 

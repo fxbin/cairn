@@ -4,7 +4,7 @@
 
 - Cairn 是 Go 1.26.4 实现的事件溯源编码 Agent V0，模块为 `github.com/fxbin/cairn`。
 - 可执行入口是 `cmd/cairn/main.go`；它处理 `SIGINT`/`SIGTERM`，第一次信号交由 Agent 持久化取消，第二次以 130 退出。
-- CLI 实现在 `internal/cli/`，命令为 `run`、`resume`、`inspect`、`doctor`、`help`。`--json` 时 stdout 只能输出 NDJSON。
+- CLI 实现在 `internal/cli/`，命令为 `run`、`resume`、`inspect`、`doctor`、`benchmark run`、`help`。`--json` 时 stdout 只能输出 NDJSON。
 - 默认配置路径为 `<workspace>/.agent/config.yaml`。API key 只从 `provider.api_key_env` 指定的环境变量读取，不能写入 YAML 或事件。
 
 ## 模块地图
@@ -31,7 +31,7 @@
 - `apply_patch` 是确定性的单文件操作：更新/删除绑定已有 SHA-256，写入采用临时文件、同步与原子重命名。
 - `exec_command` 只接受 argv，不经 shell；它受工作区、环境白名单、输出/超时上限和进程组取消保护。
 - `sandbox.backend` 可选 `host` 或 `docker`；使用 Docker 时必须指定本地已有镜像，并以无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载失败关闭执行。不得在 Docker 不可用时回退到宿主机。
-- `cairn benchmark run` 必须通过 `--manifest` 显式读取本地任务合同；每次尝试必须有新的 clone、任务专属 Docker 镜像、固定 verifier 和冻结配置。verifier patch 只能从忽略的本地目录注入，结果中只记录其摘要。
+- `cairn benchmark run` 必须通过 `--local-config` 显式读取 Git 忽略的本机评测配置；配置必须分别给出任务合同、冻结 Agent 配置、私有 verifier、结果、clone 工作区和 state 目录，CLI 不得从 manifest 位置推导这些目录。每次尝试必须有新的 clone、任务专属 Docker 镜像、固定 verifier 和冻结配置。verifier patch 只能从忽略的本地目录注入，结果中只记录其摘要。
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验、fingerprint 与测试。写入和命令的默认策略都是 `ask`。
 - 对已 started 但未记录终态的 workspace/process Operation，使用 `cairn resume --resolve` 对账；不得盲目重试。`doctor` 必须保持只读。
@@ -62,7 +62,7 @@ go test ./test/e2e -tags=e2e -count=1
 ## Git 与本地文件
 
 - `docs/` 和 `.vidt/` 是本地规划/流程产物，必须保持忽略且不提交。
-- `benchmarks/` 的任务合同、配置、verifier、结果和工作区必须保持忽略，不得包含在提交、发布包或示例中。任务集只用于个人测评，不得作为模型训练语料或公开 holdout。
+- `benchmarks/` 的任务合同、配置、verifier、结果和工作区必须保持忽略，不得包含在提交、发布包或示例中。`--local-config` 以及它在 Cairn 仓库内引用的所有资产会在运行前检查：已跟踪或未被 `.gitignore` 覆盖即失败。任务集只用于个人测评，不得作为模型训练语料或公开 holdout。
 - runner 的 clone 与 bootstrap 不能继承模型密钥、代理凭据或用户 HOME；如需代理，只能显式传入无凭据的 loopback HTTP 地址。
 - 根目录 `cairn`、`.DS_Store`、测试产物和编辑器临时文件也已被 `.gitignore` 排除。
 - 新提交使用：`<type>(<scope>): <中文说明>`。一个提交只表达一个可审计意图。
