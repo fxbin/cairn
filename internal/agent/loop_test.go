@@ -288,7 +288,7 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 	}
 	loop := Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
-		ContextAutoCompact: true, ContextMaxPromptTokens: 1_000, ContextMaxSummaryBytes: 1_024,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
 	}
 	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "inspect large file", WorkspaceHash: "workspace"})
 	if err != nil || result.Response != "large file inspected" {
@@ -356,7 +356,7 @@ func TestLoopCompactsModerateSourceOutputBeforeBudgetDrift(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "inspect source output")
 	loop := Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
-		ContextAutoCompact: true, ContextMaxPromptTokens: 1_000, ContextMaxSummaryBytes: 1_024,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
 	}
 	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "inspect source output", WorkspaceHash: "workspace"}); err != nil {
 		t.Fatal(err)
@@ -383,7 +383,7 @@ func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
 func TestDefaultPromptExplainsDeterministicPatchBinding(t *testing.T) {
 	loop := Loop{}
 	prompt := loop.prompt()
-	for _, required := range []string{"read_file", "expected_sha256", "shell hash"} {
+	for _, required := range []string{"read_file", "expected_sha256", "shell hash", "byte offset", "unchanged failed command"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("default prompt omitted %q: %s", required, prompt)
 		}
