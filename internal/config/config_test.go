@@ -105,6 +105,13 @@ func TestDefaultsEnableBoundedContextCompaction(t *testing.T) {
 	}
 }
 
+func TestDefaultsKeepAutomaticVerificationAfterPatchDisabled(t *testing.T) {
+	configuration := Defaults()
+	if configuration.Verification.AutoAfterPatch {
+		t.Fatal("automatic verification after patch is enabled by default")
+	}
+}
+
 func TestValidateSandboxRequiresAnExplicitValidDockerConfiguration(t *testing.T) {
 	configuration := Defaults()
 	if configuration.Sandbox.Backend != "host" || configuration.Sandbox.DockerImage != "" || configuration.Sandbox.MaxPIDs < 1 {
@@ -140,5 +147,14 @@ func TestFingerprintChangesWhenSandboxChanges(t *testing.T) {
 	configuration.Sandbox.DockerImage = "alpine:3.21"
 	if before == configuration.Fingerprint() {
 		t.Fatal("sandbox configuration was omitted from fingerprint")
+	}
+}
+
+func TestFingerprintChangesWhenAutomaticVerificationAfterPatchChanges(t *testing.T) {
+	configuration := Defaults()
+	before := configuration.Fingerprint()
+	configuration.Verification.AutoAfterPatch = true
+	if before == configuration.Fingerprint() {
+		t.Fatal("automatic verification after patch was omitted from fingerprint")
 	}
 }

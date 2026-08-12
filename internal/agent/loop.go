@@ -68,23 +68,24 @@ type EventSink func(domain.Event)
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
-	Journal                ports.Journal
-	Provider               ports.Provider
-	Tools                  *tools.Registry
-	Gate                   *policy.Gate
-	Model                  string
-	ConfigFingerprint      string
-	MaxTurns               int
-	MaxToolCalls           int
-	MaxInputTokens         int
-	MaxOutputTokens        int
-	MaxCostUSD             float64
-	InputTokenUSD          float64
-	OutputTokenUSD         float64
-	ContextAutoCompact     bool
-	ContextMaxPromptTokens int
-	ContextMaxSummaryBytes int
-	Verification           []VerificationCommand
+	Journal                    ports.Journal
+	Provider                   ports.Provider
+	Tools                      *tools.Registry
+	Gate                       *policy.Gate
+	Model                      string
+	ConfigFingerprint          string
+	MaxTurns                   int
+	MaxToolCalls               int
+	MaxInputTokens             int
+	MaxOutputTokens            int
+	MaxCostUSD                 float64
+	InputTokenUSD              float64
+	OutputTokenUSD             float64
+	ContextAutoCompact         bool
+	ContextMaxPromptTokens     int
+	ContextMaxSummaryBytes     int
+	VerificationAutoAfterPatch bool
+	Verification               []VerificationCommand
 	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
 	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace
@@ -157,6 +158,8 @@ type operationPayload struct {
 	ResultRef          *artifact.Ref `json:"result_ref,omitempty"`
 	ResultStorageError string        `json:"result_storage_error,omitempty"`
 }
+
+const automaticVerificationResponse = "Cairn runtime: frozen verification passed after successful apply_patch."
 
 // Run 从当前事件投影继续执行模型轮次、工具与验证，直至终态或可恢复暂停。
 func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
@@ -270,6 +273,8 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 			}
 			return Result{RunID: input.RunID, Response: response.Text}, nil
 		}
+		patched := false
+		allToolCallsSucceeded := true
 		for _, call := range response.ToolCalls {
 			toolResult, err := loop.executeTool(ctx, &projection, input, turnID, call)
 			if err != nil {
@@ -303,7 +308,21 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 			if err != nil {
 				return Result{}, err
 			}
+			patched = patched || call.Name == "apply_patch" && toolResult.OK
+			allToolCallsSucceeded = allToolCallsSucceeded && toolResult.OK
 			messages = append(messages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: string(encoded)})
+		}
+		if loop.VerificationAutoAfterPatch && patched && allToolCallsSucceeded {
+			result, feedback, err := loop.finishAutomaticVerification(ctx, &projection, input, turnID)
+			if err != nil || feedback == "" {
+				return result, err
+			}
+			messages = append(messages, ports.Message{Role: "user", Content: feedback})
+			messages, err = loop.closeTurnAndCompact(ctx, &projection, input, turnID, messages)
+			if err != nil {
+				return Result{}, err
+			}
+			continue
 		}
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
 			return Result{}, err
@@ -506,32 +525,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 			if len(response.ToolCalls) == 0 {
 				return loop.resumeFinalModelResponse(ctx, &projection, input, turnID, response, events)
 			}
-			if !hasAnyToolProposal(events, response.ToolCalls) {
-				for _, call := range response.ToolCalls {
-					if _, err := loop.executeTool(ctx, &projection, input, turnID, call); err != nil {
-						if ctx.Err() != nil {
-							return loop.persistCancellation(ctx, &projection, input, &turnID)
-						}
-						var waiting *WaitingApprovalError
-						if errors.As(err, &waiting) {
-							return Result{RunID: input.RunID}, waiting
-						}
-						var budget *BudgetExceededError
-						if errors.As(err, &budget) {
-							return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
-						}
-						var denied *PolicyDeniedError
-						if errors.As(err, &denied) {
-							return loop.failCurrentTurn(ctx, &projection, input, turnID, denied)
-						}
-						return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
-					}
-				}
-				if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
-					return Result{}, err
-				}
-				return loop.Run(ctx, input)
-			}
+			return loop.resumeToolResponse(ctx, &projection, input, turnID, response, false)
 		}
 	}
 	if projection.PendingApproval == nil {
@@ -659,13 +653,14 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 			}
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 		}
+		finalResponse := loop.completionResponse(projection)
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "final"})}); err != nil {
 			return Result{}, err
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCompleted, Payload: mustJSON(domain.RunCompletedPayload{FinalResponse: projection.LastAssistantMessage})}); err != nil {
+		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCompleted, Payload: mustJSON(domain.RunCompletedPayload{FinalResponse: finalResponse})}); err != nil {
 			return Result{}, err
 		}
-		return Result{RunID: input.RunID, Response: projection.LastAssistantMessage}, nil
+		return Result{RunID: input.RunID, Response: finalResponse}, nil
 	}
 	sideEffect := loop.Tools.SideEffect(call.Name)
 	startedPayload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}
@@ -704,13 +699,15 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(result)}); err != nil {
 		return Result{}, err
 	}
-	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+	events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
 		return Result{}, err
 	}
-	// A resumed proposal has now been consumed. Calling Run starts the next
-	// model turn; the prior tool result is already durable even if that request
-	// later fails.
-	return loop.Run(ctx, input)
+	response, found := completedModelResponseForTurn(events, turnID)
+	if !found || len(response.ToolCalls) == 0 {
+		return loop.failCurrentTurn(ctx, &projection, input, turnID, errors.New("approved tool has no replayable model response"))
+	}
+	return loop.resumeToolResponse(ctx, &projection, input, turnID, response, true)
 }
 
 // resumeFinalModelResponse 在恢复时重新处理已完成模型响应的最终回复或工具调用。
@@ -737,6 +734,124 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 		return Result{}, err
 	}
 	return Result{RunID: input.RunID, Response: response.Text}, nil
+}
+
+// resumeToolResponse 消费已持久化模型响应中尚未提议的工具调用；在最后一个成功
+// apply_patch 后按开关运行冻结验证，保证恢复不会绕过自动验证闭环。
+func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, response modelResponsePayload, resumedApproval bool) (Result, error) {
+	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	proposed := proposedToolCallIDs(events)
+	for _, call := range response.ToolCalls {
+		if proposed[call.ID] {
+			continue
+		}
+		_, err := loop.executeTool(ctx, projection, input, turnID, call)
+		if err != nil {
+			if ctx.Err() != nil {
+				return loop.persistCancellation(ctx, projection, input, &turnID)
+			}
+			var waiting *WaitingApprovalError
+			if errors.As(err, &waiting) {
+				return Result{RunID: input.RunID}, waiting
+			}
+			var budget *BudgetExceededError
+			if errors.As(err, &budget) {
+				return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
+			}
+			var denied *PolicyDeniedError
+			if errors.As(err, &denied) {
+				return loop.failCurrentTurn(ctx, projection, input, turnID, denied)
+			}
+			return loop.failCurrentTurn(ctx, projection, input, turnID, err)
+		}
+	}
+	if resumedApproval {
+		if err := loop.appendResume(ctx, projection, &input); err != nil {
+			return Result{}, err
+		}
+	}
+	events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	complete, patched, allSucceeded := completedResponseToolResults(events, response)
+	if loop.VerificationAutoAfterPatch && complete && patched && allSucceeded {
+		result, feedback, err := loop.finishAutomaticVerification(ctx, projection, input, turnID)
+		if err != nil || feedback == "" {
+			return result, err
+		}
+		messages := loop.messagesFromEvents(events, input.Task)
+		messages = append(messages, ports.Message{Role: "user", Content: feedback})
+		if _, err := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); err != nil {
+			return Result{}, err
+		}
+		return loop.Run(ctx, input)
+	}
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+		return Result{}, err
+	}
+	return loop.Run(ctx, input)
+}
+
+// finishAutomaticVerification 在同一模型响应的所有工具调用成功结束且有补丁写入后，
+// 执行冻结 verifier；通过时直接完成，失败时保留既有证据并返回给下一模型轮次。
+func (loop *Loop) finishAutomaticVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) (Result, string, error) {
+	if err := loop.runVerification(ctx, projection, input, turnID); err != nil {
+		if ctx.Err() != nil {
+			result, cancellationErr := loop.persistCancellation(ctx, projection, input, &turnID)
+			return result, "", cancellationErr
+		}
+		var waiting *WaitingApprovalError
+		if errors.As(err, &waiting) {
+			return Result{RunID: input.RunID}, "", waiting
+		}
+		var budget *BudgetExceededError
+		if errors.As(err, &budget) {
+			result, budgetErr := loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
+			return result, "", budgetErr
+		}
+		var verificationFailure *VerificationFailureError
+		if errors.As(err, &verificationFailure) {
+			return Result{RunID: input.RunID}, verificationFailure.Feedback, nil
+		}
+		result, failureErr := loop.failCurrentTurn(ctx, projection, input, turnID, err)
+		return result, "", failureErr
+	}
+	result, completionErr := loop.completeAutomaticVerification(ctx, projection, input, turnID)
+	return result, "", completionErr
+}
+
+// completeAutomaticVerification 以明确标记的运行时结论关闭已通过自动验证的运行，
+// 不将空工具调用响应伪装为模型最终文本。
+func (loop *Loop) completeAutomaticVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) (Result, error) {
+	response := loop.completionResponse(*projection)
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "final"})}); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCompleted, Payload: mustJSON(domain.RunCompletedPayload{FinalResponse: response})}); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	return Result{RunID: input.RunID, Response: response}, nil
+}
+
+// completionResponse 返回已持久化的模型最终消息；自动验证没有模型最终文本时，
+// 返回可辨识的 Cairn 运行时结论。
+func (loop *Loop) completionResponse(projection domain.RunProjection) string {
+	if strings.TrimSpace(projection.LastAssistantMessage) != "" {
+		return projection.LastAssistantMessage
+	}
+	return automaticVerificationResponse
+}
+
+// closeTurnAndCompact 写入继续轮次的关闭事件，并在需要时生成上下文检查点。
+func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, messages []ports.Message) ([]ports.Message, error) {
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+		return nil, err
+	}
+	return loop.compactContextIfNeeded(ctx, projection, input, messages)
 }
 
 // completedModelResponseForTurn 查找指定轮次已持久化的完整模型响应。
@@ -770,6 +885,66 @@ func hasAnyToolProposal(events []domain.Event, calls []ports.ToolCall) bool {
 		}
 	}
 	return false
+}
+
+// proposedToolCallIDs 返回已经持久化提议的模型工具调用 ID，用于恢复一条
+// 部分执行的模型响应时避免重复提议或重复执行。
+func proposedToolCallIDs(events []domain.Event) map[string]bool {
+	ids := make(map[string]bool)
+	for _, event := range events {
+		if event.Type != domain.EventToolCallProposed {
+			continue
+		}
+		var payload toolCallPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
+			ids[payload.CallID] = true
+		}
+	}
+	return ids
+}
+
+// completedResponseToolResults 汇总一条模型响应中各调用是否都已有持久化结果，
+// 并确认是否至少成功写入过一个补丁。它用于恢复路径，避免在部分工具批次中
+// 提前验证或重复执行已有调用。
+func completedResponseToolResults(events []domain.Event, response modelResponsePayload) (complete, successfulPatch, allSucceeded bool) {
+	proposals := make(map[domain.OperationID]toolCallPayload)
+	results := make(map[domain.OperationID]tools.Result)
+	for _, event := range events {
+		if event.OperationID == nil {
+			continue
+		}
+		switch event.Type {
+		case domain.EventToolCallProposed:
+			var payload toolCallPayload
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				proposals[*event.OperationID] = payload
+			}
+		case domain.EventToolResultAppended:
+			var result tools.Result
+			if json.Unmarshal(event.Payload, &result) == nil {
+				results[*event.OperationID] = result
+			}
+		}
+	}
+	byCallID := make(map[string]tools.Result)
+	for operationID, proposal := range proposals {
+		if result, found := results[operationID]; found {
+			byCallID[proposal.CallID] = result
+		}
+	}
+	if len(response.ToolCalls) == 0 {
+		return true, false, true
+	}
+	allSucceeded = true
+	for _, call := range response.ToolCalls {
+		result, found := byCallID[call.ID]
+		if !found {
+			return false, false, false
+		}
+		allSucceeded = allSucceeded && result.OK
+		successfulPatch = successfulPatch || call.Name == "apply_patch" && result.OK
+	}
+	return true, successfulPatch, allSucceeded
 }
 
 // hasAssistantMessage 判断指定轮次是否已写入用户可见的助手消息。

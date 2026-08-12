@@ -835,8 +835,9 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		MaxCostUSD: configuration.Budget.MaxCostUSD, InputTokenUSD: configuration.Pricing.InputTokenUSD,
 		OutputTokenUSD:     configuration.Pricing.OutputTokenUSD,
 		ContextAutoCompact: configuration.Context.AutoCompact, ContextMaxPromptTokens: configuration.Context.MaxPromptTokens,
-		ContextMaxSummaryBytes: configuration.Context.MaxSummaryBytes,
-		Verification:           verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
+		ContextMaxSummaryBytes:     configuration.Context.MaxSummaryBytes,
+		VerificationAutoAfterPatch: configuration.Verification.AutoAfterPatch,
+		Verification:               verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
 	}
 }

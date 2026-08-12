@@ -869,6 +869,222 @@ func TestLoopFeedsVerificationFailureBackForRepairBeforeCompletion(t *testing.T)
 	}
 }
 
+func TestLoopAutomaticallyCompletesAfterSuccessfulPatchVerification(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &countingExecTool{}
+	registry, err := tools.NewRegistry(patchTool, verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"target.txt","mode":"create","content":"fixed"}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "repair")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != automaticVerificationResponse {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if len(provider.requests) != 1 || verificationTool.calls != 1 {
+		t.Fatalf("provider requests=%d verification calls=%d", len(provider.requests), verificationTool.calls)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted || !projection.VerificationSucceeded || projection.LastVerificationSeq <= projection.LastMutationSeq {
+		t.Fatalf("projection = %#v, err = %v", projection, err)
+	}
+}
+
+func TestLoopAutomaticallyVerifiesApprovedPatchOnResume(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &countingExecTool{}
+	registry, err := tools.NewRegistry(patchTool, verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"target.txt","mode":"create","content":"fixed"}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "repair")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	input := RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"}
+	_, err = loop.Run(context.Background(), input)
+	var waiting *WaitingApprovalError
+	if !errors.As(err, &waiting) {
+		t.Fatalf("initial run error = %v", err)
+	}
+	result, err := loop.Resume(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: true})
+	if err != nil || result.Response != automaticVerificationResponse || len(provider.requests) != 1 || verificationTool.calls != 1 {
+		t.Fatalf("result=%#v err=%v requests=%d verification calls=%d", result, err, len(provider.requests), verificationTool.calls)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted || !projection.VerificationSucceeded {
+		t.Fatalf("projection = %#v, err = %v", projection, err)
+	}
+}
+
+func TestLoopFeedsAutomaticVerificationFailureAfterApprovedPatchBackToModel(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &flakyVerificationTool{}
+	registry, err := tools.NewRegistry(patchTool, verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"target.txt","mode":"create","content":"fixed"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "verification repaired"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "repair")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	input := RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"}
+	_, err = loop.Run(context.Background(), input)
+	var waiting *WaitingApprovalError
+	if !errors.As(err, &waiting) {
+		t.Fatalf("initial run error = %v", err)
+	}
+	result, err := loop.Resume(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: true})
+	if err != nil || result.Response != "verification repaired" || len(provider.requests) != 2 || verificationTool.calls != 2 {
+		t.Fatalf("result=%#v err=%v requests=%d verification calls=%d", result, err, len(provider.requests), verificationTool.calls)
+	}
+	feedback := false
+	for _, message := range provider.requests[1].Messages {
+		feedback = feedback || message.Role == "user" && strings.Contains(message.Content, "Verification command verification-1 failed")
+	}
+	if !feedback {
+		t.Fatalf("resumed repair request did not receive verification feedback: %#v", provider.requests[1].Messages)
+	}
+}
+
+func TestLoopFeedsAutomaticVerificationFailureBackForRepair(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &flakyVerificationTool{}
+	registry, err := tools.NewRegistry(patchTool, verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("broken"))
+	updateArguments, err := json.Marshal(tools.PatchArguments{Path: "target.txt", Mode: "update", ExpectedSHA256: "sha256:" + hex.EncodeToString(digest[:]), Replacements: []tools.Replacement{{Old: "broken", New: "fixed", Occurrence: 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "create", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"target.txt","mode":"create","content":"broken"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "repair", Name: "apply_patch", Arguments: updateArguments}}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "repair")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 4, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != automaticVerificationResponse || len(provider.requests) != 2 || verificationTool.calls != 2 {
+		t.Fatalf("result=%#v err=%v requests=%d verification calls=%d", result, err, len(provider.requests), verificationTool.calls)
+	}
+	feedback := false
+	for _, message := range provider.requests[1].Messages {
+		feedback = feedback || message.Role == "user" && strings.Contains(message.Content, "Verification command verification-1 failed")
+	}
+	if !feedback {
+		t.Fatalf("repair request did not receive verification feedback: %#v", provider.requests[1].Messages)
+	}
+}
+
+func TestLoopWaitsForAllToolCallsBeforeAutomaticVerification(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &countingExecTool{}
+	registry, err := tools.NewRegistry(patchTool, verificationTool, tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"target.txt","mode":"create","content":"fixed"}`)}},
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "list", Name: "list_files", Arguments: json.RawMessage(`{"path":"."}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "repair")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listResult, verificationStarted := -1, -1
+	for index, event := range events {
+		if event.Type == domain.EventToolResultAppended && event.OperationID != nil && strings.Contains(string(event.Payload), "target.txt") {
+			listResult = index
+		}
+		if event.Type == domain.EventVerificationStarted {
+			verificationStarted = index
+		}
+	}
+	if listResult < 0 || verificationStarted <= listResult {
+		t.Fatalf("verification started before all model tool calls completed: %#v", events)
+	}
+}
+
 func TestLoopRedactsAndRejectsSecretLikeToolArguments(t *testing.T) {
 	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {

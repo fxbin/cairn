@@ -99,8 +99,9 @@ type PolicyConfig struct {
 
 // VerificationConfig 描述完成前必须执行的固定验收命令。
 type VerificationConfig struct {
-	VolatilePaths []string              `yaml:"volatile_paths"`
-	Commands      []VerificationCommand `yaml:"commands"`
+	VolatilePaths  []string              `yaml:"volatile_paths"`
+	Commands       []VerificationCommand `yaml:"commands"`
+	AutoAfterPatch bool                  `yaml:"auto_after_patch"`
 }
 
 // VerificationCommand 是独立于模型提议的受控验证命令。

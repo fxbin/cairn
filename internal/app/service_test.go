@@ -35,6 +35,15 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	}
 }
 
+func TestConfiguredLoopPassesAutomaticVerificationAfterPatch(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Verification.AutoAfterPatch = true
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	if !loop.VerificationAutoAfterPatch {
+		t.Fatalf("loop verification configuration = %#v", loop)
+	}
+}
+
 func TestExecToolForAppliesSandboxConfiguration(t *testing.T) {
 	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {
