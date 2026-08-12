@@ -328,6 +328,47 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 	}
 }
 
+func TestLoopCompactsModerateSourceOutputBeforeBudgetDrift(t *testing.T) {
+	root := t.TempDir()
+	marker := "SOURCE_OUTPUT_MUST_BE_CHECKPOINTED"
+	content := strings.Repeat("const item = value;\n", 90) + marker
+	if err := os.WriteFile(filepath.Join(root, "source.js"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 16*1024, 100, 32*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_source", Name: "read_file", Arguments: json.RawMessage(`{"path":"source.js"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "source inspected"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "inspect source output")
+	loop := Loop{
+		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_000, ContextMaxSummaryBytes: 1_024,
+	}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "inspect source output", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 2 || len(provider.requests[1].Messages) != 3 || !strings.HasPrefix(provider.requests[1].Messages[2].Content, contextCheckpointPrefix) {
+		t.Fatalf("second request did not use cautious checkpointing: %#v", provider.requests)
+	}
+	if strings.Contains(provider.requests[1].Messages[2].Content, marker) {
+		t.Fatalf("checkpoint copied raw source body: %q", provider.requests[1].Messages[2].Content)
+	}
+}
+
 func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
 	loop := Loop{ContextMaxPromptTokens: 50_000}
 	if got := loop.contextCompactionThreshold(); got != 40_000 {

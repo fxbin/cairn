@@ -89,7 +89,8 @@ func (loop *Loop) compactionSummaryLimit(task string) int {
 	return remaining
 }
 
-// estimatePromptTokens 用 UTF-8 字节数的保守近似估算下一次请求的输入 token。
+// estimatePromptTokens 用每两个 UTF-8 字节一个 token 的悲观近似估算下一次请求输入，
+// 为源码、JSON 和中英文混合内容保留压缩余量，避免低估导致累计输入预算先被耗尽。
 func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 	bytes := 0
 	for _, message := range messages {
@@ -101,7 +102,7 @@ func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 	for _, spec := range loop.Tools.Specs() {
 		bytes += len(spec.Name) + len(spec.Description) + len(spec.Parameters)
 	}
-	return (bytes + 2) / 3
+	return (bytes + 1) / 2
 }
 
 // summarizeMessages 优先保留最近的工具结果、模型决策和验证反馈，不复制原始数据体。
