@@ -383,7 +383,7 @@ func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
 func TestDefaultPromptExplainsDeterministicPatchBinding(t *testing.T) {
 	loop := Loop{}
 	prompt := loop.prompt()
-	for _, required := range []string{"read_file", "expected_sha256", "shell hash", "byte offset", "unchanged failed command"} {
+	for _, required := range []string{"read_file", "expected_sha256", "shell hash", "byte offset", "unchanged failed command", "unrequested tests"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("default prompt omitted %q: %s", required, prompt)
 		}
