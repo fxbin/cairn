@@ -172,7 +172,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 			}
 			for _, call := range orderedCalls {
 				if !json.Valid(call.Arguments) {
-					return &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("tool call %q has invalid JSON arguments", call.ID)}
+					return &ProviderError{Kind: "invalid_response", Cause: ports.ErrMalformedToolCallArguments}
 				}
 				copy := ports.ToolCall{ID: call.ID, Name: call.Name, Arguments: append(json.RawMessage(nil), call.Arguments...)}
 				if err := emitEvent(ports.ModelEvent{Kind: ports.ToolCallEvent, ToolCall: &copy}); err != nil {

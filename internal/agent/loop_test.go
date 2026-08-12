@@ -21,6 +21,7 @@ import (
 
 type scriptedProvider struct {
 	scripts  [][]ports.ModelEvent
+	errors   []error
 	requests []ports.ModelRequest
 }
 
@@ -93,12 +94,271 @@ func (provider cancellingProvider) Stream(ctx context.Context, _ ports.ModelRequ
 func (provider *scriptedProvider) Stream(_ context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	provider.requests = append(provider.requests, request)
 	index := len(provider.requests) - 1
+	if index < len(provider.errors) && provider.errors[index] != nil {
+		return provider.errors[index]
+	}
 	for _, event := range provider.scripts[index] {
 		if err := emit(event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func TestLoopRecoversOnceFromMalformedToolArgumentsWithoutOperation(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{
+		scripts: [][]ports.ModelEvent{
+			nil,
+			{{Kind: ports.TextDelta, Text: "corrected"}, {Kind: ports.Done}},
+		},
+		errors: []error{ports.ErrMalformedToolCallArguments},
+	}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "recover malformed arguments")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "recover malformed arguments", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "corrected" {
+		t.Fatalf("run=%#v err=%v", result, err)
+	}
+	if len(provider.requests) != 2 || !hasUserMessage(provider.requests[1].Messages, malformedToolArgumentsFeedback) {
+		t.Fatalf("repair feedback was not sent exactly after malformed call: %#v", provider.requests)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countEvent(events, domain.EventToolCallProposed) != 0 || countEvent(events, domain.EventPolicyDecided) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
+		t.Fatalf("malformed arguments reached the tool path: %#v", events)
+	}
+	if malformedToolArgumentsFailureCount(events) != 1 || !containsEventPayload(events, domain.EventModelRequestFailed, `"retryable":true`) {
+		t.Fatalf("first malformed failure was not persisted as recoverable: %#v", events)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+}
+
+func TestLoopRejectsMalformedToolCallEventWithoutRecordingArguments(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "bad", Name: "list_files", Arguments: json.RawMessage(`{"token":"sk-not-for-journal"`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "corrected"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "reject raw malformed arguments")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "reject raw malformed arguments", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsEventPayload(events, domain.EventModelRequestFailed, "sk-not-for-journal") || countEvent(events, domain.EventToolCallProposed) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
+		t.Fatalf("raw malformed arguments leaked into durable or executable paths: %#v", events)
+	}
+}
+
+func TestLoopFailsOnSecondMalformedToolArgumentsWithoutOperation(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{nil, nil}, errors: []error{ports.ErrMalformedToolCallArguments, ports.ErrMalformedToolCallArguments}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "stop malformed arguments")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
+	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "stop malformed arguments", WorkspaceHash: "workspace"})
+	if !errors.Is(err, ports.ErrMalformedToolCallArguments) || len(provider.requests) != 2 {
+		t.Fatalf("error=%v requests=%d", err, len(provider.requests))
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if malformedToolArgumentsFailureCount(events) != 2 || countEvent(events, domain.EventRunFailed) != 1 || countEvent(events, domain.EventToolCallProposed) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
+		t.Fatalf("second malformed failure did not terminate safely: %#v", events)
+	}
+	if !containsEventPayload(events, domain.EventRunFailed, malformedToolArgumentsErrorClass) || !containsEventPayload(events, domain.EventModelRequestFailed, `"retryable":false`) {
+		t.Fatalf("second malformed failure was not classified: %#v", events)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunFailed {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+}
+
+func TestResumeRestoresMalformedToolArgumentsFeedback(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID, turnID, attemptID := domain.NewRunID(), domain.NewTurnID(), domain.NewAttemptID()
+	appendInitialRunningEvents(t, journal, runID, "resume malformed arguments")
+	for offset, draft := range []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
+	} {
+		if _, err := journal.Append(context.Background(), uint64(offset+2), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered"}, {Kind: ports.Done}}}}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	if err != nil || result.Response != "recovered" || len(provider.requests) != 1 || !hasUserMessage(provider.requests[0].Messages, malformedToolArgumentsFeedback) {
+		t.Fatalf("resume=%#v err=%v requests=%#v", result, err, provider.requests)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+}
+
+func TestResumeFailsOnMalformedToolArgumentsAfterCorrectionWasUsed(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID, turnID, attemptID := domain.NewRunID(), domain.NewTurnID(), domain.NewAttemptID()
+	appendInitialRunningEvents(t, journal, runID, "resume second malformed arguments")
+	for offset, draft := range []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
+	} {
+		if _, err := journal.Append(context.Background(), uint64(offset+2), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{nil}, errors: []error{ports.ErrMalformedToolCallArguments}}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	_, err = loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	if !errors.Is(err, ports.ErrMalformedToolCallArguments) || len(provider.requests) != 1 {
+		t.Fatalf("resume error=%v requests=%d", err, len(provider.requests))
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if malformedToolArgumentsFailureCount(events) != 2 || countEvent(events, domain.EventRunFailed) != 1 {
+		t.Fatalf("resume gave another correction chance: %#v", events)
+	}
+}
+
+func TestMessagesFromEventsPlacesMalformedToolArgumentsFeedbackInHistoricalOrder(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID, firstTurnID, firstAttemptID := domain.NewRunID(), domain.NewTurnID(), domain.NewAttemptID()
+	secondTurnID, secondAttemptID, operationID := domain.NewTurnID(), domain.NewAttemptID(), domain.NewOperationID()
+	call := ports.ToolCall{ID: "read", Name: "list_files", Arguments: json.RawMessage(`{"path":"."}`)}
+	appendInitialRunningEvents(t, journal, runID, "ordered feedback")
+	for offset, draft := range []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &firstTurnID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &firstTurnID, AttemptID: &firstAttemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &firstTurnID, AttemptID: &firstAttemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &firstTurnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &secondTurnID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &secondTurnID, AttemptID: &secondAttemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &secondTurnID, AttemptID: &secondAttemptID, Payload: mustJSON(modelResponsePayload{Text: "after repair", ToolCalls: []ports.ToolCall{call}})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(struct {
+			Effect string `json:"effect"`
+		}{Effect: "allow"})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: tools.Success(map[string]any{}, "listed", 0, "", false)})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(tools.Success(map[string]any{}, "listed", 0, "", false))},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &secondTurnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
+	} {
+		if _, err := journal.Append(context.Background(), uint64(offset+2), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop := Loop{Tools: registry}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := loop.messagesFromEvents(events, "fallback")
+	if len(messages) != 5 || messages[2].Role != "user" || messages[2].Content != malformedToolArgumentsFeedback || messages[3].Role != "assistant" || messages[3].Content != "after repair" || messages[4].Role != "tool" {
+		t.Fatalf("messages=%#v", messages)
+	}
+}
+
+func hasUserMessage(messages []ports.Message, expected string) bool {
+	for _, message := range messages {
+		if message.Role == "user" && message.Content == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLoopPersistsReadOnlyToolExecutionAndFinalResponse(t *testing.T) {

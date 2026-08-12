@@ -161,6 +161,18 @@ type operationPayload struct {
 
 const automaticVerificationResponse = "Cairn runtime: frozen verification passed after successful apply_patch."
 
+const malformedToolArgumentsErrorClass = "malformed_tool_arguments"
+
+const malformedToolArgumentsFeedback = "Cairn runtime: the previous tool call was rejected because its arguments were malformed. Do not repeat it. Reissue at most one tool call with valid JSON arguments and no secrets."
+
+// modelRequestFailedPayload 保存一次没有完成模型响应的可回放分类；畸形工具参数只记录
+// 固定错误文本，绝不把提供方原始参数写入事件。
+type modelRequestFailedPayload struct {
+	Error      string `json:"error"`
+	ErrorClass string `json:"error_class,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+}
+
 // Run 从当前事件投影继续执行模型轮次、工具与验证，直至终态或可恢复暂停。
 func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
@@ -192,6 +204,7 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 		return Result{}, err
 	}
 	usage := budgetUsageFromEvents(events)
+	malformedToolArgumentFailures := malformedToolArgumentsFailureCount(events)
 	for turn := 0; turn < loop.MaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, &projection, input, nil)
@@ -214,13 +227,37 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
-			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(struct {
-				Error string `json:"error"`
-			}{Error: err.Error()})})
+			if errors.Is(err, ports.ErrMalformedToolCallArguments) {
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(struct {
+					Error      string `json:"error"`
+					ErrorClass string `json:"error_class"`
+					Retryable  bool   `json:"retryable"`
+				}{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: malformedToolArgumentFailures == 0})}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				if malformedToolArgumentFailures == 0 {
+					malformedToolArgumentFailures++
+					messages = append(messages, ports.Message{Role: "user", Content: malformedToolArgumentsFeedback})
+					messages, err = loop.closeTurnAndCompact(ctx, &projection, input, turnID, messages)
+					if err != nil {
+						return Result{}, err
+					}
+					continue
+				}
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
+					Error      string `json:"error"`
+					ErrorClass string `json:"error_class"`
+				}{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass})}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				return Result{}, fmt.Errorf("model request: %w", ports.ErrMalformedToolCallArguments)
+			}
+			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: err.Error()})})
 			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
-			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-				Error string `json:"error"`
-			}{Error: err.Error()})})
+			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(modelRequestFailedPayload{Error: err.Error()})})
 			return Result{}, fmt.Errorf("model request: %w", err)
 		}
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage})}); err != nil {
@@ -1129,6 +1166,11 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			continue
 		}
 		switch event.Type {
+		case domain.EventModelRequestFailed:
+			var payload modelRequestFailedPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.ErrorClass == malformedToolArgumentsErrorClass && payload.Retryable {
+				messages = append(messages, ports.Message{Role: "user", Content: malformedToolArgumentsFeedback})
+			}
 		case domain.EventModelResponseFinished:
 			var payload modelResponsePayload
 			if json.Unmarshal(event.Payload, &payload) != nil || len(payload.ToolCalls) == 0 {
@@ -1169,6 +1211,22 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		}
 	}
 	return messages
+}
+
+// malformedToolArgumentsFailureCount 从持久化模型失败中统计畸形工具参数次数，
+// 用于在恢复后保留“只给一次纠正机会”的边界。
+func malformedToolArgumentsFailureCount(events []domain.Event) int {
+	count := 0
+	for _, event := range events {
+		if event.Type != domain.EventModelRequestFailed {
+			continue
+		}
+		var payload modelRequestFailedPayload
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.ErrorClass == malformedToolArgumentsErrorClass {
+			count++
+		}
+	}
+	return count
 }
 
 // latestContextCheckpoint 返回最新有效检查点及其所替代历史的最后事件序号。
@@ -1570,8 +1628,11 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 		case ports.TextDelta:
 			response.Text += event.Text
 		case ports.ToolCallEvent:
-			if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Name == "" || !json.Valid(event.ToolCall.Arguments) {
+			if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Name == "" {
 				return errors.New("provider emitted invalid tool call")
+			}
+			if !json.Valid(event.ToolCall.Arguments) {
+				return ports.ErrMalformedToolCallArguments
 			}
 			response.ToolCalls = append(response.ToolCalls, *event.ToolCall)
 		case ports.UsageEvent:

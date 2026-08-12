@@ -52,6 +52,23 @@ func TestStreamReturnsCallbackErrorAndStops(t *testing.T) {
 	}
 }
 
+func TestContractRejectsMalformedToolArgumentsWithoutEchoingThem(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"main.go\\\",\\\"token\\\":\\\"sk-not-for-journal\\\"\"}}]}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	err := (Client{BaseURL: server.URL}).Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	if !errors.Is(err, ports.ErrMalformedToolCallArguments) {
+		t.Fatalf("expected malformed arguments error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "sk-not-for-journal") {
+		t.Fatalf("provider error leaked malformed arguments: %v", err)
+	}
+}
+
 func TestContractRetriesTransientFailureBeforeAnySemanticEvent(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

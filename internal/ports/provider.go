@@ -3,7 +3,12 @@ package ports
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+// ErrMalformedToolCallArguments 表示提供方返回的工具参数不是完整 JSON；它不携带原始参数，
+// 以便调用方可以安全地持久化分类并要求模型重新生成。
+var ErrMalformedToolCallArguments = errors.New("provider returned malformed tool call arguments")
 
 // Provider 是将模型流式响应适配为领域事件的端口。
 type Provider interface {
