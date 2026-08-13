@@ -3,6 +3,7 @@ package benchmark
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
@@ -12,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
@@ -23,7 +26,7 @@ func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
 	output := t.TempDir()
 	privateRoot := filepath.Join(output, "private")
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	report, err := (Runner{Now: func() time.Time { return now }}).Run(context.Background(), RunOptions{
+	report, err := qualificationRunner().withNow(now).Run(context.Background(), RunOptions{
 		Pack:           pack,
 		Attempts:       1,
 		Configuration:  config.Defaults(),
@@ -37,15 +40,153 @@ func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Results) != 1 || report.Results[0].Outcome != "prepared" || report.Results[0].SourceRevision != baseline {
+	if report.Outcome != "prepared" || !report.EnvironmentValid || len(report.Results) != 0 || len(report.Qualifications) != 1 || report.Qualifications[0].Outcome != "qualified" || report.Qualifications[0].SourceRevision != baseline {
 		t.Fatalf("report=%#v", report)
 	}
-	resultPath := filepath.Join(output, "results", report.SuiteRunID, "LOCAL-001-attempt-01.json")
+	resultPath := filepath.Join(output, "results", report.SuiteRunID, "LOCAL-001-qualification-01.json")
 	if _, err := os.Stat(resultPath); err != nil {
 		t.Fatalf("result artifact: %v", err)
 	}
-	if got := report.Results[0].Workspace; !strings.Contains(got, "workspaces") || got == source {
+	if got := report.Qualifications[0].Workspace; !strings.Contains(got, "qualification") || got == source {
 		t.Fatalf("workspace=%q source=%q", got, source)
+	}
+}
+
+func TestRunnerQualificationFailureProducesEnvironmentInvalidWithoutAgentAttempts(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	cloneCalls := 0
+	runner := qualificationRunner()
+	runner.Now = func() time.Time { return now }
+	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error {
+		cloneCalls++
+		return errors.New("checkout transport unavailable")
+	}
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, Attempts: 2, Configuration: config.Defaults(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t), PrepareOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Outcome != "environment_invalid" || report.EnvironmentValid || len(report.Results) != 0 || len(report.Qualifications) != 2 || cloneCalls != 2 || report.Passed() {
+		t.Fatalf("report=%#v clone_calls=%d", report, cloneCalls)
+	}
+	for _, qualification := range report.Qualifications {
+		if qualification.Outcome != "failed" || qualification.FailureClass != "qualification_prepare" || !strings.Contains(qualification.Workspace, string(filepath.Separator)+"qualification"+string(filepath.Separator)+"LOCAL-001"+string(filepath.Separator)+"attempt-") {
+			t.Fatalf("qualification=%#v", qualification)
+		}
+	}
+	resultContents, err := os.ReadFile(filepath.Join(output, "results", report.SuiteRunID, "suite-result.json"))
+	if err != nil || !strings.Contains(string(resultContents), `"environment_invalid"`) {
+		t.Fatalf("suite result=%q err=%v", resultContents, err)
+	}
+}
+
+func TestRunnerEnvironmentInvalidSkipsProviderCredentialRequirement(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	runner := qualificationRunner()
+	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error { return errors.New("offline") }
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = ""
+	configuration.Provider.Model = ""
+	configuration.Provider.APIKeyEnv = "UNSET_BENCHMARK_KEY"
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, Configuration: configuration, ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+	})
+	if err != nil || report.Outcome != "environment_invalid" || len(report.Results) != 0 {
+		t.Fatalf("report=%#v err=%v", report, err)
+	}
+}
+
+func TestRunnerQualificationAndAgentAttemptsUseIndependentWorkspaces(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	cloned := make([]string, 0, 2)
+	runner := qualificationRunner()
+	runner.Now = func() time.Time { return now }
+	runner.CloneAtBaseline = func(ctx context.Context, task Task, workspace, proxy string) error {
+		cloned = append(cloned, workspace)
+		return cloneAtBaseline(ctx, task, workspace, proxy)
+	}
+	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "test"
+	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
+	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, Attempts: 1, Configuration: configuration, ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cloned) != 2 || len(report.Qualifications) != 1 || len(report.Results) != 1 || cloned[0] == cloned[1] || report.Qualifications[0].Workspace == report.Results[0].Workspace {
+		t.Fatalf("cloned=%#v report=%#v", cloned, report)
+	}
+}
+
+func TestRunnerFormalPreparationFailureInvalidatesSuiteBeforeProvider(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	runner := qualificationRunner()
+	bootstrapCalls := 0
+	providerCalls := 0
+	runner.RunBootstrap = func(_ context.Context, _ string, _ string, _ []Command) error {
+		bootstrapCalls++
+		if bootstrapCalls == 2 {
+			return errors.New("private command output: secret-token")
+		}
+		return nil
+	}
+	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		providerCalls++
+		return terminalProvider{}, nil
+	}}
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "test"
+	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
+	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, Configuration: configuration, ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Outcome != "environment_invalid" || report.EnvironmentValid || len(report.Results) != 0 || providerCalls != 0 || len(report.Qualifications) != 1 || len(report.Preparations) != 1 || report.Preparations[0].FailureClass != "preparation_bootstrap" {
+		t.Fatalf("report=%#v provider_calls=%d", report, providerCalls)
+	}
+	if report.Preparations[0].Error != "bootstrap preparation failed" || strings.Contains(report.Preparations[0].Error, "secret-token") {
+		t.Fatalf("preparation error leaked detail: %#v", report.Preparations[0])
+	}
+}
+
+func TestQualificationFailureUsesOnlyRedactedStableError(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	runner := qualificationRunner()
+	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error {
+		return errors.New("git https://private.example/repo?token=credential-value failed")
+	}
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, PrepareOnly: true, Configuration: config.Defaults(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+	})
+	if err != nil || len(report.Qualifications) != 1 {
+		t.Fatalf("report=%#v err=%v", report, err)
+	}
+	qualification := report.Qualifications[0]
+	if qualification.Error != "source preparation failed" || strings.Contains(qualification.Error, "private.example") || strings.Contains(qualification.Error, "credential-value") {
+		t.Fatalf("qualification error leaked detail: %#v", qualification)
 	}
 }
 
@@ -227,6 +368,35 @@ func testPack(repositoryURL, baseline string) TaskPack {
 		}},
 		Execution: ExecutionContract{AttemptsPerTask: 1, AgentWorkspace: "disposable_clone", ResetBetweenAttempts: true, NetworkDuringAgentRun: "denied"},
 	}
+}
+
+// qualificationRunner 返回不依赖本机 Docker 或私有 verifier 文件的 runner；测试仍
+// 使用真实 git clone，从而覆盖 qualification 与正式 clone 的工作区隔离。
+func qualificationRunner() Runner {
+	return Runner{
+		ApplyPrivateVerifier: func(_ context.Context, _ string, _ string, _ string) (string, error) {
+			return "sha256:test-verifier", nil
+		},
+		RunBootstrap:         func(_ context.Context, _ string, _ string, _ []Command) error { return nil },
+		DockerImageAvailable: func(_ context.Context, _ string) error { return nil },
+	}
+}
+
+// withNow 为测试 runner 固定时钟，避免结果目录和时间字段随系统时间变化。
+func (runner Runner) withNow(now time.Time) Runner {
+	runner.Now = func() time.Time { return now }
+	return runner
+}
+
+// terminalProvider 仅返回最终文本，确保 runner 测试不会发起真实网络模型请求。
+type terminalProvider struct{}
+
+// Stream 生成一条无工具调用的最终响应，供独立工作区测试验证执行路径。
+func (terminalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(ports.ModelEvent) error) error {
+	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "done"}); err != nil {
+		return err
+	}
+	return emit(ports.ModelEvent{Kind: ports.Done})
 }
 
 func localGitRepository(t *testing.T) (string, string) {

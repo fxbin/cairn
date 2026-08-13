@@ -26,8 +26,12 @@ import (
 
 // Runner 在独立 clone 中依次运行本地任务，并把每次尝试写入忽略的结果目录。
 type Runner struct {
-	Service app.Service
-	Now     func() time.Time
+	Service              app.Service
+	Now                  func() time.Time
+	CloneAtBaseline      func(context.Context, Task, string, string) error
+	ApplyPrivateVerifier func(context.Context, string, string, string) (string, error)
+	RunBootstrap         func(context.Context, string, string, []Command) error
+	DockerImageAvailable func(context.Context, string) error
 }
 
 // RunOptions 描述一次基准套件执行的本地任务、冻结基础配置和本地输出路径。
@@ -48,13 +52,63 @@ type RunOptions struct {
 
 // SuiteResult 汇总一轮基准套件的环境、合同指纹与所有独立尝试。
 type SuiteResult struct {
-	SchemaVersion       int             `json:"schema_version"`
-	SuiteRunID          string          `json:"suite_run_id"`
-	StartedAt           time.Time       `json:"started_at"`
-	FinishedAt          time.Time       `json:"finished_at"`
-	TaskPackFingerprint string          `json:"task_pack_fingerprint"`
-	CairnRevision       string          `json:"cairn_revision"`
-	Results             []AttemptResult `json:"results"`
+	SchemaVersion       int                   `json:"schema_version"`
+	SuiteRunID          string                `json:"suite_run_id"`
+	StartedAt           time.Time             `json:"started_at"`
+	FinishedAt          time.Time             `json:"finished_at"`
+	Outcome             string                `json:"outcome,omitempty"`
+	EnvironmentValid    bool                  `json:"environment_valid"`
+	TaskPackFingerprint string                `json:"task_pack_fingerprint"`
+	CairnRevision       string                `json:"cairn_revision"`
+	Qualifications      []QualificationResult `json:"qualifications,omitempty"`
+	Preparations        []PreparationResult   `json:"preparations,omitempty"`
+	Results             []AttemptResult       `json:"results"`
+}
+
+// QualificationResult 保存一次正式计分前独立环境资格检查的非敏感结果；它
+// 不包含 Agent 运行、状态目录或模型调用，绝不能被计入 Agent 通过率。
+type QualificationResult struct {
+	SchemaVersion       int       `json:"schema_version"`
+	TaskID              string    `json:"task_id"`
+	Attempt             int       `json:"attempt"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at"`
+	Outcome             string    `json:"outcome"`
+	FailureClass        string    `json:"failure_class,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	Workspace           string    `json:"workspace"`
+	SourceRevision      string    `json:"source_revision,omitempty"`
+	VerifierFingerprint string    `json:"verifier_fingerprint,omitempty"`
+	DockerImage         string    `json:"docker_image,omitempty"`
+	BootstrapDurationMS int64     `json:"bootstrap_duration_ms"`
+}
+
+// PreparationResult 保存正式 Agent 工作区启动前的独立准备记录；它与
+// QualificationResult 的 probe clone 分离，且失败不会伪装为 Agent 尝试。
+type PreparationResult struct {
+	SchemaVersion       int       `json:"schema_version"`
+	TaskID              string    `json:"task_id"`
+	Attempt             int       `json:"attempt"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at"`
+	Outcome             string    `json:"outcome"`
+	FailureClass        string    `json:"failure_class,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	Workspace           string    `json:"workspace"`
+	StateDir            string    `json:"state_dir"`
+	SourceRevision      string    `json:"source_revision,omitempty"`
+	VerifierFingerprint string    `json:"verifier_fingerprint,omitempty"`
+	DockerImage         string    `json:"docker_image,omitempty"`
+	BootstrapDurationMS int64     `json:"bootstrap_duration_ms"`
+}
+
+// preparedAttempt 只在正式工作区已完成全部环境准备后存在，携带启动 Agent
+// 所需的固定配置与非敏感准备事实，避免后续重新 clone 或重新 bootstrap。
+type preparedAttempt struct {
+	Task          Task
+	Attempt       int
+	Result        AttemptResult
+	Configuration config.Config
 }
 
 // AttemptResult 保存一次 clone、bootstrap、Agent 运行、验证和诊断的非敏感事实。
@@ -116,14 +170,6 @@ func (runner Runner) Run(ctx context.Context, options RunOptions) (SuiteResult, 
 	if err := config.Validate(options.Configuration); err != nil {
 		return SuiteResult{}, fmt.Errorf("base benchmark config: %w", err)
 	}
-	if !options.PrepareOnly {
-		if options.Configuration.Provider.BaseURL == "" || options.Configuration.Provider.Model == "" {
-			return SuiteResult{}, errors.New("benchmark run requires provider base_url and model")
-		}
-		if os.Getenv(options.Configuration.Provider.APIKeyEnv) == "" {
-			return SuiteResult{}, fmt.Errorf("benchmark run requires provider API key environment variable %q", options.Configuration.Provider.APIKeyEnv)
-		}
-	}
 	tasks, err := options.Pack.SelectedTasks(options.TaskIDs)
 	if err != nil {
 		return SuiteResult{}, err
@@ -138,90 +184,194 @@ func (runner Runner) Run(ctx context.Context, options RunOptions) (SuiteResult, 
 	if err != nil {
 		return SuiteResult{}, err
 	}
-	report := SuiteResult{SchemaVersion: 1, SuiteRunID: suiteID, StartedAt: now, TaskPackFingerprint: options.Pack.Fingerprint(), CairnRevision: revision}
+	report := SuiteResult{SchemaVersion: 2, SuiteRunID: suiteID, StartedAt: now, TaskPackFingerprint: options.Pack.Fingerprint(), CairnRevision: revision, Results: make([]AttemptResult, 0)}
+	qualificationsValid := true
 	for _, task := range tasks {
 		for attempt := 1; attempt <= options.Attempts; attempt++ {
-			result := runner.runAttempt(ctx, options, report, task, attempt, resultDirectory)
-			report.Results = append(report.Results, result)
-			if err := writeJSON(filepath.Join(resultDirectory, resultFileName(task.ID, attempt)), result); err != nil {
+			qualification := runner.qualifyAttempt(ctx, options, report, task, attempt)
+			report.Qualifications = append(report.Qualifications, qualification)
+			if qualification.Outcome != "qualified" {
+				qualificationsValid = false
+			}
+			if err := writeJSON(filepath.Join(resultDirectory, qualificationFileName(task.ID, attempt)), qualification); err != nil {
 				return SuiteResult{}, err
 			}
 		}
 	}
+	if !qualificationsValid {
+		report.Outcome = "environment_invalid"
+		report.FinishedAt = runner.now()
+		if err := writeJSON(filepath.Join(resultDirectory, "suite-result.json"), report); err != nil {
+			return SuiteResult{}, err
+		}
+		return report, nil
+	}
+	report.EnvironmentValid = true
+	if options.PrepareOnly {
+		report.Outcome = "prepared"
+		report.FinishedAt = runner.now()
+		if err := writeJSON(filepath.Join(resultDirectory, "suite-result.json"), report); err != nil {
+			return SuiteResult{}, err
+		}
+		return report, nil
+	}
+	preparedAttempts := make([]preparedAttempt, 0, len(tasks)*options.Attempts)
+	preparationsValid := true
+	for _, task := range tasks {
+		for attempt := 1; attempt <= options.Attempts; attempt++ {
+			prepared, preparation := runner.prepareAgentAttempt(ctx, options, report, task, attempt)
+			report.Preparations = append(report.Preparations, preparation)
+			if preparation.Outcome != "prepared" {
+				preparationsValid = false
+				continue
+			}
+			preparedAttempts = append(preparedAttempts, prepared)
+		}
+	}
+	if !preparationsValid {
+		report.Outcome = "environment_invalid"
+		report.EnvironmentValid = false
+		report.Results = make([]AttemptResult, 0)
+		report.FinishedAt = runner.now()
+		if err := writeJSON(filepath.Join(resultDirectory, "suite-result.json"), report); err != nil {
+			return SuiteResult{}, err
+		}
+		return report, nil
+	}
+	if options.Configuration.Provider.BaseURL == "" || options.Configuration.Provider.Model == "" {
+		return SuiteResult{}, errors.New("benchmark run requires provider base_url and model")
+	}
+	if os.Getenv(options.Configuration.Provider.APIKeyEnv) == "" {
+		return SuiteResult{}, fmt.Errorf("benchmark run requires provider API key environment variable %q", options.Configuration.Provider.APIKeyEnv)
+	}
+	for _, prepared := range preparedAttempts {
+		result := runner.runPreparedAttempt(ctx, prepared, resultDirectory)
+		report.Results = append(report.Results, result)
+		if err := writeJSON(filepath.Join(resultDirectory, resultFileName(prepared.Task.ID, prepared.Attempt)), result); err != nil {
+			return SuiteResult{}, err
+		}
+	}
 	report.FinishedAt = runner.now()
+	report.Outcome = "completed"
 	if err := writeJSON(filepath.Join(resultDirectory, "suite-result.json"), report); err != nil {
 		return SuiteResult{}, err
 	}
 	return report, nil
 }
 
-// Passed 报告所有实际 Agent 尝试是否都通过固定验证和 journal 诊断。
-func (result SuiteResult) Passed() bool {
-	return len(result.Results) != 0 && allAttemptsPassed(result.Results)
-}
-
-// runAttempt 准备一次全新 clone，再以任务专属 Docker 镜像和固定验证运行 Agent。
-func (runner Runner) runAttempt(ctx context.Context, options RunOptions, report SuiteResult, task Task, attempt int, resultDirectory string) AttemptResult {
+// prepareAgentAttempt 创建一个仅供正式 Agent 使用的全新工作区，并在 Provider
+// 构造前完成 clone、基线、verifier、bootstrap 与镜像检查；任一失败由套件按
+// environment_invalid 处理，绝不写入 AttemptResult。
+func (runner Runner) prepareAgentAttempt(ctx context.Context, options RunOptions, report SuiteResult, task Task, attempt int) (preparedAttempt, PreparationResult) {
 	started := runner.now()
 	workspace := filepath.Join(options.WorkspacesRoot, report.SuiteRunID, safePathComponent(task.ID), fmt.Sprintf("attempt-%02d", attempt))
 	stateDirectory := filepath.Join(options.StateRoot, report.SuiteRunID, safePathComponent(task.ID), fmt.Sprintf("attempt-%02d", attempt))
-	result := AttemptResult{SchemaVersion: 1, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, StateDir: stateDirectory, TaskPackFingerprint: report.TaskPackFingerprint}
+	preparation := PreparationResult{SchemaVersion: 1, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, StateDir: stateDirectory, DockerImage: task.Runtime.DockerImage}
 	if err := os.MkdirAll(filepath.Dir(workspace), 0o700); err != nil {
-		return result.fail("prepare", err)
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", err)
 	}
 	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
-		return result.fail("prepare", err)
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", err)
 	}
 	prepareContext, cancelPrepare := context.WithTimeout(ctx, options.PrepareTimeout)
 	defer cancelPrepare()
-	if err := cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy); err != nil {
-		return result.finish(runner.now()).fail(prepareFailureClass(err), err)
+	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy); err != nil {
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", err)
 	}
-	if revision, err := gitRevision(prepareContext, workspace); err == nil {
-		result.SourceRevision = revision
-	} else {
-		return result.finish(runner.now()).fail(prepareFailureClass(err), err)
+	revision, err := gitRevision(prepareContext, workspace)
+	if err != nil {
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", err)
 	}
-	if !options.PrepareOnly {
-		verifierFingerprint, err := applyPrivateVerifier(prepareContext, workspace, options.PrivateRoot, task.ID)
-		if err != nil {
-			return result.finish(runner.now()).fail(prepareFailureClass(err), err)
-		}
-		result.VerifierFingerprint = verifierFingerprint
+	if revision != task.Repository.BaselineCommit {
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", errors.New("baseline revision mismatch"))
 	}
+	preparation.SourceRevision = revision
+	verifierFingerprint, err := runner.applyPrivateVerifier(prepareContext, workspace, options.PrivateRoot, task.ID)
+	if err != nil {
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_verifier", err)
+	}
+	preparation.VerifierFingerprint = verifierFingerprint
 	bootstrapStarted := runner.now()
-	if err := runBootstrap(prepareContext, workspace, task.Runtime.DockerImage, task.Verification.Bootstrap); err != nil {
-		result.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.finish(runner.now()).fail("bootstrap", err))
+	if err := runner.runBootstrap(prepareContext, workspace, task.Runtime.DockerImage, task.Verification.Bootstrap); err != nil {
+		preparation.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_bootstrap", err)
 	}
-	result.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
-	if options.PrepareOnly {
-		result.Outcome = "prepared"
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.finish(runner.now()))
+	preparation.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
+	if err := runner.dockerImageAvailable(prepareContext, task.Runtime.DockerImage); err != nil {
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_sandbox", err)
 	}
 	configuration, err := configurationForTask(options.Configuration, task)
 	if err != nil {
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.finish(runner.now()).fail("config", err))
+		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_config", err)
 	}
-	result.ConfigFingerprint = configuration.Fingerprint()
-	result.ProviderBaseURL = configuration.Provider.BaseURL
-	result.Model = configuration.Provider.Model
-	result.DockerImage = configuration.Sandbox.DockerImage
-	if err := dockerImageAvailable(ctx, task.Runtime.DockerImage); err != nil {
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.finish(runner.now()).fail("sandbox", err))
+	preparation.Outcome = "prepared"
+	preparation = preparation.finish(runner.now())
+	attemptResult := AttemptResult{SchemaVersion: 1, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, StateDir: stateDirectory, SourceRevision: revision, TaskPackFingerprint: report.TaskPackFingerprint, VerifierFingerprint: verifierFingerprint, ConfigFingerprint: configuration.Fingerprint(), ProviderBaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, DockerImage: configuration.Sandbox.DockerImage, BootstrapDurationMS: preparation.BootstrapDurationMS}
+	return preparedAttempt{Task: task, Attempt: attempt, Result: attemptResult, Configuration: configuration}, preparation
+}
+
+// Passed 报告所有实际 Agent 尝试是否都通过固定验证和 journal 诊断。
+func (result SuiteResult) Passed() bool {
+	return result.Outcome != "environment_invalid" && len(result.Results) != 0 && allAttemptsPassed(result.Results)
+}
+
+// qualifyAttempt 在正式 Agent 尝试前创建独立 clone，验证固定 baseline、私有
+// verifier、bootstrap 和任务镜像；失败只会使整套评测环境无效，不启动模型。
+func (runner Runner) qualifyAttempt(ctx context.Context, options RunOptions, report SuiteResult, task Task, attempt int) QualificationResult {
+	started := runner.now()
+	workspace := filepath.Join(options.WorkspacesRoot, report.SuiteRunID, "qualification", safePathComponent(task.ID), fmt.Sprintf("attempt-%02d", attempt))
+	result := QualificationResult{SchemaVersion: 1, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, DockerImage: task.Runtime.DockerImage}
+	if err := os.MkdirAll(filepath.Dir(workspace), 0o700); err != nil {
+		return result.finish(runner.now()).fail("qualification_prepare", err)
 	}
+	prepareContext, cancelPrepare := context.WithTimeout(ctx, options.PrepareTimeout)
+	defer cancelPrepare()
+	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy); err != nil {
+		return result.finish(runner.now()).fail("qualification_prepare", err)
+	}
+	revision, err := gitRevision(prepareContext, workspace)
+	if err != nil {
+		return result.finish(runner.now()).fail("qualification_prepare", err)
+	}
+	if revision != task.Repository.BaselineCommit {
+		return result.finish(runner.now()).fail("qualification_prepare", fmt.Errorf("checked out revision %s does not match baseline %s", revision, task.Repository.BaselineCommit))
+	}
+	result.SourceRevision = revision
+	verifierFingerprint, err := runner.applyPrivateVerifier(prepareContext, workspace, options.PrivateRoot, task.ID)
+	if err != nil {
+		return result.finish(runner.now()).fail("qualification_verifier", err)
+	}
+	result.VerifierFingerprint = verifierFingerprint
+	bootstrapStarted := runner.now()
+	if err := runner.runBootstrap(prepareContext, workspace, task.Runtime.DockerImage, task.Verification.Bootstrap); err != nil {
+		result.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
+		return result.finish(runner.now()).fail("qualification_bootstrap", err)
+	}
+	result.BootstrapDurationMS = runner.now().Sub(bootstrapStarted).Milliseconds()
+	if err := runner.dockerImageAvailable(prepareContext, task.Runtime.DockerImage); err != nil {
+		return result.finish(runner.now()).fail("qualification_sandbox", err)
+	}
+	result.Outcome = "qualified"
+	return result.finish(runner.now())
+}
+
+// runPreparedAttempt 只在 prepareAgentAttempt 已完整成功后调用 Provider；它
+// 不再执行 clone、verifier、bootstrap 或镜像检查，从而使这些环境失败无法进入
+// Agent 计分结果。
+func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAttempt, resultDirectory string) AttemptResult {
+	result := prepared.Result
 	agentStarted := runner.now()
-	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: task.AgentPrompt(), Workspace: workspace, StateDir: stateDirectory, Config: configuration})
+	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: prepared.Task.AgentPrompt(), Workspace: result.Workspace, StateDir: result.StateDir, Config: prepared.Configuration})
 	result.AgentDurationMS = runner.now().Sub(agentStarted).Milliseconds()
 	result.RunID = run.ID
 	if run.ID != "" {
-		inspected, inspectErr := runner.Service.Inspect(context.Background(), workspace, stateDirectory, configuration, run.ID, true)
+		inspected, inspectErr := runner.Service.Inspect(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID, true)
 		if inspectErr == nil {
 			result.RunState = inspected.Projection.Phase()
 			result.VerificationSucceeded = inspected.Projection.VerificationSucceeded
-			result.Metrics = metricsFromEvents(inspected.Events, configuration)
+			result.Metrics = metricsFromEvents(inspected.Events, prepared.Configuration)
 		}
-		if doctorErr := runner.Service.Doctor(context.Background(), workspace, stateDirectory, configuration); doctorErr == nil {
+		if doctorErr := runner.Service.Doctor(context.Background(), result.Workspace, result.StateDir, prepared.Configuration); doctorErr == nil {
 			result.DoctorOK = true
 		} else if runErr == nil {
 			runErr = doctorErr
@@ -229,21 +379,13 @@ func (runner Runner) runAttempt(ctx context.Context, options RunOptions, report 
 	}
 	result = result.finish(runner.now())
 	if runErr != nil {
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.fail(classifyFailure(runErr), runErr))
+		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(classifyFailure(runErr), runErr))
 	}
 	if result.RunState != string(domain.RunCompleted) || !result.VerificationSucceeded || !result.DoctorOK {
-		return runner.captureDiff(ctx, workspace, resultDirectory, result.fail("verification", errors.New("run did not complete with verified and healthy state")))
+		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail("verification", errors.New("run did not complete with verified and healthy state")))
 	}
 	result.Outcome = "passed"
-	return runner.captureDiff(ctx, workspace, resultDirectory, result)
-}
-
-// prepareFailureClass 区分远端/依赖预备超时与其他可重试的前置失败。
-func prepareFailureClass(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "prepare_timeout"
-	}
-	return "prepare"
+	return runner.captureDiff(ctx, result.Workspace, resultDirectory, result)
 }
 
 // applyPrivateVerifier 将 evaluator-only patch 应用于 disposable clone；补丁内容
@@ -292,6 +434,41 @@ func configurationForTask(base config.Config, task Task) (config.Config, error) 
 		return config.Config{}, err
 	}
 	return configuration, nil
+}
+
+// cloneAtBaseline 调用可替换的资格/正式 clone 实现；测试替身只能替换该
+// 受控网络边界，生产默认仍使用固定 argv 的 cloneAtBaseline 函数。
+func (runner Runner) cloneAtBaseline(ctx context.Context, task Task, workspace, prepareProxy string) error {
+	if runner.CloneAtBaseline != nil {
+		return runner.CloneAtBaseline(ctx, task, workspace, prepareProxy)
+	}
+	return cloneAtBaseline(ctx, task, workspace, prepareProxy)
+}
+
+// applyPrivateVerifier 调用可替换的 evaluator-only verifier 注入，实现
+// qualification 与正式尝试共享同一摘要契约而不共享工作区。
+func (runner Runner) applyPrivateVerifier(ctx context.Context, workspace, privateRoot, taskID string) (string, error) {
+	if runner.ApplyPrivateVerifier != nil {
+		return runner.ApplyPrivateVerifier(ctx, workspace, privateRoot, taskID)
+	}
+	return applyPrivateVerifier(ctx, workspace, privateRoot, taskID)
+}
+
+// runBootstrap 调用可替换的无网络 Docker 预备步骤，保留正式执行时的
+// fail-closed 默认实现，并让单元测试无需真实 Docker。
+func (runner Runner) runBootstrap(ctx context.Context, workspace, image string, commands []Command) error {
+	if runner.RunBootstrap != nil {
+		return runner.RunBootstrap(ctx, workspace, image, commands)
+	}
+	return runBootstrap(ctx, workspace, image, commands)
+}
+
+// dockerImageAvailable 调用可替换的本地镜像检查，生产路径绝不隐式拉取镜像。
+func (runner Runner) dockerImageAvailable(ctx context.Context, image string) error {
+	if runner.DockerImageAvailable != nil {
+		return runner.DockerImageAvailable(ctx, image)
+	}
+	return dockerImageAvailable(ctx, image)
 }
 
 // cloneAtBaseline 通过 argv 固定从合同 URL 创建新的 clone 并检出不可变基线提交。
@@ -392,6 +569,58 @@ func (result AttemptResult) fail(class string, err error) AttemptResult {
 func (result AttemptResult) finish(finished time.Time) AttemptResult {
 	result.FinishedAt = finished
 	return result
+}
+
+// fail 标记资格检查的稳定失败类别；结果中只保留有限摘要，绝不持久化 clone、
+// verifier 或 Docker 的底层诊断。
+func (result QualificationResult) fail(class string, err error) QualificationResult {
+	result.Outcome = "failed"
+	result.FailureClass = class
+	result.Error = preparationErrorSummary(class, err)
+	return result
+}
+
+// finish 固定资格检查结束时间，使其与 Agent 墙钟和模型预算完全分离。
+func (result QualificationResult) finish(finished time.Time) QualificationResult {
+	result.FinishedAt = finished
+	return result
+}
+
+// fail 标记正式 Agent workspace 的准备失败；它采用与 qualification 相同的
+// 脱敏错误摘要，以便 suite 环境无效报告不泄露私有 verifier 或命令输出。
+func (result PreparationResult) fail(class string, err error) PreparationResult {
+	result.Outcome = "failed"
+	result.FailureClass = class
+	result.Error = preparationErrorSummary(class, err)
+	return result
+}
+
+// finish 固定正式准备结束时间，使环境用时不混入 Agent 墙钟预算。
+func (result PreparationResult) finish(finished time.Time) PreparationResult {
+	result.FinishedAt = finished
+	return result
+}
+
+// preparationErrorSummary 将底层错误收敛为固定非敏感分类；调用方仍可从
+// FailureClass 判断失败阶段，但不会把 URL、路径、命令输出或凭据写入结果。
+func preparationErrorSummary(class string, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "preparation timed out"
+	}
+	switch class {
+	case "qualification_prepare", "preparation_prepare":
+		return "source preparation failed"
+	case "qualification_verifier", "preparation_verifier":
+		return "private verifier preparation failed"
+	case "qualification_bootstrap", "preparation_bootstrap":
+		return "bootstrap preparation failed"
+	case "qualification_sandbox", "preparation_sandbox":
+		return "task sandbox preparation failed"
+	case "preparation_config":
+		return "task configuration preparation failed"
+	default:
+		return "environment preparation failed"
+	}
 }
 
 // now 返回可测试的 UTC 时钟；零值 Runner 使用系统时间。
@@ -608,6 +837,11 @@ func writeJSON(path string, value any) error {
 // resultFileName 将本地任务 ID 映射为不会逃出结果目录的稳定文件名。
 func resultFileName(taskID string, attempt int) string {
 	return safePathComponent(taskID) + fmt.Sprintf("-attempt-%02d.json", attempt)
+}
+
+// qualificationFileName 为环境资格记录使用与正式尝试不冲突的稳定文件名。
+func qualificationFileName(taskID string, attempt int) string {
+	return safePathComponent(taskID) + fmt.Sprintf("-qualification-%02d.json", attempt)
 }
 
 // safePathComponent 将任务 ID 规整为本地目录名，保留字母、数字、点、下划线和连字符。
