@@ -349,8 +349,57 @@ func TestMetricsFromEventsUsesPersistedUsageOnly(t *testing.T) {
 	configuration := config.Defaults()
 	configuration.Pricing = config.PricingConfig{InputTokenUSD: 0.1, OutputTokenUSD: 0.2}
 	metrics := metricsFromEvents(events, configuration)
-	if metrics.Turns != 1 || metrics.ToolCalls != 3 || metrics.InputTokens != 5 || metrics.OutputTokens != 7 || math.Abs(metrics.CostUSD-1.9) > 1e-9 || metrics.FirstPatchTurn != 1 || metrics.FirstVerificationTurn != 1 || metrics.ContextCompactions != 1 || metrics.RepeatedReadSearchCalls != 1 {
+	if metrics.Turns != 1 || metrics.ToolCalls != 3 || metrics.InputTokens != 5 || metrics.OutputTokens != 7 || math.Abs(metrics.CostUSD-1.9) > 1e-9 || metrics.FirstPatchTurn != 1 || metrics.FirstVerificationTurn != 1 || metrics.ContextCompactions != 1 || metrics.RepeatedReadSearchCalls != 1 || metrics.ZeroPatchTurnsBudgetExhausted {
 		t.Fatalf("metrics=%#v", metrics)
+	}
+}
+
+func TestMetricsFromEventsClassifiesZeroPatchTurnsBudgetExhaustion(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []domain.Event
+		want   bool
+	}{
+		{
+			name: "turn budget exhaustion without patch proposal",
+			events: []domain.Event{
+				{Type: domain.EventRunFailed, Payload: json.RawMessage(`{"budget_dimension":"turns"}`)},
+			},
+			want: true,
+		},
+		{
+			name: "turn budget exhaustion after patch proposal",
+			events: []domain.Event{
+				{Type: domain.EventTurnOpened},
+				{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)},
+				{Type: domain.EventRunFailed, Payload: json.RawMessage(`{"budget_dimension":"turns"}`)},
+			},
+			want: false,
+		},
+		{
+			name: "other budget dimension without patch proposal",
+			events: []domain.Event{
+				{Type: domain.EventRunFailed, Payload: json.RawMessage(`{"budget_dimension":"input_tokens"}`)},
+			},
+			want: false,
+		},
+		{
+			name: "no run failure without patch proposal",
+			events: []domain.Event{
+				{Type: domain.EventTurnOpened},
+				{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file"}`)},
+			},
+			want: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metrics := metricsFromEvents(test.events, config.Defaults())
+			if metrics.ZeroPatchTurnsBudgetExhausted != test.want {
+				t.Fatalf("ZeroPatchTurnsBudgetExhausted=%t want %t", metrics.ZeroPatchTurnsBudgetExhausted, test.want)
+			}
+		})
 	}
 }
 

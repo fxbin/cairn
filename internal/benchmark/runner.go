@@ -143,15 +143,16 @@ type AttemptResult struct {
 
 // RunMetrics 从持久化事件汇总轮次、工具调用、token 与按冻结单价计算的成本。
 type RunMetrics struct {
-	Turns                   int     `json:"turns"`
-	ToolCalls               int     `json:"tool_calls"`
-	InputTokens             int     `json:"input_tokens"`
-	OutputTokens            int     `json:"output_tokens"`
-	CostUSD                 float64 `json:"cost_usd"`
-	FirstPatchTurn          int     `json:"first_patch_turn,omitempty"`
-	FirstVerificationTurn   int     `json:"first_verification_turn,omitempty"`
-	ContextCompactions      int     `json:"context_compactions"`
-	RepeatedReadSearchCalls int     `json:"repeated_read_search_calls"`
+	Turns                         int     `json:"turns"`
+	ToolCalls                     int     `json:"tool_calls"`
+	InputTokens                   int     `json:"input_tokens"`
+	OutputTokens                  int     `json:"output_tokens"`
+	CostUSD                       float64 `json:"cost_usd"`
+	FirstPatchTurn                int     `json:"first_patch_turn,omitempty"`
+	FirstVerificationTurn         int     `json:"first_verification_turn,omitempty"`
+	ContextCompactions            int     `json:"context_compactions"`
+	RepeatedReadSearchCalls       int     `json:"repeated_read_search_calls"`
+	ZeroPatchTurnsBudgetExhausted bool    `json:"zero_patch_turns_budget_exhausted"`
 }
 
 // Run 执行所选任务的每次独立尝试；单次失败会写入结果并继续，只有合同或本地环境错误才返回 error。
@@ -783,6 +784,7 @@ func validatePrepareProxy(value string) error {
 func metricsFromEvents(events []domain.Event, configuration config.Config) RunMetrics {
 	var metrics RunMetrics
 	currentTurn := 0
+	turnsBudgetExhausted := false
 	seenReadSearch := make(map[string]struct{})
 	for _, event := range events {
 		switch event.Type {
@@ -827,9 +829,17 @@ func metricsFromEvents(events []domain.Event, configuration config.Config) RunMe
 				metrics.InputTokens += payload.Usage.PromptTokens
 				metrics.OutputTokens += payload.Usage.CompletionTokens
 			}
+		case domain.EventRunFailed:
+			var payload struct {
+				BudgetDimension string `json:"budget_dimension"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.BudgetDimension == "turns" {
+				turnsBudgetExhausted = true
+			}
 		}
 	}
 	metrics.CostUSD = float64(metrics.InputTokens)*configuration.Pricing.InputTokenUSD + float64(metrics.OutputTokens)*configuration.Pricing.OutputTokenUSD
+	metrics.ZeroPatchTurnsBudgetExhausted = turnsBudgetExhausted && metrics.FirstPatchTurn == 0
 	return metrics
 }
 
