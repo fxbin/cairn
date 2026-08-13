@@ -114,3 +114,40 @@ func TestRedactJSONKeepsSourceLiteralWithCredentialLikeTextValid(t *testing.T) {
 		t.Fatalf("decoded source was not redacted: %q", decoded.Data.Content)
 	}
 }
+
+// TestRedactDoesNotFlagTypeAnnotations 防回归：凭据脱敏不得误伤 Python 类型注解或短赋值，
+// 否则 auth 类任务的合法补丁（如 def hash_token(token: str)）会被错误拒绝。
+func TestRedactDoesNotFlagTypeAnnotations(t *testing.T) {
+	cases := []string{
+		`def hash_token(token: str) -> str:`,
+		`def hash_token(token: Optional[str] = None) -> None:`,
+		`token = request.headers.get("Authorization", "")`,
+		`access_token: str = field(default="")`,
+	}
+	for _, in := range cases {
+		got := string(Redact([]byte(in)))
+		if strings.Contains(got, "[REDACTED]") {
+			t.Fatalf("type annotation / short assignment wrongly redacted: %q -> %q", in, got)
+		}
+		if got != in {
+			t.Fatalf("non-secret code was modified: %q -> %q", in, got)
+		}
+	}
+}
+
+// TestRedactStillFlagsQuotedAndLongCredentials 确认收紧后仍能脱敏真实凭据：
+// 引号包裹（≥4 字符）或足够长（≥16 字符）的裸值。
+func TestRedactStillFlagsQuotedAndLongCredentials(t *testing.T) {
+	cases := []string{
+		`api_key = "sk-live-abc123def456"`,
+		`token: "eyJhbGciOiJIUzI1NiJ9.payload.sig"`,
+		`password = "hunter2-secure!"`,
+		`SECRET = aGlnaGVudHJvcHkxMjM0NTY3OA`,
+	}
+	for _, in := range cases {
+		got := string(Redact([]byte(in)))
+		if !strings.Contains(got, "[REDACTED]") {
+			t.Fatalf("real credential was not redacted: %q -> %q", in, got)
+		}
+	}
+}
