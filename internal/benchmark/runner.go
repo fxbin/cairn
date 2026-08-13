@@ -143,11 +143,15 @@ type AttemptResult struct {
 
 // RunMetrics 从持久化事件汇总轮次、工具调用、token 与按冻结单价计算的成本。
 type RunMetrics struct {
-	Turns        int     `json:"turns"`
-	ToolCalls    int     `json:"tool_calls"`
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	Turns                   int     `json:"turns"`
+	ToolCalls               int     `json:"tool_calls"`
+	InputTokens             int     `json:"input_tokens"`
+	OutputTokens            int     `json:"output_tokens"`
+	CostUSD                 float64 `json:"cost_usd"`
+	FirstPatchTurn          int     `json:"first_patch_turn,omitempty"`
+	FirstVerificationTurn   int     `json:"first_verification_turn,omitempty"`
+	ContextCompactions      int     `json:"context_compactions"`
+	RepeatedReadSearchCalls int     `json:"repeated_read_search_calls"`
 }
 
 // Run 执行所选任务的每次独立尝试；单次失败会写入结果并继续，只有合同或本地环境错误才返回 error。
@@ -778,12 +782,40 @@ func validatePrepareProxy(value string) error {
 // metricsFromEvents 汇总持久化事实，避免从模型文本或 CLI 输出猜测资源消耗。
 func metricsFromEvents(events []domain.Event, configuration config.Config) RunMetrics {
 	var metrics RunMetrics
+	currentTurn := 0
+	seenReadSearch := make(map[string]struct{})
 	for _, event := range events {
 		switch event.Type {
 		case domain.EventTurnOpened:
 			metrics.Turns++
+			currentTurn = metrics.Turns
 		case domain.EventToolCallProposed:
 			metrics.ToolCalls++
+			var payload struct {
+				ToolName  string          `json:"tool_name"`
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				if payload.ToolName == "apply_patch" && metrics.FirstPatchTurn == 0 {
+					metrics.FirstPatchTurn = currentTurn
+				}
+				if payload.ToolName == "read_file" || payload.ToolName == "search_text" {
+					if arguments, valid := canonicalJSONObject(payload.Arguments); valid {
+						key := payload.ToolName + "\x00" + arguments
+						if _, repeated := seenReadSearch[key]; repeated {
+							metrics.RepeatedReadSearchCalls++
+						} else {
+							seenReadSearch[key] = struct{}{}
+						}
+					}
+				}
+			}
+		case domain.EventVerificationStarted:
+			if metrics.FirstVerificationTurn == 0 {
+				metrics.FirstVerificationTurn = currentTurn
+			}
+		case domain.EventContextCompacted:
+			metrics.ContextCompactions++
 		case domain.EventModelResponseFinished:
 			var payload struct {
 				Usage *struct {
@@ -799,6 +831,86 @@ func metricsFromEvents(events []domain.Event, configuration config.Config) RunMe
 	}
 	metrics.CostUSD = float64(metrics.InputTokens)*configuration.Pricing.InputTokenUSD + float64(metrics.OutputTokens)*configuration.Pricing.OutputTokenUSD
 	return metrics
+}
+
+// canonicalJSONObject 对工具参数递归按 key 排序，确保 JSON 对象成员顺序不影响
+// 重复探索指标；无效、缺失或非对象参数返回 false 而不会进入重复集合。
+func canonicalJSONObject(raw json.RawMessage) (string, bool) {
+	if !json.Valid(raw) {
+		return "", false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	object, ok := value.(map[string]any)
+	if !ok || object == nil {
+		return "", false
+	}
+	encoded, err := marshalCanonicalJSON(object)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// marshalCanonicalJSON 递归生成稳定 JSON：对象按 key 排序，数组保留调用参数的
+// 原始顺序，标量保持 encoding/json 的标准数值与字符串语义。
+func marshalCanonicalJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	if err := appendCanonicalJSON(&buffer, value); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+// appendCanonicalJSON 将单个 JSON 值追加为稳定编码；该函数仅服务评测观测，
+// 不会改写事件、工具参数或模型请求。
+func appendCanonicalJSON(buffer *bytes.Buffer, value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		buffer.WriteByte('{')
+		for index, key := range keys {
+			if index > 0 {
+				buffer.WriteByte(',')
+			}
+			encodedKey, err := json.Marshal(key)
+			if err != nil {
+				return err
+			}
+			buffer.Write(encodedKey)
+			buffer.WriteByte(':')
+			if err := appendCanonicalJSON(buffer, typed[key]); err != nil {
+				return err
+			}
+		}
+		buffer.WriteByte('}')
+		return nil
+	case []any:
+		buffer.WriteByte('[')
+		for index, item := range typed {
+			if index > 0 {
+				buffer.WriteByte(',')
+			}
+			if err := appendCanonicalJSON(buffer, item); err != nil {
+				return err
+			}
+		}
+		buffer.WriteByte(']')
+		return nil
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return err
+		}
+		buffer.Write(encoded)
+		return nil
+	}
 }
 
 // classifyFailure 将可恢复暂停、策略、预算与执行异常归入可用于基准汇总的稳定类别。

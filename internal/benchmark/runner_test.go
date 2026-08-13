@@ -339,14 +339,31 @@ func TestApplyPrivateVerifierRecordsDigestWithoutPublicContent(t *testing.T) {
 func TestMetricsFromEventsUsesPersistedUsageOnly(t *testing.T) {
 	events := []domain.Event{
 		{Type: domain.EventTurnOpened},
-		{Type: domain.EventToolCallProposed},
-		{Type: domain.EventToolCallProposed},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"answer.txt"}}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"answer.txt"}}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"answer.txt"}}`)},
+		{Type: domain.EventContextCompacted},
+		{Type: domain.EventVerificationStarted},
 		{Type: domain.EventModelResponseFinished, Payload: json.RawMessage(`{"usage":{"prompt_tokens":5,"completion_tokens":7}}`)},
 	}
 	configuration := config.Defaults()
 	configuration.Pricing = config.PricingConfig{InputTokenUSD: 0.1, OutputTokenUSD: 0.2}
 	metrics := metricsFromEvents(events, configuration)
-	if metrics.Turns != 1 || metrics.ToolCalls != 2 || metrics.InputTokens != 5 || metrics.OutputTokens != 7 || math.Abs(metrics.CostUSD-1.9) > 1e-9 {
+	if metrics.Turns != 1 || metrics.ToolCalls != 3 || metrics.InputTokens != 5 || metrics.OutputTokens != 7 || math.Abs(metrics.CostUSD-1.9) > 1e-9 || metrics.FirstPatchTurn != 1 || metrics.FirstVerificationTurn != 1 || metrics.ContextCompactions != 1 || metrics.RepeatedReadSearchCalls != 1 {
+		t.Fatalf("metrics=%#v", metrics)
+	}
+}
+
+func TestMetricsFromEventsCanonicalizesObjectArgumentsAndSkipsInvalidArguments(t *testing.T) {
+	events := []domain.Event{
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"answer.txt","options":{"after":2,"before":1}}}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"options":{"before":1,"after":2},"path":"answer.txt"}}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text"}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":"not-an-object"}`)},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":["not-an-object"]}`)},
+	}
+	metrics := metricsFromEvents(events, config.Defaults())
+	if metrics.ToolCalls != len(events) || metrics.RepeatedReadSearchCalls != 1 {
 		t.Fatalf("metrics=%#v", metrics)
 	}
 }
