@@ -17,6 +17,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
@@ -220,11 +221,12 @@ func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	base.Policy.Write, base.Policy.Exec = "allow", "allow"
 	task := testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]
 	task.Verification.Command.Env = map[string]string{"DATABASE_URL": "sqlite+aiosqlite:///:memory:"}
+	task.Verification.VolatilePaths = []string{".pytest_cache"}
 	configuration, err := configurationForTask(base, task)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Sandbox.Backend != "docker" || configuration.Sandbox.DockerImage != "alpine:latest" || len(configuration.Verification.Commands) != 1 || configuration.Verification.Commands[0].Env["DATABASE_URL"] != "sqlite+aiosqlite:///:memory:" {
+	if configuration.Sandbox.Backend != "docker" || configuration.Sandbox.DockerImage != "alpine:latest" || len(configuration.Verification.Commands) != 1 || configuration.Verification.Commands[0].Env["DATABASE_URL"] != "sqlite+aiosqlite:///:memory:" || !containsString(configuration.Verification.VolatilePaths, ".pytest_cache") {
 		t.Fatalf("configuration=%#v", configuration)
 	}
 	if !containsString(configuration.Policy.EnvAllow, "DATABASE_URL") {
@@ -233,6 +235,70 @@ func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	base.Policy.Exec = "ask"
 	if _, err := configurationForTask(base, testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]); err == nil {
 		t.Fatal("expected unattended policy rejection")
+	}
+}
+
+func TestTaskVerificationVolatilePathsAreExactAndValidated(t *testing.T) {
+	pack := testPack("https://example.invalid/repository.git", "0123456789")
+	pack.Tasks[0].Verification.VolatilePaths = []string{".pytest_cache", "tmp/test-results"}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range [][]string{{"."}, {"**"}, {"tmp/*"}, {".git"}, {".git/objects"}, {".agent/config.yaml"}, {".cairn/artifacts"}, {"tmp", "tmp"}, {"../escape"}} {
+		pack.Tasks[0].Verification.VolatilePaths = invalid
+		if err := pack.Validate(); err == nil {
+			t.Fatalf("expected volatile paths %q to fail", invalid)
+		}
+	}
+}
+
+func TestConfigurationForTaskUsesOnlyDeclaredVolatilePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "backend", ".pytest_cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := config.Defaults()
+	base.Policy.Write, base.Policy.Exec = "allow", "allow"
+	task := testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]
+	task.Verification.VolatilePaths = []string{"backend/.pytest_cache"}
+	configuration, err := configurationForTask(base, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configuration.Verification.VolatilePaths) != 1 || configuration.Verification.VolatilePaths[0] != "backend/.pytest_cache" {
+		t.Fatalf("volatile paths=%#v", configuration.Verification.VolatilePaths)
+	}
+	workspace, err := tools.NewWorkspace(root, []string{"node_modules"}, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationView := workspace.ObservationView(configuration.Verification.VolatilePaths)
+	before, err := verificationView.Observation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "backend", ".pytest_cache", "lastfailed"), []byte("volatile"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterVolatile, err := verificationView.Observation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterVolatile != before {
+		t.Fatal("declared volatile cache changed verifier observation")
+	}
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterTracked, err := verificationView.Observation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterTracked == afterVolatile {
+		t.Fatal("undeclared workspace mutation did not change verifier observation")
 	}
 }
 

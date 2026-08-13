@@ -426,6 +426,7 @@ func configurationForTask(base config.Config, task Task) (config.Config, error) 
 		verificationEnvironment[key] = value
 		configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, key)
 	}
+	configuration.Verification.VolatilePaths = append([]string(nil), task.Verification.VolatilePaths...)
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: append([]string(nil), task.Verification.Command.Argv...), CWD: task.Verification.Command.CWD, Timeout: "10m", MaxOutputBytes: 1024 * 1024, Env: verificationEnvironment}}
 	if configuration.Policy.Write != "allow" || configuration.Policy.Exec != "allow" {
 		return config.Config{}, errors.New("benchmark config requires policy.write=allow and policy.exec=allow for unattended audited runs")

@@ -54,8 +54,9 @@ type Scope struct {
 
 // Verification 保存 bootstrap 与完成前固定执行的无 shell argv 命令。
 type Verification struct {
-	Bootstrap []Command `yaml:"bootstrap" json:"bootstrap"`
-	Command   Command   `yaml:"command" json:"command"`
+	Bootstrap     []Command `yaml:"bootstrap" json:"bootstrap"`
+	Command       Command   `yaml:"command" json:"command"`
+	VolatilePaths []string  `yaml:"volatile_paths,omitempty" json:"volatile_paths,omitempty"`
 }
 
 // Command 是在指定相对工作目录内运行的一条 argv 命令及其非敏感环境。
@@ -135,6 +136,9 @@ func (pack TaskPack) Validate() error {
 				return fmt.Errorf("task %q bootstrap command %d: %w", task.ID, index, err)
 			}
 		}
+		if err := validateVolatilePaths(task.Verification.VolatilePaths); err != nil {
+			return fmt.Errorf("task %q verification volatile_paths: %w", task.ID, err)
+		}
 		for _, path := range append(append([]string(nil), task.Scope.AllowedPaths...), task.Scope.ProhibitedPaths...) {
 			if err := validateRelativePath(path); err != nil {
 				return fmt.Errorf("task %q scope path %q: %w", task.ID, path, err)
@@ -142,6 +146,40 @@ func (pack TaskPack) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validateVolatilePaths 只接受任务 verifier 已知会写入的精确相对路径，避免
+// 以宽泛目录或通配符关闭 verification_mutated_workspace 防护。
+func validateVolatilePaths(paths []string) error {
+	seen := make(map[string]struct{}, len(paths))
+	for _, entry := range paths {
+		if err := validateRelativePath(entry); err != nil {
+			return err
+		}
+		clean := filepath.ToSlash(filepath.Clean(entry))
+		if clean == "." || strings.ContainsAny(clean, "*?[") {
+			return fmt.Errorf("must be an exact non-root path")
+		}
+		if isBuiltInExcludedPath(clean) {
+			return fmt.Errorf("must not repeat a built-in excluded path")
+		}
+		if _, duplicate := seen[clean]; duplicate {
+			return fmt.Errorf("contains duplicate path %q", clean)
+		}
+		seen[clean] = struct{}{}
+	}
+	return nil
+}
+
+// isBuiltInExcludedPath 判断任务合同是否试图重述 verifier 已固定排除的元数据
+// 目录或其后代，避免合同看似放宽而实际不改变 observation 边界。
+func isBuiltInExcludedPath(path string) bool {
+	for _, excluded := range []string{".git", ".agent", ".cairn"} {
+		if path == excluded || strings.HasPrefix(path, excluded+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // TaskByID 返回指定本地任务；未知 ID 不会默默回退到其他任务。
