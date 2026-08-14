@@ -472,6 +472,13 @@ func (projection *RunProjection) Apply(event Event) error {
 			return fmt.Errorf("run_cancelled from terminal state %s", projection.State)
 		}
 		projection.State = RunCancelled
+	case EventModelRequestStarted, EventModelResponseFinished, EventModelRequestFailed:
+		// 模型遥测事件只补充审计证据，不改变投影状态；负载合法性由写入路径的
+		// 封闭 payload schema 与哈希链保证，恢复逻辑直接按事件流读取。
+	case EventVerificationStarted, EventVerificationFeedbackAppended:
+		// 验证过程遥测事件同样不改变投影状态；终态判定只依赖 verification_finished。
+	default:
+		return fmt.Errorf("unhandled event type %q", event.Type)
 	}
 	projection.LastSeq = event.Seq
 	return nil

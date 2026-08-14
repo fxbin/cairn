@@ -264,3 +264,22 @@ func TestToolResultAppendedOnlyOnce(t *testing.T) {
 	chain.add(t, EventDraft{Type: EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"ok":true}`)})
 	chain.replayReject(t, "tool_result_appended requires one terminal operation result")
 }
+
+// TestApplyAcceptsTelemetryEventsWithoutStateChange 锁定五类遥测事件在投影中的
+// 显式穿透语义（不改变运行状态），以及 Apply 对未知事件类型的防御性拒绝。
+func TestApplyAcceptsTelemetryEventsWithoutStateChange(t *testing.T) {
+	chain := newEventChain(t)
+	chain.add(t, EventDraft{Type: EventModelRequestStarted, Payload: json.RawMessage(`{"provider":"p","model":"m"}`)})
+	chain.add(t, EventDraft{Type: EventModelResponseFinished, Payload: json.RawMessage(`{"text":"ok","semantic_event_count":1}`)})
+	chain.add(t, EventDraft{Type: EventModelRequestFailed, Payload: json.RawMessage(`{"error":"boom"}`)})
+	chain.add(t, EventDraft{Type: EventVerificationStarted, Payload: json.RawMessage(`{"verification_id":"v1"}`)})
+	chain.add(t, EventDraft{Type: EventVerificationFeedbackAppended, Payload: json.RawMessage(`{"text":"feedback"}`)})
+	projection := chain.replay(t)
+	if projection.State != RunRunning {
+		t.Fatalf("telemetry events must not change run state, got %s", projection.State)
+	}
+	unknown := Event{Seq: projection.LastSeq + 1, RunID: chain.runID, Type: EventType("nonexistent_event"), Payload: json.RawMessage(`{}`)}
+	if err := projection.Apply(unknown); err == nil || !strings.Contains(err.Error(), "unhandled event type") {
+		t.Fatalf("apply unknown type err = %v", err)
+	}
+}
