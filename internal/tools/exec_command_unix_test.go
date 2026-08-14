@@ -189,3 +189,26 @@ func TestStringResultTruncatesAtRuneBoundary(t *testing.T) {
 		t.Fatalf("short preview was altered: %q", short)
 	}
 }
+
+// TestExecCommandHostBackendKillsProcessGroupOnTimeout 锁定 host 后端的进程组
+// 取消语义：超时后后台孙进程也必须被收割，不允许孤儿进程继续产生副作用。
+func TestExecCommandHostBackendKillsProcessGroupOnTimeout(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(workspace.Root, "orphan-marker")
+	tool := ExecCommand{Workspace: workspace, EnvAllow: map[string]struct{}{}}
+	started := time.Now()
+	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/sh","-c","sleep 2; touch orphan-marker"],"timeout_ms":150}`))
+	if result.Code != "cancelled" {
+		t.Fatalf("result = %#v", result)
+	}
+	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+		t.Fatalf("cancellation waited %v; process group was not reaped promptly", elapsed)
+	}
+	time.Sleep(2500 * time.Millisecond)
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("orphan descendant survived process-group cancellation: %v", statErr)
+	}
+}
