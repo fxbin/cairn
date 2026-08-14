@@ -1,4 +1,7 @@
+//go:build e2e
+
 // Package e2e exercises the four offline-rebuildable Cairn V0 fixture flows.
+// 该套件按 AGENTS.md 的验证流程显式启用：go test ./test/e2e -tags=e2e。
 package e2e_test
 
 import (

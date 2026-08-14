@@ -1,4 +1,7 @@
+//go:build faultinject
+
 // Package fault covers replay outcomes at the persistence boundaries where a
+// 该套件按 AGENTS.md 的验证流程显式启用：go test ./test/fault -tags=faultinject。
 // process can die between a committed operation start and its terminal event.
 package fault
 
