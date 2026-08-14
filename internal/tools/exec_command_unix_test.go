@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestExecCommandUsesArgvAndEnforcesEnvironmentAllowlist(t *testing.T) {
@@ -168,5 +169,23 @@ func TestExecCommandDockerRuntimeWithExplicitLocalImage(t *testing.T) {
 	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/sh","-c","printf sandbox-ok"],"timeout_ms":5000}`))
 	if !result.OK || !strings.Contains(result.Preview, "sandbox-ok") {
 		t.Fatalf("runtime result = %#v", result)
+	}
+}
+
+// TestStringResultTruncatesAtRuneBoundary 验证超限预览在 UTF-8 边界截断并带
+// 确定性标记：既不以损坏的多字节字符结尾，也不静默丢失截断事实。
+func TestStringResultTruncatesAtRuneBoundary(t *testing.T) {
+	// 每 3 字节一个多字节字符，使 1024 边界必然落在字符中间。
+	payload := strings.Repeat("世", 600)
+	preview := stringResult(map[string]string{"text": payload})
+	if !strings.HasSuffix(preview, "...[preview-truncated]") {
+		t.Fatalf("preview missing truncation marker: %q", preview[len(preview)-40:])
+	}
+	if !utf8.ValidString(preview) {
+		t.Fatalf("preview ends with a corrupted rune: %q", preview[len(preview)-40:])
+	}
+	short := stringResult(map[string]string{"text": "ok"})
+	if short != `{"text":"ok"}` {
+		t.Fatalf("short preview was altered: %q", short)
 	}
 }

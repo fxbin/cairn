@@ -389,11 +389,21 @@ func (buffer *limitedBuffer) String() string { return buffer.buffer.String() }
 // Len 返回当前已保留的输出字节数。
 func (buffer *limitedBuffer) Len() int { return buffer.buffer.Len() }
 
-// stringResult 将结果编码为长度受限的 JSON 预览文本。
+// stringResult 将结果编码为长度受限的 JSON 预览文本。截断回退到最后一个
+// 完整 UTF-8 边界并附加确定性标记，保证预览不会以损坏的多字节字符结尾，
+// 且调用方可以识别被截断的预览而不尝试解析不完整的 JSON。
 func stringResult(value any) string {
 	encoded, _ := json.Marshal(value)
-	if len(encoded) > 1024 {
-		return string(encoded[:1024])
+	if len(encoded) <= 1024 {
+		return string(encoded)
 	}
-	return string(encoded)
+	const marker = "...[preview-truncated]"
+	budget := 1024
+	for budget > 0 && continuationByte(encoded[budget]) {
+		budget--
+	}
+	return string(encoded[:budget]) + marker
 }
+
+// continuationByte 判断字节是否是 UTF-8 多字节序列的续字节。
+func continuationByte(b byte) bool { return b&0xC0 == 0x80 }
