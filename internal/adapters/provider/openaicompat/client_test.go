@@ -119,3 +119,24 @@ func TestChatCompletionsURL(t *testing.T) {
 		t.Fatalf("expected invalid URL, got %v", err)
 	}
 }
+
+// TestContractExhaustsRetriesOnPersistentTransientFailure 验证持续可重试失败
+// 在总尝试次数（3 次）耗尽后返回最后一次服务端错误，且不放大调用次数。
+func TestContractExhaustsRetriesOnPersistentTransientFailure(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		writer.Header().Set("Retry-After", "0")
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = writer.Write([]byte("still unavailable"))
+	}))
+	defer server.Close()
+	err := (Client{BaseURL: server.URL}).Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	var providerError *ProviderError
+	if err == nil || !errors.As(err, &providerError) || providerError.Kind != "server" || !providerError.Retryable {
+		t.Fatalf("expected retryable server error, got %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("expected exactly 3 attempts, got %d", calls)
+	}
+}
