@@ -199,7 +199,9 @@ func VerifyChain(events []Event) error {
 	previous := GenesisHash
 	for index, event := range events {
 		expectedSeq := uint64(index + 1)
-		if event.SchemaVersion != SchemaVersion {
+		// 只拒绝来自更新二进制的未来 schema 版本；同代及更旧版本保持可回放，
+		// 使读取端升级后仍能校验既有日志（写入端仍固定产出当前版本）。
+		if event.SchemaVersion > SchemaVersion {
 			return fmt.Errorf("event %d has unsupported schema version %d", event.Seq, event.SchemaVersion)
 		}
 		if err := validatePayload(event.Type, event.Payload); err != nil {
@@ -264,7 +266,9 @@ func validatePayload(eventType EventType, raw json.RawMessage) error {
 	}
 	var version uint32
 	value, present := object["payload_version"]
-	if !present || json.Unmarshal(value, &version) != nil || version != SchemaVersion {
+	// 与 VerifyChain 一致：接受当前及更旧 payload 版本，只拒绝未来版本；写入
+	// 路径经 normalizePayload 固定补齐当前版本，旧版本只会出现在历史日志中。
+	if !present || json.Unmarshal(value, &version) != nil || version < 1 || version > SchemaVersion {
 		return fmt.Errorf("unsupported or missing payload_version")
 	}
 	for field := range object {

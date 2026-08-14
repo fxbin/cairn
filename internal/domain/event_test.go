@@ -160,3 +160,31 @@ func TestReplayRejectsTurnClosureBeforeModelToolResultIsAppended(t *testing.T) {
 		t.Fatalf("turn closed without its model tool result: %v", err)
 	}
 }
+
+// TestVerifyChainAcceptsOlderSchemaVersion 锁定读取端对旧版本事件的兼容：
+// 升级后的二进制必须仍能校验按更旧 schema 版本写入的历史日志，同时拒绝
+// 来自更新二进制的未来版本。
+func TestVerifyChainAcceptsOlderSchemaVersion(t *testing.T) {
+	runID := RunID("run_compat")
+	older, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, OccurredAt: time.Unix(1, 0), Payload: json.RawMessage(`{"task":"compat","workspace":"."}`)}, 1, GenesisHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older.SchemaVersion = SchemaVersion - 1
+	rehashed, err := ComputeEventHash(older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older.EventHash = rehashed
+	if err := VerifyChain([]Event{older}); err != nil {
+		t.Fatalf("older schema version must replay: %v", err)
+	}
+	future, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, OccurredAt: time.Unix(1, 0), Payload: json.RawMessage(`{"task":"compat","workspace":"."}`)}, 1, GenesisHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future.SchemaVersion = SchemaVersion + 1
+	if err := VerifyChain([]Event{future}); err == nil || !strings.Contains(err.Error(), "unsupported schema version") {
+		t.Fatalf("future schema version must be rejected, got %v", err)
+	}
+}
