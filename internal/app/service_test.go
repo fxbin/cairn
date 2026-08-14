@@ -630,3 +630,108 @@ func TestConcurrentResumeAllowsExactlyOneWorkspaceLockHolder(t *testing.T) {
 		t.Fatalf("provider calls=%d; duplicate resume reached the model", provider.calls)
 	}
 }
+
+// TestServiceAbortReleasesCreatedRun 锁定 created 状态（进程在 run_created 与
+// run_started 之间崩溃）的逃生门：新 run 被阻塞并提示 abort，Abort 补写 run_failed
+// 后工作区恢复可用。
+func TestServiceAbortReleasesCreatedRun(t *testing.T) {
+	provider := &patchThenFinalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
+		Task              string       `json:"task"`
+		Workspace         string       `json:"workspace"`
+		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigFingerprint string       `json:"config_fingerprint"`
+	}{Task: "interrupted", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background(), RunOptions{Task: "blocked", Workspace: workspace, StateDir: stateDir, Config: configuration}); !errors.Is(err, ErrActiveRun) {
+		t.Fatalf("run against created-state run err = %v", err)
+	}
+	aborted, err := service.Abort(context.Background(), AbortOptions{RunID: runID, Reason: "release stuck workspace", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil || aborted.ID != runID {
+		t.Fatalf("abort=%#v err=%v", aborted, err)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, true)
+	if err != nil || inspected.Projection.State != domain.RunFailed {
+		t.Fatalf("inspect=%#v err=%v", inspected, err)
+	}
+	configuration.Policy.Write = "allow"
+	configuration.Policy.Exec = "allow"
+	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
+	if _, err := service.Run(context.Background(), RunOptions{Task: "fresh", Workspace: workspace, StateDir: stateDir, Config: configuration}); err != nil {
+		t.Fatalf("workspace still blocked after abort: %v", err)
+	}
+}
+
+// TestServiceAbortCompletesCancellingRun 锁定取消序列中途崩溃（cancelling 且挂起
+// 审批与打开 turn）的逃生门：Abort 补写 approval_denied、turn_closed 与
+// run_cancelled 完成既有取消意图，工作区恢复可用。
+func TestServiceAbortCompletesCancellingRun(t *testing.T) {
+	provider := &patchThenFinalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	var waiting *agent.WaitingApprovalError
+	if !errors.As(err, &waiting) {
+		t.Fatalf("initial=%#v err=%v", initial, err)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), initial.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), events[len(events)-1].Seq, domain.EventDraft{RunID: initial.ID, WorkspaceHash: hash, Type: domain.EventRunCancelRequested, Payload: encode(struct {
+		Cause string `json:"cause"`
+	}{Cause: "user_interrupt"})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	aborted, err := service.Abort(context.Background(), AbortOptions{RunID: initial.ID, Reason: "finish interrupted cancellation", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil || aborted.ID != initial.ID {
+		t.Fatalf("abort=%#v err=%v", aborted, err)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
+	if err != nil || inspected.Projection.State != domain.RunCancelled || inspected.Projection.PendingApproval != nil {
+		t.Fatalf("inspect=%#v err=%v", inspected, err)
+	}
+	denied, closed, cancelled := false, false, false
+	for _, event := range inspected.Events {
+		denied = denied || event.Type == domain.EventApprovalDenied
+		closed = closed || event.Type == domain.EventTurnClosed
+		cancelled = cancelled || event.Type == domain.EventRunCancelled
+	}
+	if !denied || !closed || !cancelled {
+		t.Fatalf("abort sequence incomplete: denied=%v closed=%v cancelled=%v", denied, closed, cancelled)
+	}
+	configuration.Policy.Write = "allow"
+	configuration.Policy.Exec = "allow"
+	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
+	if _, err := service.Run(context.Background(), RunOptions{Task: "fresh", Workspace: workspace, StateDir: stateDir, Config: configuration}); err != nil {
+		t.Fatalf("workspace still blocked after abort: %v", err)
+	}
+}

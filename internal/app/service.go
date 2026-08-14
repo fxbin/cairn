@@ -137,6 +137,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 			}
 		case "waiting_reconcile":
 			return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, ErrWaitingReconcile)
+		case "created", "cancelling":
+			// 进程在 run_created/run_started 之间或取消序列中途崩溃留下的非终态运行：
+			// 此状态下没有可恢复的执行语义，唯一出口是补写终态解锁工作区。
+			return RunResult{}, fmt.Errorf("%w: run %s is %s after an interrupted lifecycle; finish it with resume %s --abort-run --reason <text>", ErrActiveRun, active[0].ID, active[0].Phase(), active[0].ID)
 		}
 		return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
 	}
@@ -495,7 +499,9 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 }
 
 // Abort 在不启动模型、工具或 verifier 的情况下终止非悬挂运行；已经开始的副作用
-// 所具有的不确定性只能通过 Reconcile 的判定解决。
+// 所具有的不确定性只能通过 Reconcile 的判定解决。除 running 外，它也是 created 与
+// cancelling 运行的唯一恢复出口：进程在 run_created/run_started 之间或取消序列中途
+// 崩溃后，工作区会被非终态 run 永久阻塞，此处按状态机允许的起点补写终态。
 func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResult, error) {
 	if strings.TrimSpace(options.Reason) == "" {
 		return RunResult{}, errors.New("abort reason is required")
@@ -522,7 +528,9 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 	if err != nil {
 		return RunResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	if projection.State != domain.RunRunning {
+	switch projection.State {
+	case domain.RunCreated, domain.RunRunning, domain.RunCancelling:
+	default:
 		return RunResult{ID: options.RunID}, errors.New("run is not abortable")
 	}
 	if err := requireMatchingConfig(events, options.Config); err != nil {
@@ -565,6 +573,16 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 		if err := appendEvent(domain.EventTurnClosed, &turnID, nil, domain.TurnClosedPayload{Outcome: "failed"}); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
+	}
+	// cancelling 运行的取消意图已持久化，补写 run_cancelled 完成该序列；
+	// created/running 运行按中止语义写 run_failed（两类起点均为状态机允许）。
+	if projection.State == domain.RunCancelling {
+		if err := appendEvent(domain.EventRunCancelled, nil, nil, struct {
+			Cause string `json:"cause"`
+		}{Cause: "user_interrupt"}); err != nil {
+			return RunResult{ID: options.RunID}, err
+		}
+		return RunResult{ID: options.RunID}, nil
 	}
 	if err := appendEvent(domain.EventRunFailed, nil, nil, struct {
 		Error  string `json:"error"`
