@@ -194,7 +194,16 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			}
 			return Result{}, fmt.Errorf("model request: %w", err)
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage})}); err != nil {
+		// 提供方未回报 usage 时以字节估算兜底并显式标记：token 与成本上限
+		// 在不合规端点上仍近似生效，且估算随事件持久化、resume 重建预算时
+		// 可复算，不与提供方回报值混淆。
+		usageEstimated := false
+		if response.Usage == nil {
+			usageEstimated = true
+			response.Usage = &ports.Usage{PromptTokens: loop.estimatePromptTokens(messages), CompletionTokens: estimateResponseTokens(response)}
+			response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
+		}
+		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage, UsageEstimated: usageEstimated})}); err != nil {
 			return Result{}, err
 		}
 		usage.add(response.Usage)

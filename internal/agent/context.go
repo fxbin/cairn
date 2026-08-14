@@ -237,3 +237,13 @@ func clipText(value string, maximumBytes int) string {
 	}
 	return clipped + "…"
 }
+
+// estimateResponseTokens 用字节/2 启发式估算一次响应的输出 token，供提供方
+// 未回报 usage 时的预算兜底；工具调用的标识与参数 JSON 字节数一并计入。
+func estimateResponseTokens(response collectedResponse) int {
+	total := len(response.Text)
+	for _, call := range response.ToolCalls {
+		total += len(call.ID) + len(call.Name) + len(call.Arguments)
+	}
+	return (total + 1) / 2
+}

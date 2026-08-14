@@ -10,11 +10,13 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-// modelResponsePayload 是写入 model_response_finished 事件的响应内容。
+// modelResponsePayload 是写入 model_response_finished 事件的响应内容；
+// usage_estimated 标记 usage 为字节估算兜底而非提供方回报值。
 type modelResponsePayload struct {
-	Text      string           `json:"text"`
-	ToolCalls []ports.ToolCall `json:"tool_calls,omitempty"`
-	Usage     *ports.Usage     `json:"usage,omitempty"`
+	Text           string           `json:"text"`
+	ToolCalls      []ports.ToolCall `json:"tool_calls,omitempty"`
+	Usage          *ports.Usage     `json:"usage,omitempty"`
+	UsageEstimated bool             `json:"usage_estimated,omitempty"`
 }
 
 // modelRequestPayload 是写入模型请求事件的可审计提供方信息。

@@ -98,7 +98,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventModelRequestStarted: {
 		"payload_version": {}, "provider": {}, "model": {}, "request_ref": {}, "retry_index": {},
 	},
-	EventModelResponseFinished: {"payload_version": {}, "text": {}, "tool_calls": {}, "usage": {}, "response_ref": {}, "semantic_event_count": {}},
+	EventModelResponseFinished: {"payload_version": {}, "text": {}, "tool_calls": {}, "usage": {}, "usage_estimated": {}, "response_ref": {}, "semantic_event_count": {}},
 	EventModelRequestFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "retryable": {}, "semantic_event_count": {}, "reason_ref": {}},
 	EventToolCallProposed:      {"payload_version": {}, "call_id": {}, "tool_name": {}, "spec_version": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}},
 	EventVerificationCommandProposed: {

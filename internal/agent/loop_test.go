@@ -1799,3 +1799,37 @@ func TestLoopPersistsCancellationWhenInterruptHitsAppendGap(t *testing.T) {
 		t.Fatalf("cancellation was not persisted once: %#v", events)
 	}
 }
+
+// TestLoopEnforcesOutputBudgetWithEstimatedUsageWhenProviderOmitsUsage 锁定
+// usage 缺失兜底：不回报 usage 的端点上，预算用字节估算近似生效并显式标记。
+func TestLoopEnforcesOutputBudgetWithEstimatedUsageWhenProviderOmitsUsage(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "this response is long enough to exceed a tiny output budget"}, {Kind: ports.Done}}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "estimate")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, MaxOutputTokens: 1}
+	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "estimate", WorkspaceHash: "workspace"})
+	var exceeded *BudgetExceededError
+	if !errors.As(err, &exceeded) || exceeded.Dimension != "output_tokens" {
+		t.Fatalf("err = %v", err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsEventPayload(events, domain.EventModelResponseFinished, `"usage_estimated":true`) {
+		t.Fatalf("estimated usage was not flagged: %#v", events)
+	}
+}
