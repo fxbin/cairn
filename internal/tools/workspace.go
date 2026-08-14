@@ -88,7 +88,9 @@ func newWorkspace(root string, ignored []string, maxReadBytes int64, maxSearchFi
 	return Workspace{Root: canonical, ignored: ignoreSet, MaxReadBytes: maxReadBytes, MaxSearchFiles: maxSearchFiles, MaxSearchBytes: maxSearchBytes}, nil
 }
 
-// Resolve 将工作区相对路径解析为物理路径和规范相对路径，并拒绝越界及逃逸符号链接。
+// Resolve 将工作区相对路径解析为物理路径和规范相对路径，并拒绝越界及逃逸
+// 符号链接；对尾部组件尚不存在的路径（如 create 目标），同样先解析最深已
+// 存在祖先中的符号链接再做逃逸检查，防止"叶子不存在"掩盖祖先链接逃逸。
 func (workspace Workspace) Resolve(relative string) (string, string, error) {
 	if relative == "" {
 		relative = "."
@@ -101,16 +103,52 @@ func (workspace Workspace) Resolve(relative string) (string, string, error) {
 	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
 		return "", "", errors.New("path escapes workspace")
 	}
-	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
-		resolvedRelative, relErr := filepath.Rel(workspace.Root, resolved)
-		if relErr != nil || resolvedRelative == ".." || strings.HasPrefix(resolvedRelative, ".."+string(filepath.Separator)) {
-			return "", "", errors.New("symlink escapes workspace")
-		}
-		return resolved, filepath.ToSlash(resolvedRelative), nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", "", fmt.Errorf("resolve path: %w", err)
+	resolved, err := resolveWithMissingTail(candidate)
+	if err != nil {
+		return "", "", err
 	}
-	return candidate, filepath.ToSlash(relativePath), nil
+	resolvedRelative, relErr := filepath.Rel(workspace.Root, resolved)
+	if relErr != nil || resolvedRelative == ".." || strings.HasPrefix(resolvedRelative, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("symlink escapes workspace")
+	}
+	return resolved, filepath.ToSlash(resolvedRelative), nil
+}
+
+// resolveWithMissingTail 返回 candidate 的规范物理路径：整条路径可解析时直
+// 接解析符号链接；当尾部组件（典型为 create 目标）尚不存在时，定位最深已
+// 存在祖先并解析其符号链接后拼回缺失后缀，使祖先目录符号链接（如 link 指
+// 向工作区外目录）无法借 ENOENT 分支绕过逃逸检查。
+func resolveWithMissingTail(candidate string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	probe := filepath.Dir(candidate)
+	missing := []string{filepath.Base(candidate)}
+	for {
+		if _, statErr := os.Lstat(probe); statErr == nil {
+			break
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve path: %w", statErr)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", errors.New("resolve path: no existing ancestor")
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
+	}
+	resolved, err = filepath.EvalSymlinks(probe)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		resolved = filepath.Join(resolved, missing[index])
+	}
+	return resolved, nil
 }
 
 // Ignore 判断路径是否因敏感性或工作区忽略规则而不可被工具访问。
