@@ -402,6 +402,11 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if turnID == nil {
 		return RunResult{}, errors.New("dangling operation has no open turn")
 	}
+	// 对账事件的观察值与 resume 一致采用真实工作区摘要，而不是误导性的根路径。
+	observation, err := workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
+	if err != nil {
+		return RunResult{}, err
+	}
 	appendEvent := func(eventType domain.EventType, payload any) error {
 		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)}
 		// 写入前先在克隆投影上模拟迁移，避免把不可回放的事件永久写入日志。
@@ -426,7 +431,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		Note                 string `json:"note"`
 		Evidence             string `json:"evidence"`
 		WorkspaceObservation string `json:"workspace_observation"`
-	}{Verdict: options.Verdict, Actor: "human", Note: options.Note, Evidence: options.Evidence, WorkspaceObservation: workspace.Root}); err != nil {
+	}{Verdict: options.Verdict, Actor: "human", Note: options.Note, Evidence: options.Evidence, WorkspaceObservation: observation}); err != nil {
 		return RunResult{}, err
 	}
 	if options.Verdict == "abort_run" {
@@ -446,7 +451,8 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err := appendEvent(domain.EventTurnClosed, domain.TurnClosedPayload{Outcome: "continue"}); err != nil {
 		return RunResult{}, err
 	}
-	observation, err := workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
+	// 对账本身不执行任何副作用，重算观察值以绑定恢复时刻的真实工作区状态。
+	observation, err = workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}

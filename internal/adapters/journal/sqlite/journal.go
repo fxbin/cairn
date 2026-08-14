@@ -233,14 +233,15 @@ func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.
 
 // NonTerminalRuns 重放工作区对应的运行，并筛出可恢复的非终态投影。
 func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash string) ([]domain.RunProjection, error) {
-	rows, err := journal.db.QueryContext(ctx, "SELECT DISTINCT run_id FROM events WHERE workspace_hash = ?", workspaceHash)
+	rows, err := journal.db.QueryContext(ctx, "SELECT run_id, MIN(seq) AS first_seq FROM events WHERE workspace_hash = ? GROUP BY run_id ORDER BY first_seq", workspaceHash)
 	if err != nil {
 		return nil, fmt.Errorf("list workspace runs: %w", err)
 	}
 	var runIDs []domain.RunID
 	for rows.Next() {
 		var runID domain.RunID
-		if err := rows.Scan(&runID); err != nil {
+		var firstSeq uint64
+		if err := rows.Scan(&runID, &firstSeq); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan workspace run: %w", err)
 		}
