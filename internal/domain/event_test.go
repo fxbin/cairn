@@ -188,3 +188,39 @@ func TestVerifyChainAcceptsOlderSchemaVersion(t *testing.T) {
 		t.Fatalf("future schema version must be rejected, got %v", err)
 	}
 }
+
+// TestVerifyChainRejectsReorderedDeletedAndRelinkedEvents 锁定链校验的三条
+// 防线：相邻事件交换、删除中间事件与篡改 prev_hash 各自产生明确错误。
+func TestVerifyChainRejectsReorderedDeletedAndRelinkedEvents(t *testing.T) {
+	runID := RunID("run_chain")
+	build := func() []Event {
+		first, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, OccurredAt: time.Unix(1, 0), Payload: json.RawMessage(`{"task":"chain","workspace":"."}`)}, 1, GenesisHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunStarted, OccurredAt: time.Unix(2, 0)}, 2, first.EventHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		third, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCancelRequested, OccurredAt: time.Unix(3, 0), Payload: json.RawMessage(`{"cause":"chain"}`)}, 3, second.EventHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []Event{first, second, third}
+	}
+	swapped := build()
+	swapped[1], swapped[2] = swapped[2], swapped[1]
+	if err := VerifyChain(swapped); err == nil || !strings.Contains(err.Error(), "sequence mismatch") {
+		t.Fatalf("reordered chain err = %v", err)
+	}
+	deleted := build()
+	deleted = append(deleted[:1], deleted[2])
+	if err := VerifyChain(deleted); err == nil || !strings.Contains(err.Error(), "sequence mismatch") {
+		t.Fatalf("chain with deleted middle err = %v", err)
+	}
+	relinked := build()
+	relinked[1].PrevHash = GenesisHash
+	if err := VerifyChain(relinked); err == nil || !strings.Contains(err.Error(), "previous hash mismatch") {
+		t.Fatalf("relinked chain err = %v", err)
+	}
+}
