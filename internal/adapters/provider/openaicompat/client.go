@@ -73,11 +73,7 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 		if semantic || ctx.Err() != nil || attempt == 2 || !errors.As(err, &providerError) || !providerError.Retryable {
 			return err
 		}
-		delay := providerError.RetryAfter
-		if delay <= 0 {
-			delay = time.Duration(attempt+1) * 100 * time.Millisecond
-		}
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(retryDelay(providerError.RetryAfter, attempt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -86,6 +82,22 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 		}
 	}
 	return errors.New("provider retry loop exited unexpectedly")
+}
+
+// maxRetryAfterDelay 限制服务端 Retry-After 可施加的单次休眠上限；更大值
+// 只会来自异常或恶意的服务端，实际等待仍由取消与墙钟预算兜底。
+const maxRetryAfterDelay = 30 * time.Second
+
+// retryDelay 计算单次重试等待：尊重服务端 Retry-After 但设上限，缺省时按
+// 尝试次数线性退避。
+func retryDelay(after time.Duration, attempt int) time.Duration {
+	if after > maxRetryAfterDelay {
+		return maxRetryAfterDelay
+	}
+	if after > 0 {
+		return after
+	}
+	return time.Duration(attempt+1) * 100 * time.Millisecond
 }
 
 // streamOnce 发起一次 SSE 请求，并报告是否已收到不可安全重试的语义输出。

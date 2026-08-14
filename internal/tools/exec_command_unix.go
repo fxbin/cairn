@@ -240,7 +240,13 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 		case waitErr = <-finished:
 		case <-time.After(grace):
 			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-			waitErr = <-finished
+			// SIGKILL 后仍有界等待：进程处于不可中断状态时不会永远阻塞取消
+			// 流程，而是返回明确的未确认终止错误。
+			select {
+			case waitErr = <-finished:
+			case <-time.After(5 * time.Second):
+				waitErr = errors.New("process did not exit after SIGKILL")
+			}
 		}
 	}
 	if cancelled && cleanup != nil {

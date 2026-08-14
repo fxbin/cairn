@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -138,5 +139,19 @@ func TestContractExhaustsRetriesOnPersistentTransientFailure(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("expected exactly 3 attempts, got %d", calls)
+	}
+}
+
+// TestRetryDelayCapsServerProvidedWait 锁定重试等待上限：异常或恶意服务端
+// 的超大 Retry-After 不会让客户端长时间休眠。
+func TestRetryDelayCapsServerProvidedWait(t *testing.T) {
+	if got := retryDelay(time.Hour, 0); got != 30*time.Second {
+		t.Fatalf("retryDelay(1h) = %v, want 30s", got)
+	}
+	if got := retryDelay(2*time.Second, 0); got != 2*time.Second {
+		t.Fatalf("retryDelay(2s) = %v, want 2s", got)
+	}
+	if got := retryDelay(0, 1); got != 200*time.Millisecond {
+		t.Fatalf("retryDelay(0, 1) = %v, want 200ms", got)
 	}
 }
