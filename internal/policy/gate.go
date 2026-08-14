@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/tools"
@@ -94,7 +95,7 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 			Effect:               gate.ExecMode,
 			RuleID:               "process_execution",
 			Fingerprint:          execFingerprint(proposed, observation),
-			Summary:              "execute " + strings.Join(proposed.Argv, " "),
+			Summary:              "execute " + quoteArgv(proposed.Argv),
 			WorkspaceObservation: observation,
 		}, nil
 	default:
@@ -214,4 +215,14 @@ func matchesProtected(candidate, protected string) bool {
 		}
 	}
 	return candidate == protected || strings.HasPrefix(candidate, protected+"/")
+}
+
+// quoteArgv 逐参数加引号渲染命令行，使含空格、分号等字符的实参无法在审批
+// 摘要中伪装成多条命令或纯展示文本；每个参数的边界对审批人可见。
+func quoteArgv(argv []string) string {
+	quoted := make([]string, 0, len(argv))
+	for _, argument := range argv {
+		quoted = append(quoted, strconv.Quote(argument))
+	}
+	return "[" + strings.Join(quoted, " ") + "]"
 }

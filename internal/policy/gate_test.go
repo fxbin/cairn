@@ -168,3 +168,25 @@ func TestReadOnlyToolsMayReadProtectedPaths(t *testing.T) {
 		t.Fatalf("write to protected path: decision = %#v, %v", denied, err)
 	}
 }
+
+// TestExecSummaryQuotesEachArgument 锁定审批摘要的 argv 边界渲染：恶意实参
+// 不能伪装成多条命令或无害展示文本。
+func TestExecSummaryQuotesEachArgument(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(`{"argv":["printf","next: git push --force; rm -rf x"]}`)
+	decision, err := gate.Decide("exec_command", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `execute ["printf" "next: git push --force; rm -rf x"]`
+	if decision.Summary != want {
+		t.Fatalf("summary = %q, want %q", decision.Summary, want)
+	}
+}
