@@ -21,8 +21,14 @@ type Approval struct {
 	Reason      string
 }
 
-// Resume 继续在模型工具启动前暂停的运行；它绝不为其他指纹复用审批，也不重启已开始操作。
+// Resume 恢复等待审批或普通运行；返回错误前与 Run 相同地兜底持久化取消。
 func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
+	result, err := loop.resume(ctx, input, approval)
+	return result, loop.persistCancellationIfInterrupted(ctx, input, err)
+}
+
+// resume 执行恢复主流程：处理挂起审批、未完成模型尝试与悬挂读操作。
+func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
 	}
@@ -67,7 +73,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 			return Result{}, err
 		}
 		input.Task = projection.Task
-		return loop.Run(ctx, input)
+		return loop.run(ctx, input)
 	}
 	if projection.PendingApproval == nil {
 		if err := loop.appendResume(ctx, &projection, &input); err != nil {
@@ -92,7 +98,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		if !incomplete {
 			if projection.CurrentTurn == nil {
 				input.Task = projection.Task
-				return loop.Run(ctx, input)
+				return loop.run(ctx, input)
 			}
 			return Result{}, errors.New("open turn has no resumable model attempt or approval")
 		}
@@ -109,7 +115,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 			return Result{}, err
 		}
-		return loop.Run(ctx, input)
+		return loop.run(ctx, input)
 	}
 	if projection.CurrentTurn == nil {
 		return Result{}, errors.New("run is not waiting for an approval")
@@ -204,7 +210,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
 				}
-				return loop.Run(ctx, input)
+				return loop.run(ctx, input)
 			}
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 		}
@@ -225,7 +231,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
 				}
-				return loop.Run(ctx, input)
+				return loop.run(ctx, input)
 			}
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 		}
@@ -348,7 +354,7 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 			if _, closeErr := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); closeErr != nil {
 				return Result{RunID: input.RunID}, closeErr
 			}
-			return loop.Run(ctx, input)
+			return loop.run(ctx, input)
 		}
 		return loop.failCurrentTurn(ctx, projection, input, turnID, err)
 	}
@@ -417,12 +423,12 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 		if _, err := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); err != nil {
 			return Result{}, err
 		}
-		return loop.Run(ctx, input)
+		return loop.run(ctx, input)
 	}
 	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return Result{}, err
 	}
-	return loop.Run(ctx, input)
+	return loop.run(ctx, input)
 }
 
 // expireApproval records that a one-shot approval no longer describes the
@@ -459,7 +465,7 @@ func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProj
 	if err := loop.appendResume(ctx, projection, &input); err != nil {
 		return Result{}, err
 	}
-	return loop.Run(ctx, input)
+	return loop.run(ctx, input)
 }
 
 // completedModelResponseForTurn 查找指定轮次已持久化的完整模型响应。

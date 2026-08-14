@@ -1740,3 +1740,62 @@ func TestLoopKeepsRunResumableAfterRetryableProviderFailure(t *testing.T) {
 		t.Fatalf("final projection=%#v err=%v", final, err)
 	}
 }
+
+// cancelingJournal 在第 N 次 Append 时取消运行上下文并以 canceled 失败，模拟
+// 取消信号落在事件追加间隙的竞态窗口。
+type cancelingJournal struct {
+	ports.Journal
+	cancel    context.CancelFunc
+	failAfter uint64
+	appends   uint64
+}
+
+// Append 在命中注入点时先取消上下文再返回取消错误，其余调用原样透传。
+func (journal *cancelingJournal) Append(ctx context.Context, expectedSeq uint64, draft domain.EventDraft) (domain.Event, error) {
+	journal.appends++
+	if journal.appends == journal.failAfter {
+		journal.cancel()
+		return domain.Event{}, context.Canceled
+	}
+	return journal.Journal.Append(ctx, expectedSeq, draft)
+}
+
+// TestLoopPersistsCancellationWhenInterruptHitsAppendGap 锁定顶层兜底：取消落在
+// 追加间隙、主循环以原始 append 错误退出时，run 仍必须补写完整取消序列。
+func TestLoopPersistsCancellationWhenInterruptHitsAppendGap(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "partial"}, {Kind: ports.Done}}}}
+	inner := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, inner, runID, "gap")
+	runContext, cancel := context.WithCancel(context.Background())
+	journal := &cancelingJournal{Journal: inner, cancel: cancel, failAfter: 3}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake"}
+	_, err = loop.Run(runContext, RunInput{RunID: runID, Task: "gap", WorkspaceHash: "workspace"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	cancel()
+	events, err := inner.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCancelled {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+	if countEvent(events, domain.EventRunCancelRequested) != 1 || countEvent(events, domain.EventRunCancelled) != 1 {
+		t.Fatalf("cancellation was not persisted once: %#v", events)
+	}
+}

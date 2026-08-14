@@ -63,7 +63,34 @@ type Result struct {
 }
 
 // Run 从当前事件投影继续执行模型轮次、工具与验证，直至终态或可恢复暂停。
+// 返回错误前统一兜底持久化取消，保证中断信号落在事件追加间隙时也能落盘。
 func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
+	result, err := loop.run(ctx, input)
+	return result, loop.persistCancellationIfInterrupted(ctx, input, err)
+}
+
+// persistCancellationIfInterrupted 在错误为用户取消且 run 仍处 running 时补写
+// 持久化取消序列；取消序列本身被中断（run 已处 cancelling）时留给 Abort 处置。
+func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input RunInput, err error) error {
+	if !errors.Is(err, context.Canceled) || ctx.Err() == nil {
+		return err
+	}
+	events, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if loadErr != nil {
+		return err
+	}
+	projection, replayErr := domain.Replay(events)
+	if replayErr != nil || projection.State != domain.RunRunning {
+		return err
+	}
+	if _, cancelErr := loop.persistCancellation(context.WithoutCancel(ctx), &projection, input, projection.CurrentTurn); cancelErr != nil {
+		return err
+	}
+	return context.Canceled
+}
+
+// run 执行模型轮次、工具与验证的主循环，直至终态或可恢复暂停。
+func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
 	}
