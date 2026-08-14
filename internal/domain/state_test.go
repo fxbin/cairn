@@ -1,0 +1,266 @@
+package domain
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+// eventChain 以递增序号与哈希链构造可回放事件序列，供迁移矩阵测试复用。
+type eventChain struct {
+	runID  RunID
+	events []Event
+}
+
+func newEventChain(t *testing.T) *eventChain {
+	t.Helper()
+	chain := &eventChain{runID: RunID("run_matrix")}
+	chain.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"matrix","workspace":"."}`)})
+	chain.add(t, EventDraft{Type: EventRunStarted})
+	return chain
+}
+
+// add 追加一个事件并维护 seq 与 prevHash 链；构造失败立即终止测试。
+func (chain *eventChain) add(t *testing.T, draft EventDraft) Event {
+	t.Helper()
+	draft.RunID = chain.runID
+	draft.WorkspaceHash = "workspace"
+	if draft.OccurredAt.IsZero() {
+		draft.OccurredAt = time.Unix(int64(len(chain.events))+1, 0)
+	}
+	prevHash := GenesisHash
+	seq := uint64(1)
+	if last := len(chain.events) - 1; last >= 0 {
+		prevHash = chain.events[last].EventHash
+		seq = chain.events[last].Seq + 1
+	}
+	event, err := NewEvent(draft, seq, prevHash)
+	if err != nil {
+		t.Fatalf("build %s event: %v", draft.Type, err)
+	}
+	chain.events = append(chain.events, event)
+	return event
+}
+
+// replay 断言当前序列可完整回放并返回投影。
+func (chain *eventChain) replay(t *testing.T) RunProjection {
+	t.Helper()
+	projection, err := Replay(chain.events)
+	if err != nil {
+		t.Fatalf("replay chain: %v", err)
+	}
+	return projection
+}
+
+// replayReject 断言当前序列回放失败且错误包含 want。
+func (chain *eventChain) replayReject(t *testing.T, want string) {
+	t.Helper()
+	_, err := Replay(chain.events)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected replay error containing %q, got %v", want, err)
+	}
+}
+
+// runFailedMatrixFixture 构造到达指定 from-state 的最小序列。
+func runFailedMatrixFixture(t *testing.T, state RunState) *eventChain {
+	t.Helper()
+	chain := newEventChain(t)
+	turnID := TurnID("turn_matrix")
+	switch state {
+	case RunCreated:
+		chain.events = chain.events[:1]
+	case RunRunning:
+	case RunCancelling:
+		chain.add(t, EventDraft{Type: EventRunCancelRequested, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	case RunFailed:
+		chain.add(t, EventDraft{Type: EventRunFailed, Payload: json.RawMessage(`{"error":"first"}`)})
+	case RunCompleted:
+		chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+		chain.add(t, EventDraft{Type: EventVerificationFinished, TurnID: &turnID, Payload: json.RawMessage(`{"ok":true}`)})
+		chain.add(t, EventDraft{Type: EventTurnClosed, TurnID: &turnID, Payload: json.RawMessage(`{"outcome":"final"}`)})
+		chain.add(t, EventDraft{Type: EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`)})
+	case RunCancelled:
+		chain.add(t, EventDraft{Type: EventRunCancelRequested, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+		chain.add(t, EventDraft{Type: EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	}
+	return chain
+}
+
+// TestRunFailedTransitionMatrix 锁定 run_failed 的完整 from-state 矩阵：
+// created/running/cancelling 合法（Abort 与预算路径依赖），终态及 failed 自身拒绝。
+func TestRunFailedTransitionMatrix(t *testing.T) {
+	allowed := []RunState{RunCreated, RunRunning, RunCancelling}
+	for _, state := range allowed {
+		chain := runFailedMatrixFixture(t, state)
+		chain.add(t, EventDraft{Type: EventRunFailed, Payload: json.RawMessage(`{"error":"boom"}`)})
+		if projection := chain.replay(t); projection.State != RunFailed {
+			t.Fatalf("run_failed from %s: state = %s", state, projection.State)
+		}
+	}
+	rejected := []RunState{RunFailed, RunCompleted, RunCancelled}
+	for _, state := range rejected {
+		chain := runFailedMatrixFixture(t, state)
+		chain.add(t, EventDraft{Type: EventRunFailed, Payload: json.RawMessage(`{"error":"again"}`)})
+		chain.replayReject(t, "run_failed from terminal state")
+	}
+}
+
+// TestRunCancelledRequiresCancellingState 锁定 run_cancelled 只能从 cancelling 进入。
+func TestRunCancelledRequiresCancellingState(t *testing.T) {
+	chain := newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	chain.replayReject(t, "run_cancelled from terminal state")
+
+	chain = runFailedMatrixFixture(t, RunCancelling)
+	chain.add(t, EventDraft{Type: EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	if projection := chain.replay(t); projection.State != RunCancelled {
+		t.Fatalf("state = %s", projection.State)
+	}
+}
+
+// TestRunCancelRequestedOnlyFromActiveStates 锁定 cancel_requested 仅接受
+// created/running；cancelling 与终态拒绝（防重复取消）。
+func TestRunCancelRequestedOnlyFromActiveStates(t *testing.T) {
+	chain := newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunCancelRequested, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	if projection := chain.replay(t); projection.State != RunCancelling {
+		t.Fatalf("state = %s", projection.State)
+	}
+	chain.add(t, EventDraft{Type: EventRunCancelRequested, Payload: json.RawMessage(`{"cause":"user_interrupt"}`)})
+	chain.replayReject(t, "run_cancel_requested from cancelling")
+}
+
+// TestRunStartedOnlyFromCreated 锁定 run_started 仅接受 created。
+func TestRunStartedOnlyFromCreated(t *testing.T) {
+	chain := newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunStarted})
+	chain.replayReject(t, "run_started")
+
+	chain = &eventChain{runID: RunID("run_matrix")}
+	chain.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"matrix","workspace":"."}`)})
+	chain.add(t, EventDraft{Type: EventRunStarted})
+	chain.add(t, EventDraft{Type: EventRunStarted})
+	chain.replayReject(t, "run_started")
+}
+
+// TestRunResumedRequiresCleanRunningState 锁定 run_resumed 的 payload 完整性、
+// from_seq 上界与 pending 覆盖层拒绝。
+func TestRunResumedRequiresCleanRunningState(t *testing.T) {
+	valid := func(overrides string) json.RawMessage {
+		payload := map[string]any{"invocation": "resume_test", "from_seq": 1, "workspace_observation": "sha256:obs"}
+		if overrides != "" {
+			merged := map[string]any{}
+			for key, value := range payload {
+				merged[key] = value
+			}
+			if err := json.Unmarshal(json.RawMessage(overrides), &merged); err != nil {
+				t.Fatalf("merge override payload: %v", err)
+			}
+			encoded, err := json.Marshal(merged)
+			if err != nil {
+				t.Fatalf("encode resume payload: %v", err)
+			}
+			return encoded
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("encode resume payload: %v", err)
+		}
+		return encoded
+	}
+	chain := newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunResumed, Payload: valid("")})
+	chain.replay(t)
+
+	chain = newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunResumed, Payload: valid(`{"invocation":""}`)})
+	chain.replayReject(t, "run_resumed")
+
+	chain = newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunResumed, Payload: valid(`{"workspace_observation":""}`)})
+	chain.replayReject(t, "run_resumed")
+
+	// from_seq 必须早于 run_resumed 自身序号（此处 seq=3）。
+	chain = newEventChain(t)
+	chain.add(t, EventDraft{Type: EventRunResumed, Payload: valid(`{"from_seq":3}`)})
+	chain.replayReject(t, "run_resumed")
+}
+
+// TestRunResumedRejectedWithPendingApproval 锁定悬而未决审批时不得记录恢复。
+func TestRunResumedRejectedWithPendingApproval(t *testing.T) {
+	chain := newEventChain(t)
+	turnID, operationID := TurnID("turn_matrix"), OperationID("op_matrix")
+	chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+	chain.add(t, EventDraft{Type: EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"read","tool_name":"read_file","arguments":{"path":"x"}}`)})
+	chain.add(t, EventDraft{Type: EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"ask","fingerprint":"sha256:pending"}`)})
+	chain.add(t, EventDraft{Type: EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"fingerprint":"sha256:pending","summary":"read"}`)})
+	chain.replay(t)
+	chain.add(t, EventDraft{Type: EventRunResumed, Payload: json.RawMessage(`{"invocation":"resume_test","from_seq":1,"workspace_observation":"sha256:obs"}`)})
+	chain.replayReject(t, "run_resumed")
+}
+
+// TestAssistantAndVerificationEventsRequireRunningTurn 锁定新增守卫：
+// 两个上下文事件必须发生在 running 状态的当前开轮内。
+func TestAssistantAndVerificationEventsRequireRunningTurn(t *testing.T) {
+	turnID := TurnID("turn_matrix")
+	cases := []struct {
+		name  string
+		event EventDraft
+	}{
+		{"assistant_message_appended", EventDraft{Type: EventAssistantMessageAppended, TurnID: &turnID, Payload: json.RawMessage(`{"text":"hello"}`)}},
+		{"verification_finished", EventDraft{Type: EventVerificationFinished, TurnID: &turnID, Payload: json.RawMessage(`{"ok":true}`)}},
+	}
+	for _, item := range cases {
+		chain := newEventChain(t)
+		chain.add(t, item.event)
+		chain.replayReject(t, "current running turn")
+
+		chain = newEventChain(t)
+		chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+		chain.add(t, item.event)
+		chain.replay(t)
+
+		mismatched := TurnID("turn_other")
+		chain = newEventChain(t)
+		chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+		draft := item.event
+		draft.TurnID = &mismatched
+		chain.add(t, draft)
+		chain.replayReject(t, "current running turn")
+
+		chain = newEventChain(t)
+		chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+		chain.add(t, EventDraft{Type: EventTurnClosed, TurnID: &turnID, Payload: json.RawMessage(`{"outcome":"continue"}`)})
+		chain.add(t, item.event)
+		chain.replayReject(t, "current running turn")
+	}
+}
+
+// TestApprovalResultMustMatchPendingFingerprint 锁定审批结果指纹必须与
+// 悬置审批一致。
+func TestApprovalResultMustMatchPendingFingerprint(t *testing.T) {
+	chain := newEventChain(t)
+	turnID, operationID := TurnID("turn_matrix"), OperationID("op_matrix")
+	chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+	chain.add(t, EventDraft{Type: EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"read","tool_name":"read_file","arguments":{"path":"x"}}`)})
+	chain.add(t, EventDraft{Type: EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"ask","fingerprint":"sha256:pending"}`)})
+	chain.add(t, EventDraft{Type: EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"fingerprint":"sha256:pending","summary":"read"}`)})
+	chain.add(t, EventDraft{Type: EventApprovalGranted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"fingerprint":"sha256:other"}`)})
+	chain.replayReject(t, "fingerprint does not match")
+}
+
+// TestToolResultAppendedOnlyOnce 锁定同一操作的工具结果只能追加一次。
+func TestToolResultAppendedOnlyOnce(t *testing.T) {
+	chain := newEventChain(t)
+	turnID, operationID := TurnID("turn_matrix"), OperationID("op_matrix")
+	chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+	chain.add(t, EventDraft{Type: EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"read","tool_name":"read_file","arguments":{"path":"x"}}`)})
+	chain.add(t, EventDraft{Type: EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:read"}`)})
+	chain.add(t, EventDraft{Type: EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"read_file","side_effect_class":"none"}`)})
+	chain.add(t, EventDraft{Type: EventOperationSucceeded, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"read_file","result":{"ok":true}}`)})
+	chain.add(t, EventDraft{Type: EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"ok":true}`)})
+	chain.replay(t)
+	chain.add(t, EventDraft{Type: EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"ok":true}`)})
+	chain.replayReject(t, "tool_result_appended requires one terminal operation result")
+}

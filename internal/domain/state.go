@@ -272,12 +272,18 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.operations[*event.OperationID] = &operationRecord{state: operationProposed, turnID: *event.TurnID, requiresToolResult: event.Type == EventToolCallProposed}
 	case EventAssistantMessageAppended:
+		if projection.State != RunRunning || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn {
+			return fmt.Errorf("assistant_message_appended requires the current running turn")
+		}
 		var payload AssistantMessagePayload
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode assistant message: %w", err)
 		}
 		projection.LastAssistantMessage = payload.Text
 	case EventVerificationFinished:
+		if projection.State != RunRunning || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn {
+			return fmt.Errorf("verification_finished requires the current running turn")
+		}
 		var payload VerificationFinishedPayload
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode verification result: %w", err)
@@ -454,7 +460,10 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.State = RunCompleted
 	case EventRunFailed:
-		if projection.State == RunCompleted || projection.State == RunCancelled || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		// 终态事件只允许一次：completed/cancelled 为不相容终态，failed 自身
+		// 也不得重复进入；created/running/cancelling 是合法失败起点
+		//（Abort 可中止未启动的 run，预算耗尽先经 cancel_requested 进入 cancelling）。
+		if projection.State == RunCompleted || projection.State == RunCancelled || projection.State == RunFailed || projection.PendingApproval != nil || projection.PendingOperation != nil {
 			return fmt.Errorf("run_failed from terminal state %s", projection.State)
 		}
 		projection.State = RunFailed
