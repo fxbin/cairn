@@ -151,3 +151,45 @@ func TestRedactStillFlagsQuotedAndLongCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestRedactCatchesQuotedJSONKeyForms 锁定文本脱敏对 JSON 引号键形态的覆盖：
+// 键与冒号隔着引号时值仍被脱敏，短值与类型注解不受误伤。
+func TestRedactCatchesQuotedJSONKeyForms(t *testing.T) {
+	secret := []byte(`{"api_key":"AKIA1234567890ABCD","password":"hunter2secret"}`)
+	redacted := string(Redact(secret))
+	if strings.Contains(redacted, "AKIA1234567890ABCD") || strings.Contains(redacted, "hunter2secret") {
+		t.Fatalf("quoted JSON credentials survived: %s", redacted)
+	}
+	benign := []byte(`def hash_token(token: str) -> str: return token`)
+	if got := string(Redact(benign)); got != string(benign) {
+		t.Fatalf("benign annotation was redacted: %s", got)
+	}
+}
+
+// TestPutUsesStructuralRedactionForJSONArtifacts 锁定 JSON 制品走递归键脱敏：
+// 内嵌于嵌套对象的凭据值在制品内容中被清除且结构保持合法 JSON。
+func TestPutUsesStructuralRedactionForJSONArtifacts(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "artifacts"), 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"nested":{"password":"super-secret-value"},"note":"plain"}`)
+	reference, err := store.Put(content, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimPrefix(reference.SHA256, "sha256:")
+	stored, err := os.ReadFile(filepath.Join(store.Root, "sha256", digest[:2], digest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "super-secret-value") {
+		t.Fatalf("nested credential survived JSON artifact redaction: %s", stored)
+	}
+	if !json.Valid(stored) {
+		t.Fatalf("redacted artifact is no longer valid JSON: %s", stored)
+	}
+	if !strings.Contains(string(stored), "plain") {
+		t.Fatalf("non-sensitive content was removed: %s", stored)
+	}
+}

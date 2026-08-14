@@ -32,8 +32,9 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(bearer)\s+[a-z0-9._~+/=-]{8,}`),
 	// 仅脱敏"凭据式键 = 值"中的值：值必须是引号包裹（≥4 字符）或足够长（≥16 个凭据可用字符）
 	// 的裸串。否则会把 Python 类型注解（如 def hash_token(token: str)）或短赋值（token = None）
-	// 误判为密钥，从而拒绝合法的 auth 类补丁。
-	regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`),
+	// 误判为密钥，从而拒绝合法的 auth 类补丁。键后允许可选引号，覆盖 JSON 文本
+	// 形态（"api_key": "…"）中键与冒号隔着引号的情况。
+	regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`),
 	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{12,}`),
 }
 
@@ -119,9 +120,13 @@ func sensitiveKey(key string) bool {
 		strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "credential")
 }
 
-// Put 脱敏后按内容哈希原子写入制品，并返回稳定引用。
+// Put 脱敏后按内容哈希原子写入制品，并返回稳定引用；JSON 制品优先走保留
+// 结构的递归键脱敏，使内嵌于字符串叶子中的凭据同样被清除。
 func (store *Store) Put(content []byte, mediaType string) (Ref, error) {
 	redacted := Redact(content)
+	if mediaType == "application/json" {
+		redacted = RedactJSON(content)
+	}
 	if store.MaxBytes > 0 && len(redacted) > store.MaxBytes {
 		return Ref{}, fmt.Errorf("artifact exceeds configured maximum of %d bytes", store.MaxBytes)
 	}
