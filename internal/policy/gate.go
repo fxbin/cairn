@@ -52,6 +52,9 @@ func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch)
 }
 
 // Decide 对模型提议的固定工具调用作出策略判定，并为审批生成绑定指纹。
+// 注意：ProtectedPaths 是防篡改边界而非保密边界——只读工具对受保护路径恒
+// allow 是有意设计（敏感文件已由工作区层 sensitivePath/ignore 拦截），模型
+// 需要读取（如受写保护的配置文件）才能完成任务的场景不因此被阻断。
 func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error) {
 	switch toolName {
 	case "list_files", "read_file", "search_text":

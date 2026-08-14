@@ -143,3 +143,28 @@ func patchHash(content []byte) string {
 	digest := sha256.Sum256(content)
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
+
+// TestReadOnlyToolsMayReadProtectedPaths 锁定有意设计：ProtectedPaths 只约束
+// 写入与命令执行（防篡改），只读工具对同一批路径恒 allow；保密边界由工作区
+// 层的 sensitivePath/ignore 负责。
+func TestReadOnlyToolsMayReadProtectedPaths(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := New("ask", "ask", []string{"frozen-config.yaml"}, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"list_files", "read_file", "search_text"} {
+		decision, err := gate.Decide(tool, json.RawMessage(`{"path":"frozen-config.yaml"}`))
+		if err != nil || decision.Effect != Allow || decision.RuleID != "read_only" {
+			t.Fatalf("%s on protected path: decision = %#v, %v", tool, decision, err)
+		}
+	}
+	denied, err := gate.Decide("apply_patch", json.RawMessage(`{"path":"frozen-config.yaml","mode":"create","content":"x"}`))
+	if err != nil || denied.Effect != Deny || denied.RuleID != "protected_path" {
+		t.Fatalf("write to protected path: decision = %#v, %v", denied, err)
+	}
+}
