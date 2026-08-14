@@ -220,3 +220,12 @@ func TestValidateRejectsExpandedSecretLikeEnvironmentKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadRejectsInvalidAgentEnvironmentOverride 锁定 AGENT_* 数值型环境变量
+// 的非法值被拒绝而不是静默忽略。
+func TestLoadRejectsInvalidAgentEnvironmentOverride(t *testing.T) {
+	t.Setenv("AGENT_MAX_TURNS", "not-a-number")
+	if _, err := Load("", Overrides{}); err == nil || !strings.Contains(err.Error(), "AGENT_MAX_TURNS") {
+		t.Fatalf("err = %v", err)
+	}
+}

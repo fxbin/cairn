@@ -169,7 +169,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 			}
 		}
 	}
-	applyEnvironment(&config)
+	if err := applyEnvironment(&config); err != nil {
+		return Config{}, err
+	}
 	applyOverrides(&config, overrides)
 	if err := Validate(config); err != nil {
 		return Config{}, err
@@ -378,8 +380,9 @@ func (config Config) Fingerprint() string {
 // DefaultPath 返回工作区内的默认配置文件路径。
 func DefaultPath(workspace string) string { return filepath.Join(workspace, ".agent", "config.yaml") }
 
-// applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中。
-func applyEnvironment(config *Config) {
+// applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中；非法数值视为配置
+// 错误而非静默忽略，与同名 CLI flag 的行为保持一致。
+func applyEnvironment(config *Config) error {
 	if value := os.Getenv("AGENT_BASE_URL"); value != "" {
 		config.Provider.BaseURL = value
 	}
@@ -389,34 +392,37 @@ func applyEnvironment(config *Config) {
 	if value := os.Getenv("AGENT_API_KEY_ENV"); value != "" {
 		config.Provider.APIKeyEnv = value
 	}
-	if value := os.Getenv("AGENT_MAX_TURNS"); value != "" {
-		if turns, err := strconv.Atoi(value); err == nil {
-			config.Budget.MaxTurns = turns
-		}
+	integerOverrides := []struct {
+		name   string
+		target *int
+	}{
+		{"AGENT_MAX_TURNS", &config.Budget.MaxTurns},
+		{"AGENT_MAX_TOOL_CALLS", &config.Budget.MaxToolCalls},
+		{"AGENT_MAX_INPUT_TOKENS", &config.Budget.MaxInputTokens},
+		{"AGENT_MAX_OUTPUT_TOKENS", &config.Budget.MaxOutputTokens},
 	}
-	if value := os.Getenv("AGENT_MAX_TOOL_CALLS"); value != "" {
-		if limit, err := strconv.Atoi(value); err == nil {
-			config.Budget.MaxToolCalls = limit
+	for _, override := range integerOverrides {
+		value := os.Getenv(override.name)
+		if value == "" {
+			continue
 		}
-	}
-	if value := os.Getenv("AGENT_MAX_INPUT_TOKENS"); value != "" {
-		if limit, err := strconv.Atoi(value); err == nil {
-			config.Budget.MaxInputTokens = limit
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", override.name, err)
 		}
-	}
-	if value := os.Getenv("AGENT_MAX_OUTPUT_TOKENS"); value != "" {
-		if limit, err := strconv.Atoi(value); err == nil {
-			config.Budget.MaxOutputTokens = limit
-		}
+		*override.target = limit
 	}
 	if value := os.Getenv("AGENT_MAX_WALL_TIME"); value != "" {
 		config.Budget.MaxWallTime = value
 	}
 	if value := os.Getenv("AGENT_MAX_COST_USD"); value != "" {
-		if limit, err := strconv.ParseFloat(value, 64); err == nil {
-			config.Budget.MaxCostUSD = limit
+		limit, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("AGENT_MAX_COST_USD: %w", err)
 		}
+		config.Budget.MaxCostUSD = limit
 	}
+	return nil
 }
 
 // applyOverrides 应用已经由 CLI 解析完成的显式非零覆盖项。
