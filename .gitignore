@@ -20,5 +20,6 @@ coverage.out
 # Local editor and temporary files.
 .idea/
 .vscode/
+.zcode/
 *.swp
 *.tmp
