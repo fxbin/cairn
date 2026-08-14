@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
@@ -581,11 +583,36 @@ func incompleteModelAttempt(events []domain.Event) (domain.AttemptID, domain.Tur
 	var latest domain.AttemptID
 	var turn domain.TurnID
 	for attempt, turnID := range pending {
-		if string(attempt) > string(latest) {
+		if attemptOrderAfter(attempt, latest) {
 			latest, turn = attempt, turnID
 		}
 	}
 	return latest, turn, latest != ""
+}
+
+// attemptOrderAfter 判断 attempt a 是否晚于 b。ID 形如 前缀_UnixNano_熵：
+// 先按时间戳数值比较（同纳秒或时钟回拨时字典序不可靠），时间戳解析失败时
+// 回退字典序以保持确定性。
+func attemptOrderAfter(a, b domain.AttemptID) bool {
+	aTS, aOK := attemptTimestamp(a)
+	bTS, bOK := attemptTimestamp(b)
+	if aOK && bOK && aTS != bTS {
+		return aTS > bTS
+	}
+	return string(a) > string(b)
+}
+
+// attemptTimestamp 提取 attempt ID 中第二段的 UnixNano 时间戳。
+func attemptTimestamp(id domain.AttemptID) (int64, bool) {
+	parts := strings.Split(string(id), "_")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 // proposedVerificationCommand 从事件历史恢复某操作对应的验证命令提议。
