@@ -10,6 +10,16 @@ import (
 // 以便调用方可以安全地持久化分类并要求模型重新生成。
 var ErrMalformedToolCallArguments = errors.New("provider returned malformed tool call arguments")
 
+// ClassifiedError 由携带失败分类的提供方错误实现；Agent 循环据此判断失败是否
+// 为瞬态并可恢复、并把分类持久化到事件日志，而无需依赖具体适配器包。
+type ClassifiedError interface {
+	error
+	// ErrorClass 返回提供方失败分类（如 rate_limited、network）。
+	ErrorClass() string
+	// IsRetryable 报告失败是否属于瞬态可重试类别。
+	IsRetryable() bool
+}
+
 // Provider 是将模型流式响应适配为领域事件的端口。
 type Provider interface {
 	Stream(ctx context.Context, request ModelRequest, emit func(ModelEvent) error) error

@@ -145,9 +145,26 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 				}
 				return Result{}, fmt.Errorf("model request: %w", ports.ErrMalformedToolCallArguments)
 			}
-			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: err.Error()})})
-			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
-			_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(modelRequestFailedPayload{Error: err.Error()})})
+			// 提供方失败按分类分叉：瞬态失败只关闭当前轮次、保持 run 非终态，
+			// 已完成的对话与工具上下文留给 resume 续跑；永久失败才终态化 run。
+			var classified ports.ClassifiedError
+			errorClass, retryable := "", false
+			if errors.As(err, &classified) {
+				errorClass, retryable = classified.ErrorClass(), classified.IsRetryable()
+			}
+			failure := modelRequestFailedPayload{Error: err.Error(), ErrorClass: errorClass, Retryable: retryable}
+			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(failure)}); appendErr != nil {
+				return Result{}, appendErr
+			}
+			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
+				return Result{}, appendErr
+			}
+			if retryable {
+				return Result{RunID: input.RunID}, fmt.Errorf("model request: %w", err)
+			}
+			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); appendErr != nil {
+				return Result{}, appendErr
+			}
 			return Result{}, fmt.Errorf("model request: %w", err)
 		}
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage})}); err != nil {

@@ -45,6 +45,12 @@ func (err *ProviderError) Error() string {
 // Unwrap 暴露底层 HTTP、传输或解析错误。
 func (err *ProviderError) Unwrap() error { return err.Cause }
 
+// ErrorClass 返回提供方失败分类，供 Agent 循环持久化 error_class 字段。
+func (err *ProviderError) ErrorClass() string { return err.Kind }
+
+// IsRetryable 报告失败是否属于瞬态可重试类别，实现 ports.ClassifiedError。
+func (err *ProviderError) IsRetryable() bool { return err.Retryable }
+
 // Stream 以最多三次无语义输出的可重试请求转发模型流事件。
 func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	if emit == nil {

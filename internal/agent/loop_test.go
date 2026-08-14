@@ -1681,3 +1681,62 @@ func containsEventPayload(events []domain.Event, eventType domain.EventType, fra
 	}
 	return false
 }
+
+// retryableProviderError 模拟实现了 ports.ClassifiedError 的瞬态提供方失败。
+type retryableProviderError struct{}
+
+func (retryableProviderError) Error() string      { return "provider rate_limited: upstream saturated" }
+func (retryableProviderError) ErrorClass() string { return "rate_limited" }
+func (retryableProviderError) IsRetryable() bool  { return true }
+
+// TestLoopKeepsRunResumableAfterRetryableProviderFailure 锁定瞬态提供方失败的
+// 语义：失败与分类被持久化、当前轮次关闭，但 run 保持 running，resume 可带着
+// 既有上下文续跑至完成。
+func TestLoopKeepsRunResumableAfterRetryableProviderFailure(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{nil, {{Kind: ports.TextDelta, Text: "recovered"}, {Kind: ports.Done}}}, errors: []error{retryableProviderError{}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "transient")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake"}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "transient", WorkspaceHash: "workspace"}); err == nil {
+		t.Fatal("retryable provider failure must surface an error")
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunRunning {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+	if !containsEventPayload(events, domain.EventModelRequestFailed, `"error_class":"rate_limited"`) || !containsEventPayload(events, domain.EventModelRequestFailed, `"retryable":true`) {
+		t.Fatalf("failure classification missing: %#v", events)
+	}
+	if countEvent(events, domain.EventRunFailed) != 0 {
+		t.Fatalf("retryable failure must not terminate the run: %#v", events)
+	}
+	resumed, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "transient", WorkspaceHash: "workspace"})
+	if err != nil || resumed.Response != "recovered" {
+		t.Fatalf("resumed=%#v err=%v", resumed, err)
+	}
+	finalEvents, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := domain.Replay(finalEvents)
+	if err != nil || final.State != domain.RunCompleted {
+		t.Fatalf("final projection=%#v err=%v", final, err)
+	}
+}
