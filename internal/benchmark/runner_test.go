@@ -586,3 +586,38 @@ func repositoryRoot(t *testing.T) string {
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
+
+// TestRetryTransientRetriesThenSucceedsAndExhausts 锁定准备阶段重试语义：瞬态
+// 错误按上限重试，成功即返回，取消类错误不重试。
+func TestRetryTransientRetriesThenSucceedsAndExhausts(t *testing.T) {
+	originalBackoff := prepareRetryBackoff
+	prepareRetryBackoff = 0
+	defer func() { prepareRetryBackoff = originalBackoff }()
+	calls := 0
+	err := retryTransient(func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("spurious network error")
+		}
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+	calls = 0
+	err = retryTransient(func() error {
+		calls++
+		return context.Canceled
+	})
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("cancelled must not retry: err=%v calls=%d", err, calls)
+	}
+	calls = 0
+	err = retryTransient(func() error {
+		calls++
+		return errors.New("persistent")
+	})
+	if err == nil || calls != prepareRetryAttempts {
+		t.Fatalf("exhaustion must reach attempt cap: err=%v calls=%d", err, calls)
+	}
+}

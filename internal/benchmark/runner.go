@@ -478,14 +478,44 @@ func (runner Runner) dockerImageAvailable(ctx context.Context, image string) err
 }
 
 // cloneAtBaseline 通过 argv 固定从合同 URL 创建新的 clone 并检出不可变基线提交。
+// 准备网络路径上的瞬态故障（代理吞吐抖动、RPC 中断）按固定次数重试：每次尝试
+// 都从零开始克隆，成功后内容仍由基线提交校验保证不可变。
 func cloneAtBaseline(ctx context.Context, task Task, workspace, prepareProxy string) error {
-	if err := runProcessWithProxy(ctx, "", []string{"git", "-c", "http.version=HTTP/1.1", "clone", "--filter=blob:none", "--no-checkout", task.Repository.URL, workspace}, prepareProxy); err != nil {
+	if err := retryTransient(func() error {
+		return runProcessWithProxy(ctx, "", []string{"git", "-c", "http.version=HTTP/1.1", "clone", "--filter=blob:none", "--no-checkout", task.Repository.URL, workspace}, prepareProxy)
+	}); err != nil {
 		return fmt.Errorf("clone %s: %w", task.Repository.Name, err)
 	}
-	if err := runProcessWithProxy(ctx, workspace, []string{"git", "-c", "http.version=HTTP/1.1", "checkout", "--detach", task.Repository.BaselineCommit}, prepareProxy); err != nil {
+	if err := retryTransient(func() error {
+		return runProcessWithProxy(ctx, workspace, []string{"git", "-c", "http.version=HTTP/1.1", "checkout", "--detach", task.Repository.BaselineCommit}, prepareProxy)
+	}); err != nil {
 		return fmt.Errorf("checkout baseline %s: %w", task.Repository.BaselineCommit, err)
 	}
 	return nil
+}
+
+// prepareRetryAttempts 与 prepareRetryBackoff 是准备阶段瞬态故障的重试参数；
+// 上限保守以避免掩盖持续性的环境问题（最终仍按 environment_invalid 失败关闭）。
+// 退避是变量以便测试将其置零。
+const prepareRetryAttempts = 3
+
+var prepareRetryBackoff = 5 * time.Second
+
+// retryTransient 对返回错误的操作做固定次数重试；上下文取消时不重试。
+func retryTransient(operation func() error) error {
+	var err error
+	for attempt := 0; attempt < prepareRetryAttempts; attempt++ {
+		if err = operation(); err == nil {
+			return nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if attempt+1 < prepareRetryAttempts {
+			time.Sleep(prepareRetryBackoff)
+		}
+	}
+	return err
 }
 
 // runBootstrap 在计费窗口之外按合同 argv 在任务专属 Docker 镜像中准备依赖；它
