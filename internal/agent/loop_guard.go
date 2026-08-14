@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/domain"
@@ -98,7 +99,11 @@ func operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) stri
 	return stableFingerprint(fingerprints)
 }
 
-// progressFingerprint 摘要 verifier 可见工作区和最近验证结果状态，忽略事件序号等假进展。
+// progressFingerprint 摘要 verifier 可见工作区、最近验证结果与累计读证据集合，
+// 忽略事件序号等假进展。读证据以只读工具调用的 (tool, arguments) 去重集合参与
+// 指纹：一轮中出现任何首次调用的读/检索组合即视为新证据（指纹变化、熔断窗口
+// 重置），重复完全相同的调用不产生新证据。这使得"长读后写"的正常收敛路径不会
+// 被误杀，而原地重复徘徊仍会在窗口内保持指纹稳定并被终止。
 func progressFingerprint(workspaceObservation string, events []domain.Event) string {
 	verificationResult := ""
 	verificationOK := false
@@ -113,11 +118,33 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 		}
 		break
 	}
+	evidence := make([]string, 0, 16)
+	seen := make(map[string]struct{}, 16)
+	for _, event := range events {
+		if event.Type != domain.EventToolCallProposed {
+			continue
+		}
+		var payload toolCallPayload
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			continue
+		}
+		if payload.ToolName != "list_files" && payload.ToolName != "read_file" && payload.ToolName != "search_text" {
+			continue
+		}
+		candidate := payload.ToolName + "\x00" + string(payload.Arguments)
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		evidence = append(evidence, candidate)
+	}
+	sort.Strings(evidence)
 	return stableFingerprint(struct {
-		Workspace          string `json:"workspace"`
-		VerificationOK     bool   `json:"verification_ok"`
-		VerificationResult string `json:"verification_result,omitempty"`
-	}{Workspace: workspaceObservation, VerificationOK: verificationOK, VerificationResult: verificationResult})
+		Workspace          string   `json:"workspace"`
+		VerificationOK     bool     `json:"verification_ok"`
+		VerificationResult string   `json:"verification_result,omitempty"`
+		ReadEvidence       []string `json:"read_evidence,omitempty"`
+	}{Workspace: workspaceObservation, VerificationOK: verificationOK, VerificationResult: verificationResult, ReadEvidence: evidence})
 }
 
 // turnLoopGuard 检查最近六个继续轮次的 A-B 周期和稳定无进展状态。

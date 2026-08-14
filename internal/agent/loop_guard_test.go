@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
@@ -150,4 +151,32 @@ func operationOutcomeEvents(fingerprint string, outcome domain.EventType, rest .
 		)
 	}
 	return events
+}
+
+// TestProgressFingerprintTracksDistinctReadEvidence 锁定读证据语义：首次出现的
+// 读/检索调用改变指纹（长读收敛不被误杀），重复相同调用保持指纹稳定（原地
+// 徘徊仍会被熔断），副作用工具调用不参与读证据。
+func TestProgressFingerprintTracksDistinctReadEvidence(t *testing.T) {
+	build := func(calls ...[2]string) []domain.Event {
+		events := make([]domain.Event, 0, len(calls)+1)
+		for index, call := range calls {
+			events = append(events, domain.Event{Type: domain.EventToolCallProposed, Payload: mustJSON(toolCallPayload{
+				CallID: fmt.Sprintf("call-%d", index), ToolName: call[0], Arguments: json.RawMessage(call[1]),
+			}), Seq: uint64(index + 1)})
+		}
+		return events
+	}
+	first := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}))
+	repeat := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"read_file", `{"path":"a.rs"}`}))
+	if first != repeat {
+		t.Fatal("identical read calls must not change the fingerprint")
+	}
+	grown := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"search_text", `{"query":"retry"}`}))
+	if first == grown {
+		t.Fatal("a first-time read/search call must change the fingerprint")
+	}
+	withSideEffect := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"exec_command", `{"argv":["ls"]}`}))
+	if first != withSideEffect {
+		t.Fatal("side-effect calls must not count as read evidence")
+	}
 }
