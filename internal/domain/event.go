@@ -88,7 +88,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},
 	EventRunCancelRequested: {
-		"payload_version": {}, "cause": {}, "expected_terminal": {}, "budget_dimension": {}, "signal_or_budget_dimension": {},
+		"payload_version": {}, "cause": {}, "expected_terminal": {}, "budget_dimension": {},
 	},
 	EventRunCompleted: {"payload_version": {}, "final_response": {}, "final_response_ref": {}, "verification_seq": {}},
 	EventRunFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "reason": {}, "reason_ref": {}, "budget_dimension": {}},
@@ -104,14 +104,14 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventVerificationCommandProposed: {
 		"payload_version": {}, "verification_id": {}, "command_index": {}, "tool_name": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}, "plan_ref": {},
 	},
-	EventPolicyDecided:     {"payload_version": {}, "effect": {}, "rule": {}, "rule_id": {}, "fingerprint": {}, "summary": {}, "reason": {}, "summary_or_reason": {}},
+	EventPolicyDecided:     {"payload_version": {}, "effect": {}, "rule": {}, "rule_id": {}, "fingerprint": {}, "summary": {}, "reason": {}},
 	EventApprovalRequested: {"payload_version": {}, "fingerprint": {}, "summary": {}, "rule": {}, "rule_id": {}, "workspace_observation": {}},
 	EventApprovalGranted:   {"payload_version": {}, "fingerprint": {}, "actor": {}},
 	EventApprovalDenied:    {"payload_version": {}, "fingerprint": {}, "actor": {}, "reason": {}, "stop_cause": {}},
 	EventOperationStarted: {
 		"payload_version": {}, "tool_name": {}, "kind": {}, "side_effect_class": {}, "mutation_barrier": {}, "request_ref": {}, "planned_path": {}, "planned_before": {}, "planned_after": {},
 	},
-	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "exit_or_after_observation": {}, "duration_ms": {}},
+	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "duration_ms": {}},
 	EventOperationFailed:    {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "error_class": {}, "after_observation": {}, "duration_ms": {}},
 	EventOperationCancelled: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "cause": {}, "confirmed_stopped": {}},
 	EventOperationReconciled: {

@@ -61,6 +61,41 @@ func TestNewEventAcceptsLoopGuardEvidenceFields(t *testing.T) {
 	}
 }
 
+// TestNewEventRejectsRemovedUnionPayloadFields 锁定封闭 schema：已删除的
+// 联合语义字段（历史上从未有写入方）不得重新进入任何事件 payload。
+func TestNewEventRejectsRemovedUnionPayloadFields(t *testing.T) {
+	runID := RunID("run_test")
+	turnID := TurnID("turn_test")
+	removed := []struct {
+		name    string
+		draft   EventDraft
+		payload string
+	}{
+		{
+			name:    "run_cancel_requested.signal_or_budget_dimension",
+			draft:   EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCancelRequested},
+			payload: `{"cause":"budget_exhausted","signal_or_budget_dimension":"turns"}`,
+		},
+		{
+			name:    "policy_decided.summary_or_reason",
+			draft:   EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventPolicyDecided, TurnID: &turnID},
+			payload: `{"effect":"allow","summary_or_reason":"ok"}`,
+		},
+		{
+			name:    "operation_succeeded.exit_or_after_observation",
+			draft:   EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventOperationSucceeded, TurnID: &turnID},
+			payload: `{"tool_name":"exec_command","exit_or_after_observation":"sha256:obs"}`,
+		},
+	}
+	for _, item := range removed {
+		draft := item.draft
+		draft.Payload = json.RawMessage(item.payload)
+		if _, err := NewEvent(draft, 1, GenesisHash); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("%s was accepted after removal: %v", item.name, err)
+		}
+	}
+}
+
 func TestReplayRequiresClosedSuccessfulVerification(t *testing.T) {
 	runID := RunID("run_test")
 	turnID := TurnID("turn_test")
