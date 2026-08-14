@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,5 +211,21 @@ func TestExecCommandHostBackendKillsProcessGroupOnTimeout(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 		t.Fatalf("orphan descendant survived process-group cancellation: %v", statErr)
+	}
+}
+
+// TestDockerRunArgumentsMapHostUser 锁定容器以宿主用户身份运行：可写 bind
+// mount 的产出文件不会成为 root 属主。
+func TestDockerRunArgumentsMapHostUser(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ExecCommand{Workspace: workspace, Backend: "docker", DockerImage: "alpine:3.21", DockerMaxPIDs: 16}
+	arguments := ExecArguments{Argv: []string{"/bin/true"}, CWD: ".", TimeoutMS: 1000, MaxOutputBytes: 4096}
+	want := "--user\n" + fmt.Sprint(os.Getuid()) + ":" + fmt.Sprint(os.Getgid())
+	joined := strings.Join(tool.dockerRunArguments(arguments, ".", "cairn-test"), "\n")
+	if !strings.Contains(joined, want) {
+		t.Fatalf("docker args missing host user mapping %q: %q", want, joined)
 	}
 }

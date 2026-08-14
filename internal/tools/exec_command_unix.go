@@ -156,6 +156,9 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--pids-limit", strconv.Itoa(tool.dockerPIDLimit()),
+		// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
+		// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
+		"--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
 		"--mount", "type=bind,src=" + tool.Workspace.Root + ",dst=/workspace",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
 		"--workdir", containerCWD,
