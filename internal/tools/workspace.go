@@ -164,10 +164,31 @@ func (workspace Workspace) Ignore(relative string) bool {
 	return false
 }
 
-// sensitivePath 判断路径名是否可能包含环境变量或凭据。
+// sensitivePath 判断路径名是否可能包含环境变量或凭据。覆盖私钥、常见凭据
+// 文件与 .ssh/.aws/.gnupg 目录；词干匹配刻意使用复数形式（credentials/
+// secrets/tokens），避免误伤 token.go、tokenizer.go 等常见源码文件名。
 func sensitivePath(relative string) bool {
+	cleaned := filepath.ToSlash(filepath.Clean(relative))
+	for _, segment := range strings.Split(cleaned, "/") {
+		if segment == ".ssh" || segment == ".aws" || segment == ".gnupg" {
+			return true
+		}
+	}
 	base := strings.ToLower(filepath.Base(filepath.Clean(relative)))
-	return base == ".env" || strings.HasPrefix(base, ".env.") || strings.Contains(base, "credential")
+	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".npmrc" || base == ".netrc" || base == "_netrc" {
+		return true
+	}
+	if base == "id_rsa" || base == "id_dsa" || base == "id_ecdsa" || base == "id_ed25519" {
+		return true
+	}
+	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasSuffix(base, ".p12") || strings.HasSuffix(base, ".pfx") {
+		return true
+	}
+	stem := base
+	if dot := strings.LastIndexByte(stem, '.'); dot > 0 {
+		stem = stem[:dot]
+	}
+	return strings.Contains(base, "credential") || stem == "credentials" || stem == "secrets" || stem == "tokens"
 }
 
 // Observation 计算当前视图的稳定摘要。模型审批使用 NewWorkspace，而

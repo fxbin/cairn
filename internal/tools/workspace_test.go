@@ -94,3 +94,25 @@ func TestApplyPatchPlanRejectsCreateThroughEscapingSymlink(t *testing.T) {
 		t.Fatalf("outside directory must stay empty, got %v", entries)
 	}
 }
+
+// TestSensitivePathBlocksCommonCredentialFiles 锁定敏感路径扩面与源码文件
+// 误报边界：凭据文件被拦截，常见源码与配置文件名不受影响。
+func TestSensitivePathBlocksCommonCredentialFiles(t *testing.T) {
+	blocked := []string{
+		"id_rsa", "keys/server.pem", "tls/private.key", "cert.p12", "bundle.pfx",
+		".npmrc", "config/.netrc", "_netrc", ".ssh/config", ".ssh/id_ed25519",
+		".aws/credentials", ".gnupg/secring.gpg", "deploy/secrets.yaml",
+		"config/tokens.json", "app-credentials.txt", ".env.local",
+	}
+	for _, path := range blocked {
+		if !sensitivePath(path) {
+			t.Fatalf("sensitivePath(%q) = false, want true", path)
+		}
+	}
+	allowed := []string{"token.go", "tokenizer.go", "main.go", "secrets_test.go", "README.md", "go.mod"}
+	for _, path := range allowed {
+		if sensitivePath(path) {
+			t.Fatalf("sensitivePath(%q) = true, want false", path)
+		}
+	}
+}
