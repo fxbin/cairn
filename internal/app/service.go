@@ -403,7 +403,12 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, errors.New("dangling operation has no open turn")
 	}
 	appendEvent := func(eventType domain.EventType, payload any) error {
-		event, err := journal.Append(ctx, projection.LastSeq, domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)})
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)}
+		// 写入前先在克隆投影上模拟迁移，避免把不可回放的事件永久写入日志。
+		if err := projection.ValidateDraft(draft); err != nil {
+			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
+		}
+		event, err := journal.Append(ctx, projection.LastSeq, draft)
 		if err != nil {
 			return err
 		}
@@ -445,11 +450,15 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	resumed, err := journal.Append(ctx, projection.LastSeq, domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: domain.EventRunResumed, Payload: encode(struct {
+	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: domain.EventRunResumed, Payload: encode(struct {
 		Invocation           string `json:"invocation"`
 		FromSeq              uint64 `json:"from_seq"`
 		WorkspaceObservation string `json:"workspace_observation"`
-	}{Invocation: domain.NewID("invoke"), FromSeq: projection.LastSeq, WorkspaceObservation: observation})})
+	}{Invocation: domain.NewID("invoke"), FromSeq: projection.LastSeq, WorkspaceObservation: observation})}
+	if err := projection.ValidateDraft(resumedDraft); err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("validate run_resumed after sequence %d: %w", projection.LastSeq, err)
+	}
+	resumed, err := journal.Append(ctx, projection.LastSeq, resumedDraft)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
@@ -543,7 +552,12 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=abort_run", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
 	appendEvent := func(eventType domain.EventType, turnID *domain.TurnID, operationID *domain.OperationID, payload any) error {
-		event, err := journal.Append(ctx, projection.LastSeq, domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: encode(payload)})
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: encode(payload)}
+		// 与 Reconcile 相同：先在克隆投影上模拟迁移再写入，防止不可回放事件落盘。
+		if err := projection.ValidateDraft(draft); err != nil {
+			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
+		}
+		event, err := journal.Append(ctx, projection.LastSeq, draft)
 		if err != nil {
 			return err
 		}
