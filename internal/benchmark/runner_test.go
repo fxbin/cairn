@@ -13,12 +13,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
+
+func TestClassifyFailurePreservesLoopGuardReason(t *testing.T) {
+	classification := classifyFailure(&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
+	if classification != "loop_guard_periodic_turn_cycle" {
+		t.Fatalf("classification = %q", classification)
+	}
+}
 
 func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
 	source, baseline := localGitRepository(t)

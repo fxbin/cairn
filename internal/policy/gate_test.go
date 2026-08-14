@@ -34,6 +34,29 @@ func TestGateUsesHashBoundPatchFingerprintAndProtectsPaths(t *testing.T) {
 	}
 }
 
+func TestGateFingerprintsInvalidOperationsForLoopDetection(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "apply_patch", raw: json.RawMessage(`{"path":"missing.txt","mode":"update","patch":"bad"}`)},
+		{name: "exec_command", raw: json.RawMessage(`{"argv":[]}`)},
+	} {
+		decision, err := gate.Decide(test.name, test.raw)
+		if err != nil || decision.Effect != Deny || decision.Fingerprint == "" {
+			t.Fatalf("decision for %s = %#v err=%v", test.name, decision, err)
+		}
+	}
+}
+
 func TestVerificationFingerprintCannotBeUsedAsModelCommandApproval(t *testing.T) {
 	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {

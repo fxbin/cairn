@@ -161,6 +161,8 @@ type operationPayload struct {
 
 const automaticVerificationResponse = "Cairn runtime: frozen verification passed after successful apply_patch."
 
+const fallbackMaxTurns = 40
+
 const malformedToolArgumentsErrorClass = "malformed_tool_arguments"
 
 const malformedToolArgumentsFeedback = "Cairn runtime: the previous tool call was rejected because its arguments were malformed. Do not repeat it. Reissue at most one tool call with valid JSON arguments and no secrets."
@@ -182,7 +184,7 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 		return Result{}, errors.New("run ID, task, and workspace hash are required")
 	}
 	if loop.MaxTurns <= 0 {
-		loop.MaxTurns = 16
+		loop.MaxTurns = fallbackMaxTurns
 	}
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
@@ -205,7 +207,8 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 	}
 	usage := budgetUsageFromEvents(events)
 	malformedToolArgumentFailures := malformedToolArgumentsFailureCount(events)
-	for turn := 0; turn < loop.MaxTurns; turn++ {
+	usedTurns := openedTurnCount(events)
+	for turn := usedTurns; turn < loop.MaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, &projection, input, nil)
 		}
@@ -284,15 +287,16 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 				if errors.As(err, &budget) {
 					return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
 				}
+				var guard *LoopGuardExceededError
+				if errors.As(err, &guard) {
+					return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+				}
 				var verificationFailure *VerificationFailureError
 				if errors.As(err, &verificationFailure) {
 					messages = append(messages, ports.Message{Role: "user", Content: verificationFailure.Feedback})
-					if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
-						return Result{}, err
-					}
-					messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
+					messages, err = loop.closeTurnAndCompact(ctx, &projection, input, turnID, messages)
 					if err != nil {
-						return Result{}, err
+						return Result{RunID: input.RunID}, err
 					}
 					continue
 				}
@@ -321,6 +325,10 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 				var budget *BudgetExceededError
 				if errors.As(err, &budget) {
 					return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
+				}
+				var guard *LoopGuardExceededError
+				if errors.As(err, &guard) {
+					return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 				}
 				var waiting *WaitingApprovalError
 				if errors.As(err, &waiting) {
@@ -361,12 +369,9 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 			}
 			continue
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
-			return Result{}, err
-		}
-		messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
+		messages, err = loop.closeTurnAndCompact(ctx, &projection, input, turnID, messages)
 		if err != nil {
-			return Result{}, err
+			return Result{RunID: input.RunID}, err
 		}
 	}
 	if ctx.Err() != nil {
@@ -538,7 +543,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(result)}); err != nil {
 			return Result{}, err
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+		if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 			return Result{}, err
 		}
 		if err := loop.appendResume(ctx, &projection, &input); err != nil {
@@ -584,7 +589,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		}{Error: "interrupted", Retryable: true})}); err != nil {
 			return Result{}, err
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+		if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 			return Result{}, err
 		}
 		return loop.Run(ctx, input)
@@ -664,9 +669,13 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
+			var guard *LoopGuardExceededError
+			if errors.As(err, &guard) {
+				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+			}
 			var verificationFailure *VerificationFailureError
 			if errors.As(err, &verificationFailure) {
-				if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
 				}
 				return loop.Run(ctx, input)
@@ -681,9 +690,13 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
+			var guard *LoopGuardExceededError
+			if errors.As(err, &guard) {
+				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+			}
 			var verificationFailure *VerificationFailureError
 			if errors.As(err, &verificationFailure) {
-				if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
 				}
 				return loop.Run(ctx, input)
@@ -736,6 +749,13 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(result)}); err != nil {
 		return Result{}, err
 	}
+	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
+		var guard *LoopGuardExceededError
+		if errors.As(err, &guard) {
+			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+		}
+		return Result{}, err
+	}
 	events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
 		return Result{}, err
@@ -761,6 +781,23 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 		var waiting *WaitingApprovalError
 		if errors.As(err, &waiting) {
 			return Result{RunID: input.RunID}, waiting
+		}
+		var budget *BudgetExceededError
+		if errors.As(err, &budget) {
+			return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
+		}
+		var guard *LoopGuardExceededError
+		if errors.As(err, &guard) {
+			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
+		}
+		var verificationFailure *VerificationFailureError
+		if errors.As(err, &verificationFailure) {
+			messages := loop.messagesFromEvents(events, input.Task)
+			messages = append(messages, ports.Message{Role: "user", Content: verificationFailure.Feedback})
+			if _, closeErr := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); closeErr != nil {
+				return Result{RunID: input.RunID}, closeErr
+			}
+			return loop.Run(ctx, input)
 		}
 		return loop.failCurrentTurn(ctx, projection, input, turnID, err)
 	}
@@ -798,6 +835,10 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 			if errors.As(err, &budget) {
 				return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 			}
+			var guard *LoopGuardExceededError
+			if errors.As(err, &guard) {
+				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
+			}
 			var denied *PolicyDeniedError
 			if errors.As(err, &denied) {
 				return loop.failCurrentTurn(ctx, projection, input, turnID, denied)
@@ -827,7 +868,7 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 		}
 		return loop.Run(ctx, input)
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return Result{}, err
 	}
 	return loop.Run(ctx, input)
@@ -849,6 +890,10 @@ func (loop *Loop) finishAutomaticVerification(ctx context.Context, projection *d
 		if errors.As(err, &budget) {
 			result, budgetErr := loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 			return result, "", budgetErr
+		}
+		var guard *LoopGuardExceededError
+		if errors.As(err, &guard) {
+			return Result{RunID: input.RunID}, "", loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 		}
 		var verificationFailure *VerificationFailureError
 		if errors.As(err, &verificationFailure) {
@@ -885,7 +930,7 @@ func (loop *Loop) completionResponse(projection domain.RunProjection) string {
 
 // closeTurnAndCompact 写入继续轮次的关闭事件，并在需要时生成上下文检查点。
 func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, messages []ports.Message) ([]ports.Message, error) {
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return nil, err
 	}
 	return loop.compactContextIfNeeded(ctx, projection, input, messages)
@@ -1046,7 +1091,7 @@ func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProj
 	} else if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(result)}); err != nil {
 		return Result{}, err
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return Result{}, err
 	}
 	if err := loop.appendResume(ctx, projection, &input); err != nil {
@@ -1423,13 +1468,16 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	if result.OK {
 		return nil
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: false})}); err != nil {
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: false, ResultFingerprint: stableToolResultFingerprint(result)})}); err != nil {
 		return err
 	}
 	feedback := fmt.Sprintf("Verification command %s failed (%s). Inspect the result, repair the workspace, and run the configured verification again. Evidence: %s", command.ID, result.Code, result.Preview)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFeedbackAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 		Text string `json:"text"`
 	}{Text: feedback})}); err != nil {
+		return err
+	}
+	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 		return err
 	}
 	return &VerificationFailureError{CommandID: command.ID, Feedback: feedback}
@@ -1497,6 +1545,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
 			return tools.Result{}, err
 		}
+		if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
+			return result, err
+		}
 		return result, nil
 	}
 	sideEffect := loop.Tools.SideEffect(call.Name)
@@ -1535,6 +1586,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
 		return tools.Result{}, err
+	}
+	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
+		return result, err
 	}
 	return result, nil
 }

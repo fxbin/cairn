@@ -148,7 +148,9 @@ type RunCreatedPayload struct {
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。
 type TurnClosedPayload struct {
-	Outcome string `json:"outcome"`
+	Outcome             string `json:"outcome"`
+	OperationSignature  string `json:"operation_signature,omitempty"`
+	ProgressFingerprint string `json:"progress_fingerprint,omitempty"`
 }
 
 // AssistantMessagePayload 保存模型输出给用户的文本。
@@ -158,7 +160,8 @@ type AssistantMessagePayload struct {
 
 // VerificationFinishedPayload 记录一次验证是否通过。
 type VerificationFinishedPayload struct {
-	OK bool `json:"ok"`
+	OK                bool   `json:"ok"`
+	ResultFingerprint string `json:"result_fingerprint,omitempty"`
 }
 
 // ContextCompactedPayload 保存一次可重放的对话检查点及其压缩范围。

@@ -61,7 +61,7 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(raw, &proposed); err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_patch", Summary: err.Error()}, nil
+			return Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: err.Error()}, nil
 		}
 		for _, protected := range gate.ProtectedPaths {
 			if matchesProtected(proposed.Path, protected) {
@@ -70,17 +70,17 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		}
 		plan, err := gate.Patch.Plan(raw)
 		if err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_patch", Summary: err.Error()}, nil
+			return Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: err.Error()}, nil
 		}
 		return Decision{Effect: gate.WriteMode, RuleID: "workspace_write", Fingerprint: patchFingerprint(plan), Summary: fmt.Sprintf("%s %s (%s → %s)", plan.Mode, plan.Path, plan.BeforeHash, plan.AfterHash)}, nil
 	case "exec_command":
 		proposed, err := tools.ParseExecArguments(raw)
 		if err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_command", Summary: "invalid exec_command arguments"}, nil
+			return Decision{Effect: Deny, RuleID: "invalid_command", Fingerprint: fingerprint("exec_command", raw), Summary: "invalid exec_command arguments"}, nil
 		}
 		_, relativeCWD, err := gate.Patch.Workspace.Resolve(proposed.CWD)
 		if err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_command", Summary: "invalid exec_command cwd"}, nil
+			return Decision{Effect: Deny, RuleID: "invalid_command", Fingerprint: fingerprint("exec_command", raw), Summary: "invalid exec_command cwd"}, nil
 		}
 		observation, err := gate.Patch.Workspace.Observation()
 		if err != nil {

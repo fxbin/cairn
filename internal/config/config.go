@@ -15,6 +15,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// DefaultMaxTurns 是普通任务的默认模型轮次硬上限。
+	DefaultMaxTurns = 40
+	// ComplexMaxTurns 是复杂任务建议显式选择的模型轮次档位；更高上限仍由场景配置决定。
+	ComplexMaxTurns = 80
+)
+
 // Config 汇集一次 Cairn 运行的全部非敏感配置。
 type Config struct {
 	Version      int                `yaml:"version"`
@@ -134,7 +141,7 @@ func Defaults() Config {
 		Workspace: WorkspaceConfig{Ignore: []string{".git", ".agent", ".cairn", "node_modules", "vendor"}, MaxReadBytes: 1024 * 1024, MaxSearchFiles: 10_000, MaxSearchBytes: 64 * 1024 * 1024},
 		Policy:    PolicyConfig{Write: "ask", Exec: "ask", ProtectedPaths: []string{".git", ".agent", ".cairn", ".env", ".env.*", "**/*credential*"}, EnvAllow: []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS"}},
 		Budget: BudgetConfig{
-			MaxTurns: 30, MaxToolCalls: 100, MaxInputTokens: 500_000,
+			MaxTurns: DefaultMaxTurns, MaxToolCalls: 100, MaxInputTokens: 500_000,
 			MaxOutputTokens: 100_000, MaxWallTime: "30m",
 		},
 		Context:      ContextConfig{AutoCompact: true, MaxPromptTokens: 50_000, MaxSummaryBytes: 16 * 1024},

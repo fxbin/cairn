@@ -105,6 +105,13 @@ func TestDefaultsEnableBoundedContextCompaction(t *testing.T) {
 	}
 }
 
+func TestDefaultsUseFortyTurnBudgetAndExposeComplexPreset(t *testing.T) {
+	configuration := Defaults()
+	if configuration.Budget.MaxTurns != DefaultMaxTurns || DefaultMaxTurns != 40 || ComplexMaxTurns != 80 {
+		t.Fatalf("turn presets: default=%d complex=%d config=%d", DefaultMaxTurns, ComplexMaxTurns, configuration.Budget.MaxTurns)
+	}
+}
+
 func TestDefaultsKeepAutomaticVerificationAfterPatchDisabled(t *testing.T) {
 	configuration := Defaults()
 	if configuration.Verification.AutoAfterPatch {

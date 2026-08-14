@@ -923,11 +923,12 @@ func appendCanonicalJSON(buffer *bytes.Buffer, value any) error {
 	}
 }
 
-// classifyFailure 将可恢复暂停、策略、预算与执行异常归入可用于基准汇总的稳定类别。
+// classifyFailure 将可恢复暂停、策略、预算、循环熔断与执行异常归入基准汇总类别。
 func classifyFailure(err error) string {
 	var waiting *agent.WaitingApprovalError
 	var denied *agent.PolicyDeniedError
 	var exhausted *agent.BudgetExceededError
+	var guarded *agent.LoopGuardExceededError
 	switch {
 	case errors.As(err, &waiting):
 		return "approval"
@@ -935,6 +936,8 @@ func classifyFailure(err error) string {
 		return "policy"
 	case errors.As(err, &exhausted):
 		return "budget_" + exhausted.Dimension
+	case errors.As(err, &guarded):
+		return "loop_guard_" + guarded.Reason
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):

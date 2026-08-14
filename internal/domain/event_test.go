@@ -50,6 +50,17 @@ func TestNewEventFreezesKnownPayloadSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestNewEventAcceptsLoopGuardEvidenceFields(t *testing.T) {
+	runID := RunID("run_test")
+	turnID := TurnID("turn_test")
+	if _, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventTurnClosed, TurnID: &turnID, Payload: json.RawMessage(`{"outcome":"continue","operation_signature":"sha256:operation","progress_fingerprint":"sha256:progress"}`)}, 1, GenesisHash); err != nil {
+		t.Fatalf("turn guard evidence rejected: %v", err)
+	}
+	if _, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventVerificationFinished, TurnID: &turnID, Payload: json.RawMessage(`{"ok":false,"result_fingerprint":"sha256:result"}`)}, 1, GenesisHash); err != nil {
+		t.Fatalf("verification guard evidence rejected: %v", err)
+	}
+}
+
 func TestReplayRequiresClosedSuccessfulVerification(t *testing.T) {
 	runID := RunID("run_test")
 	turnID := TurnID("turn_test")

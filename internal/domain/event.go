@@ -94,7 +94,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "reason": {}, "reason_ref": {}, "budget_dimension": {}},
 	EventRunCancelled: {"payload_version": {}, "cause": {}, "evidence_ref": {}},
 	EventTurnOpened:   {"payload_version": {}, "turn": {}, "turn_index": {}},
-	EventTurnClosed:   {"payload_version": {}, "outcome": {}, "model_response_ref": {}},
+	EventTurnClosed:   {"payload_version": {}, "outcome": {}, "model_response_ref": {}, "operation_signature": {}, "progress_fingerprint": {}},
 	EventModelRequestStarted: {
 		"payload_version": {}, "provider": {}, "model": {}, "request_ref": {}, "retry_index": {},
 	},
@@ -124,7 +124,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventVerificationStarted: {
 		"payload_version": {}, "verification_id": {}, "plan_ref": {}, "last_mutation_seq": {}, "commands_fingerprint": {}, "workspace_observation": {},
 	},
-	EventVerificationFinished: {"payload_version": {}, "verification_id": {}, "ok": {}, "evidence_ref": {}, "verified_mutation_seq": {}, "workspace_observation": {}},
+	EventVerificationFinished: {"payload_version": {}, "verification_id": {}, "ok": {}, "evidence_ref": {}, "verified_mutation_seq": {}, "workspace_observation": {}, "result_fingerprint": {}},
 }
 
 // NewEvent 规范化草稿 payload，并生成带前序哈希的不可变事件。
