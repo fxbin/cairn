@@ -60,21 +60,28 @@ func (usage budgetUsage) cost(inputRate, outputRate float64) float64 {
 }
 
 // ensureToolBudget 统计已启动操作，并在达到上限时拒绝新工具执行。
+// 首次调用从事件日志惰性初始化计数，之后由 append 随 operation_started 事件
+// 增量维护，避免每次工具调用都全量重载日志；惰性初始化始终以 journal 为准
+// 重算并覆盖计数，因此增量值不会产生偏差。
 func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) error {
 	if loop.MaxToolCalls <= 0 {
 		return nil
 	}
-	events, err := loop.Journal.Load(ctx, runID)
-	if err != nil {
-		return err
-	}
-	started := 0
-	for _, event := range events {
-		if event.Type == domain.EventOperationStarted {
-			started++
+	if !loop.startedOperationsKnown {
+		events, err := loop.Journal.Load(ctx, runID)
+		if err != nil {
+			return err
 		}
+		started := 0
+		for _, event := range events {
+			if event.Type == domain.EventOperationStarted {
+				started++
+			}
+		}
+		loop.startedOperations = started
+		loop.startedOperationsKnown = true
 	}
-	if started >= loop.MaxToolCalls {
+	if loop.startedOperations >= loop.MaxToolCalls {
 		return &BudgetExceededError{Dimension: "tool_calls"}
 	}
 	return nil

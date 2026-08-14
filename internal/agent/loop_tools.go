@@ -35,17 +35,15 @@ type operationPayload struct {
 }
 
 // resumeDecision 为已提议操作重建策略判定，并保留验证计划的独立审批边界。
-func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool) (policy.Decision, error) {
+// verificationObservation 是调用方刚计算的 verifier 视图观察值（仅验证提议使用），
+// 复用它避免同一无变更窗口内的重复全树扫描。
+func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, verificationObservation string) (policy.Decision, error) {
 	if verificationProposal {
 		planSHA := ""
 		if verification.PlanRef != nil {
 			planSHA = verification.PlanRef.SHA256
 		}
-		observation, err := loop.verificationObservation()
-		if err != nil {
-			return policy.Decision{}, fmt.Errorf("observe workspace for verification approval: %w", err)
-		}
-		decision, err := loop.Gate.DecideVerificationWithObservation(verification.Arguments, planSHA, verification.CommandIndex, loop.ConfigFingerprint, observation)
+		decision, err := loop.Gate.DecideVerificationWithObservation(verification.Arguments, planSHA, verification.CommandIndex, loop.ConfigFingerprint, verificationObservation)
 		if err != nil {
 			return policy.Decision{}, err
 		}

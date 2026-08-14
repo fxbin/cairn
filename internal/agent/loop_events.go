@@ -28,6 +28,9 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 	if err := projection.Apply(event); err != nil {
 		return fmt.Errorf("apply prevalidated %s after sequence %d: %w", event.Type, projection.LastSeq, err)
 	}
+	if event.Type == domain.EventOperationStarted {
+		loop.startedOperations++
+	}
 	if loop.OnEvent != nil {
 		loop.OnEvent(event)
 	}

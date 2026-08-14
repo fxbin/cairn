@@ -135,7 +135,7 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 		if decision.Effect == policy.Deny {
 			return &PolicyDeniedError{Summary: decision.Summary}
 		}
-		if err := loop.executeVerificationCommand(ctx, projection, input, turnID, operationID, command); err != nil {
+		if err := loop.executeVerificationCommand(ctx, projection, input, turnID, operationID, command, observation); err != nil {
 			return err
 		}
 	}
@@ -162,16 +162,15 @@ func approvalRequestedDraft(input RunInput, turnID domain.TurnID, operationID do
 }
 
 // executeVerificationCommand 在策略授权后执行单条冻结验证命令并记录证据。
-func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, command VerificationCommand) error {
+// beforeObservation 是调用方在审批决定时已计算的同一 verifier 视图观察值；
+// 两次计算之间只发生事件追加（工作区已加锁且无工具执行），因此可安全复用，
+// 避免同一无变更窗口内的重复全树扫描。
+func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, command VerificationCommand, beforeObservation string) error {
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
 		return err
 	}
 	if loop.Gate == nil {
 		return errors.New("policy gate is required for verification")
-	}
-	beforeObservation, err := loop.verificationObservation()
-	if err != nil {
-		return fmt.Errorf("observe workspace before verification: %w", err)
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(tools.SideEffectProcess), MutationBarrier: false})}); err != nil {
 		return err

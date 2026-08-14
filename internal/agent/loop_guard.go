@@ -249,12 +249,9 @@ func stableFingerprint(value any) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-// continuationPayload 为继续轮次生成可回放的操作与进展摘要。
-func (loop *Loop) continuationPayload(ctx context.Context, input RunInput, turnID domain.TurnID) (domain.TurnClosedPayload, error) {
-	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
-	if err != nil {
-		return domain.TurnClosedPayload{}, err
-	}
+// continuationPayload 为继续轮次生成可回放的操作与进展摘要；events 是调用方
+// 已加载的当前事件视图，避免同一收尾流程内重复全量重载日志。
+func (loop *Loop) continuationPayload(events []domain.Event, turnID domain.TurnID) (domain.TurnClosedPayload, error) {
 	observation, err := loop.verificationObservation()
 	if err != nil {
 		return domain.TurnClosedPayload{}, fmt.Errorf("observe progress before closing turn: %w", err)
@@ -267,6 +264,8 @@ func (loop *Loop) continuationPayload(ctx context.Context, input RunInput, turnI
 }
 
 // closeContinuationTurn 持久化继续轮次摘要，并在最近窗口满足周期或无进展规则时终止运行。
+// 全流程只加载一次事件日志：追加 TurnClosed 后在内存中合成同型事件供跨轮检测，
+// 其载荷字段与落库事件一致，无需为刚写入的事件再次全量重载。
 func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
@@ -275,17 +274,14 @@ func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.
 	if reason := repeatedOperationFailureGuard(events); reason != "" {
 		return loop.persistLoopGuardExceeded(ctx, projection, input, reason)
 	}
-	payload, err := loop.continuationPayload(ctx, input, turnID)
+	payload, err := loop.continuationPayload(events, turnID)
 	if err != nil {
 		return err
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(payload)}); err != nil {
 		return err
 	}
-	events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
-	if err != nil {
-		return err
-	}
+	events = append(events, domain.Event{Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(payload)})
 	if reason := turnLoopGuard(events); reason != "" {
 		return loop.persistLoopGuardExceeded(ctx, projection, input, reason)
 	}

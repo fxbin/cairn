@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
@@ -146,7 +147,16 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		}{Error: "approval denied"})})
 		return Result{RunID: input.RunID}, &PolicyDeniedError{Summary: approval.Reason}
 	}
-	decision, err := loop.resumeDecision(projection, call, verification, verificationProposal)
+	// 审批判定与其后执行的 before 观察共享同一次 verifier 全树扫描：
+	// 两者之间只发生事件追加（工作区已加锁），不存在可观察的工作区变更。
+	observation := ""
+	if verificationProposal {
+		observation, err = loop.verificationObservation()
+		if err != nil {
+			return Result{}, fmt.Errorf("observe workspace for verification approval: %w", err)
+		}
+	}
+	decision, err := loop.resumeDecision(projection, call, verification, verificationProposal, observation)
 	if err != nil {
 		return Result{}, err
 	}
@@ -179,7 +189,7 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 		if verification.CommandIndex < 0 || verification.CommandIndex >= len(loop.Verification) {
 			return Result{}, errors.New("verification command index does not match frozen configuration")
 		}
-		if err := loop.executeVerificationCommand(ctx, &projection, input, turnID, pending.OperationID, loop.Verification[verification.CommandIndex]); err != nil {
+		if err := loop.executeVerificationCommand(ctx, &projection, input, turnID, pending.OperationID, loop.Verification[verification.CommandIndex], observation); err != nil {
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}

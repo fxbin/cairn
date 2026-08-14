@@ -40,6 +40,10 @@ type Loop struct {
 	Artifacts             *artifact.Store
 	OnEvent               EventSink
 	SystemPrompt          string
+	// startedOperations 与 startedOperationsKnown 增量维护已启动操作计数，
+	// 供工具调用预算检查复用，避免每次工具调用都全量重载事件日志。
+	startedOperations      int
+	startedOperationsKnown bool
 }
 
 // RunInput 是启动或恢复 Loop 所需的运行标识、任务与恢复事实。
