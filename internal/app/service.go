@@ -724,13 +724,23 @@ func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, state
 		}
 		for _, event := range events {
 			var payload struct {
-				ResultRef *artifact.Ref `json:"result_ref"`
+				ResultRef   *artifact.Ref `json:"result_ref"`
+				PlanRef     *artifact.Ref `json:"plan_ref"`
+				ConfigRef   *artifact.Ref `json:"config_ref"`
+				EvidenceRef *artifact.Ref `json:"evidence_ref"`
 			}
-			if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.ResultRef == nil {
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				continue
 			}
-			if err := checkArtifactReference(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), *payload.ResultRef); err != nil {
-				return fmt.Errorf("run %s event %d: %w", runID, event.Seq, err)
+			// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
+			// 存在性与摘要校验，防止被删除或篡改后静默通过诊断。
+			for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef} {
+				if reference == nil {
+					continue
+				}
+				if err := checkArtifactReference(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), *reference); err != nil {
+					return fmt.Errorf("run %s event %d: %w", runID, event.Seq, err)
+				}
 			}
 		}
 	}

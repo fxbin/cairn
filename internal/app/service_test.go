@@ -647,13 +647,25 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	artifacts, err := openArtifactStore(stateDir, hash, configuration.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRef, err := artifacts.Put(artifact.RedactJSON(frozen), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	runID := domain.NewRunID()
 	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
-	}{Task: "interrupted", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
+	}{Task: "interrupted", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -733,5 +745,47 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	if _, err := service.Run(context.Background(), RunOptions{Task: "fresh", Workspace: workspace, StateDir: stateDir, Config: configuration}); err != nil {
 		t.Fatalf("workspace still blocked after abort: %v", err)
+	}
+}
+
+// TestInspectDetectsMissingVerificationPlanArtifact 锁定验证计划制品参与完整性
+// 校验：审批绑定的信任根被删除后，inspect 必须报告状态损坏而不是静默通过。
+func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
+	provider := &patchThenFinalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	configuration := config.Defaults()
+	configuration.Policy.Write = "allow"
+	configuration.Policy.Exec = "allow"
+	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+	result, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planPath string
+	for _, event := range inspected.Events {
+		var payload struct {
+			PlanRef *artifact.Ref `json:"plan_ref"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.PlanRef == nil {
+			continue
+		}
+		digest := strings.TrimPrefix(payload.PlanRef.SHA256, "sha256:")
+		planPath = filepath.Join(stateDir, "workspaces", inspected.Projection.WorkspaceHash, "artifacts", "sha256", digest[:2], digest)
+		break
+	}
+	if planPath == "" {
+		t.Fatalf("no verification plan artifact referenced: %#v", inspected.Events)
+	}
+	if err := os.Remove(planPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, false); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("inspect after plan artifact removal err = %v", err)
 	}
 }
