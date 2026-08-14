@@ -229,3 +229,12 @@ func TestLoadRejectsInvalidAgentEnvironmentOverride(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestDefaultsRequireApprovalForWriteAndExec 锁定写入与命令执行默认都要求
+// 审批的安全基线。
+func TestDefaultsRequireApprovalForWriteAndExec(t *testing.T) {
+	defaults := Defaults()
+	if defaults.Policy.Write != "ask" || defaults.Policy.Exec != "ask" {
+		t.Fatalf("defaults = write:%s exec:%s, want ask/ask", defaults.Policy.Write, defaults.Policy.Exec)
+	}
+}

@@ -150,6 +150,9 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 			mode = info.Mode().Perm()
 		}
 	}
+	// 先清扫历史崩溃残留的同前缀临时文件，防止其被后续工具观察或积累；
+	// 单写入者循环保证不存在并发补丁，删除是安全的。
+	sweepPatchTemporaries(filepath.Dir(filePath))
 	temporary, err := os.CreateTemp(filepath.Dir(filePath), ".cairn-patch-*")
 	if err != nil {
 		return Failure("io", err.Error())
@@ -226,4 +229,18 @@ func syncDirectory(directory string) error {
 	}
 	defer handle.Close()
 	return handle.Sync()
+}
+
+// sweepPatchTemporaries 删除目录内由历史崩溃残留的 .cairn-patch-* 临时文件；
+// 清扫失败不阻断补丁本身，残留最多存活到下一次成功补丁。
+func sweepPatchTemporaries(directory string) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), ".cairn-patch-") {
+			_ = os.Remove(filepath.Join(directory, entry.Name()))
+		}
+	}
 }
