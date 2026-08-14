@@ -312,10 +312,11 @@ func (tool ExecCommand) validateEnvironment(environment map[string]string) error
 }
 
 // sensitiveEnvironmentKey 拒绝名称暗示包含 API 凭据的环境变量，作为 Config
-// 校验之外的工具层兜底，防止直接构造 ExecCommand 时泄露密钥。
+// 校验之外的工具层兜底，防止直接构造 ExecCommand 时泄露密钥；词干清单与
+// internal/config 的同名判定保持同步（含 access_key/private_key 与 *_PAT）。
 func sensitiveEnvironmentKey(key string) bool {
 	key = strings.ToLower(key)
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
+	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "passwd") || strings.Contains(key, "api_key") || strings.Contains(key, "apikey") || strings.Contains(key, "credential") || strings.Contains(key, "access_key") || strings.Contains(key, "private_key") || strings.HasSuffix(key, "_pat")
 }
 
 // mergedEnvironment 从允许继承的环境变量与显式覆盖构造确定性的进程环境。

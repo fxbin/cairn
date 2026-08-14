@@ -292,10 +292,12 @@ func validEnvironmentKey(key string) bool {
 	return true
 }
 
-// sensitiveEnvironmentKey 判断环境变量名是否暗示包含凭据。
+// sensitiveEnvironmentKey 判断环境变量名是否暗示包含凭据；词干覆盖常见密钥
+// 命名（含 access_key/private_key 与 *_PAT 后缀），故意不匹配裸 auth/pat
+// 子串，避免误伤 PATH、AUTH_TYPE 等普通配置变量。
 func sensitiveEnvironmentKey(key string) bool {
 	key = strings.ToLower(key)
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "api_key") || strings.Contains(key, "credential")
+	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "passwd") || strings.Contains(key, "api_key") || strings.Contains(key, "apikey") || strings.Contains(key, "credential") || strings.Contains(key, "access_key") || strings.Contains(key, "private_key") || strings.HasSuffix(key, "_pat")
 }
 
 // RequestTimeout 解析模型请求超时配置。

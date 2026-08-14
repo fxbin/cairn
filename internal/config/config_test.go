@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -198,5 +199,24 @@ func TestFingerprintChangesWhenAuthorizationSemanticsChange(t *testing.T) {
 	configuration.Workspace.Ignore = append(configuration.Workspace.Ignore, "build")
 	if before == configuration.Fingerprint() {
 		t.Fatal("workspace ignore view must participate in the fingerprint")
+	}
+}
+
+// TestValidateRejectsExpandedSecretLikeEnvironmentKeys 锁定密钥名启发式扩面：
+// 常见云与令牌变量被拒绝，普通配置变量不受影响。
+func TestValidateRejectsExpandedSecretLikeEnvironmentKeys(t *testing.T) {
+	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_PAT", "DEPLOY_PRIVATE_KEY", "OPENAI_APIKEY", "DB_PASSWD"} {
+		configuration := Defaults()
+		configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, key)
+		if err := Validate(configuration); err == nil || !strings.Contains(err.Error(), "secret-like") {
+			t.Fatalf("env_allow %q err = %v", key, err)
+		}
+	}
+	for _, key := range []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS", "HOME"} {
+		configuration := Defaults()
+		configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, key)
+		if err := Validate(configuration); err != nil {
+			t.Fatalf("env_allow %q err = %v", key, err)
+		}
 	}
 }
