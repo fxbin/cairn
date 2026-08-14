@@ -1,0 +1,88 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/fxbin/cairn/internal/ports"
+)
+
+// modelResponsePayload 是写入 model_response_finished 事件的响应内容。
+type modelResponsePayload struct {
+	Text      string           `json:"text"`
+	ToolCalls []ports.ToolCall `json:"tool_calls,omitempty"`
+	Usage     *ports.Usage     `json:"usage,omitempty"`
+}
+
+// modelRequestPayload 是写入模型请求事件的可审计提供方信息。
+type modelRequestPayload struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// modelRequestFailedPayload 保存一次没有完成模型响应的可回放分类；畸形工具参数只记录
+// 固定错误文本，绝不把提供方原始参数写入事件。
+type modelRequestFailedPayload struct {
+	Error      string `json:"error"`
+	ErrorClass string `json:"error_class,omitempty"`
+	Retryable  bool   `json:"retryable,omitempty"`
+}
+
+// collectedResponse 汇集一次流式模型响应的文本、工具调用与 token 用量。
+type collectedResponse struct {
+	Text      string
+	ToolCalls []ports.ToolCall
+	Usage     *ports.Usage
+}
+
+// callModel 调用 Provider 并严格收集一个以 Done 结束的有效流式响应。
+func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (collectedResponse, error) {
+	var response collectedResponse
+	done := false
+	err := loop.Provider.Stream(ctx, ports.ModelRequest{Model: loop.Model, Messages: messages, Tools: loop.Tools.Specs()}, func(event ports.ModelEvent) error {
+		if done {
+			return errors.New("provider emitted event after done")
+		}
+		switch event.Kind {
+		case ports.TextDelta:
+			response.Text += event.Text
+		case ports.ToolCallEvent:
+			if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Name == "" {
+				return errors.New("provider emitted invalid tool call")
+			}
+			if !json.Valid(event.ToolCall.Arguments) {
+				return ports.ErrMalformedToolCallArguments
+			}
+			response.ToolCalls = append(response.ToolCalls, *event.ToolCall)
+		case ports.UsageEvent:
+			if event.Usage == nil || response.Usage != nil {
+				return errors.New("provider emitted invalid usage event")
+			}
+			usage := *event.Usage
+			response.Usage = &usage
+		case ports.Done:
+			done = true
+		default:
+			return fmt.Errorf("unknown provider event %q", event.Kind)
+		}
+		return nil
+	})
+	if err != nil {
+		return collectedResponse{}, err
+	}
+	if !done {
+		return collectedResponse{}, errors.New("provider returned without done")
+	}
+	return response, nil
+}
+
+// prompt 返回显式系统提示词，或提供安全工具使用的默认提示词。
+func (loop *Loop) prompt() string {
+	if strings.TrimSpace(loop.SystemPrompt) != "" {
+		return loop.SystemPrompt
+	}
+	return "You are Cairn, a careful coding agent. Use the supplied tools for repository facts. Start from task-scoped paths; avoid broad or repeated listings and rereading unchanged content. Treat a search_text line number only as a locator: read_file.offset is a byte offset, not a line number. Request bounded file slices; do not request the configured maximum merely to inspect source. Once you have enough evidence, implement the smallest allowed fix, then let the fixed verification decide completion. When the task-specific verification command passes after your relevant change, immediately return a final answer: do not add unrequested tests, refactors, or edge cases. Do not rerun an unchanged failed command: inspect the implicated code and patch first. Before update/delete, use read_file and copy its exact sha256 into apply_patch.expected_sha256; do not invoke shell hash programs. If a patch is rejected, read fresh state and repair it before rerunning tests. Return a concise final answer only when the task is answered."
+}

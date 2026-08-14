@@ -291,24 +291,3 @@ func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.
 	}
 	return nil
 }
-
-// persistLoopGuardExceeded 关闭当前轮次并以独立 loop_guard 分类持久化提前终止原因。
-func (loop *Loop) persistLoopGuardExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, reason string) error {
-	commitContext, cancel := loop.commitContext(ctx)
-	defer cancel()
-	guardErr := &LoopGuardExceededError{Reason: reason}
-	if projection.CurrentTurn != nil {
-		turnID := *projection.CurrentTurn
-		if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
-			return err
-		}
-	}
-	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-		Error      string `json:"error"`
-		ErrorClass string `json:"error_class"`
-		Reason     string `json:"reason"`
-	}{Error: guardErr.Error(), ErrorClass: "loop_guard", Reason: reason})}); err != nil {
-		return err
-	}
-	return guardErr
-}
