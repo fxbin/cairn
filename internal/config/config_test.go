@@ -165,3 +165,38 @@ func TestFingerprintChangesWhenAutomaticVerificationAfterPatchChanges(t *testing
 		t.Fatal("automatic verification after patch was omitted from fingerprint")
 	}
 }
+
+// TestFingerprintIgnoresOperationalFields 锁定运维/展示类字段不参与指纹：
+// 调整它们不应令在途 run 的冻结配置漂移。
+func TestFingerprintIgnoresOperationalFields(t *testing.T) {
+	configuration := Defaults()
+	before := configuration.Fingerprint()
+	configuration.Provider.RequestTimeout = "5m"
+	configuration.Output.MaxPreviewBytes = 999
+	configuration.Output.MaxArtifactBytes = 999
+	configuration.Cancellation.TerminateGrace = "9s"
+	if before != configuration.Fingerprint() {
+		t.Fatal("operational-only fields must not change the fingerprint")
+	}
+}
+
+// TestFingerprintChangesWhenAuthorizationSemanticsChange 锁定授权与执行语义
+// 字段仍参与指纹：模型、策略与工作区视图变化必须使旧审批绑定失效。
+func TestFingerprintChangesWhenAuthorizationSemanticsChange(t *testing.T) {
+	configuration := Defaults()
+	before := configuration.Fingerprint()
+	configuration.Provider.Model = "other-model"
+	if before == configuration.Fingerprint() {
+		t.Fatal("provider model must participate in the fingerprint")
+	}
+	configuration = Defaults()
+	configuration.Policy.Exec = "allow"
+	if before == configuration.Fingerprint() {
+		t.Fatal("policy exec must participate in the fingerprint")
+	}
+	configuration = Defaults()
+	configuration.Workspace.Ignore = append(configuration.Workspace.Ignore, "build")
+	if before == configuration.Fingerprint() {
+		t.Fatal("workspace ignore view must participate in the fingerprint")
+	}
+}

@@ -327,13 +327,49 @@ func (config Config) TerminateGrace() (time.Duration, error) {
 	return duration, nil
 }
 
-// Fingerprint 生成可写入事件日志的冻结非敏感配置摘要。
+// fingerprintView 显式列出参与冻结指纹的字段：只覆盖影响执行语义、审批授权
+// 与预算终止的配置。展示与运维类字段（request_timeout、terminate_grace、output
+// 限额）被刻意排除，使后续版本新增非语义字段或调整展示参数不会令在途 run 的
+// 指纹漂移；新增执行语义字段时必须同步加入此结构并补充指纹变化测试。
+type fingerprintView struct {
+	Version      int                 `json:"version"`
+	Provider     providerFingerprint `json:"provider"`
+	Workspace    WorkspaceConfig     `json:"workspace"`
+	Policy       PolicyConfig        `json:"policy"`
+	Verification VerificationConfig  `json:"verification"`
+	Budget       BudgetConfig        `json:"budget"`
+	Context      ContextConfig       `json:"context"`
+	Pricing      PricingConfig       `json:"pricing"`
+	Sandbox      SandboxConfig       `json:"sandbox"`
+}
+
+// providerFingerprint 只保留决定请求去向与身份的提供方字段；request_timeout 属
+// 运维调参，不影响授权与回放语义，不参与指纹。
+type providerFingerprint struct {
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	APIKeyEnv string `json:"api_key_env"`
+}
+
+// Fingerprint 生成可写入事件日志的冻结非敏感配置摘要；带版本前缀，指纹算法
+// 本身演进时递增前缀使新旧摘要天然不可比。
 func (config Config) Fingerprint() string {
-	encoded, err := json.Marshal(config)
+	view := fingerprintView{
+		Version:      config.Version,
+		Provider:     providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv},
+		Workspace:    config.Workspace,
+		Policy:       config.Policy,
+		Verification: config.Verification,
+		Budget:       config.Budget,
+		Context:      config.Context,
+		Pricing:      config.Pricing,
+		Sandbox:      config.Sandbox,
+	}
+	encoded, err := json.Marshal(view)
 	if err != nil {
 		panic(err)
 	}
-	digest := sha256.Sum256(encoded)
+	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v2\x00"), encoded...))
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
