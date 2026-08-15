@@ -591,7 +591,9 @@ func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{}
+	// 组合根在参数与状态校验前完成纯构造装配；注入惰性 Provider 使本用例聚焦
+	// 证据缺失的拒绝语义（Provider 本身不应被调用）。
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
 	_, err = service.Reconcile(context.Background(), ReconcileOptions{RunID: runID, OperationID: operationID, Verdict: "applied_failure", Note: "process outcome was checked", Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if err == nil || !strings.Contains(err.Error(), "requires evidence") {
 		t.Fatalf("process reconciliation accepted no evidence: %v", err)

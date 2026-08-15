@@ -106,25 +106,12 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
 	}
-	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
+	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
-	execTool, err := execToolFor(workspace, options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	journal, err := openJournal(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer journal.Close()
-	workspaceLock, err := acquireWorkspaceLock(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer workspaceLock.Release()
-	active, err := journal.NonTerminalRuns(ctx, hash)
+	defer boot.Close()
+	active, err := boot.Journal.NonTerminalRuns(ctx, boot.WorkspaceHash)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -144,36 +131,28 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 		}
 		return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
 	}
-	provider, err := service.provider(options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	artifacts, err := openArtifactStore(options.StateDir, hash, options.Config.Output)
-	if err != nil {
-		return RunResult{}, err
-	}
 	frozenConfig, err := json.Marshal(options.Config)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("encode frozen run config: %w", err)
 	}
-	configRef, err := artifacts.Put(artifact.RedactJSON(frozenConfig), "application/json")
+	configRef, err := boot.Artifacts.Put(artifact.RedactJSON(frozenConfig), "application/json")
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
 	runID := domain.NewRunID()
-	first, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
-	}{Task: options.Task, Workspace: workspace.Root, ConfigRef: configRef, ConfigFingerprint: options.Config.Fingerprint()})})
+	}{Task: options.Task, Workspace: boot.Workspace.Root, ConfigRef: configRef, ConfigFingerprint: options.Config.Fingerprint()})})
 	if err != nil {
 		return RunResult{}, err
 	}
 	if options.OnEvent != nil {
 		options.OnEvent(first)
 	}
-	second, err := journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted, Payload: encode(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: encode(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {
@@ -182,30 +161,16 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 	if options.OnEvent != nil {
 		options.OnEvent(second)
 	}
-	patchTool := tools.ApplyPatch{Workspace: workspace}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	gate, err := policy.New(options.Config.Policy.Write, options.Config.Policy.Exec, options.Config.Policy.ProtectedPaths, patchTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	verification, err := verificationCommands(options.Config.Verification)
-	if err != nil {
-		return RunResult{}, err
-	}
-	loop := configuredLoop(journal, provider, registry, gate, verification, artifacts, options.Config, options.OnEvent)
 	runContext, cancelRun, err := runBudgetContext(ctx, first.OccurredAt, options.Config)
 	if err != nil {
 		return RunResult{}, err
 	}
 	defer cancelRun()
-	result, err := loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: hash})
+	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
-		result, err = loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: hash})
+		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
 	}
 	if err != nil {
 		return RunResult{ID: runID}, err
@@ -247,25 +212,12 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunResult, error) {
-	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
+	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
-	execTool, err := execToolFor(workspace, options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	journal, err := openJournal(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer journal.Close()
-	workspaceLock, err := acquireWorkspaceLock(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer workspaceLock.Release()
-	events, err := journal.Load(ctx, options.RunID)
+	defer boot.Close()
+	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -279,50 +231,28 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	if err := checkArtifactReferences(ctx, journal, options.StateDir, hash); err != nil {
+	if err := checkArtifactReferences(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=<verdict>", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
-	observation, err := workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
+	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	provider, err := service.provider(options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	patchTool := tools.ApplyPatch{Workspace: workspace}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	gate, err := policy.New(options.Config.Policy.Write, options.Config.Policy.Exec, options.Config.Policy.ProtectedPaths, patchTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	verification, err := verificationCommands(options.Config.Verification)
-	if err != nil {
-		return RunResult{}, err
-	}
-	artifacts, err := openArtifactStore(options.StateDir, hash, options.Config.Output)
-	if err != nil {
-		return RunResult{}, err
-	}
-	loop := configuredLoop(journal, provider, registry, gate, verification, artifacts, options.Config, options.OnEvent)
 	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
 	defer cancelRun()
-	resumeInput := agent.RunInput{RunID: options.RunID, WorkspaceHash: hash, ResumeInvocation: domain.NewID("invoke"), ResumeFromSeq: projection.LastSeq, ResumeObservation: observation}
-	result, err := loop.Resume(runContext, resumeInput, options.Approval)
+	resumeInput := agent.RunInput{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, ResumeInvocation: domain.NewID("invoke"), ResumeFromSeq: projection.LastSeq, ResumeObservation: observation}
+	result, err := boot.Loop.Resume(runContext, resumeInput, options.Approval)
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		resumeInput.ResumeInvocation = ""
-		result, err = loop.Resume(expiredContext, resumeInput, options.Approval)
+		result, err = boot.Loop.Resume(expiredContext, resumeInput, options.Approval)
 	}
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
@@ -332,25 +262,12 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (RunResult, error) {
-	workspace, hash, err := workspaceFor(options.Workspace, options.Config)
+	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
-	execTool, err := execToolFor(workspace, options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	journal, err := openJournal(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer journal.Close()
-	workspaceLock, err := acquireWorkspaceLock(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer workspaceLock.Release()
-	events, err := journal.Load(ctx, options.RunID)
+	defer boot.Close()
+	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -361,7 +278,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	if err := checkArtifactReferences(ctx, journal, options.StateDir, hash); err != nil {
+	if err := checkArtifactReferences(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.State != domain.RunRunning || projection.PendingOperation == nil || projection.PendingOperation.ID != options.OperationID {
@@ -382,7 +299,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, errors.New("process reconciliation requires evidence")
 	}
 	if projection.PendingOperation.ToolName == "apply_patch" && projection.PendingOperation.PlannedPath != "" {
-		observation, err := patchObservation(workspace, projection.PendingOperation.PlannedPath)
+		observation, err := patchObservation(boot.Workspace, projection.PendingOperation.PlannedPath)
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -403,17 +320,17 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, errors.New("dangling operation has no open turn")
 	}
 	// 对账事件的观察值与 resume 一致采用真实工作区摘要，而不是误导性的根路径。
-	observation, err := workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
+	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{}, err
 	}
 	appendEvent := func(eventType domain.EventType, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)}
 		// 写入前先在克隆投影上模拟迁移，避免把不可回放的事件永久写入日志。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
 		}
-		event, err := journal.Append(ctx, projection.LastSeq, draft)
+		event, err := boot.Journal.Append(ctx, projection.LastSeq, draft)
 		if err != nil {
 			return err
 		}
@@ -452,11 +369,11 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, err
 	}
 	// 对账本身不执行任何副作用，重算观察值以绑定恢复时刻的真实工作区状态。
-	observation, err = workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
+	observation, err = boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: domain.EventRunResumed, Payload: encode(struct {
+	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunResumed, Payload: encode(struct {
 		Invocation           string `json:"invocation"`
 		FromSeq              uint64 `json:"from_seq"`
 		WorkspaceObservation string `json:"workspace_observation"`
@@ -464,7 +381,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err := projection.ValidateDraft(resumedDraft); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("validate run_resumed after sequence %d: %w", projection.LastSeq, err)
 	}
-	resumed, err := journal.Append(ctx, projection.LastSeq, resumedDraft)
+	resumed, err := boot.Journal.Append(ctx, projection.LastSeq, resumedDraft)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
@@ -474,38 +391,16 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if options.OnEvent != nil {
 		options.OnEvent(resumed)
 	}
-	provider, err := service.provider(options.Config)
-	if err != nil {
-		return RunResult{}, err
-	}
-	patchTool := tools.ApplyPatch{Workspace: workspace}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	gate, err := policy.New(options.Config.Policy.Write, options.Config.Policy.Exec, options.Config.Policy.ProtectedPaths, patchTool)
-	if err != nil {
-		return RunResult{}, err
-	}
-	verification, err := verificationCommands(options.Config.Verification)
-	if err != nil {
-		return RunResult{}, err
-	}
-	artifacts, err := openArtifactStore(options.StateDir, hash, options.Config.Output)
-	if err != nil {
-		return RunResult{}, err
-	}
-	loop := configuredLoop(journal, provider, registry, gate, verification, artifacts, options.Config, options.OnEvent)
 	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
 	defer cancelRun()
-	result, err := loop.Run(runContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: hash})
+	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
-		result, err = loop.Run(expiredContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: hash})
+		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
 	}
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
