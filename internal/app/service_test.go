@@ -791,3 +791,44 @@ func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
 		t.Fatalf("inspect after plan artifact removal err = %v", err)
 	}
 }
+
+// TestLegacyFingerprintRunsInspectButRefuseResume 锁定 AB Gate 兼容矩阵的关键
+// 行：指纹算法 v2（eadbe9c）之前的在途 run，inspect/doctor 照常工作，resume
+// 以 ErrConfigDrift 失败关闭——一次性失效是设计决策并已公开记录。
+func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
+		Task              string `json:"task"`
+		Workspace         string `json:"workspace"`
+		ConfigFingerprint string `json:"config_fingerprint"`
+	}{Task: "legacy", Workspace: workspace, ConfigFingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	if _, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, false); err != nil {
+		t.Fatalf("legacy inspect must work: %v", err)
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
+		t.Fatalf("legacy doctor must work: %v", err)
+	}
+	_, err = service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if !errors.Is(err, ErrConfigDrift) {
+		t.Fatalf("legacy resume must fail closed with ErrConfigDrift, got %v", err)
+	}
+}
