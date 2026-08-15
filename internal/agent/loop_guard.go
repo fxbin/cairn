@@ -99,11 +99,13 @@ func operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) stri
 	return stableFingerprint(fingerprints)
 }
 
-// progressFingerprint 摘要 verifier 可见工作区、最近验证结果与累计读证据集合，
-// 忽略事件序号等假进展。读证据以只读工具调用的 (tool, arguments) 去重集合参与
-// 指纹：一轮中出现任何首次调用的读/检索组合即视为新证据（指纹变化、熔断窗口
-// 重置），重复完全相同的调用不产生新证据。这使得"长读后写"的正常收敛路径不会
-// 被误杀，而原地重复徘徊仍会在窗口内保持指纹稳定并被终止。
+// progressFingerprint 摘要 verifier 可见工作区、最近验证结果与累计工具证据集合，
+// 忽略事件序号等假进展。证据以全部工具调用的 (tool, arguments) 去重集合参与指纹
+// ——exec 探索与只读工具同等计入：模型把探索从 read/search 转向 exec grep 时证据
+// 不应停止增长（跨模型实测：GLM TopicEye #1 读证据仅 7 项即冻结、8 轮被杀，其
+// 探索 4 次走 exec）。一轮中出现任何首次调用的工具组合即视为新证据（指纹变化、
+// 熔断窗口重置），重复完全相同的调用不产生新证据。工作区变异由观察值独立重置
+// 窗口，因此计入 exec 不会掩盖真正的无进展；原地重复徘徊仍会被终止。
 func progressFingerprint(workspaceObservation string, events []domain.Event) string {
 	verificationResult := ""
 	verificationOK := false
@@ -126,9 +128,6 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 		}
 		var payload toolCallPayload
 		if json.Unmarshal(event.Payload, &payload) != nil {
-			continue
-		}
-		if payload.ToolName != "list_files" && payload.ToolName != "read_file" && payload.ToolName != "search_text" {
 			continue
 		}
 		candidate := payload.ToolName + "\x00" + string(payload.Arguments)
