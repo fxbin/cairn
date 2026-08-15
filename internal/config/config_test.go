@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,5 +238,117 @@ func TestDefaultsRequireApprovalForWriteAndExec(t *testing.T) {
 	defaults := Defaults()
 	if defaults.Policy.Write != "ask" || defaults.Policy.Exec != "ask" {
 		t.Fatalf("defaults = write:%s exec:%s, want ask/ask", defaults.Policy.Write, defaults.Policy.Exec)
+	}
+}
+
+// TestExecutionProfilePrecedenceTable 按固定优先级（默认 → Profile → YAML → env
+// → CLI）表驱动验证 Profile 解析语义：default=40、complex=80，显式值覆盖预设。
+func TestExecutionProfilePrecedenceTable(t *testing.T) {
+	writeConfig := func(content string) string {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct {
+		name       string
+		yaml       string
+		env        map[string]string
+		overrides  Overrides
+		wantTurns  int
+		wantTools  int
+		wantInput  int
+		wantSource string
+	}{
+		{"旧配置无 profile 保持默认", "version: 1\nprovider:\n  api_key_env: K\n", nil, Overrides{}, 40, 100, 500_000, "default"},
+		{"complex 预设生效", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", nil, Overrides{}, 80, 160, 1_400_000, "profile:complex"},
+		{"YAML 显式轮次覆盖预设", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\nbudget:\n  max_turns: 50\n", nil, Overrides{}, 50, 160, 1_400_000, "yaml"},
+		{"更高值必须显式出现", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\nbudget:\n  max_turns: 100\n", nil, Overrides{}, 100, 160, 1_400_000, "yaml"},
+		{"环境覆盖优先于 Profile", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{}, 60, 160, 1_400_000, "env"},
+		{"CLI 显式值最高优先", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{MaxTurns: 70}, 70, 160, 1_400_000, "cli"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			for key, value := range testCase.env {
+				t.Setenv(key, value)
+			}
+			config, err := Load(writeConfig(testCase.yaml), testCase.overrides)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if config.Budget.MaxTurns != testCase.wantTurns || config.Budget.MaxToolCalls != testCase.wantTools || config.Budget.MaxInputTokens != testCase.wantInput {
+				t.Fatalf("budget = %+v", config.Budget)
+			}
+			if source := resolutionSource(config.Resolution, "budget.max_turns"); source != testCase.wantSource {
+				t.Fatalf("max_turns source = %q, want %q (plan: %+v)", source, testCase.wantSource, config.Resolution)
+			}
+		})
+	}
+}
+
+// TestUnknownExecutionProfileRejected 锁定未知 Profile 启动失败关闭。
+func TestUnknownExecutionProfileRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nprofile: turbo\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "unknown execution profile") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestProfileChangesFingerprint 锁定 Profile 语义进入配置指纹：恢复时 Profile
+// 漂移会被指纹校验拒绝。
+func TestProfileChangesFingerprint(t *testing.T) {
+	base := Defaults()
+	if base.Profile != ProfileDefault {
+		t.Fatalf("default profile = %q", base.Profile)
+	}
+	complexConfig := Defaults()
+	complexConfig.Profile = ProfileComplex
+	complexConfig.Budget.MaxTurns = ComplexMaxTurns
+	complexConfig.Budget.MaxToolCalls = 160
+	complexConfig.Budget.MaxInputTokens = 1_400_000
+	if base.Fingerprint() == complexConfig.Fingerprint() {
+		t.Fatal("complex profile must change the fingerprint")
+	}
+	explicit := complexConfig
+	explicit.Budget.MaxTurns = 50
+	if explicit.Fingerprint() == complexConfig.Fingerprint() {
+		t.Fatal("explicit turn override must change the fingerprint")
+	}
+}
+
+// resolutionSource 从 Resolved Execution Plan 中查询单个字段的来源。
+func resolutionSource(entries []ResolutionEntry, field string) string {
+	for _, entry := range entries {
+		if entry.Field == field {
+			return entry.Source
+		}
+	}
+	return ""
+}
+
+// TestResolutionMarshalsIntoFrozenPlan 锁定 Resolved Execution Plan 随冻结配置
+// 制品持久化的契约：Run 冻结的是 json.Marshal(config)，Resolution 必须在场。
+func TestResolutionMarshalsIntoFrozenPlan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"resolution"`)) || !bytes.Contains(encoded, []byte("profile:complex")) {
+		t.Fatalf("frozen plan missing resolution: %s", encoded)
+	}
+	if bytes.Contains(encoded, []byte("AGENT_API_KEY_VALUE")) {
+		t.Fatal("resolution must not carry secret values")
 	}
 }

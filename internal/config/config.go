@@ -25,6 +25,7 @@ const (
 // Config 汇集一次 Cairn 运行的全部非敏感配置。
 type Config struct {
 	Version      int                `yaml:"version"`
+	Profile      string             `yaml:"profile"`
 	Provider     ProviderConfig     `yaml:"provider"`
 	Workspace    WorkspaceConfig    `yaml:"workspace"`
 	Policy       PolicyConfig       `yaml:"policy"`
@@ -35,6 +36,93 @@ type Config struct {
 	Output       OutputConfig       `yaml:"output"`
 	Cancellation CancellationConfig `yaml:"cancellation"`
 	Sandbox      SandboxConfig      `yaml:"sandbox"`
+	// Resolution 是解析过程生成的非敏感 Resolved Execution Plan（字段→值→来源），
+	// 只读派生事实：不参与 YAML 解码、不进入配置指纹（语义已由解析后的字段承载），
+	// 随冻结配置制品持久化，供诊断与可访问性视图使用。
+	Resolution []ResolutionEntry `yaml:"-" json:"resolution,omitempty"`
+}
+
+// ResolutionEntry 是 Resolved Execution Plan 的单条记录：关键字段的最终值与其
+// 来源（default、yaml、profile:<name>、env 或 cli）。
+type ResolutionEntry struct {
+	Field  string `json:"field"`
+	Value  string `json:"value"`
+	Source string `json:"source"`
+}
+
+// ProfileDefault 与 ProfileComplex 是当前版本化的命名 Execution Profile；空值
+// 等价 default。Profile 只预设预算字段，不自动推断任务复杂度。
+const (
+	ProfileDefault = "default"
+	ProfileComplex = "complex"
+)
+
+// budgetOverlay 以指针字段探测 YAML 中哪些预算与 Provider 关键字段被显式设置，
+// 用于区分"字段缺省（可被命名 Profile 预设填充）"与"用户显式覆盖（优先于 Profile）"。
+type budgetOverlay struct {
+	MaxTurns        *int     `yaml:"max_turns"`
+	MaxToolCalls    *int     `yaml:"max_tool_calls"`
+	MaxInputTokens  *int     `yaml:"max_input_tokens"`
+	MaxOutputTokens *int     `yaml:"max_output_tokens"`
+	MaxWallTime     *string  `yaml:"max_wall_time"`
+	MaxCostUSD      *float64 `yaml:"max_cost_usd"`
+}
+
+// providerOverlay 探测 Provider 关键字段的显式设置，用于来源记录。
+type providerOverlay struct {
+	BaseURL   *string `yaml:"base_url"`
+	Model     *string `yaml:"model"`
+	APIKeyEnv *string `yaml:"api_key_env"`
+}
+
+// profileProbe 是第二轮宽松解码的目标：只提取 Profile 名称与显式字段设置。
+type profileProbe struct {
+	Profile  string          `yaml:"profile"`
+	Budget   budgetOverlay   `yaml:"budget"`
+	Provider providerOverlay `yaml:"provider"`
+}
+
+// profileBudget 返回命名 Profile 的预算预设；complex 档在默认档基础上将轮次、
+// 工具调用与输入 token 等比放大（依据 2026-08-15 G0-R gate 实验与 8/13 验证参数）。
+// 显式 YAML、环境或 CLI 值仍按固定优先级覆盖预设。
+func profileBudget(profile string) (BudgetConfig, error) {
+	switch profile {
+	case "", ProfileDefault:
+		return Defaults().Budget, nil
+	case ProfileComplex:
+		budget := Defaults().Budget
+		budget.MaxTurns = ComplexMaxTurns
+		budget.MaxToolCalls = 160
+		budget.MaxInputTokens = 1_400_000
+		return budget, nil
+	default:
+		return BudgetConfig{}, fmt.Errorf("unknown execution profile %q (supported: %s, %s)", profile, ProfileDefault, ProfileComplex)
+	}
+}
+
+// resolutionRecorder 构建 Resolved Execution Plan；同一字段再次记录时更新来源。
+type resolutionRecorder struct {
+	entries []ResolutionEntry
+}
+
+// record 追加或更新一个字段的最新值与来源。
+func (recorder *resolutionRecorder) record(field, value, source string) {
+	for index := range recorder.entries {
+		if recorder.entries[index].Field == field {
+			recorder.entries[index].Value = value
+			recorder.entries[index].Source = source
+			return
+		}
+	}
+	recorder.entries = append(recorder.entries, ResolutionEntry{Field: field, Value: value, Source: source})
+}
+
+// budgetSourceLabel 返回预算字段在某 Profile 下的来源标签。
+func budgetSourceLabel(profile string) string {
+	if profile == "" || profile == ProfileDefault {
+		return "default"
+	}
+	return "profile:" + profile
 }
 
 // ProviderConfig 配置兼容 OpenAI API 的模型提供方。
@@ -137,6 +225,7 @@ type Overrides struct {
 func Defaults() Config {
 	return Config{
 		Version:   1,
+		Profile:   ProfileDefault,
 		Provider:  ProviderConfig{APIKeyEnv: "AGENT_API_KEY", RequestTimeout: "120s"},
 		Workspace: WorkspaceConfig{Ignore: []string{".git", ".agent", ".cairn", "node_modules", "vendor"}, MaxReadBytes: 1024 * 1024, MaxSearchFiles: 10_000, MaxSearchBytes: 64 * 1024 * 1024},
 		Policy:    PolicyConfig{Write: "ask", Exec: "ask", ProtectedPaths: []string{".git", ".agent", ".cairn", ".env", ".env.*", "**/*credential*"}, EnvAllow: []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS"}},
@@ -152,9 +241,24 @@ func Defaults() Config {
 	}
 }
 
-// Load 合并默认值、严格 YAML、环境变量与显式覆盖项，并校验最终配置。
+// Load 按固定优先级合并配置：安全默认值 → 命名 Profile 预设 → YAML 显式值 →
+// 环境覆盖 → CLI 显式值，并校验最终配置。解析过程为每个关键字段记录最终值与
+// 来源，生成非敏感的 Resolved Execution Plan；恢复比较使用解析后的配置指纹，
+// Profile 或字段漂移都会被既有指纹校验拒绝。
 func Load(path string, overrides Overrides) (Config, error) {
 	config := Defaults()
+	config.Profile = ProfileDefault
+	recorder := &resolutionRecorder{}
+	recorder.record("profile", ProfileDefault, "default")
+	recorder.record("provider.base_url", config.Provider.BaseURL, "default")
+	recorder.record("provider.model", config.Provider.Model, "default")
+	recorder.record("provider.api_key_env", config.Provider.APIKeyEnv, "default")
+	recorder.record("budget.max_turns", strconv.Itoa(config.Budget.MaxTurns), "default")
+	recorder.record("budget.max_tool_calls", strconv.Itoa(config.Budget.MaxToolCalls), "default")
+	recorder.record("budget.max_input_tokens", strconv.Itoa(config.Budget.MaxInputTokens), "default")
+	recorder.record("budget.max_output_tokens", strconv.Itoa(config.Budget.MaxOutputTokens), "default")
+	recorder.record("budget.max_wall_time", config.Budget.MaxWallTime, "default")
+	recorder.record("budget.max_cost_usd", strconv.FormatFloat(config.Budget.MaxCostUSD, 'f', -1, 64), "default")
 	if path != "" {
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -167,22 +271,96 @@ func Load(path string, overrides Overrides) (Config, error) {
 			if err := decoder.Decode(&config); err != nil {
 				return Config{}, fmt.Errorf("parse config: %w", err)
 			}
+			// 第二轮宽松解码只探测 Profile 名称与关键字段的显式设置：命名 Profile
+			// 的预算预设仅填充 YAML 缺省字段，显式值按优先级保留并标记来源。
+			var probe profileProbe
+			relaxed := yaml.NewDecoder(strings.NewReader(string(content)))
+			if err := relaxed.Decode(&probe); err != nil {
+				return Config{}, fmt.Errorf("parse config profile overlay: %w", err)
+			}
+			profile := probe.Profile
+			if profile == "" {
+				profile = ProfileDefault
+			}
+			preset, err := profileBudget(profile)
+			if err != nil {
+				return Config{}, err
+			}
+			config.Profile = profile
+			if probe.Profile != "" {
+				recorder.record("profile", profile, "yaml")
+			}
+			if probe.Provider.BaseURL != nil {
+				recorder.record("provider.base_url", config.Provider.BaseURL, "yaml")
+			}
+			if probe.Provider.Model != nil {
+				recorder.record("provider.model", config.Provider.Model, "yaml")
+			}
+			if probe.Provider.APIKeyEnv != nil {
+				recorder.record("provider.api_key_env", config.Provider.APIKeyEnv, "yaml")
+			}
+			applyProfilePreset(&config, &probe.Budget, preset, profile, recorder)
 		}
 	}
-	if err := applyEnvironment(&config); err != nil {
+	if err := applyEnvironment(&config, recorder); err != nil {
 		return Config{}, err
 	}
-	applyOverrides(&config, overrides)
+	applyOverrides(&config, overrides, recorder)
 	if err := Validate(config); err != nil {
 		return Config{}, err
 	}
+	config.Resolution = recorder.entries
 	return config, nil
+}
+
+// applyProfilePreset 将命名 Profile 的预算预设填充到 YAML 缺省的预算字段；
+// 显式设置的字段保留 YAML 值并把来源标记为 yaml。
+func applyProfilePreset(config *Config, explicit *budgetOverlay, preset BudgetConfig, profile string, recorder *resolutionRecorder) {
+	if explicit.MaxTurns != nil {
+		recorder.record("budget.max_turns", strconv.Itoa(config.Budget.MaxTurns), "yaml")
+	} else {
+		config.Budget.MaxTurns = preset.MaxTurns
+		recorder.record("budget.max_turns", strconv.Itoa(config.Budget.MaxTurns), budgetSourceLabel(profile))
+	}
+	if explicit.MaxToolCalls != nil {
+		recorder.record("budget.max_tool_calls", strconv.Itoa(config.Budget.MaxToolCalls), "yaml")
+	} else {
+		config.Budget.MaxToolCalls = preset.MaxToolCalls
+		recorder.record("budget.max_tool_calls", strconv.Itoa(config.Budget.MaxToolCalls), budgetSourceLabel(profile))
+	}
+	if explicit.MaxInputTokens != nil {
+		recorder.record("budget.max_input_tokens", strconv.Itoa(config.Budget.MaxInputTokens), "yaml")
+	} else {
+		config.Budget.MaxInputTokens = preset.MaxInputTokens
+		recorder.record("budget.max_input_tokens", strconv.Itoa(config.Budget.MaxInputTokens), budgetSourceLabel(profile))
+	}
+	if explicit.MaxOutputTokens != nil {
+		recorder.record("budget.max_output_tokens", strconv.Itoa(config.Budget.MaxOutputTokens), "yaml")
+	} else {
+		config.Budget.MaxOutputTokens = preset.MaxOutputTokens
+		recorder.record("budget.max_output_tokens", strconv.Itoa(config.Budget.MaxOutputTokens), budgetSourceLabel(profile))
+	}
+	if explicit.MaxWallTime != nil {
+		recorder.record("budget.max_wall_time", config.Budget.MaxWallTime, "yaml")
+	} else {
+		config.Budget.MaxWallTime = preset.MaxWallTime
+		recorder.record("budget.max_wall_time", config.Budget.MaxWallTime, budgetSourceLabel(profile))
+	}
+	if explicit.MaxCostUSD != nil {
+		recorder.record("budget.max_cost_usd", strconv.FormatFloat(config.Budget.MaxCostUSD, 'f', -1, 64), "yaml")
+	} else {
+		config.Budget.MaxCostUSD = preset.MaxCostUSD
+		recorder.record("budget.max_cost_usd", strconv.FormatFloat(config.Budget.MaxCostUSD, 'f', -1, 64), budgetSourceLabel(profile))
+	}
 }
 
 // Validate 验证配置版本、限额、时长、策略与验证命令的安全约束。
 func Validate(config Config) error {
 	if config.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", config.Version)
+	}
+	if config.Profile != "" && config.Profile != ProfileDefault && config.Profile != ProfileComplex {
+		return fmt.Errorf("profile must be %s or %s", ProfileDefault, ProfileComplex)
 	}
 	if config.Provider.APIKeyEnv == "" {
 		return fmt.Errorf("provider.api_key_env is required")
@@ -380,9 +558,9 @@ func (config Config) Fingerprint() string {
 // DefaultPath 返回工作区内的默认配置文件路径。
 func DefaultPath(workspace string) string { return filepath.Join(workspace, ".agent", "config.yaml") }
 
-// applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中；非法数值视为配置
-// 错误而非静默忽略，与同名 CLI flag 的行为保持一致。
-func applyEnvironment(config *Config) error {
+// applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中并记录来源；非法数值
+// 视为配置错误而非静默忽略，与同名 CLI flag 的行为保持一致。
+func applyEnvironment(config *Config, recorder *resolutionRecorder) error {
 	if value := os.Getenv("AGENT_BASE_URL"); value != "" {
 		config.Provider.BaseURL = value
 	}
@@ -411,9 +589,11 @@ func applyEnvironment(config *Config) error {
 			return fmt.Errorf("%s: %w", override.name, err)
 		}
 		*override.target = limit
+		recorder.record(envSourceField[override.name], strconv.Itoa(limit), "env")
 	}
 	if value := os.Getenv("AGENT_MAX_WALL_TIME"); value != "" {
 		config.Budget.MaxWallTime = value
+		recorder.record("budget.max_wall_time", value, "env")
 	}
 	if value := os.Getenv("AGENT_MAX_COST_USD"); value != "" {
 		limit, err := strconv.ParseFloat(value, 64)
@@ -421,37 +601,55 @@ func applyEnvironment(config *Config) error {
 			return fmt.Errorf("AGENT_MAX_COST_USD: %w", err)
 		}
 		config.Budget.MaxCostUSD = limit
+		recorder.record("budget.max_cost_usd", strconv.FormatFloat(limit, 'f', -1, 64), "env")
 	}
 	return nil
 }
 
-// applyOverrides 应用已经由 CLI 解析完成的显式非零覆盖项。
-func applyOverrides(config *Config, overrides Overrides) {
+// envSourceField 将 AGENT_* 环境变量名映射到 Resolved Plan 的字段名。
+var envSourceField = map[string]string{
+	"AGENT_MAX_TURNS":         "budget.max_turns",
+	"AGENT_MAX_TOOL_CALLS":    "budget.max_tool_calls",
+	"AGENT_MAX_INPUT_TOKENS":  "budget.max_input_tokens",
+	"AGENT_MAX_OUTPUT_TOKENS": "budget.max_output_tokens",
+}
+
+// applyOverrides 应用已经由 CLI 解析完成的显式非零覆盖项并记录来源。
+func applyOverrides(config *Config, overrides Overrides, recorder *resolutionRecorder) {
 	if overrides.BaseURL != "" {
 		config.Provider.BaseURL = overrides.BaseURL
+		recorder.record("provider.base_url", overrides.BaseURL, "cli")
 	}
 	if overrides.Model != "" {
 		config.Provider.Model = overrides.Model
+		recorder.record("provider.model", overrides.Model, "cli")
 	}
 	if overrides.APIKeyEnv != "" {
 		config.Provider.APIKeyEnv = overrides.APIKeyEnv
+		recorder.record("provider.api_key_env", overrides.APIKeyEnv, "cli")
 	}
 	if overrides.MaxTurns > 0 {
 		config.Budget.MaxTurns = overrides.MaxTurns
+		recorder.record("budget.max_turns", strconv.Itoa(overrides.MaxTurns), "cli")
 	}
 	if overrides.MaxToolCalls > 0 {
 		config.Budget.MaxToolCalls = overrides.MaxToolCalls
+		recorder.record("budget.max_tool_calls", strconv.Itoa(overrides.MaxToolCalls), "cli")
 	}
 	if overrides.MaxInputTokens > 0 {
 		config.Budget.MaxInputTokens = overrides.MaxInputTokens
+		recorder.record("budget.max_input_tokens", strconv.Itoa(overrides.MaxInputTokens), "cli")
 	}
 	if overrides.MaxOutputTokens > 0 {
 		config.Budget.MaxOutputTokens = overrides.MaxOutputTokens
+		recorder.record("budget.max_output_tokens", strconv.Itoa(overrides.MaxOutputTokens), "cli")
 	}
 	if overrides.MaxWallTime != "" {
 		config.Budget.MaxWallTime = overrides.MaxWallTime
+		recorder.record("budget.max_wall_time", overrides.MaxWallTime, "cli")
 	}
 	if overrides.MaxCostUSD > 0 {
 		config.Budget.MaxCostUSD = overrides.MaxCostUSD
+		recorder.record("budget.max_cost_usd", strconv.FormatFloat(overrides.MaxCostUSD, 'f', -1, 64), "cli")
 	}
 }
