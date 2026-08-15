@@ -352,3 +352,52 @@ func TestResolutionMarshalsIntoFrozenPlan(t *testing.T) {
 		t.Fatal("resolution must not carry secret values")
 	}
 }
+
+// TestPresetReadOnlyForcesDenyAndFailsVerification 锁定 read-only Preset 的组合
+// 语义：强制 deny/deny 并记录来源；携带验证命令时失败关闭。
+func TestPresetReadOnlyForcesDenyAndFailsVerification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\npreset: read-only\nprovider:\n  api_key_env: K\npolicy:\n  write: allow\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Policy.Write != "deny" || config.Policy.Exec != "deny" {
+		t.Fatalf("policy = %s/%s", config.Policy.Write, config.Policy.Exec)
+	}
+	if source := resolutionSource(config.Resolution, "policy.write"); source != "preset:read-only" {
+		t.Fatalf("policy.write source = %q", source)
+	}
+	withVerify := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(withVerify, []byte("version: 1\npreset: read-only\nprovider:\n  api_key_env: K\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(withVerify, Overrides{}); err == nil || !strings.Contains(err.Error(), "read-only preset") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestUnknownPresetFailsClosedAndFingerprintCoversPreset 锁定未知 Preset 失败
+// 关闭与 Preset 进入指纹（能力组合漂移在恢复时被拒绝）。
+func TestUnknownPresetFailsClosedAndFingerprintCoversPreset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\npreset: turbo\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "unknown preset") {
+		t.Fatalf("err = %v", err)
+	}
+	coding := Defaults()
+	readOnly := Defaults()
+	readOnly.Preset = PresetReadOnly
+	readOnly.Policy.Write = "deny"
+	readOnly.Policy.Exec = "deny"
+	if coding.Fingerprint() == readOnly.Fingerprint() {
+		t.Fatal("preset must participate in the fingerprint")
+	}
+	if coding.Preset != PresetCoding {
+		t.Fatalf("default preset = %q", coding.Preset)
+	}
+}

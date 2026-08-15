@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ const (
 type Config struct {
 	Version      int                `yaml:"version"`
 	Profile      string             `yaml:"profile"`
+	Preset       string             `yaml:"preset"`
 	Provider     ProviderConfig     `yaml:"provider"`
 	Workspace    WorkspaceConfig    `yaml:"workspace"`
 	Policy       PolicyConfig       `yaml:"policy"`
@@ -57,6 +59,46 @@ const (
 	ProfileComplex = "complex"
 )
 
+// 静态 Preset 是编译期已知组件的能力组合：工具子集、策略模式与验证要求。
+// 不存在目录扫描、自注册或动态加载；未知 Preset 在校验层失败关闭。
+const (
+	PresetCoding    = "coding"
+	PresetReadOnly  = "read-only"
+	PresetBenchmark = "benchmark"
+)
+
+// normalizePreset 归一化并应用静态 Preset 的组合语义：read-only 强制写入与
+// 执行策略为 deny 并记录来源（Preset 即组合，显式 allow 配置被组合覆盖且在
+// Resolution 中可见）；benchmark 复用 coding 工具集，其冻结配置、Docker 与
+// 隔离约束由 benchmark runner 自行强制，不在通用配置层重复。返回校验错误。
+func normalizePreset(cfg *Config, recorder *resolutionRecorder) error {
+	switch cfg.Preset {
+	case "":
+		cfg.Preset = PresetCoding
+		recorder.record("preset", PresetCoding, "default")
+		return nil
+	case PresetCoding, PresetBenchmark:
+		recorder.record("preset", cfg.Preset, "yaml")
+		return nil
+	case PresetReadOnly:
+		recorder.record("preset", PresetReadOnly, "yaml")
+		if cfg.Policy.Write != "deny" {
+			cfg.Policy.Write = "deny"
+			recorder.record("policy.write", "deny", "preset:read-only")
+		}
+		if cfg.Policy.Exec != "deny" {
+			cfg.Policy.Exec = "deny"
+			recorder.record("policy.exec", "deny", "preset:read-only")
+		}
+		if len(cfg.Verification.Commands) != 0 {
+			return errors.New("read-only preset forbids verification commands")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s)", cfg.Preset, PresetCoding, PresetReadOnly, PresetBenchmark)
+	}
+}
+
 // budgetOverlay 以指针字段探测 YAML 中哪些预算与 Provider 关键字段被显式设置，
 // 用于区分"字段缺省（可被命名 Profile 预设填充）"与"用户显式覆盖（优先于 Profile）"。
 type budgetOverlay struct {
@@ -78,6 +120,7 @@ type providerOverlay struct {
 // profileProbe 是第二轮宽松解码的目标：只提取 Profile 名称与显式字段设置。
 type profileProbe struct {
 	Profile  string          `yaml:"profile"`
+	Preset   string          `yaml:"preset"`
 	Budget   budgetOverlay   `yaml:"budget"`
 	Provider providerOverlay `yaml:"provider"`
 }
@@ -226,6 +269,7 @@ func Defaults() Config {
 	return Config{
 		Version:   1,
 		Profile:   ProfileDefault,
+		Preset:    PresetCoding,
 		Provider:  ProviderConfig{APIKeyEnv: "AGENT_API_KEY", RequestTimeout: "120s"},
 		Workspace: WorkspaceConfig{Ignore: []string{".git", ".agent", ".cairn", "node_modules", "vendor"}, MaxReadBytes: 1024 * 1024, MaxSearchFiles: 10_000, MaxSearchBytes: 64 * 1024 * 1024},
 		Policy:    PolicyConfig{Write: "ask", Exec: "ask", ProtectedPaths: []string{".git", ".agent", ".cairn", ".env", ".env.*", "**/*credential*"}, EnvAllow: []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS"}},
@@ -302,6 +346,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 			applyProfilePreset(&config, &probe.Budget, preset, profile, recorder)
 		}
 	}
+	if err := normalizePreset(&config, recorder); err != nil {
+		return Config{}, err
+	}
 	if err := applyEnvironment(&config, recorder); err != nil {
 		return Config{}, err
 	}
@@ -361,6 +408,16 @@ func Validate(config Config) error {
 	}
 	if config.Profile != "" && config.Profile != ProfileDefault && config.Profile != ProfileComplex {
 		return fmt.Errorf("profile must be %s or %s", ProfileDefault, ProfileComplex)
+	}
+	switch config.Preset {
+	case "", PresetCoding, PresetReadOnly, PresetBenchmark:
+	default:
+		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s)", config.Preset, PresetCoding, PresetReadOnly, PresetBenchmark)
+	}
+	if config.Preset == PresetReadOnly {
+		if config.Policy.Write != "deny" || config.Policy.Exec != "deny" || len(config.Verification.Commands) != 0 {
+			return fmt.Errorf("read-only preset requires deny policies and no verification commands")
+		}
 	}
 	if config.Provider.APIKeyEnv == "" {
 		return fmt.Errorf("provider.api_key_env is required")
@@ -515,6 +572,7 @@ func (config Config) TerminateGrace() (time.Duration, error) {
 // 指纹漂移；新增执行语义字段时必须同步加入此结构并补充指纹变化测试。
 type fingerprintView struct {
 	Version      int                 `json:"version"`
+	Preset       string              `json:"preset"`
 	Provider     providerFingerprint `json:"provider"`
 	Workspace    WorkspaceConfig     `json:"workspace"`
 	Policy       PolicyConfig        `json:"policy"`
@@ -538,6 +596,7 @@ type providerFingerprint struct {
 func (config Config) Fingerprint() string {
 	view := fingerprintView{
 		Version:      config.Version,
+		Preset:       config.Preset,
 		Provider:     providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv},
 		Workspace:    config.Workspace,
 		Policy:       config.Policy,

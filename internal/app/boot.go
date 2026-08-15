@@ -70,13 +70,13 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		return nil, err
 	}
 	boot.Artifacts = artifacts
-	patchTool := tools.ApplyPatch{Workspace: workspace}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool)
+	registry, err := tools.NewRegistry(readOnlySafeTools(workspace, cfg.Preset)...)
 	if err != nil {
 		boot.Close()
 		return nil, err
 	}
 	boot.Registry = registry
+	patchTool := tools.ApplyPatch{Workspace: workspace}
 	gate, err := policy.New(cfg.Policy.Write, cfg.Policy.Exec, cfg.Policy.ProtectedPaths, patchTool)
 	if err != nil {
 		boot.Close()
@@ -112,10 +112,13 @@ func (boot *Boot) Close() {
 // （工具/Policy/Verifier/预算展开进指纹）由后续切片扩展，此处仅汇总非敏感
 // 能力事实供诊断与测试使用。
 type CapabilityManifest struct {
+	Preset       string   `json:"preset"`
 	Profile      string   `json:"profile"`
 	Provider     string   `json:"provider"`
 	Model        string   `json:"model"`
 	Sandbox      string   `json:"sandbox"`
+	Policy       string   `json:"policy"`
+	BudgetTurns  int      `json:"budget_max_turns"`
 	Tools        []string `json:"tools"`
 	Verification int      `json:"verification_commands"`
 }
@@ -127,10 +130,13 @@ func (boot *Boot) Manifest() CapabilityManifest {
 		names = append(names, spec.Name)
 	}
 	return CapabilityManifest{
+		Preset:       boot.Config.Preset,
 		Profile:      boot.Config.Profile,
 		Provider:     boot.Config.Provider.BaseURL,
 		Model:        boot.Config.Provider.Model,
 		Sandbox:      boot.Config.Sandbox.Backend,
+		Policy:       "write=" + boot.Config.Policy.Write + ",exec=" + boot.Config.Policy.Exec,
+		BudgetTurns:  boot.Config.Budget.MaxTurns,
 		Tools:        names,
 		Verification: len(boot.Verification),
 	}

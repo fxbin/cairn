@@ -128,3 +128,30 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 		}
 	}
 }
+
+// TestReadOnlyPresetDropsSideEffectTools 锁定 read-only Preset 的工具子集与
+// Manifest 展开：注册表只有三件只读工具，策略与预算进入能力清单。
+func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Preset = config.PresetReadOnly
+	configuration.Policy.Write = "deny"
+	configuration.Policy.Exec = "deny"
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		return &finalProvider{}, nil
+	}}
+	boot, err := service.assembleBoot(t.TempDir(), t.TempDir(), configuration, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boot.Close()
+	manifest := boot.Manifest()
+	if strings.Join(manifest.Tools, ",") != "list_files,read_file,search_text" {
+		t.Fatalf("read-only tools = %v", manifest.Tools)
+	}
+	if manifest.Preset != config.PresetReadOnly || !strings.Contains(manifest.Policy, "write=deny") {
+		t.Fatalf("manifest = %+v", manifest)
+	}
+	if manifest.BudgetTurns != config.Defaults().Budget.MaxTurns {
+		t.Fatalf("manifest budget turns = %d", manifest.BudgetTurns)
+	}
+}

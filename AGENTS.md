@@ -35,6 +35,7 @@
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验与测试；影响执行、审批或预算语义的字段还必须加入 `internal/config` 的 `fingerprintView` 白名单并补充指纹变化测试（运维/展示类字段不得加入，避免在途 run 漂移）。写入和命令的默认策略都是 `ask`。
 - Execution Profile 是版本化产品合同：`profile: default|complex`（空=default；default=40 轮，complex=80 轮并等比放大工具与输入预算）。解析优先级固定为 安全默认值 → 命名 Profile → YAML 显式值 → 环境覆盖 → CLI 显式值；任意更高预算值必须显式出现并进入指纹。`Config.Resolution` 是只读的 Resolved Execution Plan（字段→值→来源），随冻结配置制品持久化，不得进入 YAML 解码或配置指纹。
+- 静态 Preset 是编译期已知组件的能力组合：`preset: coding|read-only|benchmark`（空=coding）。read-only 强制 write/exec=deny、禁止验证命令并只注册三件只读工具（工具子集由 `readOnlySafeTools` 单一来源提供，Boot 装配与 doctor 清单共用）；benchmark 复用 coding 工具集，其冻结配置、Docker 与隔离约束由 benchmark runner 强制。Preset 进入配置指纹；未知 Preset 失败关闭；禁止目录扫描、自注册或动态加载。
 - 对已 started 但未记录终态的 workspace/process Operation，使用 `cairn resume --resolve` 对账；不得盲目重试。`doctor` 必须保持只读。停在 `created`/`cancelling` 的非终态 run 只能经 `resume --abort-run` 补写终态解锁工作区。
 - `test/fault` 与 `test/e2e` 分别以 `-tags=faultinject`、`-tags=e2e` 门控，默认 `go test ./...` 不包含它们；两条验证命令必须显式执行。
 - `cmd/` 与 `internal/` 的生产 Go 代码中，每个 `type`、顶层函数和方法都必须在声明紧邻位置写简明中文注释，说明职责以及关键输入/输出、状态变化或安全约束；测试函数和显而易见的匿名字段除外。

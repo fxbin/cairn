@@ -35,6 +35,7 @@ type SandboxHealth struct {
 // artifacts_ok 对应既有只读完整性检查。
 type DoctorReport struct {
 	ConfigValid       bool                     `json:"config_valid"`
+	Preset            string                   `json:"preset"`
 	Profile           string                   `json:"profile"`
 	Resolution        []config.ResolutionEntry `json:"resolution,omitempty"`
 	Provider          ProviderHealth           `json:"provider"`
@@ -50,6 +51,7 @@ type DoctorReport struct {
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
 	report := DoctorReport{
 		ConfigValid:       config.Validate(configuration) == nil,
+		Preset:            configuration.Preset,
 		Profile:           configuration.Profile,
 		Resolution:        configuration.Resolution,
 		Provider:          ProviderHealth{BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
@@ -67,7 +69,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	if configuration.Sandbox.Backend == "docker" {
 		report.Sandbox.ImageAvailable = probeDockerImage(configuration.Sandbox.DockerImage)
 	}
-	report.Tools = fixedToolNames(workspace)
+	report.Tools = fixedToolNames(workspace, configuration.Preset)
 	journal, err := openReadOnlyJournal(stateDir, hash)
 	if err != nil {
 		return report, err
@@ -102,10 +104,9 @@ func probeDockerImage(image string) string {
 }
 
 // fixedToolNames 返回固定注册表的能力清单顺序；注册表构造是纯装配，不产生
-// 任何副作用，符合 doctor 的只读合同。
-func fixedToolNames(workspace tools.Workspace) []string {
-	patchTool := tools.ApplyPatch{Workspace: workspace}
-	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, tools.ExecCommand{Workspace: workspace})
+// 任何副作用，符合 doctor 的只读合同。read-only Preset 只列出三件只读工具。
+func fixedToolNames(workspace tools.Workspace, preset string) []string {
+	registry, err := tools.NewRegistry(readOnlySafeTools(workspace, preset)...)
 	if err != nil {
 		return nil
 	}
@@ -114,6 +115,19 @@ func fixedToolNames(workspace tools.Workspace) []string {
 		names = append(names, spec.Name)
 	}
 	return names
+}
+
+// readOnlySafeTools 按 Preset 返回注册表工具子集；read-only 只组合三件只读
+// 工具，coding 与 benchmark 使用完整五件。是 Boot 装配与 doctor 清单的唯一
+// 共同来源，防止能力清单双轨漂移。
+func readOnlySafeTools(workspace tools.Workspace, preset string) []tools.Tool {
+	execTool := tools.ExecCommand{Workspace: workspace}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	available := []tools.Tool{tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool}
+	if preset == config.PresetReadOnly {
+		return available[:3]
+	}
+	return available
 }
 
 // VerificationFact 摘要最近一次验证的序号与结果。
