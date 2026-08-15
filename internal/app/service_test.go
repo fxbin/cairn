@@ -80,7 +80,7 @@ func TestServiceRejectsInvalidDockerSandboxBeforeProviderOrDoctorStateAccess(t *
 	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: domain.NewRunID(), Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
 		t.Fatalf("resume error = %v", err)
 	}
-	if err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
 		t.Fatalf("doctor error = %v", err)
 	}
 }
@@ -494,7 +494,7 @@ func TestDoctorDetectsHashChainTamperingWithoutRepairingDatabase(t *testing.T) {
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
 		t.Fatal("doctor accepted a tampered journal")
 	}
 	if _, err := os.Stat(databasePath); err != nil {
@@ -511,7 +511,7 @@ func TestDoctorDoesNotCreateMissingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	databasePath := filepath.Join(stateDir, "workspaces", hash, "runs.db")
-	if err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
 		t.Fatal("doctor accepted a missing database")
 	}
 	if _, err := os.Stat(databasePath); !os.IsNotExist(err) {
@@ -556,7 +556,7 @@ func TestDoctorRejectsMissingArtifactReferencedByAnEvent(t *testing.T) {
 	if err := os.Remove(artifactPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
 		t.Fatalf("doctor accepted a missing referenced artifact: %v", err)
 	}
 }

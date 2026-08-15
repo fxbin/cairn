@@ -95,9 +95,11 @@ type AbortOptions struct {
 	OnEvent   EventSink
 }
 
-// InspectResult 包含当前投影以及按需附带的完整事件列表。
+// InspectResult 包含当前投影、诊断摘要以及按需附带的完整事件列表；人类视图与
+// --json 机器视图来自同一投影。
 type InspectResult struct {
 	Projection domain.RunProjection `json:"projection"`
+	Summary    RunSummary           `json:"summary"`
 	Events     []domain.Event       `json:"events,omitempty"`
 }
 
@@ -203,7 +205,7 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 	if err := checkArtifactReferences(ctx, journal, stateDir, hash); err != nil {
 		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	result := InspectResult{Projection: projection}
+	result := InspectResult{Projection: projection, Summary: SummarizeRun(events, projection)}
 	if includeEvents {
 		result.Events = events
 	}
@@ -506,29 +508,6 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 		return RunResult{ID: options.RunID}, err
 	}
 	return RunResult{ID: options.RunID}, nil
-}
-
-// Doctor 以只读模式验证工作区对应日志和制品引用的完整性。
-func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, config config.Config) error {
-	workspace, hash, err := workspaceFor(workspacePath, config)
-	if err != nil {
-		return err
-	}
-	if _, err := execToolFor(workspace, config); err != nil {
-		return err
-	}
-	journal, err := openReadOnlyJournal(stateDir, hash)
-	if err != nil {
-		return err
-	}
-	defer journal.Close()
-	if err := journal.Check(ctx); err != nil {
-		return fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	if err := checkArtifactReferences(ctx, journal, stateDir, hash); err != nil {
-		return fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	return nil
 }
 
 // provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。

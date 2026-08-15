@@ -453,6 +453,20 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 		if result.Projection.LastAssistantMessage != "" {
 			fmt.Fprintf(command.Stdout, "response: %s\n", result.Projection.LastAssistantMessage)
 		}
+		summary := result.Summary
+		if summary.StopReason != "" {
+			fmt.Fprintf(command.Stdout, "stopped: %s\n", summary.StopReason)
+		}
+		fmt.Fprintf(command.Stdout, "budget: turns %d, tool calls %d, tokens %d in / %d out\n", summary.TurnsUsed, summary.ToolCallsStarted, summary.InputTokens, summary.OutputTokens)
+		if summary.LastVerification != nil {
+			fmt.Fprintf(command.Stdout, "last verification: seq %d ok=%t (last mutation seq %d)\n", summary.LastVerification.Seq, summary.LastVerification.OK, summary.LastMutationSeq)
+		}
+		if summary.CompletionTrusted {
+			fmt.Fprintln(command.Stdout, "completion: trusted (verification binds all mutations)")
+		}
+		if summary.NextAction != "" {
+			fmt.Fprintf(command.Stdout, "next: %s\n", summary.NextAction)
+		}
 	}
 	return ExitOK
 }
@@ -464,6 +478,7 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
 	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write the doctor report as NDJSON to stdout")
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
 	}
@@ -476,11 +491,28 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	if err := command.Service.Doctor(ctx, *workspace, *stateDir, configuration); err != nil {
+	report, err := command.Service.Doctor(ctx, *workspace, *stateDir, configuration)
+	if err != nil {
 		fmt.Fprintln(command.Stderr, "doctor failed:", err)
 		return ExitCorrupt
 	}
-	fmt.Fprintln(command.Stdout, "journal: ok")
+	if *jsonOutput {
+		writeJSON(command.Stdout, report)
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "config: %t (profile %s)\n", report.ConfigValid, report.Profile)
+	fmt.Fprintf(command.Stdout, "provider: %s model %s key env %s present=%t\n", report.Provider.BaseURL, report.Provider.Model, report.Provider.APIKeyEnv, report.Provider.APIKeyPresent)
+	if report.Sandbox.Backend == "docker" {
+		fmt.Fprintf(command.Stdout, "sandbox: docker image %s available=%s\n", report.Sandbox.DockerImage, report.Sandbox.ImageAvailable)
+	} else {
+		fmt.Fprintf(command.Stdout, "sandbox: %s\n", report.Sandbox.Backend)
+	}
+	fmt.Fprintf(command.Stdout, "tools: %s\n", strings.Join(report.Tools, ", "))
+	fmt.Fprintf(command.Stdout, "verification commands: %d\n", report.VerificationCount)
+	for _, entry := range report.Resolution {
+		fmt.Fprintf(command.Stdout, "resolved %s = %s (%s)\n", entry.Field, entry.Value, entry.Source)
+	}
+	fmt.Fprintf(command.Stdout, "journal: %t artifacts: %t\n", report.JournalOK, report.ArtifactsOK)
 	return ExitOK
 }
 

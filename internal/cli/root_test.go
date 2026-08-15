@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -76,5 +77,35 @@ func TestAbortRunRequiresReason(t *testing.T) {
 	code := Run(context.Background(), []string{"resume", "run_test", "--abort-run"}, &stdout, &stderr)
 	if code != ExitUsage || !strings.Contains(stderr.String(), "--abort-run requires --reason") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestDoctorWritesOnlyNDJSONToStdout 锁定 doctor --json 的 stdout 纯 NDJSON 契约
+// （AB-4：人类视图与机器视图共享同一事实，错误只走 stderr）。
+func TestDoctorWritesOnlyNDJSONToStdout(t *testing.T) {
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+	// doctor 只读校验既有 journal；先用文本型 fakeProvider 跑一次 run 建立日志。
+	var runStdout, runStderr bytes.Buffer
+	runCommand := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &runStdout, Stderr: &runStderr}
+	if exit := runCommand.Run(context.Background(), []string{"run", "seed journal", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK {
+		t.Fatalf("seed run exit = %d, stderr = %s", exit, runStderr.String())
+	}
+	var output bytes.Buffer
+	command := Command{Stdout: &output, Stderr: os.Stderr}
+	code := command.Run(context.Background(), []string{"doctor", "--workspace", workspace, "--state-dir", stateDir, "--config", config.DefaultPath(workspace), "--json"})
+	if code != 0 {
+		t.Fatalf("doctor exit = %d, stderr shown above", code)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 1 || !json.Valid([]byte(lines[0])) {
+		t.Fatalf("stdout must be a single NDJSON object, got %q", output.String())
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &report); err != nil {
+		t.Fatalf("decode doctor report: %v", err)
+	}
+	if _, exists := report["provider"]; !exists {
+		t.Fatalf("doctor report missing provider section: %v", report)
 	}
 }

@@ -376,7 +376,7 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 			result.VerificationSucceeded = inspected.Projection.VerificationSucceeded
 			result.Metrics = metricsFromEvents(inspected.Events, prepared.Configuration)
 		}
-		if doctorErr := runner.Service.Doctor(context.Background(), result.Workspace, result.StateDir, prepared.Configuration); doctorErr == nil {
+		if _, doctorErr := runner.Service.Doctor(context.Background(), result.Workspace, result.StateDir, prepared.Configuration); doctorErr == nil {
 			result.DoctorOK = true
 		} else if runErr == nil {
 			runErr = doctorErr
