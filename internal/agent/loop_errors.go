@@ -10,6 +10,9 @@ import (
 // ErrTurnBudgetExceeded 表示运行耗尽了允许的模型轮次。
 var ErrTurnBudgetExceeded = errors.New("turn budget exhausted")
 
+// ErrWaitingReconcile 表示已启动的副作用操作没有可确认的终态，必须人工对账。
+var ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
+
 // BudgetExceededError 标识导致运行停止的持久化预算维度；为兼容调用方，
 // 它会解包为 ErrTurnBudgetExceeded。
 type BudgetExceededError struct{ Dimension string }
@@ -34,6 +37,22 @@ type WaitingApprovalError struct {
 func (err *WaitingApprovalError) Error() string {
 	return fmt.Sprintf("approval required for %s (%s)", err.OperationID, err.Fingerprint)
 }
+
+// WaitingReconcileError 标识一次已持久化 operation_started 的副作用无法确认终态；
+// RunID 与 OperationID 供 CLI 和调用方生成精确的恢复指引。
+type WaitingReconcileError struct {
+	RunID       domain.RunID
+	OperationID domain.OperationID
+	Reason      string
+}
+
+// Error 返回需要人工对账的操作及其非敏感原因。
+func (err *WaitingReconcileError) Error() string {
+	return fmt.Sprintf("reconciliation required for %s: %s", err.OperationID, err.Reason)
+}
+
+// Unwrap 使等待对账错误可映射到公开稳定的 reconciliation required 退出码。
+func (err *WaitingReconcileError) Unwrap() error { return ErrWaitingReconcile }
 
 // PolicyDeniedError 表示策略明确拒绝了模型提议的操作。
 type PolicyDeniedError struct{ Summary string }

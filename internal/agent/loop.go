@@ -216,6 +216,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				return Result{}, err
 			}
 			if err := loop.runVerification(ctx, &projection, input, turnID); err != nil {
+				if errors.Is(err, ErrWaitingReconcile) {
+					return Result{RunID: input.RunID}, err
+				}
 				if ctx.Err() != nil {
 					return loop.persistCancellation(ctx, &projection, input, &turnID)
 				}
@@ -259,6 +262,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		for _, call := range response.ToolCalls {
 			toolResult, err := loop.executeTool(ctx, &projection, input, turnID, call)
 			if err != nil {
+				if errors.Is(err, ErrWaitingReconcile) {
+					return Result{RunID: input.RunID}, err
+				}
 				if ctx.Err() != nil {
 					return loop.persistCancellation(ctx, &projection, input, &turnID)
 				}

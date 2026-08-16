@@ -9,6 +9,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -100,5 +101,13 @@ func TestSummarizeRunAnswersFourQuestions(t *testing.T) {
 	waitingSummary := waitingInspect.Summary
 	if !waitingSummary.PendingApproval || !strings.Contains(waitingSummary.NextAction, "--approve") {
 		t.Fatalf("waiting summary = %+v", waitingSummary)
+	}
+}
+
+func TestNextActionForReconciliationIncludesRequiredEvidence(t *testing.T) {
+	projection := domain.RunProjection{PendingOperation: &domain.PendingOperation{SideEffectClass: "process"}}
+	action := nextActionFor(projection)
+	if !strings.Contains(action, "--note <text>") || !strings.Contains(action, "--evidence <ref>") {
+		t.Fatalf("next action is not executable under the CLI contract: %q", action)
 	}
 }

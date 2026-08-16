@@ -72,6 +72,19 @@ func TestRedactJSONReplacesCredentialValuesWithoutBreakingJSON(t *testing.T) {
 	}
 }
 
+func TestRedactJSONCoversExpandedCredentialVocabulary(t *testing.T) {
+	const sentinel = "credential-sentinel-value"
+	input := []byte(`{"AWS_ACCESS_KEY_ID":"` + sentinel + `","DEPLOY_PRIVATE_KEY":"` + sentinel + `","DB_PASSWD":"` + sentinel + `","GITHUB_PAT":"` + sentinel + `"}`)
+	redacted := RedactJSON(input)
+	if strings.Contains(string(redacted), sentinel) {
+		t.Fatalf("expanded credential key leaked: %s", redacted)
+	}
+	text := Redact([]byte("GITHUB_PAT=" + sentinel))
+	if strings.Contains(string(text), sentinel) {
+		t.Fatalf("credential assignment leaked: %s", text)
+	}
+}
+
 func TestRedactJSONPreservesTokenUsageAndBudgetCounters(t *testing.T) {
 	redacted := RedactJSON([]byte(`{"token":"very-secret","session_token":"also-secret","usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168},"budget":{"max_input_tokens":250000,"max_output_tokens":50000}}`))
 	if strings.Contains(string(redacted), "very-secret") || strings.Contains(string(redacted), "also-secret") {

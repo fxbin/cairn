@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/fxbin/cairn/internal/credential"
 )
 
 // Ref 是可持久化的制品引用及供用户查看的截断预览。
@@ -30,13 +32,12 @@ type Store struct {
 
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(bearer)\s+[a-z0-9._~+/=-]{8,}`),
-	// 仅脱敏"凭据式键 = 值"中的值：值必须是引号包裹（≥4 字符）或足够长（≥16 个凭据可用字符）
-	// 的裸串。否则会把 Python 类型注解（如 def hash_token(token: str)）或短赋值（token = None）
-	// 误判为密钥，从而拒绝合法的 auth 类补丁。键后允许可选引号，覆盖 JSON 文本
-	// 形态（"api_key": "…"）中键与冒号隔着引号的情况。
-	regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password)["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`),
 	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{12,}`),
 }
+
+// credentialAssignmentPattern 只捕获形如“标识符 = 长值”的候选赋值；键名是否
+// 敏感统一交给 credential.Key，避免文本、JSON、配置和工具各自维护词干。
+var credentialAssignmentPattern = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`)
 
 // New 创建仅当前用户可读写的制品根目录。
 func New(root string, previewSize int) (*Store, error) {
@@ -69,6 +70,17 @@ func Redact(content []byte) []byte {
 			return "[REDACTED]"
 		})
 	}
+	clean = credentialAssignmentPattern.ReplaceAllStringFunc(clean, func(match string) string {
+		index := strings.IndexAny(match, ":=")
+		if index < 0 {
+			return match
+		}
+		key := strings.Trim(strings.TrimSpace(match[:index]), "\"'")
+		if !credential.Key(key) {
+			return match
+		}
+		return match[:index+1] + "[REDACTED]"
+	})
 	return []byte(clean)
 }
 
@@ -115,9 +127,7 @@ func scrubJSON(value *any, key string) {
 // 虽然包含 tokens 字样，但属于审计与预算事实，必须保留。
 func sensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-	return key == "token" || key == "apikey" || key == "api_key" ||
-		(strings.HasSuffix(key, "token") && !strings.HasSuffix(key, "tokens")) ||
-		strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "credential")
+	return !strings.HasSuffix(key, "tokens") && credential.Key(key)
 }
 
 // Put 脱敏后按内容哈希原子写入制品，并返回稳定引用；JSON 制品优先走保留

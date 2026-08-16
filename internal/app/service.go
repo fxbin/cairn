@@ -31,7 +31,7 @@ var (
 	// ErrActiveRun 表示同一工作区已有尚未终态的运行。
 	ErrActiveRun = errors.New("workspace already has an active run")
 	// ErrWaitingReconcile 表示悬而未决的副作用必须由人工先对账。
-	ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
+	ErrWaitingReconcile = agent.ErrWaitingReconcile
 	// ErrConfigDrift 表示当前配置与运行创建时冻结的配置不一致。
 	ErrConfigDrift = errors.New("frozen config fingerprint does not match current configuration")
 	// ErrStateCorrupt 表示事件日志或制品引用无法通过完整性校验。

@@ -305,18 +305,60 @@ func TestProfileChangesFingerprint(t *testing.T) {
 	if base.Profile != ProfileDefault {
 		t.Fatalf("default profile = %q", base.Profile)
 	}
-	complexConfig := Defaults()
+	complexConfig := base
 	complexConfig.Profile = ProfileComplex
-	complexConfig.Budget.MaxTurns = ComplexMaxTurns
-	complexConfig.Budget.MaxToolCalls = 160
-	complexConfig.Budget.MaxInputTokens = 1_400_000
 	if base.Fingerprint() == complexConfig.Fingerprint() {
-		t.Fatal("complex profile must change the fingerprint")
+		t.Fatal("profile name alone must change the fingerprint")
+	}
+	emptyProfile := base
+	emptyProfile.Profile = ""
+	if emptyProfile.Fingerprint() != base.Fingerprint() {
+		t.Fatal("empty profile must remain semantically equivalent to default")
 	}
 	explicit := complexConfig
 	explicit.Budget.MaxTurns = 50
 	if explicit.Fingerprint() == complexConfig.Fingerprint() {
 		t.Fatal("explicit turn override must change the fingerprint")
+	}
+}
+
+func TestProviderOverrideResolutionTracksEnvironmentAndCLI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "version: 1\nprovider:\n  base_url: http://yaml.test/v1\n  model: yaml-model\n  api_key_env: YAML_KEY\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_BASE_URL", "http://env.test/v1")
+	t.Setenv("AGENT_MODEL", "env-model")
+	t.Setenv("AGENT_API_KEY_ENV", "ENV_KEY")
+	cases := []struct {
+		name       string
+		overrides  Overrides
+		wantSource string
+		wantURL    string
+		wantModel  string
+		wantKey    string
+	}{
+		{name: "environment", wantSource: "env", wantURL: "http://env.test/v1", wantModel: "env-model", wantKey: "ENV_KEY"},
+		{name: "cli", overrides: Overrides{BaseURL: "http://cli.test/v1", Model: "cli-model", APIKeyEnv: "CLI_KEY"}, wantSource: "cli", wantURL: "http://cli.test/v1", wantModel: "cli-model", wantKey: "CLI_KEY"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			configuration, err := Load(path, testCase.overrides)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for field, want := range map[string]string{
+				"provider.base_url":    testCase.wantURL,
+				"provider.model":       testCase.wantModel,
+				"provider.api_key_env": testCase.wantKey,
+			} {
+				entry, found := resolutionEntry(configuration.Resolution, field)
+				if !found || entry.Value != want || entry.Source != testCase.wantSource {
+					t.Fatalf("%s = %+v, found=%t; want value %q source %q", field, entry, found, want, testCase.wantSource)
+				}
+			}
+		})
 	}
 }
 
@@ -328,6 +370,16 @@ func resolutionSource(entries []ResolutionEntry, field string) string {
 		}
 	}
 	return ""
+}
+
+// resolutionEntry 从 Resolved Execution Plan 中查询完整字段记录。
+func resolutionEntry(entries []ResolutionEntry, field string) (ResolutionEntry, bool) {
+	for _, entry := range entries {
+		if entry.Field == field {
+			return entry, true
+		}
+	}
+	return ResolutionEntry{}, false
 }
 
 // TestResolutionMarshalsIntoFrozenPlan 锁定 Resolved Execution Plan 随冻结配置

@@ -214,6 +214,18 @@ func TestExecCommandHostBackendKillsProcessGroupOnTimeout(t *testing.T) {
 	}
 }
 
+func TestWaitForExitAfterKillDistinguishesConfirmedAndUnconfirmed(t *testing.T) {
+	finished := make(chan error, 1)
+	finished <- errors.New("killed")
+	if err, confirmed := waitForExitAfterKill(finished, time.Second); !confirmed || err == nil {
+		t.Fatalf("confirmed wait = %v, %t", err, confirmed)
+	}
+	blocked := make(chan error)
+	if err, confirmed := waitForExitAfterKill(blocked, time.Millisecond); confirmed || err == nil {
+		t.Fatalf("unconfirmed wait = %v, %t", err, confirmed)
+	}
+}
+
 // TestDockerRunArgumentsMapHostUser 锁定容器以宿主用户身份运行：可写 bind
 // mount 的产出文件不会成为 root 属主。
 func TestDockerRunArgumentsMapHostUser(t *testing.T) {

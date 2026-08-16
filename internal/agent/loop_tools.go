@@ -141,6 +141,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	}
 	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
 	result = redactToolResult(result)
+	if result.Code == tools.CodeTerminationUnconfirmed {
+		return result, &WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
+	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
 	if cancelled {

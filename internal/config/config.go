@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxbin/cairn/internal/credential"
 	"gopkg.in/yaml.v3"
 )
 
@@ -463,7 +464,7 @@ func Validate(config Config) error {
 		if !validEnvironmentKey(key) {
 			return fmt.Errorf("policy.env_allow contains invalid environment variable %q", key)
 		}
-		if sensitiveEnvironmentKey(key) {
+		if credential.Key(key) {
 			return fmt.Errorf("policy.env_allow cannot expose secret-like environment variable %q", key)
 		}
 		allowedEnvironment[key] = struct{}{}
@@ -529,14 +530,6 @@ func validEnvironmentKey(key string) bool {
 	return true
 }
 
-// sensitiveEnvironmentKey 判断环境变量名是否暗示包含凭据；词干覆盖常见密钥
-// 命名（含 access_key/private_key 与 *_PAT 后缀），故意不匹配裸 auth/pat
-// 子串，避免误伤 PATH、AUTH_TYPE 等普通配置变量。
-func sensitiveEnvironmentKey(key string) bool {
-	key = strings.ToLower(key)
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "passwd") || strings.Contains(key, "api_key") || strings.Contains(key, "apikey") || strings.Contains(key, "credential") || strings.Contains(key, "access_key") || strings.Contains(key, "private_key") || strings.HasSuffix(key, "_pat")
-}
-
 // RequestTimeout 解析模型请求超时配置。
 func (config Config) RequestTimeout() (time.Duration, error) {
 	return time.ParseDuration(config.Provider.RequestTimeout)
@@ -572,6 +565,7 @@ func (config Config) TerminateGrace() (time.Duration, error) {
 // 指纹漂移；新增执行语义字段时必须同步加入此结构并补充指纹变化测试。
 type fingerprintView struct {
 	Version      int                 `json:"version"`
+	Profile      string              `json:"profile"`
 	Preset       string              `json:"preset"`
 	Provider     providerFingerprint `json:"provider"`
 	Workspace    WorkspaceConfig     `json:"workspace"`
@@ -594,8 +588,13 @@ type providerFingerprint struct {
 // Fingerprint 生成可写入事件日志的冻结非敏感配置摘要；带版本前缀，指纹算法
 // 本身演进时递增前缀使新旧摘要天然不可比。
 func (config Config) Fingerprint() string {
+	profile := config.Profile
+	if profile == "" {
+		profile = ProfileDefault
+	}
 	view := fingerprintView{
 		Version:      config.Version,
+		Profile:      profile,
 		Preset:       config.Preset,
 		Provider:     providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv},
 		Workspace:    config.Workspace,
@@ -610,7 +609,7 @@ func (config Config) Fingerprint() string {
 	if err != nil {
 		panic(err)
 	}
-	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v2\x00"), encoded...))
+	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v3\x00"), encoded...))
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
@@ -622,12 +621,15 @@ func DefaultPath(workspace string) string { return filepath.Join(workspace, ".ag
 func applyEnvironment(config *Config, recorder *resolutionRecorder) error {
 	if value := os.Getenv("AGENT_BASE_URL"); value != "" {
 		config.Provider.BaseURL = value
+		recorder.record("provider.base_url", value, "env")
 	}
 	if value := os.Getenv("AGENT_MODEL"); value != "" {
 		config.Provider.Model = value
+		recorder.record("provider.model", value, "env")
 	}
 	if value := os.Getenv("AGENT_API_KEY_ENV"); value != "" {
 		config.Provider.APIKeyEnv = value
+		recorder.record("provider.api_key_env", value, "env")
 	}
 	integerOverrides := []struct {
 		name   string

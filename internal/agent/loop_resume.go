@@ -198,6 +198,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 			return Result{}, errors.New("verification command index does not match frozen configuration")
 		}
 		if err := loop.executeVerificationCommand(ctx, &projection, input, turnID, pending.OperationID, loop.Verification[verification.CommandIndex], observation); err != nil {
+			if errors.Is(err, ErrWaitingReconcile) {
+				return Result{RunID: input.RunID}, err
+			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
@@ -215,6 +218,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 		}
 		if err := loop.runVerificationCommands(ctx, &projection, input, turnID, verification.VerificationID, verification.PlanRef, verification.CommandIndex+1); err != nil {
+			if errors.Is(err, ErrWaitingReconcile) {
+				return Result{RunID: input.RunID}, err
+			}
 			var waiting *WaitingApprovalError
 			if errors.As(err, &waiting) {
 				return Result{RunID: input.RunID}, waiting
@@ -258,6 +264,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	}
 	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
 	result = redactToolResult(result)
+	if result.Code == tools.CodeTerminationUnconfirmed {
+		return Result{RunID: input.RunID}, &WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
+	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
 	if cancelled {
@@ -332,6 +341,9 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 		}
 	}
 	if err := loop.runVerification(ctx, projection, input, turnID); err != nil {
+		if errors.Is(err, ErrWaitingReconcile) {
+			return Result{RunID: input.RunID}, err
+		}
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, projection, input, &turnID)
 		}
@@ -381,6 +393,9 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 		}
 		_, err := loop.executeTool(ctx, projection, input, turnID, call)
 		if err != nil {
+			if errors.Is(err, ErrWaitingReconcile) {
+				return Result{RunID: input.RunID}, err
+			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, projection, input, &turnID)
 			}

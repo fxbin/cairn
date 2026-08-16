@@ -246,7 +246,7 @@ func nextActionFor(projection domain.RunProjection) string {
 		return "resume <run-id> --approve <fingerprint>"
 	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
-		return "resume <run-id> --resolve <operation-id>=<verdict> --note <text>"
+		return "resume <run-id> --resolve <operation-id>=<verdict> --note <text> --evidence <ref>"
 	}
 	switch projection.State {
 	case domain.RunRunning:

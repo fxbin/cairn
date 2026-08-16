@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -227,6 +228,7 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 	go func() { finished <- command.Wait() }()
 	var waitErr error
 	cancelled := false
+	terminationUnconfirmed := false
 	select {
 	case waitErr = <-finished:
 	case <-commandContext.Done():
@@ -240,17 +242,25 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 		case waitErr = <-finished:
 		case <-time.After(grace):
 			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-			// SIGKILL 后仍有界等待：进程处于不可中断状态时不会永远阻塞取消
-			// 流程，而是返回明确的未确认终止错误。
-			select {
-			case waitErr = <-finished:
-			case <-time.After(5 * time.Second):
-				waitErr = errors.New("process did not exit after SIGKILL")
-			}
+			var terminationConfirmed bool
+			waitErr, terminationConfirmed = waitForExitAfterKill(finished, 5*time.Second)
+			terminationUnconfirmed = !terminationConfirmed
 		}
 	}
 	if cancelled && cleanup != nil {
 		cleanup()
+		if terminationUnconfirmed {
+			select {
+			case waitErr = <-finished:
+				terminationUnconfirmed = false
+			default:
+			}
+		}
+	}
+	if terminationUnconfirmed {
+		// Wait 仍可能持有 stdout/stderr 的异步写入协程；此处分支不得读取缓冲区，
+		// 同时用专用结果码要求 Agent 保留 operation_started 供人工对账。
+		return Failure(CodeTerminationUnconfirmed, "process termination could not be confirmed after SIGKILL")
 	}
 	duration := time.Since(started).Milliseconds()
 	exitCode, signal := commandOutcome(waitErr)
@@ -272,6 +282,17 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 		return Result{Code: "nonzero_exit", Preview: stringResult(data), Truncated: data.OutputCapped, Bytes: int64(stdout.Len() + stderr.Len())}
 	}
 	return Success(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
+}
+
+// waitForExitAfterKill 在 SIGKILL 后有界等待 Wait 结果；布尔值仅在已确认 Wait
+// 返回时为真，超时不能被解释为进程已经终止。
+func waitForExitAfterKill(finished <-chan error, limit time.Duration) (error, bool) {
+	select {
+	case err := <-finished:
+		return err, true
+	case <-time.After(limit):
+		return errors.New("process did not exit after SIGKILL"), false
+	}
 }
 
 // ParseExecArguments 校验命令参数并填充与执行器相同的默认值；策略层在审批前
@@ -313,19 +334,11 @@ func (tool ExecCommand) validateEnvironment(environment map[string]string) error
 		if _, allowed := tool.EnvAllow[key]; !allowed {
 			return fmt.Errorf("environment variable %q is not allowed", key)
 		}
-		if sensitiveEnvironmentKey(key) {
+		if credential.Key(key) {
 			return fmt.Errorf("environment variable %q is secret-like and cannot be exposed to a command", key)
 		}
 	}
 	return nil
-}
-
-// sensitiveEnvironmentKey 拒绝名称暗示包含 API 凭据的环境变量，作为 Config
-// 校验之外的工具层兜底，防止直接构造 ExecCommand 时泄露密钥；词干清单与
-// internal/config 的同名判定保持同步（含 access_key/private_key 与 *_PAT）。
-func sensitiveEnvironmentKey(key string) bool {
-	key = strings.ToLower(key)
-	return strings.Contains(key, "token") || strings.Contains(key, "secret") || strings.Contains(key, "password") || strings.Contains(key, "passwd") || strings.Contains(key, "api_key") || strings.Contains(key, "apikey") || strings.Contains(key, "credential") || strings.Contains(key, "access_key") || strings.Contains(key, "private_key") || strings.HasSuffix(key, "_pat")
 }
 
 // mergedEnvironment 从允许继承的环境变量与显式覆盖构造确定性的进程环境。

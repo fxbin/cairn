@@ -176,6 +176,9 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 		return err
 	}
 	result := redactToolResult(loop.Tools.Execute(ctx, "exec_command", command.Arguments))
+	if result.Code == tools.CodeTerminationUnconfirmed {
+		return &WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
+	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
 	if cancelled {
@@ -239,6 +242,9 @@ func (loop *Loop) verificationObservation() (string, error) {
 // 执行冻结 verifier；通过时直接完成，失败时保留既有证据并返回给下一模型轮次。
 func (loop *Loop) finishAutomaticVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) (Result, string, error) {
 	if err := loop.runVerification(ctx, projection, input, turnID); err != nil {
+		if errors.Is(err, ErrWaitingReconcile) {
+			return Result{RunID: input.RunID}, "", err
+		}
 		if ctx.Err() != nil {
 			result, cancellationErr := loop.persistCancellation(ctx, projection, input, &turnID)
 			return result, "", cancellationErr

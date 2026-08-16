@@ -29,11 +29,23 @@ type cancellingProvider struct{ cancel context.CancelFunc }
 
 type cancellingExecTool struct{ cancel context.CancelFunc }
 
+type uncertainExecTool struct{}
+
 type flakyVerificationTool struct{ calls int }
 
 type countingExecTool struct{ calls int }
 
 type mutatingVerificationTool struct{ path string }
+
+func (uncertainExecTool) Spec() ports.ToolSpec {
+	return ports.ToolSpec{Name: "exec_command"}
+}
+
+func (uncertainExecTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+
+func (uncertainExecTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
+	return tools.Failure(tools.CodeTerminationUnconfirmed, "process termination is unconfirmed")
+}
 
 func (tool mutatingVerificationTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
@@ -182,6 +194,40 @@ func TestLoopRejectsMalformedToolCallEventWithoutRecordingArguments(t *testing.T
 	}
 	if containsEventPayload(events, domain.EventModelRequestFailed, "sk-not-for-journal") || countEvent(events, domain.EventToolCallProposed) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
 		t.Fatalf("raw malformed arguments leaked into durable or executable paths: %#v", events)
+	}
+}
+
+func TestLoopRejectsExpandedCredentialBeforeToolProposal(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ExecCommand{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sentinel = "credential-sentinel-value"
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "secret-env", Name: "exec_command", Arguments: json.RawMessage(`{"argv":["/usr/bin/true"],"env":{"GITHUB_PAT":"` + sentinel + `"}}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "reject expanded credential")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "reject expanded credential", WorkspaceHash: "workspace"}); err == nil {
+		t.Fatal("credential-bearing tool call unexpectedly succeeded")
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsEventPayload(events, domain.EventToolCallProposed, sentinel) || countEvent(events, domain.EventToolCallProposed) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
+		t.Fatalf("credential reached the durable tool path: %#v", events)
 	}
 }
 
@@ -1059,6 +1105,47 @@ func TestCancellationDuringProcessOperationPersistsNoFurtherModelRequest(t *test
 	}
 	if !foundCancelled {
 		t.Fatalf("operation cancellation event missing: %#v", events)
+	}
+}
+
+func TestUnconfirmedProcessTerminationLeavesOperationForReconciliation(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(uncertainExecTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "uncertain", Name: "exec_command", Arguments: json.RawMessage(`{"argv":["/usr/bin/true"]}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "uncertain command")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	_, runErr := loop.Run(context.Background(), RunInput{RunID: runID, Task: "uncertain command", WorkspaceHash: "workspace"})
+	if !errors.Is(runErr, ErrWaitingReconcile) {
+		t.Fatalf("run error = %v", runErr)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.State != domain.RunRunning || projection.PendingOperation == nil || projection.PendingOperation.SideEffectClass != "process" {
+		t.Fatalf("projection = %#v", projection)
+	}
+	if countEvent(events, domain.EventOperationFailed) != 0 || countEvent(events, domain.EventOperationCancelled) != 0 || countEvent(events, domain.EventToolResultAppended) != 0 || countEvent(events, domain.EventRunFailed) != 0 {
+		t.Fatalf("unconfirmed operation was incorrectly closed: %#v", events)
 	}
 }
 

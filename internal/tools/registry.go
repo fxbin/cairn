@@ -20,6 +20,10 @@ type Result struct {
 	SHA256    string          `json:"sha256,omitempty"`
 }
 
+// CodeTerminationUnconfirmed 表示取消信号已发出，但进程退出与资源回收仍未得到确认；
+// 调用方必须保留副作用操作的非终态并进入人工对账。
+const CodeTerminationUnconfirmed = "termination_unconfirmed"
+
 // Tool 定义固定工具的模型声明和同步执行契约。
 type Tool interface {
 	Spec() ports.ToolSpec
