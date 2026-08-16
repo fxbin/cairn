@@ -832,3 +832,26 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 		t.Fatalf("legacy resume must fail closed with ErrConfigDrift, got %v", err)
 	}
 }
+
+// TestVerificationEnvironmentFlowsThroughConfiguredExecTool 锁定 2026-08-16
+// AB Gate 回归的根因不再复发：Preset 工具子集必须携带已配置装配的 exec 工具，
+// 验证命令声明的环境变量（经 env_allowlist 授权）能真实进入执行环境。
+func TestVerificationEnvironmentFlowsThroughConfiguredExecTool(t *testing.T) {
+	provider := &finalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	configuration := config.Defaults()
+	configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, "CAIRN_TEST_ENV")
+	configuration.Verification.Commands = []config.VerificationCommand{{
+		Argv: []string{"/bin/sh", "-c", `[ "$CAIRN_TEST_ENV" = deployed ]`},
+		Env:  map[string]string{"CAIRN_TEST_ENV": "deployed"},
+	}}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	result, err := service.Run(context.Background(), RunOptions{Task: "env gate", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatalf("verification env was not propagated through the registry: %v", err)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, false)
+	if err != nil || !inspected.Projection.VerificationSucceeded {
+		t.Fatalf("inspect = %+v err = %v", inspected.Projection, err)
+	}
+}

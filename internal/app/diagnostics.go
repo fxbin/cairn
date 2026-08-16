@@ -105,8 +105,9 @@ func probeDockerImage(image string) string {
 
 // fixedToolNames 返回固定注册表的能力清单顺序；注册表构造是纯装配，不产生
 // 任何副作用，符合 doctor 的只读合同。read-only Preset 只列出三件只读工具。
+// doctor 只需名称清单，副作用工具实例的运行时配置在此无关紧要。
 func fixedToolNames(workspace tools.Workspace, preset string) []string {
-	registry, err := tools.NewRegistry(readOnlySafeTools(workspace, preset)...)
+	registry, err := tools.NewRegistry(presetTools(workspace, tools.ExecCommand{Workspace: workspace}, preset)...)
 	if err != nil {
 		return nil
 	}
@@ -117,11 +118,11 @@ func fixedToolNames(workspace tools.Workspace, preset string) []string {
 	return names
 }
 
-// readOnlySafeTools 按 Preset 返回注册表工具子集；read-only 只组合三件只读
-// 工具，coding 与 benchmark 使用完整五件。是 Boot 装配与 doctor 清单的唯一
-// 共同来源，防止能力清单双轨漂移。
-func readOnlySafeTools(workspace tools.Workspace, preset string) []tools.Tool {
-	execTool := tools.ExecCommand{Workspace: workspace}
+// presetTools 按 Preset 返回注册表工具子集；read-only 只组合三件只读工具，
+// coding 与 benchmark 使用完整五件。副作用工具必须传入"已完成配置装配"的
+// 实例（EnvAllow/Backend/Grace 等），此处绝不自造裸工具——否则验证命令所需
+// 的环境变量会被拒、沙箱配置会被静默丢弃（2026-08-16 AB Gate 回归实证）。
+func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset string) []tools.Tool {
 	patchTool := tools.ApplyPatch{Workspace: workspace}
 	available := []tools.Tool{tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool}
 	if preset == config.PresetReadOnly {

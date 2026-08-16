@@ -70,7 +70,7 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		return nil, err
 	}
 	boot.Artifacts = artifacts
-	registry, err := tools.NewRegistry(readOnlySafeTools(workspace, cfg.Preset)...)
+	registry, err := tools.NewRegistry(presetTools(workspace, execTool, cfg.Preset)...)
 	if err != nil {
 		boot.Close()
 		return nil, err
