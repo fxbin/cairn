@@ -58,6 +58,76 @@ func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	}
 }
 
+// TestDoctorReportOnFreshWorkspaceSupportsPreflight 锁定首次运行前 preflight：
+// 没有 journal 的新工作区不报错，journal_state=absent，就绪判定按配置与
+// Provider 前提给出，而不是失败。
+func TestDoctorReportOnFreshWorkspaceSupportsPreflight(t *testing.T) {
+	t.Setenv("CAIRN_DOCTOR_TEST_KEY", "present")
+	configuration := config.Defaults()
+	configuration.Provider.APIKeyEnv = "CAIRN_DOCTOR_TEST_KEY"
+	configuration.Provider.BaseURL = "https://provider.test/v1"
+	configuration.Provider.Model = "test-model"
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	report, err := service.Doctor(context.Background(), t.TempDir(), t.TempDir(), configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.JournalState != "absent" || report.JournalOK || report.ArtifactsOK {
+		t.Fatalf("journal state = %q ok=%v artifacts=%v", report.JournalState, report.JournalOK, report.ArtifactsOK)
+	}
+	if !report.Ready || !report.ConfigValid {
+		t.Fatalf("fresh workspace preflight must be ready, report = %+v", report)
+	}
+	if report.ConfigFingerprint == "" {
+		t.Fatal("doctor report missing config fingerprint")
+	}
+	if report.Policy.Write != "ask" || report.Policy.Exec != "ask" {
+		t.Fatalf("policy health = %+v", report.Policy)
+	}
+}
+
+// TestDoctorReadinessFailsClosedOnMissingPrerequisites 锁定就绪判定的失败关闭：
+// 密钥环境变量缺失或 Docker 后端镜像不可用时 ready=false，即使其余检查通过。
+func TestDoctorReadinessFailsClosedOnMissingPrerequisites(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://provider.test/v1"
+	configuration.Provider.Model = "test-model"
+	configuration.Sandbox.Backend = "host"
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	workspacePath, stateDir := t.TempDir(), t.TempDir()
+	_, hash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.Doctor(context.Background(), workspacePath, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Ready {
+		t.Fatalf("missing API key must not be ready, report = %+v", report)
+	}
+	dockerConfig := config.Defaults()
+	dockerConfig.Provider.BaseURL = "https://provider.test/v1"
+	dockerConfig.Provider.Model = "test-model"
+	dockerConfig.Sandbox.Backend = "docker"
+	dockerConfig.Sandbox.DockerImage = "cairn-doctor-missing-image:definitely-absent"
+	t.Setenv(dockerConfig.Provider.APIKeyEnv, "present")
+	dockerReport, err := service.Doctor(context.Background(), workspacePath, t.TempDir(), dockerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dockerReport.Ready {
+		t.Fatalf("missing docker image must not be ready, report = %+v", dockerReport)
+	}
+}
+
 // TestSummarizeRunAnswersFourQuestions 锁定 inspect 摘要：完成 run 的可信完成
 // 证据绑定、预算计数与空待决；等待审批 run 给出可发现的下一步动作。
 func TestSummarizeRunAnswersFourQuestions(t *testing.T) {

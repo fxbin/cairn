@@ -502,6 +502,9 @@ func TestDoctorDetectsHashChainTamperingWithoutRepairingDatabase(t *testing.T) {
 	}
 }
 
+// TestDoctorDoesNotCreateMissingState 锁定 doctor 的只读合同与首次运行前
+// preflight 语义：journal 不存在时报告 absent 而不是失败，且诊断全程绝不
+// 创建任何状态文件。
 func TestDoctorDoesNotCreateMissingState(t *testing.T) {
 	service := Service{}
 	configuration := config.Defaults()
@@ -511,8 +514,12 @@ func TestDoctorDoesNotCreateMissingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	databasePath := filepath.Join(stateDir, "workspaces", hash, "runs.db")
-	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
-		t.Fatal("doctor accepted a missing database")
+	report, err := service.Doctor(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatalf("doctor must support fresh-workspace preflight: %v", err)
+	}
+	if report.JournalState != "absent" {
+		t.Fatalf("journal state = %q, want absent", report.JournalState)
 	}
 	if _, err := os.Stat(databasePath); !os.IsNotExist(err) {
 		t.Fatalf("doctor created state while diagnosing missing database: %v", err)

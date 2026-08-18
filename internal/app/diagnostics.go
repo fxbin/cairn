@@ -4,9 +4,12 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"runtime/debug"
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
@@ -32,37 +35,59 @@ type SandboxHealth struct {
 
 // DoctorReport 回答"环境和配置是否可运行"：非敏感 resolved 配置、Profile、
 // 预算来源、Provider/Sandbox 可用性与 capability manifest；journal_ok 与
-// artifacts_ok 对应既有只读完整性检查。
+// artifacts_ok 对应既有只读完整性检查。ready 是总体就绪判定：配置有效、
+// Provider 前提（基地址、模型、密钥环境变量）在位、Docker 后端镜像存在、
+// journal 完整或尚不存在（支持首次运行前 preflight）。诊断永远只读。
 type DoctorReport struct {
 	ConfigValid       bool                     `json:"config_valid"`
+	Ready             bool                     `json:"ready"`
 	Preset            string                   `json:"preset"`
 	Profile           string                   `json:"profile"`
+	ConfigFingerprint string                   `json:"config_fingerprint"`
+	BuildRevision     string                   `json:"build_revision,omitempty"`
+	WorkspaceHash     string                   `json:"workspace_hash"`
+	Policy            PolicyHealth             `json:"policy"`
 	Resolution        []config.ResolutionEntry `json:"resolution,omitempty"`
 	Provider          ProviderHealth           `json:"provider"`
 	Sandbox           SandboxHealth            `json:"sandbox"`
 	Tools             []string                 `json:"tools"`
 	VerificationCount int                      `json:"verification_commands"`
+	JournalState      string                   `json:"journal_state"`
 	JournalOK         bool                     `json:"journal_ok"`
 	ArtifactsOK       bool                     `json:"artifacts_ok"`
 }
 
+// PolicyHealth 暴露写入与命令执行策略的非敏感结论；doctor 只报告，不决策。
+type PolicyHealth struct {
+	Write string `json:"write"`
+	Exec  string `json:"exec"`
+}
+
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性，并返回环境可运行性
 // 诊断报告；所有探测均为只读（环境变量只查存在性、Docker 只做本地镜像查询）。
+// 新工作区没有 journal 时不报错，journal_state=absent 并继续给出 ready 判定。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
 	report := DoctorReport{
 		ConfigValid:       config.Validate(configuration) == nil,
 		Preset:            configuration.Preset,
 		Profile:           configuration.Profile,
+		ConfigFingerprint: configuration.Fingerprint(),
+		BuildRevision:     buildRevision(),
+		WorkspaceHash:     "",
+		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
 		Resolution:        configuration.Resolution,
 		Provider:          ProviderHealth{BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
 		Sandbox:           SandboxHealth{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
+		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),
+		JournalState:      "absent",
 	}
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
 	workspace, hash, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
 		return report, err
 	}
+	report.WorkspaceHash = hash
 	if _, err := execToolFor(workspace, configuration); err != nil {
 		return report, err
 	}
@@ -72,18 +97,46 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	report.Tools = fixedToolNames(workspace, configuration.Preset)
 	journal, err := openReadOnlyJournal(stateDir, hash)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			report.evaluateReadiness()
+			return report, nil
+		}
 		return report, err
 	}
 	defer journal.Close()
 	if err := journal.Check(ctx); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	report.JournalState = "ok"
 	report.JournalOK = true
 	if err := checkArtifactReferences(ctx, journal, stateDir, hash); err != nil {
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.ArtifactsOK = true
+	report.evaluateReadiness()
 	return report, nil
+}
+
+// evaluateReadiness 汇总总体就绪判定：配置有效、Provider 前提在位、Docker 后端
+// 镜像可用、journal 完整或首次运行前尚不存在。
+func (report *DoctorReport) evaluateReadiness() {
+	sandboxReady := report.Sandbox.Backend != "docker" || report.Sandbox.ImageAvailable == "yes"
+	report.Ready = report.ConfigValid && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
+}
+
+// buildRevision 返回当前二进制的 VCS 修订（来自 Go 构建信息）；非 VCS 构建或
+// 测试二进制返回空串，doctor 输出相应省略该字段。
+func buildRevision() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			return setting.Value
+		}
+	}
+	return ""
 }
 
 // probeDockerImage 以无 shell 的只读 argv 查询本地镜像存在性；docker 不可用
