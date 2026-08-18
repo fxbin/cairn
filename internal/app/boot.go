@@ -2,6 +2,9 @@
 package app
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
@@ -60,32 +63,32 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	boot.workspaceLock = workspaceLock
 	provider, err := service.provider(cfg)
 	if err != nil {
-		boot.Close()
+		_ = boot.Close()
 		return nil, err
 	}
 	boot.Provider = provider
 	artifacts, err := openArtifactStore(stateDir, hash, cfg.Output)
 	if err != nil {
-		boot.Close()
+		_ = boot.Close()
 		return nil, err
 	}
 	boot.Artifacts = artifacts
 	registry, err := tools.NewRegistry(presetTools(workspace, execTool, cfg.Preset)...)
 	if err != nil {
-		boot.Close()
+		_ = boot.Close()
 		return nil, err
 	}
 	boot.Registry = registry
 	patchTool := tools.ApplyPatch{Workspace: workspace}
 	gate, err := policy.New(cfg.Policy.Write, cfg.Policy.Exec, cfg.Policy.ProtectedPaths, patchTool)
 	if err != nil {
-		boot.Close()
+		_ = boot.Close()
 		return nil, err
 	}
 	boot.Gate = gate
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {
-		boot.Close()
+		_ = boot.Close()
 		return nil, err
 	}
 	boot.Verification = verification
@@ -93,19 +96,26 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	return boot, nil
 }
 
-// Close 按创建的逆序释放资源；Loop、Provider、Registry 与 Gate 无常驻句柄，
-// Artifacts 无需显式回收。Close 幂等，重复调用安全。
-func (boot *Boot) Close() {
+// Close 按创建的逆序释放资源并返回关闭错误；Loop、Provider、Registry 与 Gate
+// 无常驻句柄，Artifacts 无需显式回收。Close 幂等，重复调用安全；单个组件的
+// 关闭错误不阻止其余资源释放，全部错误合并返回供调用方上报。
+func (boot *Boot) Close() error {
 	if boot == nil || boot.closed {
-		return
+		return nil
 	}
 	boot.closed = true
+	var closeErrors []error
 	if boot.Journal != nil {
-		boot.Journal.Close()
+		if err := boot.Journal.Close(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close journal: %w", err))
+		}
 	}
 	if boot.workspaceLock != nil {
-		boot.workspaceLock.Release()
+		if err := boot.workspaceLock.Release(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("release workspace lock: %w", err))
+		}
 	}
+	return errors.Join(closeErrors...)
 }
 
 // CapabilityManifest 是对当前装配能力的只读、可追溯描述；完整 Preset 合同

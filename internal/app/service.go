@@ -103,8 +103,9 @@ type InspectResult struct {
 	Events     []domain.Event       `json:"events,omitempty"`
 }
 
-// Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop。
-func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
+// Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
+// Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
+func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
 	}
@@ -112,7 +113,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	defer boot.Close()
+	defer func() { err = errors.Join(err, boot.Close()) }()
 	active, err := boot.Journal.NonTerminalRuns(ctx, boot.WorkspaceHash)
 	if err != nil {
 		return RunResult{}, err
@@ -212,13 +213,14 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 	return result, nil
 }
 
-// Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行。
-func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunResult, error) {
+// Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
+// Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
+func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
 	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
-	defer boot.Close()
+	defer func() { err = errors.Join(err, boot.Close()) }()
 	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
@@ -263,12 +265,13 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (RunRe
 }
 
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
-func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (RunResult, error) {
+// 返回前关闭 Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
+func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
 	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
-	defer boot.Close()
+	defer func() { err = errors.Join(err, boot.Close()) }()
 	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err

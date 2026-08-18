@@ -33,8 +33,13 @@ func TestAssembleBootReleasesLockOnContention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lock was not released by Close: %v", err)
 	}
-	retry.Close()
-	first.Close() // Close 幂等：重复调用不得 panic 或重复释放。
+	if err := retry.Close(); err != nil {
+		t.Fatalf("healthy boot close must not fail: %v", err)
+	}
+	// Close 幂等：重复调用不得 panic、不得重复释放，且返回零错误。
+	if err := first.Close(); err != nil {
+		t.Fatalf("idempotent close must return nil, got %v", err)
+	}
 }
 
 // TestAssembleBootCleansUpWhenLateStageFails 锁定装配中段失败的逆序清理：Provider
