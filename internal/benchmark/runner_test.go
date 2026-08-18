@@ -237,6 +237,9 @@ func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	if configuration.Sandbox.Backend != "docker" || configuration.Sandbox.DockerImage != "alpine:latest" || len(configuration.Verification.Commands) != 1 || configuration.Verification.Commands[0].Env["DATABASE_URL"] != "sqlite+aiosqlite:///:memory:" || !containsString(configuration.Verification.VolatilePaths, ".pytest_cache") {
 		t.Fatalf("configuration=%#v", configuration)
 	}
+	if configuration.Preset != config.PresetBenchmark {
+		t.Fatalf("benchmark attempt must freeze the benchmark preset, got %q", configuration.Preset)
+	}
 	if !containsString(configuration.Policy.EnvAllow, "DATABASE_URL") {
 		t.Fatalf("verification environment was not allowlisted: %#v", configuration.Policy.EnvAllow)
 	}

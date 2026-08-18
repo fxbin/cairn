@@ -421,9 +421,12 @@ func applyPrivateVerifier(ctx context.Context, workspace, privateRoot, taskID st
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
-// configurationForTask 冻结任务专属的 Docker 镜像和固定验证命令，拒绝 host 后端与审批暂停。
+// configurationForTask 冻结任务专属的 Docker 镜像和固定验证命令，拒绝 host 后端与审批暂停；
+// 无论本机冻结配置声明何种 Preset，benchmark 尝试一律按 benchmark Preset 冻结，
+// 使结果、指纹与 capability manifest 绑定真实执行形态而非误标为 coding。
 func configurationForTask(base config.Config, task Task) (config.Config, error) {
 	configuration := base
+	configuration.Preset = config.PresetBenchmark
 	configuration.Sandbox.Backend = "docker"
 	configuration.Sandbox.DockerImage = task.Runtime.DockerImage
 	verificationEnvironment := make(map[string]string, len(task.Verification.Command.Env))
