@@ -127,9 +127,10 @@ type profileProbe struct {
 	Provider providerOverlay `yaml:"provider"`
 }
 
-// profileBudget 返回命名 Profile 的预算预设；complex 档在默认档基础上将轮次、
-// 工具调用与输入 token 等比放大（依据 2026-08-15 G0-R gate 实验与 8/13 验证参数）。
-// 显式 YAML、环境或 CLI 值仍按固定优先级覆盖预设。
+// profileBudget 返回命名 Profile 的预算预设；complex 档在默认档基础上按
+// 2026-08-15 G0-R gate 实验与 8/13 验证参数非等比放大：轮次 2×（40→80）、
+// 工具调用 1.6×（100→160）、输入 token 2.8×（500k→1.4M）。显式 YAML、环境
+// 或 CLI 值仍按固定优先级覆盖预设。
 func profileBudget(profile string) (BudgetConfig, error) {
 	switch profile {
 	case "", ProfileDefault:
