@@ -119,6 +119,15 @@ func TestChatCompletionsURL(t *testing.T) {
 	if _, err := chatCompletionsURL("not-a-url"); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("expected invalid URL, got %v", err)
 	}
+	if _, err := chatCompletionsURL("https://user:secret@example.test/v1"); err == nil || !strings.Contains(err.Error(), "userinfo") {
+		t.Fatalf("expected userinfo rejection, got %v", err)
+	}
+	if _, err := chatCompletionsURL("https://example.test/v1?token=secret"); err == nil || !strings.Contains(err.Error(), "query or fragment") {
+		t.Fatalf("expected query rejection, got %v", err)
+	}
+	if _, err := chatCompletionsURL("https://example.test/v1#secret"); err == nil || !strings.Contains(err.Error(), "query or fragment") {
+		t.Fatalf("expected fragment rejection, got %v", err)
+	}
 }
 
 // TestContractExhaustsRetriesOnPersistentTransientFailure 验证持续可重试失败

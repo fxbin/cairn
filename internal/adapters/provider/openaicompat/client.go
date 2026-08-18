@@ -148,7 +148,9 @@ func retryAfter(value string, now time.Time) time.Duration {
 	return 0
 }
 
-// chatCompletionsURL 验证绝对 HTTP(S) 基地址并拼接 Chat Completions 路径。
+// chatCompletionsURL 验证绝对 HTTP(S) 基地址并拼接 Chat Completions 路径；
+// 携带 userinfo、query 或 fragment 的地址被拒绝，防止内嵌凭据随请求与
+// 日志输出绕开"密钥只能来自环境变量"的合同。
 func chatCompletionsURL(baseURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -156,6 +158,12 @@ func chatCompletionsURL(baseURL string) (string, error) {
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", fmt.Errorf("unsupported base URL scheme %q", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("base URL must not embed userinfo credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return "", fmt.Errorf("base URL must not carry query or fragment")
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/chat/completions"
 	return parsed.String(), nil

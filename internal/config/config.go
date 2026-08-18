@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -423,6 +424,11 @@ func Validate(config Config) error {
 	if config.Provider.APIKeyEnv == "" {
 		return fmt.Errorf("provider.api_key_env is required")
 	}
+	if config.Provider.BaseURL != "" {
+		if err := validateProviderBaseURL(config.Provider.BaseURL); err != nil {
+			return err
+		}
+	}
 	if config.Provider.RequestTimeout == "" {
 		return fmt.Errorf("provider.request_timeout is required")
 	}
@@ -483,6 +489,26 @@ func Validate(config Config) error {
 				return fmt.Errorf("verification.commands[%d].env %q is not in policy.env_allow", index, key)
 			}
 		}
+	}
+	return nil
+}
+
+// validateProviderBaseURL 拒绝携带 userinfo、query 或 fragment 的 Provider 基地址：
+// 这些成分可能内嵌凭据，会随冻结配置制品、Resolution 与诊断输出落盘，绕开
+// "密钥只能来自环境变量"的合同。空值不在此处强制必填，由请求层兜底校验。
+func validateProviderBaseURL(baseURL string) error {
+	parsed, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("provider.base_url must be an absolute http(s) URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("provider.base_url scheme must be http or https")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("provider.base_url must not embed userinfo credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return fmt.Errorf("provider.base_url must not carry query or fragment")
 	}
 	return nil
 }

@@ -31,6 +31,33 @@ func TestValidateRejectsSecretLikeEnvironmentAllowlistEntries(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsCredentialBearingBaseURL 锁定 BaseURL 的无凭据合同：
+// userinfo、query 与 fragment 都可能内嵌密钥，必须在配置层失败关闭，
+// 防止凭据进入冻结配置制品与诊断输出；普通绝对 URL 与空值仍然放行。
+func TestValidateRejectsCredentialBearingBaseURL(t *testing.T) {
+	rejects := []string{
+		"https://user:secret@provider.test/v1",
+		"https://:secret@provider.test/v1",
+		"https://provider.test/v1?token=secret",
+		"https://provider.test/v1#secret",
+	}
+	for _, baseURL := range rejects {
+		configuration := Defaults()
+		configuration.Provider.BaseURL = baseURL
+		if err := Validate(configuration); err == nil {
+			t.Fatalf("credential-bearing base URL accepted: %s", baseURL)
+		}
+	}
+	configuration := Defaults()
+	configuration.Provider.BaseURL = "https://provider.test/v1"
+	if err := Validate(configuration); err != nil {
+		t.Fatalf("plain base URL rejected: %v", err)
+	}
+	if err := Validate(Defaults()); err != nil {
+		t.Fatalf("empty base URL rejected: %v", err)
+	}
+}
+
 func TestValidateRequiresVerificationEnvironmentToBeAllowlisted(t *testing.T) {
 	configuration := Defaults()
 	configuration.Verification.Commands = []VerificationCommand{{Argv: []string{"/usr/bin/true"}, Env: map[string]string{"UNAPPROVED": "1"}}}
