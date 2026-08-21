@@ -225,7 +225,14 @@ func TestTaskPromptExcludesReferenceOracle(t *testing.T) {
 }
 
 func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
-	base := config.Defaults()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\npreset: coding\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := config.Load(path, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	base.Policy.Write, base.Policy.Exec = "allow", "allow"
 	task := testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]
 	task.Verification.Command.Env = map[string]string{"DATABASE_URL": "sqlite+aiosqlite:///:memory:"}
@@ -240,6 +247,10 @@ func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	if configuration.Preset != config.PresetBenchmark {
 		t.Fatalf("benchmark attempt must freeze the benchmark preset, got %q", configuration.Preset)
 	}
+	presetEntry, found := benchmarkResolutionEntry(configuration.Resolution, "preset")
+	if !found || presetEntry.Value != config.PresetBenchmark || presetEntry.Source != "benchmark:runner" {
+		t.Fatalf("benchmark preset resolution=%+v found=%t", presetEntry, found)
+	}
 	if !containsString(configuration.Policy.EnvAllow, "DATABASE_URL") {
 		t.Fatalf("verification environment was not allowlisted: %#v", configuration.Policy.EnvAllow)
 	}
@@ -247,6 +258,17 @@ func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	if _, err := configurationForTask(base, testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]); err == nil {
 		t.Fatal("expected unattended policy rejection")
 	}
+}
+
+// benchmarkResolutionEntry 从 benchmark 冻结配置的 Resolved Plan 查询单个字段，
+// 供测试验证 runner 强制 Preset 后不会遗留 coding 的来源记录。
+func benchmarkResolutionEntry(entries []config.ResolutionEntry, field string) (config.ResolutionEntry, bool) {
+	for _, entry := range entries {
+		if entry.Field == field {
+			return entry, true
+		}
+	}
+	return config.ResolutionEntry{}, false
 }
 
 func TestTaskVerificationVolatilePathsAreExactAndValidated(t *testing.T) {

@@ -72,18 +72,19 @@ const (
 // normalizePreset 归一化并应用静态 Preset 的组合语义：read-only 强制写入与
 // 执行策略为 deny 并记录来源（Preset 即组合，显式 allow 配置被组合覆盖且在
 // Resolution 中可见）；benchmark 复用 coding 工具集，其冻结配置、Docker 与
-// 隔离约束由 benchmark runner 自行强制，不在通用配置层重复。返回校验错误。
-func normalizePreset(cfg *Config, recorder *resolutionRecorder) error {
+// 隔离约束由 benchmark runner 自行强制，不在通用配置层重复。presetSource 由
+// YAML Presence 探针提供，从而避免 Defaults 预填 coding 后误报为 yaml。返回校验错误。
+func normalizePreset(cfg *Config, recorder *resolutionRecorder, presetSource string) error {
 	switch cfg.Preset {
 	case "":
 		cfg.Preset = PresetCoding
-		recorder.record("preset", PresetCoding, "default")
+		recorder.record("preset", PresetCoding, presetSource)
 		return nil
 	case PresetCoding, PresetBenchmark:
-		recorder.record("preset", cfg.Preset, "yaml")
+		recorder.record("preset", cfg.Preset, presetSource)
 		return nil
 	case PresetReadOnly:
-		recorder.record("preset", PresetReadOnly, "yaml")
+		recorder.record("preset", PresetReadOnly, presetSource)
 		if cfg.Policy.Write != "deny" {
 			cfg.Policy.Write = "deny"
 			recorder.record("policy.write", "deny", "preset:read-only")
@@ -122,7 +123,7 @@ type providerOverlay struct {
 // profileProbe 是第二轮宽松解码的目标：只提取 Profile 名称与显式字段设置。
 type profileProbe struct {
 	Profile  string          `yaml:"profile"`
-	Preset   string          `yaml:"preset"`
+	Preset   *string         `yaml:"preset"`
 	Budget   budgetOverlay   `yaml:"budget"`
 	Provider providerOverlay `yaml:"provider"`
 }
@@ -161,6 +162,17 @@ func (recorder *resolutionRecorder) record(field, value, source string) {
 		}
 	}
 	recorder.entries = append(recorder.entries, ResolutionEntry{Field: field, Value: value, Source: source})
+}
+
+// WithPresetResolution 返回一份仅更新 Resolved Execution Plan 中 preset 记录的
+// 配置副本。它不改变运行时 Preset、策略或配置指纹，供 benchmark runner 在强制
+// benchmark Preset 后保留冻结配置的解释一致性。
+func WithPresetResolution(configuration Config, preset, source string) Config {
+	configuration.Resolution = append([]ResolutionEntry(nil), configuration.Resolution...)
+	recorder := resolutionRecorder{entries: configuration.Resolution}
+	recorder.record("preset", preset, source)
+	configuration.Resolution = recorder.entries
+	return configuration
 }
 
 // budgetSourceLabel 返回预算字段在某 Profile 下的来源标签。
@@ -296,6 +308,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 	config := Defaults()
 	config.Profile = ProfileDefault
 	recorder := &resolutionRecorder{}
+	presetSource := "default"
 	recorder.record("profile", ProfileDefault, "default")
 	recorder.record("provider.base_url", config.Provider.BaseURL, "default")
 	recorder.record("provider.model", config.Provider.Model, "default")
@@ -325,6 +338,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 			if err := relaxed.Decode(&probe); err != nil {
 				return Config{}, fmt.Errorf("parse config profile overlay: %w", err)
 			}
+			if probe.Preset != nil {
+				presetSource = "yaml"
+			}
 			profile := probe.Profile
 			if profile == "" {
 				profile = ProfileDefault
@@ -349,7 +365,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 			applyProfilePreset(&config, &probe.Budget, preset, profile, recorder)
 		}
 	}
-	if err := normalizePreset(&config, recorder); err != nil {
+	if err := normalizePreset(&config, recorder, presetSource); err != nil {
 		return Config{}, err
 	}
 	if err := applyEnvironment(&config, recorder); err != nil {

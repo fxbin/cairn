@@ -427,6 +427,7 @@ func applyPrivateVerifier(ctx context.Context, workspace, privateRoot, taskID st
 func configurationForTask(base config.Config, task Task) (config.Config, error) {
 	configuration := base
 	configuration.Preset = config.PresetBenchmark
+	configuration = config.WithPresetResolution(configuration, config.PresetBenchmark, "benchmark:runner")
 	configuration.Sandbox.Backend = "docker"
 	configuration.Sandbox.DockerImage = task.Runtime.DockerImage
 	verificationEnvironment := make(map[string]string, len(task.Verification.Command.Env))

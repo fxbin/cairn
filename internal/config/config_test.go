@@ -432,6 +432,61 @@ func TestResolutionMarshalsIntoFrozenPlan(t *testing.T) {
 	}
 }
 
+// TestPresetResolutionTracksDefaultAndYAMLDeclarations 锁定 Preset 的来源由 YAML
+// 是否声明而非 Defaults 预填值决定，冻结配置可据此解释真实的能力组合来源。
+func TestPresetResolutionTracksDefaultAndYAMLDeclarations(t *testing.T) {
+	cases := []struct {
+		name       string
+		yamlPreset string
+		wantPreset string
+		wantSource string
+	}{
+		{name: "未声明 preset 使用默认 coding", wantPreset: PresetCoding, wantSource: "default"},
+		{name: "YAML 显式 coding", yamlPreset: "coding", wantPreset: PresetCoding, wantSource: "yaml"},
+		{name: "YAML 显式 read-only", yamlPreset: "read-only", wantPreset: PresetReadOnly, wantSource: "yaml"},
+		{name: "YAML 显式 benchmark", yamlPreset: "benchmark", wantPreset: PresetBenchmark, wantSource: "yaml"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			contents := "version: 1\nprovider:\n  api_key_env: K\n"
+			if testCase.yamlPreset != "" {
+				contents = "version: 1\npreset: " + testCase.yamlPreset + "\nprovider:\n  api_key_env: K\n"
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			configuration, err := Load(path, Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, found := resolutionEntry(configuration.Resolution, "preset")
+			if !found || configuration.Preset != testCase.wantPreset || entry.Value != testCase.wantPreset || entry.Source != testCase.wantSource {
+				t.Fatalf("preset=%q resolution=%+v found=%t; want value=%q source=%q", configuration.Preset, entry, found, testCase.wantPreset, testCase.wantSource)
+			}
+		})
+	}
+}
+
+// TestWithPresetResolutionIsDiagnosticOnly 锁定 Resolution 更新只影响冻结配置的
+// 非敏感解释，不反向改变配置语义、指纹或调用者持有的配置切片。
+func TestWithPresetResolutionIsDiagnosticOnly(t *testing.T) {
+	base := Defaults()
+	base.Resolution = []ResolutionEntry{{Field: "preset", Value: PresetCoding, Source: "default"}}
+	fingerprint := base.Fingerprint()
+	updated := WithPresetResolution(base, PresetBenchmark, "benchmark:runner")
+	entry, found := resolutionEntry(updated.Resolution, "preset")
+	if !found || entry.Value != PresetBenchmark || entry.Source != "benchmark:runner" {
+		t.Fatalf("updated resolution=%+v found=%t", entry, found)
+	}
+	if base.Resolution[0].Value != PresetCoding || base.Resolution[0].Source != "default" {
+		t.Fatalf("source config resolution mutated: %+v", base.Resolution)
+	}
+	if updated.Fingerprint() != fingerprint {
+		t.Fatal("resolution must not participate in config fingerprint")
+	}
+}
+
 // TestPresetReadOnlyForcesDenyAndFailsVerification 锁定 read-only Preset 的组合
 // 语义：强制 deny/deny 并记录来源；携带验证命令时失败关闭。
 func TestPresetReadOnlyForcesDenyAndFailsVerification(t *testing.T) {
