@@ -61,6 +61,18 @@ func TestNewEventAcceptsLoopGuardEvidenceFields(t *testing.T) {
 	}
 }
 
+// TestNewEventAcceptsOptionalRunIdentity 锁定 run_created 的新增身份字段属于闭合
+// payload schema，同时不要求旧 Run 伪造这些字段。
+func TestNewEventAcceptsOptionalRunIdentity(t *testing.T) {
+	runID := RunID("run_test")
+	if _, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, Payload: json.RawMessage(`{"task":"test","workspace":".","config_fingerprint":"sha256:config","build":{"revision":"abc","dirty":"false","flavor":"plain","fingerprint":"sha256:build"}}`)}, 1, GenesisHash); err != nil {
+		t.Fatalf("run identity fields rejected: %v", err)
+	}
+	if _, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, Payload: json.RawMessage(`{"task":"legacy","workspace":"."}`)}, 1, GenesisHash); err != nil {
+		t.Fatalf("legacy run_created rejected: %v", err)
+	}
+}
+
 // TestNewEventRejectsRemovedUnionPayloadFields 锁定封闭 schema：已删除的
 // 联合语义字段（历史上从未有写入方）不得重新进入任何事件 payload。
 func TestNewEventRejectsRemovedUnionPayloadFields(t *testing.T) {

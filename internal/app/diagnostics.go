@@ -3,6 +3,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +47,7 @@ type DoctorReport struct {
 	Profile           string                   `json:"profile"`
 	ConfigFingerprint string                   `json:"config_fingerprint"`
 	BuildRevision     string                   `json:"build_revision,omitempty"`
+	Build             domain.BuildIdentity     `json:"build"`
 	WorkspaceHash     string                   `json:"workspace_hash"`
 	Policy            PolicyHealth             `json:"policy"`
 	Resolution        []config.ResolutionEntry `json:"resolution,omitempty"`
@@ -72,7 +75,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Preset:            configuration.Preset,
 		Profile:           configuration.Profile,
 		ConfigFingerprint: configuration.Fingerprint(),
-		BuildRevision:     buildRevision(),
+		Build:             buildIdentity(),
 		WorkspaceHash:     "",
 		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
 		Resolution:        configuration.Resolution,
@@ -82,6 +85,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 	}
+	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
 	workspace, hash, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
@@ -124,19 +128,55 @@ func (report *DoctorReport) evaluateReadiness() {
 	report.Ready = report.ConfigValid && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
 }
 
-// buildRevision 返回当前二进制的 VCS 修订（来自 Go 构建信息）；非 VCS 构建或
-// 测试二进制返回空串，doctor 输出相应省略该字段。
-func buildRevision() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
+// buildIdentity 返回实际二进制的非敏感身份。当前版本没有构建标签或 otelc
+// flavor，因此固定为 plain；revision 缺失时保留空值、dirty 元数据缺失时标为
+// unknown，以如实表示构建信息不可得。
+func buildIdentity() domain.BuildIdentity {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return buildIdentityFromSettings(info.Settings)
 	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
+	return buildIdentityFromSettings(nil)
+}
+
+// buildIdentityFromSettings 从 Go BuildInfo 中可公开的 VCS 设置派生构建身份；缺失
+// dirty 设置必须保留 unknown，避免把不可知状态误报为干净工作树。
+func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdentity {
+	identity := domain.BuildIdentity{Dirty: "unknown", Flavor: "plain"}
+	for _, setting := range settings {
+		switch setting.Key {
+		case "vcs.revision":
+			identity.Revision = setting.Value
+		case "vcs.modified":
+			if setting.Value == "true" || setting.Value == "false" {
+				identity.Dirty = setting.Value
+			}
 		}
 	}
-	return ""
+	identity.Fingerprint = buildIdentityFingerprint(identity)
+	return identity
+}
+
+// buildIdentityPtr 为 run_created payload 返回独立的构建身份副本；每个 Run 都冻结
+// 创建时实际二进制的事实，不依赖 inspect 时所在的二进制。
+func buildIdentityPtr() *domain.BuildIdentity {
+	identity := buildIdentity()
+	return &identity
+}
+
+// buildIdentityFingerprint 为实际构建事实生成稳定的版本化摘要；只覆盖可公开的
+// identity 字段，绝不读取环境变量、配置或任何凭据。
+func buildIdentityFingerprint(identity domain.BuildIdentity) string {
+	view := struct {
+		Revision string `json:"revision"`
+		Dirty    string `json:"dirty"`
+		Flavor   string `json:"flavor"`
+	}{Revision: identity.Revision, Dirty: identity.Dirty, Flavor: identity.Flavor}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		panic(err)
+	}
+	digest := sha256.Sum256(append([]byte("cairn-build-identity-v1\x00"), encoded...))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 // probeDockerImage 以无 shell 的只读 argv 查询本地镜像存在性；docker 不可用
@@ -194,30 +234,38 @@ type VerificationFact struct {
 // 最新验证进展、待决审批/对账、下一步恢复动作与完成证据绑定；全部从已持久化
 // 事件与投影派生，不依赖隐藏日志或模型思维链。
 type RunSummary struct {
-	State             string            `json:"state"`
-	Phase             string            `json:"phase"`
-	StopReason        string            `json:"stop_reason,omitempty"`
-	TurnsUsed         int               `json:"turns_used"`
-	ToolCallsStarted  int               `json:"tool_calls_started"`
-	InputTokens       int64             `json:"input_tokens"`
-	OutputTokens      int64             `json:"output_tokens"`
-	UsageEstimated    bool              `json:"usage_estimated"`
-	LastMutationSeq   uint64            `json:"last_mutation_seq"`
-	LastVerification  *VerificationFact `json:"last_verification,omitempty"`
-	PendingApproval   bool              `json:"pending_approval"`
-	PendingOperation  bool              `json:"pending_operation"`
-	NextAction        string            `json:"next_action,omitempty"`
-	CompletionTrusted bool              `json:"completion_trusted"`
+	State                string                `json:"state"`
+	Phase                string                `json:"phase"`
+	ConfigFingerprint    string                `json:"config_fingerprint,omitempty"`
+	Build                *domain.BuildIdentity `json:"build,omitempty"`
+	WorkspaceHash        string                `json:"workspace_hash"`
+	WorkspaceObservation string                `json:"workspace_observation,omitempty"`
+	StopReason           string                `json:"stop_reason,omitempty"`
+	TurnsUsed            int                   `json:"turns_used"`
+	ToolCallsStarted     int                   `json:"tool_calls_started"`
+	InputTokens          int64                 `json:"input_tokens"`
+	OutputTokens         int64                 `json:"output_tokens"`
+	UsageEstimated       bool                  `json:"usage_estimated"`
+	LastMutationSeq      uint64                `json:"last_mutation_seq"`
+	LastVerification     *VerificationFact     `json:"last_verification,omitempty"`
+	PendingApproval      bool                  `json:"pending_approval"`
+	PendingOperation     bool                  `json:"pending_operation"`
+	NextAction           string                `json:"next_action,omitempty"`
+	CompletionTrusted    bool                  `json:"completion_trusted"`
 }
 
 // SummarizeRun 从事件流与投影构建诊断摘要；事件 payload 在写入时已经过脱敏，
 // 此处只读取既有事实。
 func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSummary {
 	summary := RunSummary{
-		State:            string(projection.State),
-		Phase:            projection.Phase(),
-		PendingApproval:  projection.PendingApproval != nil,
-		PendingOperation: projection.PendingOperation != nil,
+		State:                string(projection.State),
+		Phase:                projection.Phase(),
+		ConfigFingerprint:    projection.ConfigFingerprint,
+		Build:                cloneBuildIdentity(projection.Build),
+		WorkspaceHash:        projection.WorkspaceHash,
+		WorkspaceObservation: projection.WorkspaceObservation,
+		PendingApproval:      projection.PendingApproval != nil,
+		PendingOperation:     projection.PendingOperation != nil,
 	}
 	for _, event := range events {
 		switch event.Type {
@@ -250,6 +298,15 @@ func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSum
 	summary.NextAction = nextActionFor(projection)
 	summary.CompletionTrusted = projection.State == domain.RunCompleted && projection.VerificationSucceeded && projection.LastVerificationSeq != 0 && (projection.LastMutationSeq == 0 || projection.LastVerificationSeq > projection.LastMutationSeq)
 	return summary
+}
+
+// cloneBuildIdentity 避免诊断摘要与可变投影共享指针，保证两种呈现视图都只读。
+func cloneBuildIdentity(identity *domain.BuildIdentity) *domain.BuildIdentity {
+	if identity == nil {
+		return nil
+	}
+	copy := *identity
+	return &copy
 }
 
 // terminalStopReason 从终态事件提取人可读的停止原因；仅读取已脱敏的持久化文本。

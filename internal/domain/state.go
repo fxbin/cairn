@@ -24,6 +24,8 @@ type RunProjection struct {
 	Task                    string
 	Workspace               string
 	WorkspaceHash           string
+	ConfigFingerprint       string         `json:"config_fingerprint,omitempty"`
+	Build                   *BuildIdentity `json:"build,omitempty"`
 	WorkspaceObservation    string
 	State                   RunState
 	LastSeq                 uint64
@@ -75,10 +77,18 @@ func (projection RunProjection) clone() RunProjection {
 		value := *source
 		return &value
 	}
+	copyBuild := func(source *BuildIdentity) *BuildIdentity {
+		if source == nil {
+			return nil
+		}
+		value := *source
+		return &value
+	}
 	candidate := projection
 	candidate.CurrentTurn = copyTurn(projection.CurrentTurn)
 	candidate.PendingApproval = copyApproval(projection.PendingApproval)
 	candidate.PendingOperation = copyOperation(projection.PendingOperation)
+	candidate.Build = copyBuild(projection.Build)
 	if projection.operationFingerprints != nil {
 		candidate.operationFingerprints = make(map[OperationID]string, len(projection.operationFingerprints))
 		for id, fingerprint := range projection.operationFingerprints {
@@ -140,10 +150,41 @@ type PendingOperation struct {
 	PlannedAfter    string
 }
 
-// RunCreatedPayload 是 run_created 事件的可回放业务字段。
+// BuildIdentity 描述实际启动 Run 的二进制身份；它仅保存修订、三态 dirty 状态
+// （unknown/true/false）、明确的 plain flavor 与这些事实的确定性摘要，不承诺
+// 可选探针或构建标签存在。
+type BuildIdentity struct {
+	Revision    string `json:"revision"`
+	Dirty       string `json:"dirty"`
+	Flavor      string `json:"flavor"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// validateBuildIdentity 拒绝无法解释为当前 plain 二进制的新增 Run 身份；nil 是
+// 旧 run 的合法兼容形式。Revision 可以为空、dirty 必须明确为 unknown/true/false。
+func validateBuildIdentity(identity *BuildIdentity) error {
+	if identity == nil {
+		return nil
+	}
+	if identity.Flavor != "plain" {
+		return fmt.Errorf("run build flavor %q is unsupported", identity.Flavor)
+	}
+	if identity.Dirty != "unknown" && identity.Dirty != "true" && identity.Dirty != "false" {
+		return fmt.Errorf("run build dirty status %q is invalid", identity.Dirty)
+	}
+	if identity.Fingerprint == "" {
+		return errors.New("run build fingerprint is required")
+	}
+	return nil
+}
+
+// RunCreatedPayload 是 run_created 事件的可回放业务字段。ConfigFingerprint 与
+// Build 均为可选字段，使旧 Run 在升级后仍可完整回放。
 type RunCreatedPayload struct {
-	Task      string `json:"task"`
-	Workspace string `json:"workspace"`
+	Task              string         `json:"task"`
+	Workspace         string         `json:"workspace"`
+	ConfigFingerprint string         `json:"config_fingerprint,omitempty"`
+	Build             *BuildIdentity `json:"build,omitempty"`
 }
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。
@@ -209,10 +250,18 @@ func (projection *RunProjection) Apply(event Event) error {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode run_created payload: %w", err)
 		}
+		if err := validateBuildIdentity(payload.Build); err != nil {
+			return err
+		}
 		projection.ID = event.RunID
 		projection.Task = payload.Task
 		projection.Workspace = payload.Workspace
 		projection.WorkspaceHash = event.WorkspaceHash
+		projection.ConfigFingerprint = payload.ConfigFingerprint
+		if payload.Build != nil {
+			build := *payload.Build
+			projection.Build = &build
+		}
 		projection.State = RunCreated
 	case EventRunStarted:
 		if projection.State != RunCreated {
@@ -475,8 +524,20 @@ func (projection *RunProjection) Apply(event Event) error {
 	case EventModelRequestStarted, EventModelResponseFinished, EventModelRequestFailed:
 		// 模型遥测事件只补充审计证据，不改变投影状态；负载合法性由写入路径的
 		// 封闭 payload schema 与哈希链保证，恢复逻辑直接按事件流读取。
-	case EventVerificationStarted, EventVerificationFeedbackAppended:
-		// 验证过程遥测事件同样不改变投影状态；终态判定只依赖 verification_finished。
+	case EventVerificationStarted:
+		// verification_started 的观察摘要是最近一次 verifier 视图；它不参与终态
+		// 判定，却让 inspect 能解释验证时看到的工作区而无需重新扫描或写入状态。
+		var payload struct {
+			WorkspaceObservation string `json:"workspace_observation"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("decode verification start: %w", err)
+		}
+		if payload.WorkspaceObservation != "" {
+			projection.WorkspaceObservation = payload.WorkspaceObservation
+		}
+	case EventVerificationFeedbackAppended:
+		// 验证反馈仅补充模型上下文；终态判定只依赖 verification_finished。
 	default:
 		return fmt.Errorf("unhandled event type %q", event.Type)
 	}

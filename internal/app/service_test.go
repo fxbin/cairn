@@ -153,10 +153,18 @@ func TestServiceRunThenInspect(t *testing.T) {
 		t.Fatalf("inspect = %#v, %v", inspected, err)
 	}
 	var payload struct {
-		ConfigRef *artifact.Ref `json:"config_ref"`
+		ConfigRef         *artifact.Ref         `json:"config_ref"`
+		ConfigFingerprint string                `json:"config_fingerprint"`
+		Build             *domain.BuildIdentity `json:"build"`
 	}
 	if err := json.Unmarshal(inspected.Events[0].Payload, &payload); err != nil || payload.ConfigRef == nil || payload.ConfigRef.SHA256 == "" {
 		t.Fatalf("run_created did not freeze a config artifact: payload=%s err=%v", inspected.Events[0].Payload, err)
+	}
+	if payload.ConfigFingerprint != configuration.Fingerprint() || payload.Build == nil || payload.Build.Flavor != "plain" || payload.Build.Fingerprint == "" {
+		t.Fatalf("run_created did not freeze identity: payload=%s", inspected.Events[0].Payload)
+	}
+	if inspected.Projection.ConfigFingerprint != payload.ConfigFingerprint || inspected.Projection.Build == nil || *inspected.Projection.Build != *payload.Build {
+		t.Fatalf("run identity did not replay: projection=%+v payload=%+v", inspected.Projection, payload)
 	}
 }
 

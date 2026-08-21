@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -116,5 +117,56 @@ func TestDoctorWritesOnlyNDJSONToStdout(t *testing.T) {
 	}
 	if _, exists := report["provider"]; !exists {
 		t.Fatalf("doctor report missing provider section: %v", report)
+	}
+	if _, exists := report["build"]; !exists {
+		t.Fatalf("doctor report missing build identity: %v", report)
+	}
+}
+
+// TestHumanDiagnosticsExposeTheSameOperationalFacts 锁定人类视图不会丢失 JSON
+// 中的关键诊断事实，且只显示密钥环境变量名而不显示其值。
+func TestHumanDiagnosticsExposeTheSameOperationalFacts(t *testing.T) {
+	t.Setenv("CAIRN_CLI_DIAGNOSTIC_KEY", "cli-secret-sentinel-value")
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configPath := config.DefaultPath(workspace)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("provider:\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: CAIRN_CLI_DIAGNOSTIC_KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var doctorOut, doctorErr bytes.Buffer
+	command := Command{Stdout: &doctorOut, Stderr: &doctorErr}
+	if code := command.Run(context.Background(), []string{"doctor", "--workspace", workspace, "--state-dir", stateDir, "--config", configPath}); code != ExitOK {
+		t.Fatalf("doctor exit=%d stderr=%q", code, doctorErr.String())
+	}
+	for _, required := range []string{"ready:", "preset", "profile", "config fingerprint:", "build: revision=", "workspace:", "policy:", "journal:"} {
+		if !strings.Contains(doctorOut.String(), required) {
+			t.Fatalf("doctor human output missing %q: %s", required, doctorOut.String())
+		}
+	}
+	if strings.Contains(doctorOut.String(), "cli-secret-sentinel-value") {
+		t.Fatalf("doctor human output leaked credential value: %s", doctorOut.String())
+	}
+}
+
+// TestHumanInspectExposesReplayedRunIdentity 锁定 inspect 的人类视图从同一回放
+// 摘要呈现 Run 身份、工作区观察与验证进展，而不依赖重新执行模型或 verifier。
+func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
+	result, err := service.Run(context.Background(), app.RunOptions{Task: "inspect identity", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	command := Command{Service: service, Stdout: &stdout, Stderr: &stderr}
+	if code := command.Run(context.Background(), []string{"inspect", "--workspace", workspace, "--state-dir", stateDir, string(result.ID)}); code != ExitOK {
+		t.Fatalf("inspect exit=%d stderr=%q", code, stderr.String())
+	}
+	for _, required := range []string{"config fingerprint:", "build: revision=", "workspace:", "workspace observation:", "changes:", "last verification:"} {
+		if !strings.Contains(stdout.String(), required) {
+			t.Fatalf("inspect human output missing %q: %s", required, stdout.String())
+		}
 	}
 }

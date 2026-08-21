@@ -83,7 +83,7 @@ type EventDraft struct {
 // reducer 能理解每一个持久化字段。每个 payload 都必须包含 payload_version。
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
-		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "budget": {},
+		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "build": {}, "budget": {},
 	},
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},

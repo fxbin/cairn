@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -53,8 +54,37 @@ func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	if !report.Provider.APIKeyPresent {
 		t.Fatal("key presence flag must be true when env var is set")
 	}
+	if report.Build.Flavor != "plain" || report.Build.Fingerprint == "" {
+		t.Fatalf("doctor report build identity = %+v", report.Build)
+	}
 	if strings.Join(report.Tools, ",") != "list_files,read_file,search_text,apply_patch,exec_command" {
 		t.Fatalf("tools = %v", report.Tools)
+	}
+}
+
+// TestBuildIdentityIsPlainAndDeterministic 锁定当前二进制身份只报告真实的 plain
+// flavor，并让同一份构建事实得到可复算的非敏感摘要。
+func TestBuildIdentityIsPlainAndDeterministic(t *testing.T) {
+	first := buildIdentity()
+	second := buildIdentity()
+	if first != second {
+		t.Fatalf("build identity is not deterministic: first=%+v second=%+v", first, second)
+	}
+	if first.Flavor != "plain" || first.Fingerprint == "" || first.Fingerprint != buildIdentityFingerprint(first) {
+		t.Fatalf("build identity = %+v", first)
+	}
+}
+
+// TestBuildIdentityMarksMissingDirtyMetadataUnknown 锁定没有 VCS BuildInfo 时不把
+// dirty 状态误报为 false，并让显式 metadata 原样进入冻结 Run 身份。
+func TestBuildIdentityMarksMissingDirtyMetadataUnknown(t *testing.T) {
+	missing := buildIdentityFromSettings(nil)
+	if missing.Revision != "" || missing.Dirty != "unknown" || missing.Flavor != "plain" || missing.Fingerprint == "" {
+		t.Fatalf("missing BuildInfo identity = %+v", missing)
+	}
+	known := buildIdentityFromSettings([]debug.BuildSetting{{Key: "vcs.revision", Value: "abc"}, {Key: "vcs.modified", Value: "true"}})
+	if known.Revision != "abc" || known.Dirty != "true" || known.Flavor != "plain" || known.Fingerprint == missing.Fingerprint {
+		t.Fatalf("known BuildInfo identity = %+v", known)
 	}
 }
 
@@ -155,6 +185,9 @@ func TestSummarizeRunAnswersFourQuestions(t *testing.T) {
 	}
 	if summary.LastVerification == nil || !summary.LastVerification.OK || summary.LastVerification.Seq <= summary.LastMutationSeq {
 		t.Fatalf("verification binding missing: %+v", summary)
+	}
+	if summary.ConfigFingerprint != configuration.Fingerprint() || summary.Build == nil || summary.Build.Flavor != "plain" || summary.WorkspaceHash == "" || summary.WorkspaceObservation == "" {
+		t.Fatalf("run identity or observation missing: %+v", summary)
 	}
 
 	waitingService := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &patchThenFinalProvider{}, nil }}

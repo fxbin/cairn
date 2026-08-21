@@ -450,14 +450,29 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 		writeJSON(command.Stdout, result)
 	} else {
 		fmt.Fprintf(command.Stdout, "run: %s\nstate: %s\nlast sequence: %d\n", result.Projection.ID, result.Projection.Phase(), result.Projection.LastSeq)
+		summary := result.Summary
+		if summary.ConfigFingerprint != "" {
+			fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", summary.ConfigFingerprint)
+		} else {
+			fmt.Fprintln(command.Stdout, "config fingerprint: unavailable (legacy run)")
+		}
+		if summary.Build != nil {
+			writeBuildIdentity(command.Stdout, "build", *summary.Build)
+		} else {
+			fmt.Fprintln(command.Stdout, "build: unavailable (legacy run)")
+		}
+		fmt.Fprintf(command.Stdout, "workspace: %s\n", summary.WorkspaceHash)
+		if summary.WorkspaceObservation != "" {
+			fmt.Fprintf(command.Stdout, "workspace observation: %s\n", summary.WorkspaceObservation)
+		}
 		if result.Projection.LastAssistantMessage != "" {
 			fmt.Fprintf(command.Stdout, "response: %s\n", result.Projection.LastAssistantMessage)
 		}
-		summary := result.Summary
 		if summary.StopReason != "" {
 			fmt.Fprintf(command.Stdout, "stopped: %s\n", summary.StopReason)
 		}
 		fmt.Fprintf(command.Stdout, "budget: turns %d, tool calls %d, tokens %d in / %d out\n", summary.TurnsUsed, summary.ToolCallsStarted, summary.InputTokens, summary.OutputTokens)
+		fmt.Fprintf(command.Stdout, "changes: last mutation seq %d\n", summary.LastMutationSeq)
 		if summary.LastVerification != nil {
 			fmt.Fprintf(command.Stdout, "last verification: seq %d ok=%t (last mutation seq %d)\n", summary.LastVerification.Seq, summary.LastVerification.OK, summary.LastMutationSeq)
 		}
@@ -500,7 +515,12 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 		writeJSON(command.Stdout, report)
 		return ExitOK
 	}
-	fmt.Fprintf(command.Stdout, "config: %t (profile %s)\n", report.ConfigValid, report.Profile)
+	fmt.Fprintf(command.Stdout, "ready: %t\n", report.Ready)
+	fmt.Fprintf(command.Stdout, "config: %t (preset %s profile %s)\n", report.ConfigValid, report.Preset, report.Profile)
+	fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", report.ConfigFingerprint)
+	writeBuildIdentity(command.Stdout, "build", report.Build)
+	fmt.Fprintf(command.Stdout, "workspace: %s\n", report.WorkspaceHash)
+	fmt.Fprintf(command.Stdout, "policy: write=%s exec=%s\n", report.Policy.Write, report.Policy.Exec)
 	fmt.Fprintf(command.Stdout, "provider: %s model %s key env %s present=%t\n", report.Provider.BaseURL, report.Provider.Model, report.Provider.APIKeyEnv, report.Provider.APIKeyPresent)
 	if report.Sandbox.Backend == "docker" {
 		fmt.Fprintf(command.Stdout, "sandbox: docker image %s available=%s\n", report.Sandbox.DockerImage, report.Sandbox.ImageAvailable)
@@ -512,8 +532,18 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	for _, entry := range report.Resolution {
 		fmt.Fprintf(command.Stdout, "resolved %s = %s (%s)\n", entry.Field, entry.Value, entry.Source)
 	}
-	fmt.Fprintf(command.Stdout, "journal: %t artifacts: %t\n", report.JournalOK, report.ArtifactsOK)
+	fmt.Fprintf(command.Stdout, "journal: %s ok=%t artifacts=%t\n", report.JournalState, report.JournalOK, report.ArtifactsOK)
 	return ExitOK
+}
+
+// writeBuildIdentity 输出实际二进制的非敏感身份；空 revision 代表构建信息未提供，
+// 不把它误报成某个可验证的提交。
+func writeBuildIdentity(writer io.Writer, label string, identity domain.BuildIdentity) {
+	revision := identity.Revision
+	if revision == "" {
+		revision = "unknown"
+	}
+	fmt.Fprintf(writer, "%s: revision=%s dirty=%s flavor=%s fingerprint=%s\n", label, revision, identity.Dirty, identity.Flavor, identity.Fingerprint)
 }
 
 // loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。

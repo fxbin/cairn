@@ -144,11 +144,9 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	runID := domain.NewRunID()
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
-		Task              string       `json:"task"`
-		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
-		ConfigFingerprint string       `json:"config_fingerprint"`
-	}{Task: options.Task, Workspace: boot.Workspace.Root, ConfigRef: configRef, ConfigFingerprint: options.Config.Fingerprint()})})
+		domain.RunCreatedPayload
+		ConfigRef artifact.Ref `json:"config_ref"`
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr()}, ConfigRef: configRef})})
 	if err != nil {
 		return RunResult{}, err
 	}

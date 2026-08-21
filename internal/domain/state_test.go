@@ -106,6 +106,31 @@ func TestRunFailedTransitionMatrix(t *testing.T) {
 	}
 }
 
+// TestReplayPreservesOptionalRunIdentityAndObservation 锁定新 Run 身份在 replay
+// 后可供 inspect 使用，旧事件缺少这些字段时仍维持已有状态机兼容性。
+func TestReplayPreservesOptionalRunIdentityAndObservation(t *testing.T) {
+	chain := &eventChain{runID: RunID("run_identity")}
+	chain.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"identity","workspace":".","config_fingerprint":"sha256:config","build":{"revision":"abc","dirty":"true","flavor":"plain","fingerprint":"sha256:build"}}`)})
+	chain.add(t, EventDraft{Type: EventRunStarted})
+	chain.add(t, EventDraft{Type: EventVerificationStarted, Payload: json.RawMessage(`{"workspace_observation":"sha256:observation"}`)})
+	projection := chain.replay(t)
+	if projection.ConfigFingerprint != "sha256:config" || projection.Build == nil || projection.Build.Revision != "abc" || projection.Build.Dirty != "true" || projection.Build.Flavor != "plain" || projection.WorkspaceObservation != "sha256:observation" {
+		t.Fatalf("projection = %+v", projection)
+	}
+
+	legacy := &eventChain{runID: RunID("run_legacy")}
+	legacy.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"legacy","workspace":"."}`)})
+	legacy.add(t, EventDraft{Type: EventRunStarted})
+	legacyProjection := legacy.replay(t)
+	if legacyProjection.ConfigFingerprint != "" || legacyProjection.Build != nil || legacyProjection.State != RunRunning {
+		t.Fatalf("legacy projection = %+v", legacyProjection)
+	}
+
+	invalid := &eventChain{runID: RunID("run_invalid_identity")}
+	invalid.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"invalid","workspace":".","build":{"revision":"abc","dirty":"maybe","flavor":"plain","fingerprint":"sha256:build"}}`)})
+	invalid.replayReject(t, "build dirty status")
+}
+
 // TestRunCancelledRequiresCancellingState 锁定 run_cancelled 只能从 cancelling 进入。
 func TestRunCancelledRequiresCancellingState(t *testing.T) {
 	chain := newEventChain(t)
