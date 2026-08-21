@@ -31,12 +31,14 @@ type Boot struct {
 	Gate          *policy.Gate
 	Verification  []agent.VerificationCommand
 	Loop          agent.Loop
+	closeJournal  func() error
+	releaseLock   func() error
 	closed        bool
 }
 
 // assembleBoot 按固定顺序装配：workspace → execTool → journal → 工作区锁 →
 // provider → artifacts → 工具注册表 → 策略门 → 验证命令 → Loop。任一步失败都
-// 会按逆序释放已完成初始化的资源（Journal 先于锁关闭，与既有 defer 语义一致），
+// 会关闭已完成初始化的资源并合并关闭错误（Journal 关闭期间继续持有工作区锁），
 // 不留下孤儿 Journal 或锁；装配只做纯构造，不产生事件或副作用。
 func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.Config, onEvent EventSink) (*Boot, error) {
 	boot := &Boot{Config: cfg}
@@ -55,63 +57,73 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		return nil, err
 	}
 	boot.Journal = journal
+	boot.closeJournal = journal.Close
 	workspaceLock, err := acquireWorkspaceLock(stateDir, hash)
 	if err != nil {
-		journal.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.workspaceLock = workspaceLock
+	boot.releaseLock = workspaceLock.Release
 	provider, err := service.provider(cfg)
 	if err != nil {
-		_ = boot.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Provider = provider
 	artifacts, err := openArtifactStore(stateDir, hash, cfg.Output)
 	if err != nil {
-		_ = boot.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Artifacts = artifacts
 	registry, err := tools.NewRegistry(presetTools(workspace, execTool, cfg.Preset)...)
 	if err != nil {
-		_ = boot.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Registry = registry
 	patchTool := tools.ApplyPatch{Workspace: workspace}
 	gate, err := policy.New(cfg.Policy.Write, cfg.Policy.Exec, cfg.Policy.ProtectedPaths, patchTool)
 	if err != nil {
-		_ = boot.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Gate = gate
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {
-		_ = boot.Close()
-		return nil, err
+		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Verification = verification
 	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent)
 	return boot, nil
 }
 
-// Close 按创建的逆序释放资源并返回关闭错误；Loop、Provider、Registry 与 Gate
-// 无常驻句柄，Artifacts 无需显式回收。Close 幂等，重复调用安全；单个组件的
-// 关闭错误不阻止其余资源释放，全部错误合并返回供调用方上报。
+// bootAssemblyFailure 在装配失败后尝试关闭已取得的资源，并保留原始失败与全部
+// 清理失败；调用方据此既能看到装配根因，也不会丢失可能影响后续恢复的关闭错误。
+func bootAssemblyFailure(boot *Boot, cause error) error {
+	return errors.Join(cause, boot.Close())
+}
+
+// Close 在释放工作区锁前先关闭 Journal，并返回关闭错误；Loop、Provider、Registry
+// 与 Gate 无常驻句柄，Artifacts 无需显式回收。Close 幂等，重复调用安全；单个组件
+// 的关闭错误不阻止其余资源释放，全部错误合并返回供调用方上报。
 func (boot *Boot) Close() error {
 	if boot == nil || boot.closed {
 		return nil
 	}
 	boot.closed = true
 	var closeErrors []error
-	if boot.Journal != nil {
-		if err := boot.Journal.Close(); err != nil {
+	closeJournal := boot.closeJournal
+	if closeJournal == nil && boot.Journal != nil {
+		closeJournal = boot.Journal.Close
+	}
+	if closeJournal != nil {
+		if err := closeJournal(); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("close journal: %w", err))
 		}
 	}
-	if boot.workspaceLock != nil {
-		if err := boot.workspaceLock.Release(); err != nil {
+	releaseLock := boot.releaseLock
+	if releaseLock == nil && boot.workspaceLock != nil {
+		releaseLock = boot.workspaceLock.Release
+	}
+	if releaseLock != nil {
+		if err := releaseLock(); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("release workspace lock: %w", err))
 		}
 	}

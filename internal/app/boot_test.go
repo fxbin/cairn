@@ -63,6 +63,37 @@ func TestAssembleBootCleansUpWhenLateStageFails(t *testing.T) {
 	boot.Close()
 }
 
+// TestAssembleBootFailurePreservesCleanupErrors 锁定装配失败的错误语义：主失败
+// 与所有已取得资源的关闭失败必须同时可由 errors.Is 识别，且两个关闭动作都执行。
+func TestAssembleBootFailurePreservesCleanupErrors(t *testing.T) {
+	providerErr := errors.New("provider unavailable")
+	journalErr := errors.New("journal close failed")
+	lockErr := errors.New("lock release failed")
+	journalClosed, lockReleased := false, false
+	boot := &Boot{
+		closeJournal: func() error {
+			journalClosed = true
+			return journalErr
+		},
+		releaseLock: func() error {
+			lockReleased = true
+			return lockErr
+		},
+	}
+	err := bootAssemblyFailure(boot, providerErr)
+	for _, expected := range []error{providerErr, journalErr, lockErr} {
+		if !errors.Is(err, expected) {
+			t.Fatalf("assembly error %v does not preserve %v", err, expected)
+		}
+	}
+	if !journalClosed || !lockReleased {
+		t.Fatalf("cleanup calls journal=%t lock=%t, want both true", journalClosed, lockReleased)
+	}
+	if !boot.closed {
+		t.Fatal("failed assembly must mark its temporary boot closed")
+	}
+}
+
 // TestBootManifestDescribesCapabilities 锁定 Capability Manifest 的非敏感能力
 // 事实：固定五工具、Profile、沙箱后端与验证命令数。
 func TestBootManifestDescribesCapabilities(t *testing.T) {
