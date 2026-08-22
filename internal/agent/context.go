@@ -13,9 +13,13 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v1"
+const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v2"
 
-const contextCheckpointPrefix = "此前的对话原文已被压缩为以下可审计检查点。系统提示和原始任务保持不变；需要细节时请重新读取工作区或调用工具。\n"
+// contextCheckpointPrefix 声明检查点的使用纪律：优先基于清单内已有发现推进，
+// 不重复探索。措辞本身就是行为合同——v1 的"需要细节时请重新读取工作区"曾被
+// 观测为压缩后重读循环的放大器（AgentScope 失败 run：压缩后 search 塌缩、
+// read 爆炸、零 patch 耗尽 48 轮）。
+const contextCheckpointPrefix = "此前的对话原文已被压缩为以下可审计检查点。系统提示和原始任务保持不变；检查点首先列出已检查对象清单，请基于已有发现继续推进，仅当清单之外的信息确有必要时才读取或搜索。\n"
 
 // compactContextIfNeeded 在安全恢复边界把过长对话替换为持久化检查点。
 func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain.RunProjection, input RunInput, messages []ports.Message) ([]ports.Message, error) {
@@ -105,8 +109,34 @@ func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 	return (bytes + 1) / 2
 }
 
-// summarizeMessages 优先保留最近的工具结果、模型决策和验证反馈，不复制原始数据体。
+// summarizeMessages 优先保留探索清单、最近的工具结果、模型决策和验证反馈，
+// 不复制原始数据体。探索清单获得独立预算切片（至多四分之一）：它是从工具
+// 调用确定性派生的去重"已检查对象"视图，压缩后防止模型重读循环。
 func summarizeMessages(messages []ports.Message, maximumBytes int) string {
+	if maximumBytes < 1 {
+		return ""
+	}
+	// 清单预算取四分之一，但不低于 512 字节（覆盖中文表头与常见路径）；
+	// 极小预算下清单优先于近期事实——丢失探索记忆的代价高于丢失最后一条
+	// 工具结果的预览。
+	inventoryBudget := maximumBytes / 4
+	if inventoryBudget < 512 {
+		inventoryBudget = min(512, maximumBytes)
+	}
+	inventory := explorationInventory(messages, inventoryBudget)
+	factBudget := maximumBytes
+	if inventory != "" {
+		factBudget = maximumBytes - len(inventory)
+	}
+	facts := summarizeRecentFacts(messages, factBudget)
+	if facts == "" && inventory == "" {
+		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
+	}
+	return string(artifact.Redact([]byte(inventory + facts)))
+}
+
+// summarizeRecentFacts 从尾部反向保留预算内的近期事实；先前检查点占用一半预算。
+func summarizeRecentFacts(messages []ports.Message, maximumBytes int) string {
 	if maximumBytes < 1 {
 		return ""
 	}
@@ -151,14 +181,75 @@ func summarizeMessages(messages []ports.Message, maximumBytes int) string {
 	}
 	if len(entries) == 0 {
 		if preservedCheckpoint != "" {
-			return string(artifact.Redact([]byte(preservedCheckpoint)))
+			return preservedCheckpoint
 		}
-		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
+		return ""
 	}
 	for left, right := 0, len(entries)-1; left < right; left, right = left+1, right-1 {
 		entries[left], entries[right] = entries[right], entries[left]
 	}
-	return string(artifact.Redact([]byte(preservedCheckpoint + strings.Join(entries, ""))))
+	return preservedCheckpoint + strings.Join(entries, "")
+}
+
+// explorationInventory 从全部历史工具调用确定性派生去重的已检查对象清单；
+// 只读工具列路径或查询，exec 列 argv 首词，patch 列路径。清单内的事实跨压缩
+// 保留，是压缩后"不要重复探索"的机器可核对依据。
+func explorationInventory(messages []ports.Message, maximumBytes int) string {
+	if maximumBytes < 1 {
+		return ""
+	}
+	header := "已检查对象（勿重复探索）：\n"
+	seen := make(map[string]bool)
+	lines := make([]string, 0, 16)
+	used := len(header)
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			target := toolExplorationTarget(call.Name, call.Arguments)
+			if target == "" {
+				continue
+			}
+			key := call.Name + ":" + target
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			line := "- " + call.Name + " " + target + "\n"
+			if used+len(line) > maximumBytes {
+				if used+len("- …\n") <= maximumBytes {
+					lines = append(lines, "- …\n")
+				}
+				return header + strings.Join(lines, "")
+			}
+			lines = append(lines, line)
+			used += len(line)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return header + strings.Join(lines, "")
+}
+
+// toolExplorationTarget 提取一次工具调用的探索目标摘要；无法识别目标时为空。
+func toolExplorationTarget(name string, arguments json.RawMessage) string {
+	var fields struct {
+		Path  string   `json:"path"`
+		Query string   `json:"query"`
+		Argv  []string `json:"argv"`
+	}
+	if len(arguments) == 0 || json.Unmarshal(arguments, &fields) != nil {
+		return ""
+	}
+	switch {
+	case fields.Path != "":
+		return clipText(fields.Path, 160)
+	case fields.Query != "":
+		return clipText(fields.Query, 160)
+	case len(fields.Argv) > 0:
+		return clipText(strings.Join(fields.Argv, " "), 160)
+	default:
+		return ""
+	}
 }
 
 // summarizeMessage 将单条历史消息归约为不含工具原始 data 字段的事实记录。
@@ -173,7 +264,9 @@ func summarizeMessage(message ports.Message, toolNames map[string]string) string
 	case "assistant":
 		parts := make([]string, 0, len(message.ToolCalls)+1)
 		if text := strings.TrimSpace(message.Content); text != "" {
-			parts = append(parts, "模型说明："+clipText(string(artifact.Redact([]byte(text))), 480))
+			// 模型说明是压缩后最有价值的综合推理（早于任何工具结果的合成结论），
+			// 保留额度高于普通事实条目，防止探索-综合链在检查点处断裂。
+			parts = append(parts, "模型说明："+clipText(string(artifact.Redact([]byte(text))), 960))
 		}
 		for _, call := range message.ToolCalls {
 			parts = append(parts, fmt.Sprintf("请求工具 %s（调用 %s）", call.Name, call.ID))

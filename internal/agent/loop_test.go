@@ -696,6 +696,46 @@ func TestDefaultPromptExplainsDeterministicPatchBinding(t *testing.T) {
 	}
 }
 
+// TestSummarizeMessagesRetainsExplorationInventoryUnderBudgetPressure 锁定
+// 探索记忆合同：检查点必须保留去重的已检查对象清单，且在近期事实预算被
+// 挤压到截断时清单依然完整——这是压缩后"不重复探索"行为的机器可核对依据
+// （AgentScope 失败 run 实证：v1 检查点丢探索记忆导致 read 爆炸循环）。
+func TestSummarizeMessagesRetainsExplorationInventoryUnderBudgetPressure(t *testing.T) {
+	result := func(body string) string {
+		encoded, err := json.Marshal(tools.Success(map[string]any{"preview": body}, body, int64(len(body)), "", false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	messages := []ports.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"src/agentscope/agent/_agent.py"}`)}}},
+		{Role: "tool", ToolCallID: "c1", Content: result("thinking-only branch at line 214")},
+		{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "c2", Name: "search_text", Arguments: json.RawMessage(`{"query":"thinking_only_response"}`)}}},
+		{Role: "tool", ToolCallID: "c2", Content: result("three call sites")},
+		{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "c3", Name: "read_file", Arguments: json.RawMessage(`{"path":"src/agentscope/agent/_agent.py"}`)}}},
+		{Role: "tool", ToolCallID: "c3", Content: result("second read of the same file")},
+		{Role: "assistant", Content: "已定位 ReAct 循环的纯思考分支处理位置，下一步在 _agent.py 修改循环继续条件。"},
+	}
+	summary := summarizeMessages(messages, 260)
+	if !strings.Contains(summary, "已检查对象") {
+		t.Fatalf("summary missing exploration inventory: %q", summary)
+	}
+	for _, required := range []string{"src/agentscope/agent/_agent.py", "thinking_only_response"} {
+		if !strings.Contains(summary, required) {
+			t.Fatalf("inventory missing explored target %q: %q", required, summary)
+		}
+	}
+	if strings.Count(summary, "src/agentscope/agent/_agent.py") != 1 {
+		t.Fatalf("inventory must dedupe repeated reads: %q", summary)
+	}
+	if strings.Contains(summary, "second read of the same file") {
+		t.Fatalf("recent facts may be truncated but inventory must not duplicate: %q", summary)
+	}
+}
+
 func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T) {
 	messages := []ports.Message{
 		{Role: "system", Content: "system"},
