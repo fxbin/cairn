@@ -2,6 +2,9 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -130,36 +133,82 @@ func (boot *Boot) Close() error {
 	return errors.Join(closeErrors...)
 }
 
-// CapabilityManifest 是对当前装配能力的只读、可追溯描述；完整 Preset 合同
-// （工具/Policy/Verifier/预算展开进指纹）由后续切片扩展，此处仅汇总非敏感
-// 能力事实供诊断与测试使用。
-type CapabilityManifest struct {
-	Preset       string   `json:"preset"`
-	Profile      string   `json:"profile"`
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model"`
-	Sandbox      string   `json:"sandbox"`
-	Policy       string   `json:"policy"`
-	BudgetTurns  int      `json:"budget_max_turns"`
-	Tools        []string `json:"tools"`
-	Verification int      `json:"verification_commands"`
+// ToolCapability 描述固定注册表中一件工具的非敏感能力事实：名称与其保守
+// 副作用分类；只读工具为 none，apply_patch 为 workspace，exec_command 为 process。
+type ToolCapability struct {
+	Name       string `json:"name"`
+	SideEffect string `json:"side_effect"`
 }
 
-// Manifest 返回当前装配的非敏感能力清单；工具名来自固定注册表的规格顺序。
+// BudgetView 展开进入执行语义的全部预算字段，与配置指纹的预算视图一一对应。
+type BudgetView struct {
+	MaxTurns        int     `json:"max_turns"`
+	MaxToolCalls    int     `json:"max_tool_calls"`
+	MaxInputTokens  int     `json:"max_input_tokens"`
+	MaxOutputTokens int     `json:"max_output_tokens"`
+	MaxWallTime     string  `json:"max_wall_time"`
+	MaxCostUSD      float64 `json:"max_cost_usd,omitempty"`
+}
+
+// SandboxView 展开执行后端与任务镜像；镜像仅在 Docker 后端下非空。
+type SandboxView struct {
+	Backend     string `json:"backend"`
+	DockerImage string `json:"docker_image,omitempty"`
+}
+
+// PolicyView 展开写入与命令执行策略及防篡改路径模式；全部为非敏感配置事实。
+type PolicyView struct {
+	Write          string   `json:"write"`
+	Exec           string   `json:"exec"`
+	ProtectedPaths []string `json:"protected_paths,omitempty"`
+}
+
+// VerificationView 展开冻结验证命令数量与其稳定摘要；摘要算法与运行期
+// 验证计划（createVerificationPlan）一致，保证 manifest 与事件证据可对账。
+type VerificationView struct {
+	Commands    int    `json:"commands"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// CapabilityManifest 是对当前装配能力的只读、可追溯描述：Preset 的工具、
+// Policy、Verifier、Sandbox 与预算完整展开，供诊断与测试对账配置指纹。
+type CapabilityManifest struct {
+	Preset            string           `json:"preset"`
+	Profile           string           `json:"profile"`
+	Provider          string           `json:"provider"`
+	Model             string           `json:"model"`
+	Sandbox           SandboxView      `json:"sandbox"`
+	Policy            PolicyView       `json:"policy"`
+	Budget            BudgetView       `json:"budget"`
+	Tools             []ToolCapability `json:"tools"`
+	Verification      VerificationView `json:"verification"`
+	ConfigFingerprint string           `json:"config_fingerprint"`
+}
+
+// Manifest 返回当前装配的非敏感能力清单；由装配后的注册表与冻结验证命令构建。
 func (boot *Boot) Manifest() CapabilityManifest {
-	names := make([]string, 0, len(boot.Registry.Specs()))
+	tools := make([]ToolCapability, 0, len(boot.Registry.Specs()))
 	for _, spec := range boot.Registry.Specs() {
-		names = append(names, spec.Name)
+		tools = append(tools, ToolCapability{Name: spec.Name, SideEffect: string(boot.Registry.SideEffect(spec.Name))})
 	}
+	return buildCapabilityManifest(boot.Config, tools, boot.Verification)
+}
+
+// buildCapabilityManifest 由配置、工具能力与冻结验证命令构建唯一投影；
+// Boot.Manifest 与 doctor 共用本函数，保证两个视图不矛盾。
+func buildCapabilityManifest(configuration config.Config, tools []ToolCapability, verification []agent.VerificationCommand) CapabilityManifest {
+	commands, _ := json.Marshal(verification)
+	digest := sha256.Sum256(commands)
 	return CapabilityManifest{
-		Preset:       boot.Config.Preset,
-		Profile:      boot.Config.Profile,
-		Provider:     boot.Config.Provider.BaseURL,
-		Model:        boot.Config.Provider.Model,
-		Sandbox:      boot.Config.Sandbox.Backend,
-		Policy:       "write=" + boot.Config.Policy.Write + ",exec=" + boot.Config.Policy.Exec,
-		BudgetTurns:  boot.Config.Budget.MaxTurns,
-		Tools:        names,
-		Verification: len(boot.Verification),
+		Preset:            configuration.Preset,
+		Profile:           configuration.Profile,
+		Provider:          configuration.Provider.BaseURL,
+		Model:             configuration.Provider.Model,
+		Sandbox:           SandboxView{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
+		Policy:            PolicyView{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec, ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...)},
+		Budget:            BudgetView{MaxTurns: configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls, MaxInputTokens: configuration.Budget.MaxInputTokens, MaxOutputTokens: configuration.Budget.MaxOutputTokens, MaxWallTime: configuration.Budget.MaxWallTime, MaxCostUSD: configuration.Budget.MaxCostUSD},
+		Tools:             tools,
+		Verification:      VerificationView{Commands: len(verification), Fingerprint: "sha256:" + hex.EncodeToString(digest[:])},
+		ConfigFingerprint: configuration.Fingerprint(),
 	}
 }

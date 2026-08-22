@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -110,14 +113,98 @@ func TestBootManifestDescribesCapabilities(t *testing.T) {
 	}
 	defer boot.Close()
 	manifest := boot.Manifest()
-	if manifest.Profile != config.ProfileDefault || manifest.Sandbox != "docker" || manifest.Verification != 1 {
+	if manifest.Profile != config.ProfileDefault || manifest.Sandbox.Backend != "docker" || manifest.Sandbox.DockerImage != "alpine:3.21" || manifest.Verification.Commands != 1 {
 		t.Fatalf("manifest = %+v", manifest)
 	}
-	if strings.Join(manifest.Tools, ",") != "list_files,read_file,search_text,apply_patch,exec_command" {
-		t.Fatalf("manifest tools = %v", manifest.Tools)
+	if manifest.Verification.Fingerprint == "" || !strings.HasPrefix(manifest.Verification.Fingerprint, "sha256:") {
+		t.Fatalf("manifest verification fingerprint = %q", manifest.Verification.Fingerprint)
 	}
-	if strings.Contains(strings.ToLower(strings.Join(manifest.Tools, " ")+manifest.Provider+manifest.Model), "key") {
+	toolNames := make([]string, 0, len(manifest.Tools))
+	for _, tool := range manifest.Tools {
+		toolNames = append(toolNames, tool.Name)
+	}
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,apply_patch,exec_command" {
+		t.Fatalf("manifest tools = %v", toolNames)
+	}
+	sideEffects := map[string]string{}
+	for _, tool := range manifest.Tools {
+		sideEffects[tool.Name] = tool.SideEffect
+	}
+	if sideEffects["read_file"] != "none" || sideEffects["apply_patch"] != "workspace" || sideEffects["exec_command"] != "process" {
+		t.Fatalf("manifest side effects = %v", sideEffects)
+	}
+	if manifest.Budget.MaxTurns != configuration.Budget.MaxTurns || manifest.Budget.MaxToolCalls != configuration.Budget.MaxToolCalls || manifest.Budget.MaxInputTokens != configuration.Budget.MaxInputTokens || manifest.Budget.MaxWallTime != configuration.Budget.MaxWallTime {
+		t.Fatalf("manifest budget = %+v", manifest.Budget)
+	}
+	if manifest.ConfigFingerprint != configuration.Fingerprint() {
+		t.Fatalf("manifest config fingerprint = %q, want %q", manifest.ConfigFingerprint, configuration.Fingerprint())
+	}
+	allTools := strings.Join(toolNames, " ") + manifest.Provider + manifest.Model + manifest.Policy.Write + manifest.Policy.Exec
+	if strings.Contains(strings.ToLower(allTools), "key") {
 		t.Fatalf("manifest must not carry credential material: %+v", manifest)
+	}
+}
+
+// TestCapabilityManifestIsSingleProjection 锁定 AB-3 验收合同：Boot.Manifest 与
+// doctor 的 capability_manifest 是同一投影（不矛盾），预算展开与 Resolved
+// Execution Plan 逐字段对账，验证命令摘要非空且随命令集变化。
+func TestCapabilityManifestIsSingleProjection(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".agent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(workspace, ".agent", "config.yaml")
+	yaml := "version: 1\nprovider:\n  base_url: https://provider.test/v1\n  model: m1\n  api_key_env: CAIRN_AB3_KEY\n  request_timeout: 30s\nsandbox:\n  backend: docker\n  docker_image: alpine:3.21\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := config.Load(configPath, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	boot, err := service.assembleBoot(workspace, stateDir, configuration, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boot.Close()
+	fromBoot := boot.Manifest()
+	doctorReport, err := service.Doctor(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fromBoot, doctorReport.Capabilities) {
+		t.Fatalf("boot manifest and doctor projection diverge:\nboot   = %+v\ndoctor = %+v", fromBoot, doctorReport.Capabilities)
+	}
+	resolved := map[string]string{}
+	for _, entry := range configuration.Resolution {
+		resolved[entry.Field] = entry.Value
+	}
+	budgetPairs := []struct {
+		field string
+		value string
+	}{
+		{"budget.max_turns", strconv.Itoa(fromBoot.Budget.MaxTurns)},
+		{"budget.max_tool_calls", strconv.Itoa(fromBoot.Budget.MaxToolCalls)},
+		{"budget.max_input_tokens", strconv.Itoa(fromBoot.Budget.MaxInputTokens)},
+		{"budget.max_output_tokens", strconv.Itoa(fromBoot.Budget.MaxOutputTokens)},
+		{"budget.max_wall_time", fromBoot.Budget.MaxWallTime},
+		{"budget.max_cost_usd", strconv.FormatFloat(fromBoot.Budget.MaxCostUSD, 'f', -1, 64)},
+	}
+	for _, pair := range budgetPairs {
+		if resolved[pair.field] != pair.value {
+			t.Fatalf("manifest budget field %s = %q, resolution = %q", pair.field, pair.value, resolved[pair.field])
+		}
+	}
+	changed := config.Defaults()
+	changed.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/false"}}}
+	changedCommands, err := verificationCommands(changed.Verification)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedManifest := buildCapabilityManifest(changed, nil, changedCommands)
+	if changedManifest.Verification.Fingerprint == fromBoot.Verification.Fingerprint {
+		t.Fatalf("verification fingerprint must change with command set: %q", fromBoot.Verification.Fingerprint)
 	}
 }
 
@@ -181,13 +268,25 @@ func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
 	}
 	defer boot.Close()
 	manifest := boot.Manifest()
-	if strings.Join(manifest.Tools, ",") != "list_files,read_file,search_text" {
-		t.Fatalf("read-only tools = %v", manifest.Tools)
+	toolNames := make([]string, 0, len(manifest.Tools))
+	for _, tool := range manifest.Tools {
+		toolNames = append(toolNames, tool.Name)
 	}
-	if manifest.Preset != config.PresetReadOnly || !strings.Contains(manifest.Policy, "write=deny") {
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text" {
+		t.Fatalf("read-only tools = %v", toolNames)
+	}
+	for _, tool := range manifest.Tools {
+		if tool.SideEffect != "none" {
+			t.Fatalf("read-only tool %q must be side-effect none, got %q", tool.Name, tool.SideEffect)
+		}
+	}
+	if manifest.Preset != config.PresetReadOnly || manifest.Policy.Write != "deny" || manifest.Policy.Exec != "deny" {
 		t.Fatalf("manifest = %+v", manifest)
 	}
-	if manifest.BudgetTurns != config.Defaults().Budget.MaxTurns {
-		t.Fatalf("manifest budget turns = %d", manifest.BudgetTurns)
+	if manifest.Budget.MaxTurns != config.Defaults().Budget.MaxTurns {
+		t.Fatalf("manifest budget turns = %d", manifest.Budget.MaxTurns)
+	}
+	if manifest.Verification.Commands != 0 {
+		t.Fatalf("read-only manifest verification commands = %d", manifest.Verification.Commands)
 	}
 }

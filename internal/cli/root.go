@@ -528,6 +528,8 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 		fmt.Fprintf(command.Stdout, "sandbox: %s\n", report.Sandbox.Backend)
 	}
 	fmt.Fprintf(command.Stdout, "tools: %s\n", strings.Join(report.Tools, ", "))
+	fmt.Fprintf(command.Stdout, "budget: turns %d, tool calls %d, input %d, output %d, wall %s\n", report.Capabilities.Budget.MaxTurns, report.Capabilities.Budget.MaxToolCalls, report.Capabilities.Budget.MaxInputTokens, report.Capabilities.Budget.MaxOutputTokens, report.Capabilities.Budget.MaxWallTime)
+	fmt.Fprintf(command.Stdout, "verification: %d command(s) %s\n", report.Capabilities.Verification.Commands, report.Capabilities.Verification.Fingerprint)
 	fmt.Fprintf(command.Stdout, "verification commands: %d\n", report.VerificationCount)
 	for _, entry := range report.Resolution {
 		fmt.Fprintf(command.Stdout, "resolved %s = %s (%s)\n", entry.Field, entry.Value, entry.Source)

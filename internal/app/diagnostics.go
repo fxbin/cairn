@@ -55,6 +55,7 @@ type DoctorReport struct {
 	Sandbox           SandboxHealth            `json:"sandbox"`
 	Tools             []string                 `json:"tools"`
 	VerificationCount int                      `json:"verification_commands"`
+	Capabilities      CapabilityManifest       `json:"capability_manifest"`
 	JournalState      string                   `json:"journal_state"`
 	JournalOK         bool                     `json:"journal_ok"`
 	ArtifactsOK       bool                     `json:"artifacts_ok"`
@@ -98,7 +99,16 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	if configuration.Sandbox.Backend == "docker" {
 		report.Sandbox.ImageAvailable = probeDockerImage(configuration.Sandbox.DockerImage)
 	}
-	report.Tools = fixedToolNames(workspace, configuration.Preset)
+	capabilities := toolCapabilities(workspace, configuration.Preset)
+	report.Tools = make([]string, 0, len(capabilities))
+	for _, tool := range capabilities {
+		report.Tools = append(report.Tools, tool.Name)
+	}
+	verification, err := verificationCommands(configuration.Verification)
+	if err != nil {
+		return report, err
+	}
+	report.Capabilities = buildCapabilityManifest(configuration, capabilities, verification)
 	journal, err := openReadOnlyJournal(stateDir, hash)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -196,19 +206,20 @@ func probeDockerImage(image string) string {
 	return "yes"
 }
 
-// fixedToolNames 返回固定注册表的能力清单顺序；注册表构造是纯装配，不产生
-// 任何副作用，符合 doctor 的只读合同。read-only Preset 只列出三件只读工具。
-// doctor 只需名称清单，副作用工具实例的运行时配置在此无关紧要。
-func fixedToolNames(workspace tools.Workspace, preset string) []string {
+// toolCapabilities 返回固定注册表的能力清单顺序与副作用分类；注册表构造是
+// 纯装配，不产生任何副作用，符合 doctor 的只读合同。read-only Preset 只列出
+// 三件只读工具。doctor 只需非敏感能力事实，副作用工具实例的运行时配置在此
+// 无关紧要。
+func toolCapabilities(workspace tools.Workspace, preset string) []ToolCapability {
 	registry, err := tools.NewRegistry(presetTools(workspace, tools.ExecCommand{Workspace: workspace}, preset)...)
 	if err != nil {
 		return nil
 	}
-	names := make([]string, 0, len(registry.Specs()))
+	capabilities := make([]ToolCapability, 0, len(registry.Specs()))
 	for _, spec := range registry.Specs() {
-		names = append(names, spec.Name)
+		capabilities = append(capabilities, ToolCapability{Name: spec.Name, SideEffect: string(registry.SideEffect(spec.Name))})
 	}
-	return names
+	return capabilities
 }
 
 // presetTools 按 Preset 返回注册表工具子集；read-only 只组合三件只读工具，
