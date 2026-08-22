@@ -56,6 +56,7 @@ type DoctorReport struct {
 	Tools             []string                 `json:"tools"`
 	VerificationCount int                      `json:"verification_commands"`
 	Capabilities      CapabilityManifest       `json:"capability_manifest"`
+	Telemetry         TelemetryHealth          `json:"telemetry"`
 	JournalState      string                   `json:"journal_state"`
 	JournalOK         bool                     `json:"journal_ok"`
 	ArtifactsOK       bool                     `json:"artifacts_ok"`
@@ -65,6 +66,13 @@ type DoctorReport struct {
 type PolicyHealth struct {
 	Write string `json:"write"`
 	Exec  string `json:"exec"`
+}
+
+// TelemetryHealth 如实报告遥测的真实接线状态：当前版本没有接入任何
+// TelemetrySink 或基础设施探针，状态恒为 disabled。测试锁定该诚实合同——
+// otelc 构建形态落地时必须同步更新本投影，不得提前宣称任何观测能力。
+type TelemetryHealth struct {
+	Status string `json:"status"`
 }
 
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性，并返回环境可运行性
@@ -85,6 +93,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
+		Telemetry:         TelemetryHealth{Status: "disabled"},
 	}
 	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
