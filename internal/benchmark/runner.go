@@ -67,7 +67,7 @@ type SuiteResult struct {
 }
 
 // QualificationResult 保存一次正式计分前独立环境资格检查的非敏感结果；它
-// 不包含 Agent 运行、状态目录或模型调用，绝不能被计入 Agent 通过率。
+// 不包含 Agent 运行、状态目录、工作区路径或模型调用，绝不能被计入 Agent 通过率。
 type QualificationResult struct {
 	SchemaVersion       int       `json:"schema_version"`
 	TaskID              string    `json:"task_id"`
@@ -77,7 +77,7 @@ type QualificationResult struct {
 	Outcome             string    `json:"outcome"`
 	FailureClass        string    `json:"failure_class,omitempty"`
 	Error               string    `json:"error,omitempty"`
-	Workspace           string    `json:"workspace"`
+	Workspace           string    `json:"-"`
 	SourceRevision      string    `json:"source_revision,omitempty"`
 	VerifierFingerprint string    `json:"verifier_fingerprint,omitempty"`
 	DockerImage         string    `json:"docker_image,omitempty"`
@@ -85,7 +85,8 @@ type QualificationResult struct {
 }
 
 // PreparationResult 保存正式 Agent 工作区启动前的独立准备记录；它与
-// QualificationResult 的 probe clone 分离，且失败不会伪装为 Agent 尝试。
+// QualificationResult 的 probe clone 分离，且失败不会伪装为 Agent 尝试。路径
+// 仅供进程内编排，绝不写入结果 JSON。
 type PreparationResult struct {
 	SchemaVersion       int       `json:"schema_version"`
 	TaskID              string    `json:"task_id"`
@@ -95,8 +96,8 @@ type PreparationResult struct {
 	Outcome             string    `json:"outcome"`
 	FailureClass        string    `json:"failure_class,omitempty"`
 	Error               string    `json:"error,omitempty"`
-	Workspace           string    `json:"workspace"`
-	StateDir            string    `json:"state_dir"`
+	Workspace           string    `json:"-"`
+	StateDir            string    `json:"-"`
 	SourceRevision      string    `json:"source_revision,omitempty"`
 	VerifierFingerprint string    `json:"verifier_fingerprint,omitempty"`
 	DockerImage         string    `json:"docker_image,omitempty"`
@@ -124,8 +125,8 @@ type AttemptResult struct {
 	Outcome             string            `json:"outcome"`
 	FailureClass        string            `json:"failure_class,omitempty"`
 	Error               string            `json:"error,omitempty"`
-	Workspace           string            `json:"workspace"`
-	StateDir            string            `json:"state_dir"`
+	Workspace           string            `json:"-"`
+	StateDir            string            `json:"-"`
 	Task                contract.TaskSpec `json:"task_spec"`
 	Run                 *contract.Result  `json:"run,omitempty"`
 	DoctorOK            bool              `json:"doctor_ok"`

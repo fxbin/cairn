@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -121,6 +122,9 @@ func (pack TaskPack) Validate() error {
 		if strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.Repository.URL) == "" || strings.TrimSpace(task.Repository.BaselineCommit) == "" || strings.TrimSpace(task.TaskPrompt) == "" {
 			return fmt.Errorf("task has incomplete repository identity or prompt")
 		}
+		if err := validateRepositoryURL(task.Repository.URL); err != nil {
+			return fmt.Errorf("task %q repository url: %w", task.ID, err)
+		}
 		if _, exists := seen[task.ID]; exists {
 			return fmt.Errorf("duplicate task id %q", task.ID)
 		}
@@ -144,6 +148,26 @@ func (pack TaskPack) Validate() error {
 				return fmt.Errorf("task %q scope path %q: %w", task.ID, path, err)
 			}
 		}
+	}
+	return nil
+}
+
+// validateRepositoryURL 只接受无凭据的 HTTP(S) 远端 Git 地址。任务合同会进入
+// 结果投影，因此不能把本机路径、file URL、userinfo、查询参数或 fragment 当作
+// 可持久化来源身份，避免结果泄露本地布局或访问令牌。
+func validateRepositoryURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("must be an absolute HTTP(S) URL: %w", err)
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return fmt.Errorf("must use http or https")
+	}
+	if parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("must name a credential-free remote host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("must not contain query or fragment")
 	}
 	return nil
 }

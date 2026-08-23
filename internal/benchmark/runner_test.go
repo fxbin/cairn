@@ -35,7 +35,7 @@ func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
 	output := t.TempDir()
 	privateRoot := filepath.Join(output, "private")
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	report, err := qualificationRunner().withNow(now).Run(context.Background(), RunOptions{
+	report, err := qualificationRunner(source).withNow(now).Run(context.Background(), RunOptions{
 		Pack:           pack,
 		Attempts:       1,
 		Configuration:  config.Defaults(),
@@ -67,7 +67,7 @@ func TestRunnerQualificationFailureProducesEnvironmentInvalidWithoutAgentAttempt
 	output := t.TempDir()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	cloneCalls := 0
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	runner.Now = func() time.Time { return now }
 	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error {
 		cloneCalls++
@@ -97,7 +97,7 @@ func TestRunnerEnvironmentInvalidSkipsProviderCredentialRequirement(t *testing.T
 	source, baseline := localGitRepository(t)
 	pack := testPack(source, baseline)
 	output := t.TempDir()
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error { return errors.New("offline") }
 	configuration := config.Defaults()
 	configuration.Provider.BaseURL = ""
@@ -117,10 +117,11 @@ func TestRunnerQualificationAndAgentAttemptsUseIndependentWorkspaces(t *testing.
 	output := t.TempDir()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	cloned := make([]string, 0, 2)
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	runner.Now = func() time.Time { return now }
 	runner.CloneAtBaseline = func(ctx context.Context, task Task, workspace, proxy string) error {
 		cloned = append(cloned, workspace)
+		task.Repository.URL = source
 		return cloneAtBaseline(ctx, task, workspace, proxy)
 	}
 	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
@@ -146,7 +147,7 @@ func TestRunnerFormalPreparationFailureInvalidatesSuiteBeforeProvider(t *testing
 	source, baseline := localGitRepository(t)
 	pack := testPack(source, baseline)
 	output := t.TempDir()
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	bootstrapCalls := 0
 	providerCalls := 0
 	runner.RunBootstrap = func(_ context.Context, _ string, _ string, _ []Command) error {
@@ -185,7 +186,7 @@ func TestQualificationFailureUsesOnlyRedactedStableError(t *testing.T) {
 	source, baseline := localGitRepository(t)
 	pack := testPack(source, baseline)
 	output := t.TempDir()
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error {
 		return errors.New("git https://private.example/repo?token=credential-value failed")
 	}
@@ -210,6 +211,44 @@ func TestTaskPackLoadsStrictlyFromCallerSuppliedLocalPath(t *testing.T) {
 	pack, err := LoadTaskPack(path)
 	if err != nil || pack.TaskCount != 1 || pack.Tasks[0].ID != "LOCAL-001" {
 		t.Fatalf("pack=%#v err=%v", pack, err)
+	}
+}
+
+// TestTaskPackRejectsPrivateOrLocalRepositoryLocations 锁定评测合同写入结果前的
+// 来源边界：仅允许无凭据的 HTTP(S) 远端标识，避免本机路径或 URL 令牌进入 TaskSpec。
+func TestTaskPackRejectsPrivateOrLocalRepositoryLocations(t *testing.T) {
+	for _, repositoryURL := range []string{
+		"/Users/example/private-repository",
+		"file:///Users/example/private-repository",
+		"https://user:token@example.invalid/repository.git",
+		"https://example.invalid/repository.git?token=secret",
+		"https://example.invalid/repository.git#private",
+		"git@example.invalid:owner/repository.git",
+	} {
+		pack := testPack("https://example.invalid/repository.git", "0123456789")
+		pack.Tasks[0].Repository.URL = repositoryURL
+		if err := pack.Validate(); err == nil {
+			t.Fatalf("repository URL %q was accepted", repositoryURL)
+		}
+	}
+}
+
+// TestBenchmarkResultJSONOmitsRuntimePaths 锁定所有可持久化 benchmark 结果都
+// 不编码 runner 的 clone 或状态目录；这些路径只用于进程内执行编排。
+func TestBenchmarkResultJSONOmitsRuntimePaths(t *testing.T) {
+	report := SuiteResult{
+		Qualifications: []QualificationResult{{Workspace: "/private/qualification"}},
+		Preparations:   []PreparationResult{{Workspace: "/private/preparation", StateDir: "/private/preparation-state"}},
+		Results:        []AttemptResult{{Workspace: "/private/attempt", StateDir: "/private/attempt-state"}},
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"/private/qualification", "/private/preparation", "/private/preparation-state", "/private/attempt", "/private/attempt-state", `"workspace"`, `"state_dir"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("benchmark JSON leaked runtime path field %q: %s", forbidden, encoded)
+		}
 	}
 }
 
@@ -457,7 +496,7 @@ func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
 	source, baseline := localGitRepository(t)
 	pack := testPack(source, baseline)
 	output := t.TempDir()
-	runner := qualificationRunner()
+	runner := qualificationRunner(source)
 	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
 	configuration := config.Defaults()
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
@@ -492,8 +531,8 @@ func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
 	if attempt.Run.State != string(domain.RunCompleted) || attempt.Run.FailureClass != "" || !attempt.Run.Evidence.Trusted {
 		t.Fatalf("run outcome=%#v", attempt.Run)
 	}
-	// 统一合同（Task/Run 投影）不得携带任务正文、本地路径或密钥；信封中
-	// Workspace/StateDir 是既有本地私有结果字段，仅留在被忽略的结果目录。
+	// 统一合同与结果信封都不得携带任务正文、本地路径或密钥；Workspace/
+	// StateDir 只在 runner 进程内用于编排，序列化结果中必须完全缺席。
 	contractOnly, err := json.Marshal(struct {
 		Task contract.TaskSpec `json:"task"`
 		Run  *contract.Result  `json:"run"`
@@ -508,8 +547,8 @@ func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
 	}
 	if encoded, err := json.Marshal(attempt); err != nil {
 		t.Fatal(err)
-	} else if strings.Contains(string(encoded), "修复本地测试任务") || strings.Contains(string(encoded), "test-key") {
-		t.Fatal("attempt envelope leaked task prompt or credential")
+	} else if strings.Contains(string(encoded), "修复本地测试任务") || strings.Contains(string(encoded), "test-key") || strings.Contains(string(encoded), attempt.Workspace) || strings.Contains(string(encoded), attempt.StateDir) {
+		t.Fatal("attempt envelope leaked task prompt, credential, or local path")
 	}
 }
 
@@ -598,6 +637,9 @@ func TestRestrictedProcessEnvironmentDoesNotInheritModelKey(t *testing.T) {
 }
 
 func testPack(repositoryURL, baseline string) TaskPack {
+	if filepath.IsAbs(repositoryURL) {
+		repositoryURL = "https://example.invalid/local-test-repository.git"
+	}
 	return TaskPack{
 		Version: 1, Suite: "test-pack", IntendedUse: "evaluation_only", TaskCount: 1,
 		Tasks: []Task{{
@@ -616,14 +658,22 @@ func testPack(repositoryURL, baseline string) TaskPack {
 
 // qualificationRunner 返回不依赖本机 Docker 或私有 verifier 文件的 runner；测试仍
 // 使用真实 git clone，从而覆盖 qualification 与正式 clone 的工作区隔离。
-func qualificationRunner() Runner {
-	return Runner{
+func qualificationRunner(sources ...string) Runner {
+	runner := Runner{
 		ApplyPrivateVerifier: func(_ context.Context, _ string, _ string, _ string) (string, error) {
 			return "sha256:test-verifier", nil
 		},
 		RunBootstrap:         func(_ context.Context, _ string, _ string, _ []Command) error { return nil },
 		DockerImageAvailable: func(_ context.Context, _ string) error { return nil },
 	}
+	if len(sources) == 1 {
+		source := sources[0]
+		runner.CloneAtBaseline = func(ctx context.Context, task Task, workspace, proxy string) error {
+			task.Repository.URL = source
+			return cloneAtBaseline(ctx, task, workspace, proxy)
+		}
+	}
+	return runner
 }
 
 // withNow 为测试 runner 固定时钟，避免结果目录和时间字段随系统时间变化。
