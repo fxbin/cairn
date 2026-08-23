@@ -205,13 +205,23 @@ type VerificationFinishedPayload struct {
 	ResultFingerprint string `json:"result_fingerprint,omitempty"`
 }
 
-// ContextCompactedPayload 保存一次可重放的对话检查点及其压缩范围。
+// ContextCompactedPayload 保存一次可重放的对话检查点及其压缩范围。V1.3 起
+// 追加可选证据字段（ADR-0007）：摘要格式版本、触发原因、估算器身份、最近
+// 实际 Provider 输入计数、被替代与被完整保留的 turn 清单；旧事件缺省合法。
+// retained_turn_ids 不带 omitempty——v1 摘要格式不保留任何完整轮次，该空
+// 清单是显式设计事实，必须随新事件写入。
 type ContextCompactedPayload struct {
-	ThroughSeq            uint64 `json:"through_seq"`
-	Summary               string `json:"summary"`
-	EstimatedTokensBefore int    `json:"estimated_units_before"`
-	EstimatedTokensAfter  int    `json:"estimated_units_after"`
-	Strategy              string `json:"strategy"`
+	ThroughSeq               uint64   `json:"through_seq"`
+	Summary                  string   `json:"summary"`
+	EstimatedTokensBefore    int      `json:"estimated_units_before"`
+	EstimatedTokensAfter     int      `json:"estimated_units_after"`
+	Strategy                 string   `json:"strategy"`
+	SummaryVersion           int      `json:"summary_version,omitempty"`
+	Trigger                  string   `json:"trigger,omitempty"`
+	UnitsSource              string   `json:"units_source,omitempty"`
+	LastProviderPromptTokens int64    `json:"last_provider_prompt_tokens,omitempty"`
+	CompactedTurnIDs         []string `json:"compacted_turn_ids,omitempty"`
+	RetainedTurnIDs          []string `json:"retained_turn_ids"`
 }
 
 // RunCompletedPayload 保存已完成运行的最终回复。
@@ -349,6 +359,24 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		if payload.ThroughSeq == 0 || payload.ThroughSeq >= event.Seq || payload.Summary == "" || payload.EstimatedTokensBefore < 1 || payload.EstimatedTokensAfter < 1 || payload.EstimatedTokensAfter > payload.EstimatedTokensBefore || payload.Strategy == "" {
 			return errors.New("context_compacted payload is incomplete")
+		}
+		// 证据字段"出现即必须合法"：版本不超过当前摘要格式版本，枚举取值
+		// 受限，计数非负；缺省（旧事件）不参与校验。
+		if payload.SummaryVersion < 0 || payload.SummaryVersion > ContextSummaryVersion {
+			return fmt.Errorf("context_compacted summary_version %d is unsupported", payload.SummaryVersion)
+		}
+		if payload.Trigger != "" && payload.Trigger != ContextCompactionTriggerPromptEstimate {
+			return fmt.Errorf("context_compacted trigger %q is unsupported", payload.Trigger)
+		}
+		if payload.UnitsSource != "" && payload.UnitsSource != ContextUnitsSourceEstimateBytesDiv2 {
+			return fmt.Errorf("context_compacted units_source %q is unsupported", payload.UnitsSource)
+		}
+		if payload.LastProviderPromptTokens < 0 {
+			return errors.New("context_compacted last_provider_prompt_tokens must not be negative")
+		}
+		// v1 摘要格式不保留任何完整轮次；声明非空 retained 清单即是矛盾证据。
+		if payload.SummaryVersion == ContextSummaryVersion && len(payload.RetainedTurnIDs) != 0 {
+			return errors.New("context_compacted summary v1 must not retain full turns")
 		}
 		projection.LastContextCompactSeq = event.Seq
 		projection.ContextCompactedThrough = payload.ThroughSeq

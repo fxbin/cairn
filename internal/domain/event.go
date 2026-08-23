@@ -10,9 +10,24 @@ import (
 	"time"
 )
 
+// SchemaVersion 是事件信封的当前全局版本；payload 级扩展以可选字段推进，
+// 不递增本值（见 ADR-0007）。
 const SchemaVersion uint32 = 1
 
+// GenesisHash 是哈希链起点之前的空摘要占位。
 const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// ContextSummaryVersion 是 context_compacted 检查点摘要格式的当前版本；
+// 0 表示未标注该字段的历史事件。摘要算法演进必须递增此版本并保持旧事件回放。
+const ContextSummaryVersion = 1
+
+// ContextCompactionTriggerPromptEstimate 是当前唯一的压缩触发原因：
+// 下一次请求的估算输入越过保留余量后的阈值。
+const ContextCompactionTriggerPromptEstimate = "prompt_estimate_over_threshold"
+
+// ContextUnitsSourceEstimateBytesDiv2 标注 estimated_units_* 字段的估算器
+// 身份：字节总数除以二的悲观近似。
+const ContextUnitsSourceEstimateBytesDiv2 = "estimate_bytes_div2"
 
 // EventType 标识事件日志中可回放的事件种类。
 type EventType string
@@ -120,7 +135,13 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventToolResultAppended:           {"payload_version": {}, "ok": {}, "code": {}, "data": {}, "preview": {}, "truncated": {}, "bytes": {}, "sha256": {}, "result_ref": {}, "is_error": {}},
 	EventAssistantMessageAppended:     {"payload_version": {}, "text": {}, "message_ref": {}},
 	EventVerificationFeedbackAppended: {"payload_version": {}, "text": {}},
-	EventContextCompacted:             {"payload_version": {}, "through_seq": {}, "summary": {}, "estimated_units_before": {}, "estimated_units_after": {}, "strategy": {}},
+	// 证据字段（ADR-0007）：全部可选，旧事件缺省合法；retained_turn_ids 在
+	// v1 摘要格式下恒为空（不保留任何完整轮次），compacted_turn_ids 与
+	// through_seq 共同界定检查点替代的轮次区间。
+	EventContextCompacted: {
+		"payload_version": {}, "through_seq": {}, "summary": {}, "estimated_units_before": {}, "estimated_units_after": {}, "strategy": {},
+		"summary_version": {}, "trigger": {}, "units_source": {}, "last_provider_prompt_tokens": {}, "compacted_turn_ids": {}, "retained_turn_ids": {},
+	},
 	EventVerificationStarted: {
 		"payload_version": {}, "verification_id": {}, "plan_ref": {}, "last_mutation_seq": {}, "commands_fingerprint": {}, "workspace_observation": {},
 	},

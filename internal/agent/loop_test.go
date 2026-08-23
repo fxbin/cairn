@@ -628,9 +628,203 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 	if !seenCheckpoint || checkpoint.ThroughSeq == 0 || checkpoint.EstimatedTokensAfter >= checkpoint.EstimatedTokensBefore || strings.Contains(checkpoint.Summary, marker) {
 		t.Fatalf("invalid checkpoint = %#v", checkpoint)
 	}
+	// ADR-0007 证据字段：格式版本、触发原因、估算器身份、被替代 turn 清单
+	// （恰为第一个已关闭轮次）、保留清单显式为空；无实际 Provider 计数时省略。
+	if checkpoint.SummaryVersion != domain.ContextSummaryVersion || checkpoint.Trigger != domain.ContextCompactionTriggerPromptEstimate || checkpoint.UnitsSource != domain.ContextUnitsSourceEstimateBytesDiv2 || checkpoint.LastProviderPromptTokens != 0 || len(checkpoint.CompactedTurnIDs) != 1 || checkpoint.RetainedTurnIDs == nil || len(checkpoint.RetainedTurnIDs) != 0 {
+		t.Fatalf("checkpoint evidence = %#v", checkpoint)
+	}
+	for _, event := range events {
+		if event.Type != domain.EventTurnOpened {
+			continue
+		}
+		if checkpoint.CompactedTurnIDs[0] != string(*event.TurnID) {
+			t.Fatalf("compacted turn id %q does not match first opened turn %s", checkpoint.CompactedTurnIDs[0], *event.TurnID)
+		}
+		break
+	}
 	rebuilt := loop.messagesFromEvents(events, "fallback")
 	if len(rebuilt) != 3 || rebuilt[2].Content != secondRequest[2].Content {
 		t.Fatalf("replayed context = %#v, want %#v", rebuilt, secondRequest)
+	}
+}
+
+// TestLoopCompactionRecordsProviderPromptTokens 锁定压缩事件会携带最近一次
+// 实际 Provider 回报的输入计数，使估算值与真实 usage 可对照。
+func TestLoopCompactionRecordsProviderPromptTokens(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("padding-", 8_000)+"END"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 128*1024, 100, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_usage", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt"}`)}}, {Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 4321, CompletionTokens: 99, TotalTokens: 4420}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "done with usage"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "inspect with usage")
+	loop := Loop{
+		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
+	}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "inspect with usage", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != domain.EventContextCompacted {
+			continue
+		}
+		var payload domain.ContextCompactedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.LastProviderPromptTokens != 4321 {
+			t.Fatalf("last provider prompt tokens = %d, want 4321", payload.LastProviderPromptTokens)
+		}
+		return
+	}
+	t.Fatal("missing context_compacted event")
+}
+
+// TestLoopRepeatedCompactionCoversDisjointTurnRanges 锁定反 thrash 证据：连续
+// 两次压缩的被替代 turn 区间互不重叠、切点单调递增，可离线判定检查点边界。
+func TestLoopRepeatedCompactionCoversDisjointTurnRanges(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("padding-", 8_000)+"END"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 128*1024, 100, 256*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_one", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_two", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "done twice"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "inspect twice")
+	loop := Loop{
+		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3,
+		ContextAutoCompact: true, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
+	}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "inspect twice", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactions := make([]domain.ContextCompactedPayload, 0, 2)
+	for _, event := range events {
+		if event.Type != domain.EventContextCompacted {
+			continue
+		}
+		var payload domain.ContextCompactedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		compactions = append(compactions, payload)
+	}
+	if len(compactions) != 2 {
+		t.Fatalf("compactions = %d, want 2", len(compactions))
+	}
+	if compactions[0].ThroughSeq >= compactions[1].ThroughSeq {
+		t.Fatalf("through seq must increase: %d then %d", compactions[0].ThroughSeq, compactions[1].ThroughSeq)
+	}
+	if len(compactions[0].CompactedTurnIDs) != 1 || len(compactions[1].CompactedTurnIDs) != 1 || compactions[0].CompactedTurnIDs[0] == compactions[1].CompactedTurnIDs[0] {
+		t.Fatalf("compacted turn ranges overlap: %#v", compactions)
+	}
+}
+
+// TestContextAutoCompactTogglePreservesRunOutcome 提供启用/禁用压缩的离线对照
+// 证据：同一脚本化流程在两种设置下得到相同的终局与最终回复，启用侧工具
+// 消息配对经回放重建仍完整（真实模型 A/B 属 V1.2 评测轨，保持 HOLD）。
+func TestContextAutoCompactTogglePreservesRunOutcome(t *testing.T) {
+	run := func(autoCompact bool) (string, []ports.Message, int) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("padding-", 8_000)+"END"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		workspace, err := tools.NewWorkspace(root, nil, 128*1024, 100, 256*1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+			{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "call_ab", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt"}`)}}, {Kind: ports.Done}},
+			{{Kind: ports.TextDelta, Text: "same final answer"}, {Kind: ports.Done}},
+		}}
+		journal := memory.New()
+		runID := domain.NewRunID()
+		appendInitialRunningEvents(t, journal, runID, "toggle probe")
+		loop := Loop{
+			Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
+			ContextAutoCompact: autoCompact, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
+		}
+		result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "toggle probe", WorkspaceHash: "workspace"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := journal.Load(context.Background(), runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compactions := 0
+		for _, event := range events {
+			if event.Type == domain.EventContextCompacted {
+				compactions++
+			}
+		}
+		if state, err := domain.Replay(events); err != nil || state.State != domain.RunCompleted {
+			t.Fatalf("run must complete, got %s err=%v", state.State, err)
+		}
+		return result.Response, provider.requests[1].Messages, compactions
+	}
+	responseOn, secondOn, compactionsOn := run(true)
+	responseOff, secondOff, compactionsOff := run(false)
+	if responseOn != responseOff || responseOn != "same final answer" {
+		t.Fatalf("outcomes diverged: %q vs %q", responseOn, responseOff)
+	}
+	if compactionsOn != 1 || compactionsOff != 0 {
+		t.Fatalf("compactions on=%d off=%d", compactionsOn, compactionsOff)
+	}
+	if len(secondOn) != 3 || !strings.HasPrefix(secondOn[2].Content, contextCheckpointPrefix) {
+		t.Fatalf("enabled run must use checkpoint: %#v", secondOn)
+	}
+	if len(secondOff) <= 3 {
+		t.Fatalf("disabled run must keep raw history: %#v", secondOff)
 	}
 }
 

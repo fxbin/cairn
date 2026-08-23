@@ -22,6 +22,9 @@ const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v2"
 const contextCheckpointPrefix = "此前的对话原文已被压缩为以下可审计检查点。系统提示和原始任务保持不变；检查点首先列出已检查对象清单，请基于已有发现继续推进，仅当清单之外的信息确有必要时才读取或搜索。\n"
 
 // compactContextIfNeeded 在安全恢复边界把过长对话替换为持久化检查点。
+// 证据字段（ADR-0007）在压缩时刻从事件流一次性派生：被替代的 turn 清单、
+// 最近一次实际 Provider 输入计数与上一检查点切点都取自日志，不做 Loop 内存
+// 状态，因此 resume 后立即压缩也能产出正确证据。
 func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain.RunProjection, input RunInput, messages []ports.Message) ([]ports.Message, error) {
 	if !loop.ContextAutoCompact || loop.ContextMaxPromptTokens <= 0 {
 		return messages, nil
@@ -43,17 +46,74 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 	if after > loop.ContextMaxPromptTokens {
 		return nil, fmt.Errorf("context checkpoint requires %d tokens, exceeding configured limit %d", after, loop.ContextMaxPromptTokens)
 	}
+	evidence, err := loop.compactionEvidence(ctx, *projection, input)
+	if err != nil {
+		return nil, err
+	}
 	payload := domain.ContextCompactedPayload{
-		ThroughSeq:            projection.LastSeq,
-		Summary:               summary,
-		EstimatedTokensBefore: before,
-		EstimatedTokensAfter:  after,
-		Strategy:              contextCompactionStrategy,
+		ThroughSeq:               projection.LastSeq,
+		Summary:                  summary,
+		EstimatedTokensBefore:    before,
+		EstimatedTokensAfter:     after,
+		Strategy:                 contextCompactionStrategy,
+		SummaryVersion:           domain.ContextSummaryVersion,
+		Trigger:                  domain.ContextCompactionTriggerPromptEstimate,
+		UnitsSource:              domain.ContextUnitsSourceEstimateBytesDiv2,
+		LastProviderPromptTokens: evidence.lastProviderPromptTokens,
+		CompactedTurnIDs:         evidence.compactedTurnIDs,
+		RetainedTurnIDs:          []string{},
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventContextCompacted, Payload: mustJSON(payload)}); err != nil {
 		return nil, err
 	}
 	return compacted, nil
+}
+
+// compactionEvidence 保存压缩时刻从事件流派生的证据：被替代的 turn 清单与
+// 最近一次实际 Provider 输入计数。
+type compactionEvidence struct {
+	compactedTurnIDs         []string
+	lastProviderPromptTokens int64
+}
+
+// compactionEvidence 方法从已持久化事件派生压缩证据：上一检查点切点之后的全部
+// turn_opened 即被本次检查点替代的轮次；反向最近一次未估算的
+// model_response_finished 提供实际输入计数，缺失时保持零值（字段省略）。
+func (loop *Loop) compactionEvidence(ctx context.Context, projection domain.RunProjection, input RunInput) (compactionEvidence, error) {
+	var evidence compactionEvidence
+	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return evidence, fmt.Errorf("load events for compaction evidence: %w", err)
+	}
+	_, previousThrough := latestContextCheckpoint(events)
+	evidence.compactedTurnIDs = make([]string, 0, 4)
+	for _, event := range events {
+		if event.Type != domain.EventTurnOpened || event.TurnID == nil {
+			continue
+		}
+		if event.Seq <= previousThrough || event.Seq > projection.LastSeq {
+			continue
+		}
+		evidence.compactedTurnIDs = append(evidence.compactedTurnIDs, string(*event.TurnID))
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventModelResponseFinished {
+			continue
+		}
+		var payload struct {
+			Usage *struct {
+				PromptTokens int64 `json:"prompt_tokens"`
+			} `json:"usage"`
+			UsageEstimated bool `json:"usage_estimated"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Usage != nil && !payload.UsageEstimated {
+			// 取最近一次真实回报（含 0），不被更早回报覆盖；估算兜底跳过。
+			evidence.lastProviderPromptTokens = payload.Usage.PromptTokens
+			break
+		}
+	}
+	return evidence, nil
 }
 
 // contextCompactionThreshold 在模型的名义上下文上限前保留 20% 余量，吸收

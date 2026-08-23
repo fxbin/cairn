@@ -308,3 +308,41 @@ func TestApplyAcceptsTelemetryEventsWithoutStateChange(t *testing.T) {
 		t.Fatalf("apply unknown type err = %v", err)
 	}
 }
+
+// TestContextCompactedEvidenceFieldsValidateAndLegacyReplays 锁定 ADR-0007：
+// 证据字段（summary_version/trigger/units_source/last_provider_prompt_tokens/
+// compacted_turn_ids/retained_turn_ids）出现即必须合法，缺省（旧事件）可完整
+// 回放，非法取值失败关闭且不落入不确定状态。
+func TestContextCompactedEvidenceFieldsValidateAndLegacyReplays(t *testing.T) {
+	build := func(payload string) *eventChain {
+		chain := newEventChain(t)
+		turnID := NewTurnID()
+		chain.add(t, EventDraft{Type: EventTurnOpened, TurnID: &turnID})
+		chain.add(t, EventDraft{Type: EventTurnClosed, TurnID: &turnID, Payload: json.RawMessage(`{"outcome":"continue"}`)})
+		chain.add(t, EventDraft{Type: EventContextCompacted, Payload: json.RawMessage(payload)})
+		return chain
+	}
+	legacyPayload := `{"through_seq":4,"summary":"旧检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2"}`
+	if projection := build(legacyPayload).replay(t); projection.LastContextCompactSeq != 5 || projection.ContextCompactedThrough != 4 {
+		t.Fatalf("legacy compaction must replay unchanged: %+v", projection)
+	}
+	fullPayload := `{"through_seq":4,"summary":"检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2","summary_version":1,"trigger":"prompt_estimate_over_threshold","units_source":"estimate_bytes_div2","last_provider_prompt_tokens":4321,"compacted_turn_ids":["turn-a"],"retained_turn_ids":[]}`
+	if projection := build(fullPayload).replay(t); projection.LastContextCompactSeq != 5 || projection.ContextCompactedThrough != 4 {
+		t.Fatalf("full evidence compaction projection = %+v", projection)
+	}
+	base := `"through_seq":4,"summary":"s","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2"`
+	if projection := build("{" + base + `,"summary_version":0}`).replay(t); projection.LastContextCompactSeq != 5 {
+		t.Fatalf("explicit summary_version 0 must replay like a legacy event: %+v", projection)
+	}
+	build("{"+base+`,"summary_version":-1}`).replayReject(t, "summary_version -1 is unsupported")
+	build("{"+base+`,"summary_version":1,"retained_turn_ids":["turn-x"]}`).replayReject(t, "summary v1 must not retain full turns")
+	for name, extension := range map[string]string{
+		"summary_version 2 is unsupported":            `,"summary_version":2`,
+		"trigger \"manual\" is unsupported":           `,"trigger":"manual"`,
+		"units_source \"provider_usage\" is unsuppor": `,"units_source":"provider_usage"`,
+		"last_provider_prompt_tokens must not be ne":  `,"last_provider_prompt_tokens":-1`,
+	} {
+		payload := "{" + base + extension + "}"
+		build(payload).replayReject(t, name)
+	}
+}
