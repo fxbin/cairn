@@ -69,4 +69,4 @@ go test ./test/e2e -tags=e2e -count=1
 - `benchmarks/` 的任务合同、配置、verifier、结果和工作区必须保持忽略，不得包含在提交、发布包或示例中。`--local-config` 以及它在 Cairn 仓库内引用的所有资产会在运行前检查：已跟踪或未被 `.gitignore` 覆盖即失败。任务集只用于个人测评，不得作为模型训练语料或公开 holdout。
 - runner 的 clone 与 bootstrap 不能继承模型密钥、代理凭据或用户 HOME；如需代理，只能显式传入无凭据的 loopback HTTP 地址。
 - 根目录 `cairn`、`.DS_Store`、测试产物和编辑器临时文件也已被 `.gitignore` 排除。
-- 新提交使用：`<type>(<scope>): <中文说明>`。一个提交只表达一个可审计意图。
+- 新提交使用：`<type>(<scope>): <中文说明>`。一个提交只表达一个可审计意图。提交信息（标题与正文）不得出现 v2、V1.3 之类版本号标记；版本事实由代码、事件 schema 与制品自身承载，提交说明只描述变更意图与语义结果。
