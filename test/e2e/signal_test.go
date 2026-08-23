@@ -123,8 +123,10 @@ func startFinalProvider(t *testing.T) string {
 		flusher := writer.(http.Flusher)
 		if current == 1 {
 			fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"patch1\",\"function\":{\"name\":\"apply_patch\",\"arguments\":\"{\\\"path\\\":\\\"note.txt\\\",\\\"mode\\\":\\\"create\\\",\\\"content\\\":\\\"x\\\"}\"}}]}}]}\n\n")
+			fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
 		} else {
 			fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n")
+			fmt.Fprint(writer, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
 		}
 		fmt.Fprint(writer, "data: [DONE]\n\n")
 		flusher.Flush()

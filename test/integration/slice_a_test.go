@@ -31,8 +31,10 @@ func TestSliceARealHTTPProviderSQLiteAndReadTools(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		if requests.Add(1) == 1 {
 			_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]}}]}\n\n"))
+			_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
 		} else {
 			_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"The README explains the project.\"}}]}\n\n"))
+			_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
 		}
 		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
 	}))

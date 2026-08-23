@@ -37,13 +37,32 @@ type scriptedProvider struct {
 	requests []ports.ModelRequest
 }
 
+// Stream 回放固定脚本，并为每个终态补齐能力卡所需的 usage 与 finish_reason；
+// 夹具只描述任务语义，协议完成事实由此统一保证。
 func (provider *scriptedProvider) Stream(_ context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	provider.requests = append(provider.requests, request)
 	index := len(provider.requests) - 1
 	if index >= len(provider.scripts) {
 		return errors.New("unexpected model request")
 	}
+	toolCalls, usageSeen := false, false
 	for _, event := range provider.scripts[index] {
+		toolCalls = toolCalls || event.Kind == ports.ToolCallEvent
+		usageSeen = usageSeen || event.Kind == ports.UsageEvent
+		if event.Kind == ports.Done {
+			if !usageSeen {
+				if err := emit(ports.ModelEvent{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}); err != nil {
+					return err
+				}
+			}
+			if event.StopReason == "" {
+				if toolCalls {
+					event.StopReason = "tool_calls"
+				} else {
+					event.StopReason = "stop"
+				}
+			}
+		}
 		if err := emit(event); err != nil {
 			return err
 		}
