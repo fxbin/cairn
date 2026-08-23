@@ -60,6 +60,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.run(ctx, args[1:])
 	case "inspect":
 		return command.inspect(ctx, args[1:])
+	case "evidence":
+		return command.evidence(ctx, args[1:])
 	case "doctor":
 		return command.doctor(ctx, args[1:])
 	case "resume":
@@ -500,6 +502,54 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 	return ExitOK
 }
 
+// evidence 输出一次运行的统一证据视图：任务/运行/Provider 卡身份、终局、
+// 失败分类、完成证据与资源指标，全部来自事件与冻结配置制品的回放投影。
+func (command Command) evidence(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("evidence", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write the evidence result as NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "evidence requires a run ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	result, err := command.Service.Evidence(ctx, *workspace, *stateDir, configuration, domain.RunID(flags.Arg(0)))
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "evidence failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, result)
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "run: %s\n", result.Manifest.RunID)
+	if result.Manifest.Provider.Card != nil {
+		card := result.Manifest.Provider.Card
+		fmt.Fprintf(command.Stdout, "provider card: %s protocol=%s tool_calls=%t streaming_usage=%t context=%d output=%d stops=%s source=%s\n", card.Model, card.Protocol, card.ToolCalls, card.StreamingUsage, card.ContextWindowTokens, card.MaxOutputTokens, strings.Join(card.StopReasons, "/"), card.Source)
+	}
+	writeRunManifest(command.Stdout, result.Manifest)
+	fmt.Fprintf(command.Stdout, "outcome: %s (state %s)\n", result.Outcome, result.State)
+	if result.FailureClass != "" {
+		fmt.Fprintf(command.Stdout, "failure class: %s\n", result.FailureClass)
+	}
+	if result.StopReason != "" {
+		fmt.Fprintf(command.Stdout, "stop reason: %s\n", result.StopReason)
+	}
+	fmt.Fprintf(command.Stdout, "metrics: turns %d, tool calls %d, tokens %d in / %d out (estimated=%t), compactions %d\n", result.Metrics.Turns, result.Metrics.ToolCalls, result.Metrics.InputTokens, result.Metrics.OutputTokens, result.Metrics.UsageEstimated, result.Metrics.ContextCompactions)
+	fmt.Fprintf(command.Stdout, "completion evidence: verification seq %d ok=%t, last mutation seq %d, trusted=%t\n", result.Evidence.VerificationSeq, result.Evidence.VerificationOK, result.Evidence.LastMutationSeq, result.Evidence.Trusted)
+	return ExitOK
+}
+
 // doctor 执行不改变状态的 Journal 与制品库完整性诊断。
 func (command Command) doctor(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -622,7 +672,8 @@ func (command Command) usage() {
 Usage:
   cairn run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--base-url <url>] [--model <name>] [--api-key-env <name>] [--max-turns <n>] [--max-tool-calls <n>] [--max-input-tokens <n>] [--max-output-tokens <n>] [--max-wall-time <duration>] [--max-cost-usd <n>] [--json]
   cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--json]
-  cairn inspect <run-id> [--workspace <path>] [--events] [--json]
+  cairn inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--events] [--json] <run-id>
+  cairn evidence [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <run-id>
   cairn doctor [--workspace <path>] [--state-dir <path>]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 

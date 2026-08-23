@@ -36,9 +36,9 @@ func (terminalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit fun
 }
 
 // TestNormalRunAndBenchmarkShareOneManifestConstructor 以一次真实 SQLite 运行
-// 为事实源，验证三种投影互相一致：Run 结束时返回的 contract.Result、事后
-// Inspect 的 manifest、以及 benchmark 侧用同一事件流 + 冻结配置直调
-// contract.ResultFromRun 的结果（仅任务身份不同）。
+// 为事实源，验证四种投影互相一致：Run 结束时返回的 contract.Result、事后
+// Inspect 的 manifest、独立 evidence 视图，以及 benchmark 侧用同一事件流 +
+// 冻结配置直调 contract.ResultFromRun 的结果（仅任务身份不同）。
 func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
 	configuration := withTestProvider(config.Defaults())
@@ -53,8 +53,20 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	if err != nil || inspected.Manifest == nil {
 		t.Fatalf("inspect=%#v err=%v", inspected, err)
 	}
-	if inspected.Manifest.RunID != result.Result.Manifest.RunID || !reflect.DeepEqual(inspected.Manifest.Task, result.Result.Manifest.Task) {
-		t.Fatalf("inspect/run manifest disagree: %#v vs %#v", *inspected.Manifest, result.Result.Manifest)
+	if !reflect.DeepEqual(*inspected.Manifest, result.Result.Manifest) {
+		t.Fatalf("inspect manifest drifted from run projection:\ninspect=%#v\nrun=%#v", *inspected.Manifest, result.Result.Manifest)
+	}
+	// 独立 evidence 视图：同一事件流的回放投影必须与运行时投影整体一致，
+	// 包括从冻结配置回放的 Provider 能力卡。
+	evidence, err := service.Evidence(context.Background(), workspace, stateDir, configuration, result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(evidence, *result.Result) {
+		t.Fatalf("evidence view drifted from run projection:\nevidence=%#v\nrun=%#v", evidence, *result.Result)
+	}
+	if evidence.Manifest.Provider.Card == nil || evidence.Manifest.Provider.Card.Model != "test-model" || !evidence.Manifest.Provider.Card.ToolCalls {
+		t.Fatalf("evidence provider card = %#v", evidence.Manifest.Provider.Card)
 	}
 
 	// benchmark 视角：同一事件流 + 自行冻结的配置，仅任务身份换成 TaskPack 投影。
@@ -70,7 +82,7 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if benchmarkResult.Manifest.ConfigFingerprint != result.Result.Manifest.ConfigFingerprint ||
-		benchmarkResult.Manifest.Provider != result.Result.Manifest.Provider ||
+		!reflect.DeepEqual(benchmarkResult.Manifest.Provider, result.Result.Manifest.Provider) ||
 		benchmarkResult.Manifest.Build != result.Result.Manifest.Build ||
 		benchmarkResult.Manifest.WorkspaceHash != result.Result.Manifest.WorkspaceHash ||
 		benchmarkResult.State != result.Result.State ||

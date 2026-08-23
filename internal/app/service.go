@@ -237,6 +237,33 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 	return result, nil
 }
 
+// Evidence 返回一次运行的统一证据视图（V1.5）：以 contract.Result 为唯一
+// 载体，从事件与冻结配置制品回放任务身份、运行身份、Provider 卡、终局、
+// 失败分类与完成证据。只读，不依赖当前配置漂移与否。
+func (service Service) Evidence(ctx context.Context, workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (contract.Result, error) {
+	_, hash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return contract.Result{}, err
+	}
+	journal, err := openReadOnlyJournal(stateDir, hash)
+	if err != nil {
+		return contract.Result{}, err
+	}
+	defer journal.Close()
+	events, err := journal.Load(ctx, runID)
+	if err != nil {
+		return contract.Result{}, err
+	}
+	if len(events) == 0 {
+		return contract.Result{}, fmt.Errorf("run %s not found", runID)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), readFrozenRunConfig(events, stateDir, hash))
+}
+
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {

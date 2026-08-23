@@ -12,6 +12,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -67,7 +68,7 @@ func TestHelpMatchesSupportedCommandsAndExitContract(t *testing.T) {
 		t.Fatalf("help exit=%d", exit)
 	}
 	usage := stderr.String()
-	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn doctor", "cairn benchmark run", "--local-config <path>", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
+	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn evidence", "cairn doctor", "cairn benchmark run", "--local-config <path>", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
 		if !strings.Contains(usage, required) {
 			t.Fatalf("usage omitted %q: %s", required, usage)
 		}
@@ -180,5 +181,59 @@ func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "inspect identity") {
 		t.Fatalf("inspect human output leaked task prompt: %s", stdout.String())
+	}
+}
+
+// TestEvidenceCommandProjectsUnifiedResult 锁定 V1.5 统一证据视图：evidence
+// 命令的 NDJSON 与人类视图来自同一 contract.Result 投影，内建目录模型可回放
+// Provider 能力卡，输出不含任务正文。
+func TestEvidenceCommandProjectsUnifiedResult(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
+	var runStdout bytes.Buffer
+	runCommand := Command{Service: service, Stdout: &runStdout, Stderr: os.Stderr}
+	if exit := runCommand.Run(context.Background(), []string{"run", "evidence probe", "--workspace", workspace, "--state-dir", stateDir, "--model", "glm-5.2", "--json"}); exit != ExitOK {
+		t.Fatalf("seed run exit=%d stdout=%s", exit, runStdout.String())
+	}
+	var seeded struct {
+		RunID string `json:"run_id"`
+	}
+	lines := strings.Split(strings.TrimSpace(runStdout.String()), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &seeded); err != nil || seeded.RunID == "" {
+		t.Fatalf("seed result line=%s err=%v", lines[len(lines)-1], err)
+	}
+
+	var jsonOut bytes.Buffer
+	jsonCommand := Command{Service: service, Stdout: &jsonOut, Stderr: os.Stderr}
+	if exit := jsonCommand.Run(context.Background(), []string{"evidence", "--workspace", workspace, "--state-dir", stateDir, "--json", seeded.RunID}); exit != ExitOK {
+		t.Fatalf("evidence json exit=%d", exit)
+	}
+	var projected contract.Result
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut.String())), &projected); err != nil {
+		t.Fatalf("evidence json=%q err=%v", jsonOut.String(), err)
+	}
+	if projected.Manifest.RunID != domain.RunID(seeded.RunID) || projected.State != "completed" || !projected.Evidence.Trusted {
+		t.Fatalf("projected=%#v", projected)
+	}
+	card := projected.Manifest.Provider.Card
+	if card == nil || card.Source != contract.ProviderCardSourceBuiltin || card.Model != "glm-5.2" || !card.ToolCalls {
+		t.Fatalf("builtin provider card = %#v", card)
+	}
+	if strings.Contains(jsonOut.String(), "evidence probe") {
+		t.Fatalf("evidence leaked task prompt: %s", jsonOut.String())
+	}
+
+	var humanOut bytes.Buffer
+	humanCommand := Command{Service: service, Stdout: &humanOut, Stderr: os.Stderr}
+	if exit := humanCommand.Run(context.Background(), []string{"evidence", "--workspace", workspace, "--state-dir", stateDir, seeded.RunID}); exit != ExitOK {
+		t.Fatalf("evidence human exit=%d", exit)
+	}
+	for _, required := range []string{"task: freeform (cli) prompt=sha256:", "outcome: completed", "completion evidence:", "metrics: turns"} {
+		if !strings.Contains(humanOut.String(), required) {
+			t.Fatalf("evidence human output missing %q: %s", required, humanOut.String())
+		}
+	}
+	if strings.Contains(humanOut.String(), "evidence probe") {
+		t.Fatalf("evidence human view leaked task prompt: %s", humanOut.String())
 	}
 }
