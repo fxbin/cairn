@@ -16,6 +16,15 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// withTestProvider 为 CLI 测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.Model == "" {
+		configuration.Provider.Model = "test-model"
+	}
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	return configuration
+}
+
 type fakeProvider struct{}
 
 func TestExitForUnconfirmedOperationRequiresReconciliation(t *testing.T) {
@@ -35,7 +44,7 @@ func (fakeProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(po
 func TestRunWritesOnlyNDJSONToStdout(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &stdout, Stderr: &stderr}
-	exitCode := command.Run(context.Background(), []string{"run", "answer this", "--workspace", t.TempDir(), "--state-dir", t.TempDir(), "--json"})
+	exitCode := command.Run(context.Background(), []string{"run", "answer this", "--workspace", t.TempDir(), "--state-dir", t.TempDir(), "--model", "glm-5.2", "--json"})
 	if exitCode != ExitOK {
 		t.Fatalf("exit = %d, stderr = %s", exitCode, stderr.String())
 	}
@@ -98,7 +107,7 @@ func TestDoctorWritesOnlyNDJSONToStdout(t *testing.T) {
 	// doctor 只读校验既有 journal；先用文本型 fakeProvider 跑一次 run 建立日志。
 	var runStdout, runStderr bytes.Buffer
 	runCommand := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &runStdout, Stderr: &runStderr}
-	if exit := runCommand.Run(context.Background(), []string{"run", "seed journal", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK {
+	if exit := runCommand.Run(context.Background(), []string{"run", "seed journal", "--workspace", workspace, "--state-dir", stateDir, "--model", "glm-5.2", "--json"}); exit != ExitOK {
 		t.Fatalf("seed run exit = %d, stderr = %s", exit, runStderr.String())
 	}
 	var output bytes.Buffer
@@ -132,7 +141,7 @@ func TestHumanDiagnosticsExposeTheSameOperationalFacts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("provider:\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: CAIRN_CLI_DIAGNOSTIC_KEY\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("provider:\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: CAIRN_CLI_DIAGNOSTIC_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var doctorOut, doctorErr bytes.Buffer
@@ -155,7 +164,7 @@ func TestHumanDiagnosticsExposeTheSameOperationalFacts(t *testing.T) {
 func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
-	result, err := service.Run(context.Background(), app.RunOptions{Task: "inspect identity", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	result, err := service.Run(context.Background(), app.RunOptions{Task: "inspect identity", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	if err != nil {
 		t.Fatal(err)
 	}

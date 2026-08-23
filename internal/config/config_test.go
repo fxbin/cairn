@@ -535,3 +535,42 @@ func TestUnknownPresetFailsClosedAndFingerprintCoversPreset(t *testing.T) {
 		t.Fatalf("default preset = %q", coding.Preset)
 	}
 }
+
+// TestProviderCapabilityBlockValidatesAndChangesFingerprint 锁定 V1.4 能力声明
+// 块：YAML 严格解析、非法声明（假能力/负上限/空停止原因）在 Load/Validate 失败
+// 关闭，声明进入配置指纹使在途 run 的能力合同不可漂移。
+func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	valid := "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: 131072\n    max_output_tokens: 8192\n    stop_reasons: [stop, length]\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability := configuration.Provider.Capability; capability == nil || !capability.ToolCalls || !capability.StreamingUsage || capability.ContextWindowTokens != 131072 || capability.MaxOutputTokens != 8192 || len(capability.StopReasons) != 2 {
+		t.Fatalf("capability = %#v", capability)
+	}
+	if Defaults().Fingerprint() == configuration.Fingerprint() {
+		t.Fatal("provider capability declaration must participate in the fingerprint")
+	}
+	changed := configuration
+	changed.Provider.Capability = &ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true, ContextWindowTokens: 65536}
+	if configuration.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("capability limit changes must change the fingerprint")
+	}
+	for name, invalid := range map[string]string{
+		"capability without tool calls": "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    streaming_usage: true\n",
+		"capability without usage":      "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n",
+		"negative context window":       "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: -1\n",
+		"empty stop reason":             "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [\"\", stop]\n",
+	} {
+		if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path, Overrides{}); err == nil {
+			t.Fatalf("expected config rejection for %s", name)
+		}
+	}
+}

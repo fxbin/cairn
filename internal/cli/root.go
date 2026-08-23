@@ -536,6 +536,12 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	fmt.Fprintf(command.Stdout, "workspace: %s\n", report.WorkspaceHash)
 	fmt.Fprintf(command.Stdout, "policy: write=%s exec=%s\n", report.Policy.Write, report.Policy.Exec)
 	fmt.Fprintf(command.Stdout, "provider: %s model %s key env %s present=%t\n", report.Provider.BaseURL, report.Provider.Model, report.Provider.APIKeyEnv, report.Provider.APIKeyPresent)
+	if report.ProviderCard != nil {
+		card := report.ProviderCard
+		fmt.Fprintf(command.Stdout, "provider card: %s protocol=%s tool_calls=%t streaming_usage=%t context=%d output=%d stops=%s source=%s\n", card.Model, card.Protocol, card.ToolCalls, card.StreamingUsage, card.ContextWindowTokens, card.MaxOutputTokens, strings.Join(card.StopReasons, "/"), card.Source)
+	} else {
+		fmt.Fprintf(command.Stdout, "provider card: unresolved (%s)\n", report.ProviderCardError)
+	}
 	if report.Sandbox.Backend == "docker" {
 		fmt.Fprintf(command.Stdout, "sandbox: docker image %s available=%s\n", report.Sandbox.DockerImage, report.Sandbox.ImageAvailable)
 	} else {

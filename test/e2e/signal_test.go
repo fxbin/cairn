@@ -156,7 +156,7 @@ func launchCairnRun(t *testing.T, binary, workspace, stateDir, configYAML, task 
 
 // baseSignalConfig 返回指向指定端点的最小运行配置。
 func baseSignalConfig(baseURL string) string {
-	return "version: 1\nprovider:\n  base_url: " + baseURL + "\n  model: signal-model\n  api_key_env: CAIRN_E2E_SIGNAL_KEY\n  request_timeout: 120s\n"
+	return "version: 1\nprovider:\n  base_url: " + baseURL + "\n  model: signal-model\n  api_key_env: CAIRN_E2E_SIGNAL_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n  request_timeout: 120s\n"
 }
 
 // waitFor 等待通道关闭或超时，用于确定性地卡住测试时序。

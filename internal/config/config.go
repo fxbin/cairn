@@ -185,10 +185,23 @@ func budgetSourceLabel(profile string) string {
 
 // ProviderConfig 配置兼容 OpenAI API 的模型提供方。
 type ProviderConfig struct {
-	BaseURL        string `yaml:"base_url"`
-	Model          string `yaml:"model"`
-	APIKeyEnv      string `yaml:"api_key_env"`
-	RequestTimeout string `yaml:"request_timeout"`
+	BaseURL        string                    `yaml:"base_url"`
+	Model          string                    `yaml:"model"`
+	APIKeyEnv      string                    `yaml:"api_key_env"`
+	RequestTimeout string                    `yaml:"request_timeout"`
+	Capability     *ProviderCapabilityConfig `yaml:"capability"`
+}
+
+// ProviderCapabilityConfig 是 provider.capability 显式能力声明块（V1.4）：
+// 为内建目录之外的模型声明工具调用、流式 usage 与可选的上下文/输出上限。
+// ToolCalls 与 StreamingUsage 必须显式为 true——Cairn 唯一生产路径依赖两者，
+// 省缺即假值会在配置校验时失败关闭；上限 0 表示未声明。
+type ProviderCapabilityConfig struct {
+	ToolCalls           bool     `yaml:"tool_calls"`
+	StreamingUsage      bool     `yaml:"streaming_usage"`
+	ContextWindowTokens int      `yaml:"context_window_tokens"`
+	MaxOutputTokens     int      `yaml:"max_output_tokens"`
+	StopReasons         []string `yaml:"stop_reasons"`
 }
 
 // WorkspaceConfig 限制模型工具可读取和检索的工作区范围。
@@ -446,6 +459,19 @@ func Validate(config Config) error {
 			return err
 		}
 	}
+	if capability := config.Provider.Capability; capability != nil {
+		if !capability.ToolCalls || !capability.StreamingUsage {
+			return fmt.Errorf("provider.capability requires tool_calls and streaming_usage to be true")
+		}
+		if capability.ContextWindowTokens < 0 || capability.MaxOutputTokens < 0 {
+			return fmt.Errorf("provider.capability token limits cannot be negative")
+		}
+		for _, reason := range capability.StopReasons {
+			if reason == "" {
+				return fmt.Errorf("provider.capability stop reasons cannot be empty strings")
+			}
+		}
+	}
 	if config.Provider.RequestTimeout == "" {
 		return fmt.Errorf("provider.request_timeout is required")
 	}
@@ -621,11 +647,36 @@ type fingerprintView struct {
 }
 
 // providerFingerprint 只保留决定请求去向与身份的提供方字段；request_timeout 属
-// 运维调参，不影响授权与回放语义，不参与指纹。
+// 运维调参，不影响授权与回放语义，不参与指纹。capability 声明决定 Boot 时的
+// 能力合同与预算对照，属于执行语义，必须进入指纹。
 type providerFingerprint struct {
-	BaseURL   string `json:"base_url"`
-	Model     string `json:"model"`
-	APIKeyEnv string `json:"api_key_env"`
+	BaseURL    string                         `json:"base_url"`
+	Model      string                         `json:"model"`
+	APIKeyEnv  string                         `json:"api_key_env"`
+	Capability *providerCapabilityFingerprint `json:"capability,omitempty"`
+}
+
+// providerCapabilityFingerprint 是进入指纹的能力声明投影。
+type providerCapabilityFingerprint struct {
+	ToolCalls           bool     `json:"tool_calls"`
+	StreamingUsage      bool     `json:"streaming_usage"`
+	ContextWindowTokens int      `json:"context_window_tokens"`
+	MaxOutputTokens     int      `json:"max_output_tokens"`
+	StopReasons         []string `json:"stop_reasons"`
+}
+
+// providerFingerprintFor 组装提供方指纹视图；能力声明存在时整体进入指纹，
+// 使在途 run 的能力合同漂移被 resume 拒绝。
+func providerFingerprintFor(config Config) providerFingerprint {
+	view := providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv}
+	if capability := config.Provider.Capability; capability != nil {
+		view.Capability = &providerCapabilityFingerprint{
+			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
+			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
+			StopReasons: capability.StopReasons,
+		}
+	}
+	return view
 }
 
 // Fingerprint 生成可写入事件日志的冻结非敏感配置摘要；带版本前缀，指纹算法
@@ -639,7 +690,7 @@ func (config Config) Fingerprint() string {
 		Version:      config.Version,
 		Profile:      profile,
 		Preset:       config.Preset,
-		Provider:     providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv},
+		Provider:     providerFingerprintFor(config),
 		Workspace:    config.Workspace,
 		Policy:       config.Policy,
 		Verification: config.Verification,

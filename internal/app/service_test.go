@@ -24,10 +24,30 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// withTestProvider 为应用层测试配置补齐 V1.4 能力卡所需的模型与显式声明；
+// 测试替身模型名不在内建目录，必须显式声明才能通过装配期失败关闭。
+func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.Model == "" {
+		configuration.Provider.Model = "test-model"
+	}
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	return configuration
+}
+
+// mustTestCard 解析测试配置的能力卡，供 manifest 投影断言复用。
+func mustTestCard(t *testing.T, configuration config.Config) contract.ProviderCapabilityCard {
+	t.Helper()
+	card, err := resolveProviderCard(withTestProvider(configuration))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card
+}
+
 type finalProvider struct{}
 
 func TestConfiguredLoopPassesContextLimits(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Context.AutoCompact = false
 	configuration.Context.MaxPromptTokens = 12_345
 	configuration.Context.MaxSummaryBytes = 6_789
@@ -38,7 +58,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 }
 
 func TestConfiguredLoopPassesAutomaticVerificationAfterPatch(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Verification.AutoAfterPatch = true
 	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
 	if !loop.VerificationAutoAfterPatch {
@@ -51,7 +71,7 @@ func TestExecToolForAppliesSandboxConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Sandbox.Backend = "docker"
 	configuration.Sandbox.DockerImage = "alpine:3.21"
 	configuration.Sandbox.MaxPIDs = 48
@@ -65,7 +85,7 @@ func TestExecToolForAppliesSandboxConfiguration(t *testing.T) {
 }
 
 func TestServiceRejectsInvalidDockerSandboxBeforeProviderOrDoctorStateAccess(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Sandbox.Backend = "docker"
 	providerCalled := false
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
@@ -140,7 +160,7 @@ func (provider *blockingResumeProvider) Stream(_ context.Context, _ ports.ModelR
 
 func TestServiceRunThenInspect(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace := t.TempDir()
 	stateDir := t.TempDir()
 	result, err := service.Run(context.Background(), RunOptions{Task: "answer", Workspace: workspace, StateDir: stateDir, Config: configuration})
@@ -175,7 +195,7 @@ func TestServiceRunThenInspect(t *testing.T) {
 // 构造器，字段一致且不泄漏任务正文或本地路径。
 func TestServiceRunProjectsUnifiedContractResult(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test-model"
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -217,7 +237,7 @@ func TestServiceRunProjectsUnifiedContractResult(t *testing.T) {
 
 func TestProviderSetupFailureDoesNotLeaveAnActiveRun(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	failing := Service{NewProvider: func(config.Config) (ports.Provider, error) { return nil, errors.New("provider unavailable") }}
 	if _, err := failing.Run(context.Background(), RunOptions{Task: "answer", Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil {
 		t.Fatal("provider setup unexpectedly succeeded")
@@ -232,7 +252,7 @@ func TestProviderSetupFailureDoesNotLeaveAnActiveRun(t *testing.T) {
 func TestServiceRequiresSuccessfulVerificationAfterPatch(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write = "allow"
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
@@ -282,7 +302,7 @@ func TestServiceStopsBeforeUnapprovedPatch(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 	workspace := t.TempDir()
 	stateDir := t.TempDir()
-	result, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	result, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	var waiting *agent.WaitingApprovalError
 	if !errors.As(err, &waiting) || result.ID == "" {
 		t.Fatalf("result = %#v, err = %v", result, err)
@@ -295,7 +315,7 @@ func TestServiceStopsBeforeUnapprovedPatch(t *testing.T) {
 func TestServiceAbortClosesPendingApprovalWithoutStartingOperation(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
 	var waiting *agent.WaitingApprovalError
@@ -323,7 +343,7 @@ func TestServiceAbortClosesPendingApprovalWithoutStartingOperation(t *testing.T)
 func TestServiceResumeConsumesOneMatchingApproval(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace := t.TempDir()
@@ -380,7 +400,7 @@ func TestServiceResumeConsumesOneMatchingApproval(t *testing.T) {
 func TestServicePersistsBudgetFailureWhenWallTimeExpires(t *testing.T) {
 	provider := &waitForDeadlineProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	// 预算需覆盖 race/慢盘下的 Boot 装配耗时，保证断言的"过期发生在模型调用
 	// 期间"稳定成立；provider 阻塞到截止再返回，测试时长受此值控制。
 	configuration.Budget.MaxWallTime = "2s"
@@ -411,7 +431,7 @@ func TestServicePersistsBudgetFailureWhenWallTimeExpires(t *testing.T) {
 func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -461,7 +481,7 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 }
 
 func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace := t.TempDir()
@@ -516,12 +536,12 @@ func TestNewRunIsRejectedWhileWorkspaceHasPendingApproval(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	first, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	first, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	var waiting *agent.WaitingApprovalError
 	if !errors.As(err, &waiting) || first.ID == "" {
 		t.Fatalf("first run = %#v, %v", first, err)
 	}
-	_, err = service.Run(context.Background(), RunOptions{Task: "another", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	_, err = service.Run(context.Background(), RunOptions{Task: "another", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	if !errors.Is(err, ErrActiveRun) {
 		t.Fatalf("expected active run rejection, got %v", err)
 	}
@@ -529,7 +549,7 @@ func TestNewRunIsRejectedWhileWorkspaceHasPendingApproval(t *testing.T) {
 
 func TestDoctorDetectsHashChainTamperingWithoutRepairingDatabase(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	result, err := service.Run(context.Background(), RunOptions{Task: "answer", Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if err != nil {
@@ -564,7 +584,7 @@ func TestDoctorDetectsHashChainTamperingWithoutRepairingDatabase(t *testing.T) {
 // 创建任何状态文件。
 func TestDoctorDoesNotCreateMissingState(t *testing.T) {
 	service := Service{}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspace, configuration)
 	if err != nil {
@@ -586,7 +606,7 @@ func TestDoctorDoesNotCreateMissingState(t *testing.T) {
 func TestDoctorRejectsMissingArtifactReferencedByAnEvent(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -626,7 +646,7 @@ func TestDoctorRejectsMissingArtifactReferencedByAnEvent(t *testing.T) {
 }
 
 func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspace, configuration)
 	if err != nil {
@@ -668,7 +688,7 @@ func TestConcurrentResumeAllowsExactlyOneWorkspaceLockHolder(t *testing.T) {
 	release := make(chan struct{})
 	provider := &blockingResumeProvider{entered: make(chan struct{}), release: release}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -703,7 +723,7 @@ func TestConcurrentResumeAllowsExactlyOneWorkspaceLockHolder(t *testing.T) {
 func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspace, configuration)
 	if err != nil {
@@ -762,7 +782,7 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
 	var waiting *agent.WaitingApprovalError
@@ -819,7 +839,7 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write = "allow"
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
@@ -860,7 +880,7 @@ func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
 // 行：指纹算法 v2（eadbe9c）之前的在途 run，inspect/doctor 照常工作，resume
 // 以 ErrConfigDrift 失败关闭——一次性失效是设计决策并已公开记录。
 func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspace, configuration)
 	if err != nil {
@@ -903,7 +923,7 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 func TestVerificationEnvironmentFlowsThroughConfiguredExecTool(t *testing.T) {
 	provider := &finalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, "CAIRN_TEST_ENV")
 	configuration.Verification.Commands = []config.VerificationCommand{{
 		Argv: []string{"/bin/sh", "-c", `[ "$CAIRN_TEST_ENV" = deployed ]`},

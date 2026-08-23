@@ -14,6 +14,14 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
+// withTestProvider 为测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.Model == "" {
+		configuration.Provider.Model = "test-model"
+	}
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	return configuration
+}
 func TestSliceARealHTTPProviderSQLiteAndReadTools(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -33,7 +41,7 @@ func TestSliceARealHTTPProviderSQLiteAndReadTools(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("Cairn is an event-sourced coding agent.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.BaseURL = server.URL + "/v1"
 	configuration.Provider.Model = "test-model"
 	stateDir := t.TempDir()

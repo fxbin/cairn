@@ -23,6 +23,15 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// withTestProvider 为测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.Model == "" {
+		configuration.Provider.Model = "test-model"
+	}
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	return configuration
+}
+
 type scriptedProvider struct {
 	scripts  [][]ports.ModelEvent
 	requests []ports.ModelRequest
@@ -55,11 +64,11 @@ func TestFixtureReadOnlyRepositoryQuestion(t *testing.T) {
 		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"path":"answer.txt"}`)}}, {Kind: ports.Done}},
 		{{Kind: ports.TextDelta, Text: "The repository keeps an event journal."}, {Kind: ports.Done}},
 	}}
-	result, err := providerService(provider).Run(context.Background(), app.RunOptions{Task: "What does this repository keep?", Workspace: workspace, StateDir: stateDir, Config: config.Defaults()})
+	result, err := providerService(provider).Run(context.Background(), app.RunOptions{Task: "What does this repository keep?", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	if err != nil || result.Response != "The repository keeps an event journal." {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	inspected, err := providerService(provider).Inspect(context.Background(), workspace, stateDir, config.Defaults(), result.ID, true)
+	inspected, err := providerService(provider).Inspect(context.Background(), workspace, stateDir, withTestProvider(config.Defaults()), result.ID, true)
 	if err != nil || inspected.Projection.Phase() != "completed" || len(inspected.Events) == 0 {
 		t.Fatalf("inspect=%#v err=%v", inspected, err)
 	}
@@ -79,7 +88,7 @@ func TestFixtureApprovedSingleFilePatch(t *testing.T) {
 		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"note.txt","mode":"create","content":"created"}`)}}, {Kind: ports.Done}},
 		{{Kind: ports.TextDelta, Text: "created and verified"}, {Kind: ports.Done}},
 	}}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	service := providerService(provider)
@@ -121,7 +130,7 @@ func TestFixtureVerificationFailureThenRepair(t *testing.T) {
 		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "repair", Name: "apply_patch", Arguments: updateArguments}}, {Kind: ports.Done}},
 		{{Kind: ports.TextDelta, Text: "fixed and verified"}, {Kind: ports.Done}},
 	}}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"./verify.sh"}}}
 	result, err := providerService(provider).Run(context.Background(), app.RunOptions{Task: "repair target", Workspace: workspace, StateDir: stateDir, Config: configuration})
@@ -152,7 +161,7 @@ func TestFixtureReconcileDanglingPatchWithoutRetryingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()

@@ -15,6 +15,15 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// withTestProvider 为测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.Model == "" {
+		configuration.Provider.Model = "test-model"
+	}
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	return configuration
+}
+
 // terminalProvider 返回无工具调用的最终文本，保证本测试不发起真实网络请求。
 type terminalProvider struct{}
 
@@ -32,7 +41,7 @@ func (terminalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit fun
 // contract.ResultFromRun 的结果（仅任务身份不同）。
 func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test-model"
 	workspace, stateDir := t.TempDir(), t.TempDir()

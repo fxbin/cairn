@@ -12,6 +12,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -30,6 +31,7 @@ type Boot struct {
 	workspaceLock *lock.Lock
 	Artifacts     *artifact.Store
 	Provider      ports.Provider
+	ProviderCard  contract.ProviderCapabilityCard
 	Registry      *tools.Registry
 	Gate          *policy.Gate
 	Verification  []agent.VerificationCommand
@@ -39,12 +41,40 @@ type Boot struct {
 	closed        bool
 }
 
+// resolveProviderCard 解析版本化 Provider 能力卡并对照预算：显式声明优先于
+// 内建目录，未知模型失败关闭（V1.4 合同）。解析是纯函数，装配在创建任何
+// 资源之前执行，保证能力未知时绝不启动。
+func resolveProviderCard(configuration config.Config) (contract.ProviderCapabilityCard, error) {
+	var declared *contract.ProviderCapabilityDeclaration
+	if capability := configuration.Provider.Capability; capability != nil {
+		declared = &contract.ProviderCapabilityDeclaration{
+			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
+			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
+			StopReasons: capability.StopReasons,
+		}
+	}
+	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, declared)
+	if err != nil {
+		return contract.ProviderCapabilityCard{}, err
+	}
+	if err := card.ValidateBudget(configuration.Context.MaxPromptTokens, configuration.Budget.MaxOutputTokens); err != nil {
+		return contract.ProviderCapabilityCard{}, err
+	}
+	return card, nil
+}
+
 // assembleBoot 按固定顺序装配：workspace → execTool → journal → 工作区锁 →
 // provider → artifacts → 工具注册表 → 策略门 → 验证命令 → Loop。任一步失败都
 // 会关闭已完成初始化的资源并合并关闭错误（Journal 关闭期间继续持有工作区锁），
 // 不留下孤儿 Journal 或锁；装配只做纯构造，不产生事件或副作用。
 func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.Config, onEvent EventSink) (*Boot, error) {
 	boot := &Boot{Config: cfg}
+	// 能力卡解析先于任何资源创建：未知能力失败关闭，不留孤儿 Journal 或锁。
+	card, err := resolveProviderCard(cfg)
+	if err != nil {
+		return nil, err
+	}
+	boot.ProviderCard = card
 	workspace, hash, err := workspaceFor(workspacePath, cfg)
 	if err != nil {
 		return nil, err
@@ -171,18 +201,20 @@ type VerificationView struct {
 }
 
 // CapabilityManifest 是对当前装配能力的只读、可追溯描述：Preset 的工具、
-// Policy、Verifier、Sandbox 与预算完整展开，供诊断与测试对账配置指纹。
+// Policy、Verifier、Sandbox、预算与 Provider 能力卡完整展开，供诊断与测试
+// 对账配置指纹。
 type CapabilityManifest struct {
-	Preset            string           `json:"preset"`
-	Profile           string           `json:"profile"`
-	Provider          string           `json:"provider"`
-	Model             string           `json:"model"`
-	Sandbox           SandboxView      `json:"sandbox"`
-	Policy            PolicyView       `json:"policy"`
-	Budget            BudgetView       `json:"budget"`
-	Tools             []ToolCapability `json:"tools"`
-	Verification      VerificationView `json:"verification"`
-	ConfigFingerprint string           `json:"config_fingerprint"`
+	Preset            string                           `json:"preset"`
+	Profile           string                           `json:"profile"`
+	Provider          string                           `json:"provider"`
+	Model             string                           `json:"model"`
+	ProviderCard      *contract.ProviderCapabilityCard `json:"provider_card,omitempty"`
+	Sandbox           SandboxView                      `json:"sandbox"`
+	Policy            PolicyView                       `json:"policy"`
+	Budget            BudgetView                       `json:"budget"`
+	Tools             []ToolCapability                 `json:"tools"`
+	Verification      VerificationView                 `json:"verification"`
+	ConfigFingerprint string                           `json:"config_fingerprint"`
 }
 
 // Manifest 返回当前装配的非敏感能力清单；由装配后的注册表与冻结验证命令构建。
@@ -191,12 +223,14 @@ func (boot *Boot) Manifest() CapabilityManifest {
 	for _, spec := range boot.Registry.Specs() {
 		tools = append(tools, ToolCapability{Name: spec.Name, SideEffect: string(boot.Registry.SideEffect(spec.Name))})
 	}
-	return buildCapabilityManifest(boot.Config, tools, boot.Verification)
+	card := boot.ProviderCard
+	return buildCapabilityManifest(boot.Config, tools, boot.Verification, &card)
 }
 
 // buildCapabilityManifest 由配置、工具能力与冻结验证命令构建唯一投影；
 // Boot.Manifest 与 doctor 共用本函数，保证两个视图不矛盾。
-func buildCapabilityManifest(configuration config.Config, tools []ToolCapability, verification []agent.VerificationCommand) CapabilityManifest {
+// 未解析（nil）时 manifest 省略卡字段，避免把零值卡误读为空卡合同。
+func buildCapabilityManifest(configuration config.Config, tools []ToolCapability, verification []agent.VerificationCommand, card *contract.ProviderCapabilityCard) CapabilityManifest {
 	commands, _ := json.Marshal(verification)
 	digest := sha256.Sum256(commands)
 	return CapabilityManifest{
@@ -204,6 +238,7 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 		Profile:           configuration.Profile,
 		Provider:          configuration.Provider.BaseURL,
 		Model:             configuration.Provider.Model,
+		ProviderCard:      card,
 		Sandbox:           SandboxView{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
 		Policy:            PolicyView{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec, ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...)},
 		Budget:            BudgetView{MaxTurns: configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls, MaxInputTokens: configuration.Budget.MaxInputTokens, MaxOutputTokens: configuration.Budget.MaxOutputTokens, MaxWallTime: configuration.Budget.MaxWallTime, MaxCostUSD: configuration.Budget.MaxCostUSD},

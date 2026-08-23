@@ -18,7 +18,7 @@ import (
 // 密钥环境变量名，绝不出现其值；报告字段schema稳定。
 func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	t.Setenv("CAIRN_DOCTOR_TEST_KEY", "doctor-secret-sentinel-value")
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.APIKeyEnv = "CAIRN_DOCTOR_TEST_KEY"
 	workspacePath, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspacePath, configuration)
@@ -93,7 +93,7 @@ func TestBuildIdentityMarksMissingDirtyMetadataUnknown(t *testing.T) {
 // Provider 前提给出，而不是失败。
 func TestDoctorReportOnFreshWorkspaceSupportsPreflight(t *testing.T) {
 	t.Setenv("CAIRN_DOCTOR_TEST_KEY", "present")
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.APIKeyEnv = "CAIRN_DOCTOR_TEST_KEY"
 	configuration.Provider.BaseURL = "https://provider.test/v1"
 	configuration.Provider.Model = "test-model"
@@ -124,7 +124,7 @@ func TestDoctorReportOnFreshWorkspaceSupportsPreflight(t *testing.T) {
 // TestDoctorReadinessFailsClosedOnMissingPrerequisites 锁定就绪判定的失败关闭：
 // 密钥环境变量缺失或 Docker 后端镜像不可用时 ready=false，即使其余检查通过。
 func TestDoctorReadinessFailsClosedOnMissingPrerequisites(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.BaseURL = "https://provider.test/v1"
 	configuration.Provider.Model = "test-model"
 	configuration.Sandbox.Backend = "host"
@@ -148,7 +148,7 @@ func TestDoctorReadinessFailsClosedOnMissingPrerequisites(t *testing.T) {
 	if report.Ready {
 		t.Fatalf("missing API key must not be ready, report = %+v", report)
 	}
-	dockerConfig := config.Defaults()
+	dockerConfig := withTestProvider(config.Defaults())
 	dockerConfig.Provider.BaseURL = "https://provider.test/v1"
 	dockerConfig.Provider.Model = "test-model"
 	dockerConfig.Sandbox.Backend = "docker"
@@ -168,7 +168,7 @@ func TestDoctorReadinessFailsClosedOnMissingPrerequisites(t *testing.T) {
 func TestSummarizeRunAnswersFourQuestions(t *testing.T) {
 	provider := &patchThenFinalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write = "allow"
 	configuration.Policy.Exec = "allow"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
@@ -197,12 +197,12 @@ func TestSummarizeRunAnswersFourQuestions(t *testing.T) {
 
 	waitingService := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &patchThenFinalProvider{}, nil }}
 	waitingWorkspace, waitingState := t.TempDir(), t.TempDir()
-	waitingResult, err := waitingService.Run(context.Background(), RunOptions{Task: "patch", Workspace: waitingWorkspace, StateDir: waitingState, Config: config.Defaults()})
+	waitingResult, err := waitingService.Run(context.Background(), RunOptions{Task: "patch", Workspace: waitingWorkspace, StateDir: waitingState, Config: withTestProvider(config.Defaults())})
 	var waiting *agent.WaitingApprovalError
 	if !errors.As(err, &waiting) || waitingResult.ID == "" {
 		t.Fatalf("expected waiting approval, got %v", err)
 	}
-	waitingInspect, err := waitingService.Inspect(context.Background(), waitingWorkspace, waitingState, config.Defaults(), waitingResult.ID, false)
+	waitingInspect, err := waitingService.Inspect(context.Background(), waitingWorkspace, waitingState, withTestProvider(config.Defaults()), waitingResult.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}

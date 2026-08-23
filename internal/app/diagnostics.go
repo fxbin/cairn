@@ -37,30 +37,33 @@ type SandboxHealth struct {
 }
 
 // DoctorReport 回答"环境和配置是否可运行"：非敏感 resolved 配置、Profile、
-// 预算来源、Provider/Sandbox 可用性与 capability manifest；journal_ok 与
-// artifacts_ok 对应既有只读完整性检查。ready 是总体就绪判定：配置有效、
-// Provider 前提（基地址、模型、密钥环境变量）在位、Docker 后端镜像存在、
-// journal 完整或尚不存在（支持首次运行前 preflight）。诊断永远只读。
+// 预算来源、Provider/Sandbox 可用性、Provider 能力卡与 capability manifest；
+// journal_ok 与 artifacts_ok 对应既有只读完整性检查。ready 是总体就绪判定：
+// 配置有效、能力卡可解析、Provider 前提（基地址、模型、密钥环境变量）在位、
+// Docker 后端镜像存在、journal 完整或尚不存在（支持首次运行前 preflight）。
+// 诊断永远只读。
 type DoctorReport struct {
-	ConfigValid       bool                     `json:"config_valid"`
-	Ready             bool                     `json:"ready"`
-	Preset            string                   `json:"preset"`
-	Profile           string                   `json:"profile"`
-	ConfigFingerprint string                   `json:"config_fingerprint"`
-	BuildRevision     string                   `json:"build_revision,omitempty"`
-	Build             domain.BuildIdentity     `json:"build"`
-	WorkspaceHash     string                   `json:"workspace_hash"`
-	Policy            PolicyHealth             `json:"policy"`
-	Resolution        []config.ResolutionEntry `json:"resolution,omitempty"`
-	Provider          ProviderHealth           `json:"provider"`
-	Sandbox           SandboxHealth            `json:"sandbox"`
-	Tools             []string                 `json:"tools"`
-	VerificationCount int                      `json:"verification_commands"`
-	Capabilities      CapabilityManifest       `json:"capability_manifest"`
-	Telemetry         TelemetryHealth          `json:"telemetry"`
-	JournalState      string                   `json:"journal_state"`
-	JournalOK         bool                     `json:"journal_ok"`
-	ArtifactsOK       bool                     `json:"artifacts_ok"`
+	ConfigValid       bool                             `json:"config_valid"`
+	Ready             bool                             `json:"ready"`
+	Preset            string                           `json:"preset"`
+	Profile           string                           `json:"profile"`
+	ConfigFingerprint string                           `json:"config_fingerprint"`
+	BuildRevision     string                           `json:"build_revision,omitempty"`
+	Build             domain.BuildIdentity             `json:"build"`
+	WorkspaceHash     string                           `json:"workspace_hash"`
+	Policy            PolicyHealth                     `json:"policy"`
+	Resolution        []config.ResolutionEntry         `json:"resolution,omitempty"`
+	Provider          ProviderHealth                   `json:"provider"`
+	ProviderCard      *contract.ProviderCapabilityCard `json:"provider_card,omitempty"`
+	ProviderCardError string                           `json:"provider_card_error,omitempty"`
+	Sandbox           SandboxHealth                    `json:"sandbox"`
+	Tools             []string                         `json:"tools"`
+	VerificationCount int                              `json:"verification_commands"`
+	Capabilities      CapabilityManifest               `json:"capability_manifest"`
+	Telemetry         TelemetryHealth                  `json:"telemetry"`
+	JournalState      string                           `json:"journal_state"`
+	JournalOK         bool                             `json:"journal_ok"`
+	ArtifactsOK       bool                             `json:"artifacts_ok"`
 }
 
 // PolicyHealth 暴露写入与命令执行策略的非敏感结论；doctor 只报告，不决策。
@@ -98,6 +101,16 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	}
 	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
+	// 能力卡解析在 doctor 中保持只读：失败只记录错误并压低 ready，不中断
+	// 其余诊断；成功则进入 manifest 与报告供运行前解释。
+	card, cardErr := resolveProviderCard(configuration)
+	var cardPtr *contract.ProviderCapabilityCard
+	if cardErr == nil {
+		cardPtr = &card
+		report.ProviderCard = &card
+	} else {
+		report.ProviderCardError = cardErr.Error()
+	}
 	workspace, hash, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
 		return report, err
@@ -118,7 +131,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	if err != nil {
 		return report, err
 	}
-	report.Capabilities = buildCapabilityManifest(configuration, capabilities, verification)
+	report.Capabilities = buildCapabilityManifest(configuration, capabilities, verification, cardPtr)
 	journal, err := openReadOnlyJournal(stateDir, hash)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -141,11 +154,11 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	return report, nil
 }
 
-// evaluateReadiness 汇总总体就绪判定：配置有效、Provider 前提在位、Docker 后端
-// 镜像可用、journal 完整或首次运行前尚不存在。
+// evaluateReadiness 汇总总体就绪判定：配置有效、能力卡可解析、Provider 前提
+// 在位、Docker 后端镜像可用、journal 完整或首次运行前尚不存在。
 func (report *DoctorReport) evaluateReadiness() {
 	sandboxReady := report.Sandbox.Backend != "docker" || report.Sandbox.ImageAvailable == "yes"
-	report.Ready = report.ConfigValid && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
+	report.Ready = report.ConfigValid && report.ProviderCardError == "" && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
 }
 
 // buildIdentity 返回实际二进制的非敏感身份。当前版本没有构建标签或 otelc

@@ -13,13 +13,14 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
 // TestAssembleBootReleasesLockOnContention 锁定生命周期顺序：第二个 Boot 在锁
 // 竞争处失败且不泄漏资源；第一个 Boot Close 后同一工作区可再次装配。
 func TestAssembleBootReleasesLockOnContention(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
 		return &finalProvider{}, nil
@@ -48,7 +49,7 @@ func TestAssembleBootReleasesLockOnContention(t *testing.T) {
 // TestAssembleBootCleansUpWhenLateStageFails 锁定装配中段失败的逆序清理：Provider
 // 构造失败时，锁与 Journal 必须已被释放，工作区可立即重试装配。
 func TestAssembleBootCleansUpWhenLateStageFails(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	failing := Service{NewProvider: func(config.Config) (ports.Provider, error) {
 		return nil, errors.New("provider unavailable")
@@ -100,7 +101,7 @@ func TestAssembleBootFailurePreservesCleanupErrors(t *testing.T) {
 // TestBootManifestDescribesCapabilities 锁定 Capability Manifest 的非敏感能力
 // 事实：固定五工具、Profile、沙箱后端与验证命令数。
 func TestBootManifestDescribesCapabilities(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Sandbox.Backend = "docker"
 	configuration.Sandbox.DockerImage = "alpine:3.21"
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
@@ -154,7 +155,7 @@ func TestCapabilityManifestIsSingleProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(workspace, ".agent", "config.yaml")
-	yaml := "version: 1\nprovider:\n  base_url: https://provider.test/v1\n  model: m1\n  api_key_env: CAIRN_AB3_KEY\n  request_timeout: 30s\nsandbox:\n  backend: docker\n  docker_image: alpine:3.21\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"
+	yaml := "version: 1\nprovider:\n  base_url: https://provider.test/v1\n  model: m1\n  api_key_env: CAIRN_AB3_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n  request_timeout: 30s\nsandbox:\n  backend: docker\n  docker_image: alpine:3.21\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"
 	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -196,13 +197,14 @@ func TestCapabilityManifestIsSingleProjection(t *testing.T) {
 			t.Fatalf("manifest budget field %s = %q, resolution = %q", pair.field, pair.value, resolved[pair.field])
 		}
 	}
-	changed := config.Defaults()
+	changed := withTestProvider(config.Defaults())
 	changed.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/false"}}}
 	changedCommands, err := verificationCommands(changed.Verification)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedManifest := buildCapabilityManifest(changed, nil, changedCommands)
+	changedCard := mustTestCard(t, changed)
+	changedManifest := buildCapabilityManifest(changed, nil, changedCommands, &changedCard)
 	if changedManifest.Verification.Fingerprint == fromBoot.Verification.Fingerprint {
 		t.Fatalf("verification fingerprint must change with command set: %q", fromBoot.Verification.Fingerprint)
 	}
@@ -255,7 +257,7 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 // TestReadOnlyPresetDropsSideEffectTools 锁定 read-only Preset 的工具子集与
 // Manifest 展开：注册表只有三件只读工具，策略与预算进入能力清单。
 func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
-	configuration := config.Defaults()
+	configuration := withTestProvider(config.Defaults())
 	configuration.Preset = config.PresetReadOnly
 	configuration.Policy.Write = "deny"
 	configuration.Policy.Exec = "deny"
@@ -283,10 +285,60 @@ func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
 	if manifest.Preset != config.PresetReadOnly || manifest.Policy.Write != "deny" || manifest.Policy.Exec != "deny" {
 		t.Fatalf("manifest = %+v", manifest)
 	}
-	if manifest.Budget.MaxTurns != config.Defaults().Budget.MaxTurns {
+	if manifest.Budget.MaxTurns != withTestProvider(config.Defaults()).Budget.MaxTurns {
 		t.Fatalf("manifest budget turns = %d", manifest.Budget.MaxTurns)
 	}
 	if manifest.Verification.Commands != 0 {
 		t.Fatalf("read-only manifest verification commands = %d", manifest.Verification.Commands)
+	}
+}
+
+// TestBootFailsClosedOnUnknownProviderCapability 锁定 V1.4 失败关闭：模型既无
+// 显式声明也不在内建目录时，装配在任何资源创建前失败，错误给出可行动指引。
+func TestBootFailsClosedOnUnknownProviderCapability(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Provider.Model = "mystery-model"
+	configuration.Provider.Capability = nil
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, err := service.assembleBoot(workspace, stateDir, configuration, nil)
+	if err == nil || !strings.Contains(err.Error(), "declare provider.capability") {
+		t.Fatalf("unknown capability must fail closed: %v", err)
+	}
+	if _, err := service.Run(context.Background(), RunOptions{Task: "x", Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "provider capability unknown") {
+		t.Fatalf("run must fail closed for unknown capability: %v", err)
+	}
+	// 能力声明超窗时同样拒绝启动：预算不得越过已声明上限。
+	overWindow := withTestProvider(config.Defaults())
+	overWindow.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true, ContextWindowTokens: 100}
+	if _, err := service.assembleBoot(t.TempDir(), t.TempDir(), overWindow, nil); err == nil || !strings.Contains(err.Error(), "context window") {
+		t.Fatalf("over-window budget must fail closed: %v", err)
+	}
+}
+
+// TestDoctorReportsProviderCapabilityCard 锁定 doctor 对能力卡的只读投影：
+// 可解析时报告卡与来源，未知模型记录可行动错误并压低 ready。
+func TestDoctorReportsProviderCapabilityCard(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	report, err := service.Doctor(context.Background(), t.TempDir(), t.TempDir(), configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProviderCard == nil || report.ProviderCardError != "" || report.ProviderCard.Source != contract.ProviderCardSourceConfig || !report.ProviderCard.ToolCalls {
+		t.Fatalf("doctor card = %#v error=%q", report.ProviderCard, report.ProviderCardError)
+	}
+	if report.Capabilities.ProviderCard == nil || !reflect.DeepEqual(*report.Capabilities.ProviderCard, *report.ProviderCard) {
+		t.Fatalf("manifest card drifted from doctor card: %#v", report.Capabilities.ProviderCard)
+	}
+	unknown := configuration
+	unknown.Provider.Model = "mystery-model"
+	unknown.Provider.Capability = nil
+	unknownReport, err := service.Doctor(context.Background(), t.TempDir(), t.TempDir(), unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknownReport.ProviderCard != nil || unknownReport.ProviderCardError == "" || unknownReport.Ready {
+		t.Fatalf("unknown capability doctor = %#v", unknownReport.ProviderCard)
 	}
 }

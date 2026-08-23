@@ -128,6 +128,7 @@ func TestRunnerQualificationAndAgentAttemptsUseIndependentWorkspaces(t *testing.
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
 	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
 	report, err := runner.Run(context.Background(), RunOptions{
@@ -163,6 +164,7 @@ func TestRunnerFormalPreparationFailureInvalidatesSuiteBeforeProvider(t *testing
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
 	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
 	report, err := runner.Run(context.Background(), RunOptions{
@@ -461,6 +463,7 @@ func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test-model"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
 	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
 	report, err := runner.Run(context.Background(), RunOptions{
