@@ -28,6 +28,8 @@ func TestContainsSensitiveToolCallBlocksCredentialFamily(t *testing.T) {
 		{name: "mysql 附着短口令标志", argv: []string{"mysql", "-phunter2", "-e", "SELECT 1"}, want: true},
 		{name: "ssh-keygen 口令标志", argv: []string{"ssh-keygen", "-P", "hunter2", "-N", "newpass", "id_rsa"}, want: true},
 		{name: "redis-cli 口令标志", argv: []string{"redis-cli", "-a", "hunter2"}, want: true},
+		{name: "sshpass 口令标志", argv: []string{"sshpass", "-p", "hunter2", "ssh", "host"}, want: true},
+		{name: "zip 口令标志", argv: []string{"zip", "-P", "hunter2", "a.zip", "."}, want: true},
 		{name: "词表外词干 passphrase", argv: []string{"ssh", "--passphrase=hunter2", "host"}, want: true},
 		{name: "词表外词干 client-key", argv: []string{"tool", "--client-key=abc123"}, want: true},
 		{name: "URL userinfo 凭据", argv: []string{"git", "clone", "https://admin:hunter2@github.com/o/r.git"}, want: true},
@@ -39,11 +41,20 @@ func TestContainsSensitiveToolCallBlocksCredentialFamily(t *testing.T) {
 		{name: "规范长标志保持拒绝", argv: []string{"curl", "--password=short", "https://example.invalid/"}, want: true},
 		{name: "无口令 docker 登录", argv: []string{"docker", "login", "--password-stdin", "reg.io"}, want: false},
 		{name: "空口令 ssh-keygen", argv: []string{"ssh-keygen", "-N", `""`, "-f", "id_rsa"}, want: false},
+		{name: "附着空口令豁免", argv: []string{"tool", `--password=""`}, want: false},
+		{name: "docker 端口发布", argv: []string{"docker", "run", "-p", "8080:80", "nginx"}, want: false},
+		{name: "docker compose 项目名", argv: []string{"docker", "compose", "-p", "myproj", "up"}, want: false},
+		{name: "docker uid:gid 用户", argv: []string{"docker", "run", "-u", "1000:1000", "img"}, want: false},
+		{name: "rsync 源地址冒号", argv: []string{"rsync", "-u", "host:/src", "dst"}, want: false},
+		{name: "提交消息含赋值文本", argv: []string{"git", "commit", "-m", "fix: token_expiry=3600"}, want: false},
+		{name: "grep 搜索鉴权头模式", argv: []string{"grep", "-rn", "Authorization:", "src/"}, want: false},
+		{name: "分页游标查询键", argv: []string{"curl", "https://example.invalid/list?NextToken=abc"}, want: false},
 		{name: "纯用户 userinfo", argv: []string{"git", "clone", "https://git@github.com/o/r.git"}, want: false},
 		{name: "普通构建命令", argv: []string{"go", "test", "./..."}, want: false},
 		{name: "普通查询串", argv: []string{"curl", "https://example.invalid/p?page=2"}, want: false},
 		{name: "非凭据环境赋值", argv: []string{"env", "TERM=xterm", "make", "build"}, want: false},
 		{name: "非凭据请求头", argv: []string{"curl", "-H", "Accept: application/json", "https://example.invalid/"}, want: false},
+		{name: "无头标志的裸鉴权串为已记录残留通道", argv: []string{"curl", "Authorization: Bearer ab12cd3", "https://example.invalid/"}, want: false},
 	}
 	for _, vector := range vectors {
 		arguments, err := json.Marshal(map[string]any{"argv": vector.argv})
@@ -71,6 +82,10 @@ func TestContainsSensitiveToolCallBlocksOtherToolChannels(t *testing.T) {
 	searchArguments := json.RawMessage(`{"query":"password="}`)
 	if containsSensitiveToolCall(ports.ToolCall{ID: "call", Name: "search_text", Arguments: searchArguments}) {
 		t.Fatal("credential-syntax search queries must stay usable")
+	}
+	benignScript := json.RawMessage(`{"path":"deploy.sh","mode":"create","content":"#!/bin/sh\nPWD=$(pwd)\nOLDPWD=/home/deploy\necho \"$PWD\"\n"}`)
+	if containsSensitiveToolCall(ports.ToolCall{ID: "call", Name: "apply_patch", Arguments: benignScript}) {
+		t.Fatal("PWD/OLDPWD shell lines are not credentials and must stay patchable")
 	}
 }
 
