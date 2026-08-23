@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -61,6 +60,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 			if !json.Valid(event.ToolCall.Arguments) {
 				return ports.ErrMalformedToolCallArguments
 			}
+			if !isObjectArguments(event.ToolCall.Arguments) {
+				return ports.ErrMalformedToolCallArguments
+			}
 			if containsSensitiveToolCall(*event.ToolCall) {
 				return errSensitiveToolArguments
 			}
@@ -87,10 +89,14 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 	return response, nil
 }
 
-// containsSensitiveToolCall 在模型响应尚未进入事件或上下文前拒绝可能包含凭据的工具
-// 参数。除通用 JSON 脱敏外，exec_command 必须识别短的 --token=value / --token value
-// 形式；这些 argv 元素不能依赖面向长文本的脱敏正则。
+// containsSensitiveToolCall 在模型响应尚未进入事件或上下文前拒绝可能包含凭据的
+// 工具调用事实。除通用 JSON 脱敏与工具身份检查外，exec_command 的结构化 argv
+// 规则（短口令标志、URL userinfo、查询串凭据键、Authorization 头、裸环境赋值）
+// 统一由 sensitive.go 提供，不依赖面向长文本的脱敏阈值。
 func containsSensitiveToolCall(call ports.ToolCall) bool {
+	if sensitiveToolIdentity(call.Name, call.ID) {
+		return true
+	}
 	if containsSecretJSON(call.Arguments) {
 		return true
 	}
@@ -103,20 +109,7 @@ func containsSensitiveToolCall(call ports.ToolCall) bool {
 	if json.Unmarshal(call.Arguments, &fields) != nil {
 		return false
 	}
-	for index, argument := range fields.Argv {
-		option := strings.TrimLeft(argument, "-")
-		key, value, assigned := strings.Cut(option, "=")
-		if option == argument || !credential.Key(key) {
-			continue
-		}
-		if assigned && value != "" {
-			return true
-		}
-		if !assigned && index+1 < len(fields.Argv) && !strings.HasPrefix(fields.Argv[index+1], "-") {
-			return true
-		}
-	}
-	return false
+	return sensitiveExecArgv(fields.Argv)
 }
 
 // prompt 返回显式系统提示词，或提供安全工具使用的默认提示词。
