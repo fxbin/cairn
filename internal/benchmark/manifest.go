@@ -125,6 +125,9 @@ func (pack TaskPack) Validate() error {
 		if err := validateRepositoryURL(task.Repository.URL); err != nil {
 			return fmt.Errorf("task %q repository url: %w", task.ID, err)
 		}
+		if err := validateRepositoryName(task.Repository.Name); err != nil {
+			return fmt.Errorf("task %q repository name: %w", task.ID, err)
+		}
 		if _, exists := seen[task.ID]; exists {
 			return fmt.Errorf("duplicate task id %q", task.ID)
 		}
@@ -168,6 +171,24 @@ func validateRepositoryURL(value string) error {
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("must not contain query or fragment")
+	}
+	return nil
+}
+
+// validateRepositoryName 约束结果合同中的来源显示名不能退化为本地路径。名称
+// 允许常见的 owner/repository 形式，但不允许绝对路径、相对跳转、反斜杠或控制
+// 字符，避免 RepositoryURL 已收紧后仍由显示名泄露宿主机布局。
+func validateRepositoryName(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 256 || filepath.IsAbs(value) || strings.Contains(value, "\\") || strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("must be a bounded non-path display name")
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("must not contain path traversal segments")
+		}
 	}
 	return nil
 }

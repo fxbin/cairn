@@ -233,6 +233,18 @@ func TestTaskPackRejectsPrivateOrLocalRepositoryLocations(t *testing.T) {
 	}
 }
 
+// TestTaskPackRejectsRepositoryNamesThatCanLeakLocalPaths 锁定来源显示名与 URL
+// 共享同一空间边界，避免本地路径经 TaskSpec.RepositoryName 重新进入结果。
+func TestTaskPackRejectsRepositoryNamesThatCanLeakLocalPaths(t *testing.T) {
+	for _, name := range []string{"/Users/example/private-repository", "../private-repository", "owner/../private-repository", `C:\\Users\\example\\private-repository`} {
+		pack := testPack("https://example.invalid/repository.git", "0123456789")
+		pack.Tasks[0].Repository.Name = name
+		if err := pack.Validate(); err == nil {
+			t.Fatalf("repository name %q was accepted", name)
+		}
+	}
+}
+
 // TestBenchmarkResultJSONOmitsRuntimePaths 锁定所有可持久化 benchmark 结果都
 // 不编码 runner 的 clone 或状态目录；这些路径只用于进程内执行编排。
 func TestBenchmarkResultJSONOmitsRuntimePaths(t *testing.T) {
