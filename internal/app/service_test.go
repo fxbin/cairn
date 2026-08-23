@@ -984,6 +984,60 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 	}
 }
 
+// TestLegacyProviderCapabilityRunResumesWithFrozenCompatibility 锁定能力卡引入
+// 后的唯一兼容例外：创建时和当前配置都没有 provider.capability、且冻结制品
+// 完整的历史运行可恢复收尾，但新 Run 仍必须保持能力未知即失败关闭。
+func TestLegacyProviderCapabilityRunResumesWithFrozenCompatibility(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "legacy-model"
+	configuration.Provider.Capability = nil
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := openArtifactStore(stateDir, hash, configuration.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRef, err := artifacts.Put(artifact.RedactJSON(frozen), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
+		Task              string       `json:"task"`
+		Workspace         string       `json:"workspace"`
+		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigFingerprint string       `json:"config_fingerprint"`
+	}{Task: "legacy capability", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) || resumed.Result.Manifest.Provider.Card != nil {
+		t.Fatalf("legacy resume=%#v err=%v", resumed, err)
+	}
+	if _, err := service.Run(context.Background(), RunOptions{Task: "new run must fail closed", Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "provider capability unknown") {
+		t.Fatalf("new run with legacy config err=%v", err)
+	}
+}
+
 // TestVerificationEnvironmentFlowsThroughConfiguredExecTool 锁定 2026-08-16
 // AB Gate 回归的根因不再复发：Preset 工具子集必须携带已配置装配的 exec 工具，
 // 验证命令声明的环境变量（经 env_allowlist 授权）能真实进入执行环境。

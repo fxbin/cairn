@@ -68,13 +68,25 @@ func resolveProviderCard(configuration config.Config) (contract.ProviderCapabili
 // 会关闭已完成初始化的资源并合并关闭错误（Journal 关闭期间继续持有工作区锁），
 // 不留下孤儿 Journal 或锁；装配只做纯构造，不产生事件或副作用。
 func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.Config, onEvent EventSink) (*Boot, error) {
+	return service.assembleBootWithLegacyProviderCapability(workspacePath, stateDir, cfg, onEvent, false)
+}
+
+// assembleBootWithLegacyProviderCapability 仅为已验证的历史 Run 提供受限兼容
+// 装配：legacyProviderCapability 为真时不再解析后来新增的能力卡，保留历史
+// 执行语义；它只能由 Resume/Reconcile 在冻结配置明确缺失该字段后调用，新
+// Run 与普通装配始终走失败关闭的能力卡解析。
+func (service Service) assembleBootWithLegacyProviderCapability(workspacePath, stateDir string, cfg config.Config, onEvent EventSink, legacyProviderCapability bool) (*Boot, error) {
 	boot := &Boot{Config: cfg}
-	// 能力卡解析先于任何资源创建：未知能力失败关闭，不留孤儿 Journal 或锁。
-	card, err := resolveProviderCard(cfg)
-	if err != nil {
-		return nil, err
+	var card contract.ProviderCapabilityCard
+	if !legacyProviderCapability {
+		// 能力卡解析先于任何资源创建：未知能力失败关闭，不留孤儿 Journal 或锁。
+		resolvedCard, err := resolveProviderCard(cfg)
+		if err != nil {
+			return nil, err
+		}
+		card = resolvedCard
+		boot.ProviderCard = card
 	}
-	boot.ProviderCard = card
 	workspace, hash, err := workspaceFor(workspacePath, cfg)
 	if err != nil {
 		return nil, err
@@ -124,8 +136,10 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	}
 	boot.Verification = verification
 	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent)
-	boot.Loop.RequireProviderUsage = card.StreamingUsage
-	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
+	if !legacyProviderCapability {
+		boot.Loop.RequireProviderUsage = card.StreamingUsage
+		boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
+	}
 	return boot, nil
 }
 
@@ -224,6 +238,9 @@ func (boot *Boot) Manifest() CapabilityManifest {
 	tools := make([]ToolCapability, 0, len(boot.Registry.Specs()))
 	for _, spec := range boot.Registry.Specs() {
 		tools = append(tools, ToolCapability{Name: spec.Name, SideEffect: string(boot.Registry.SideEffect(spec.Name))})
+	}
+	if boot.ProviderCard.SchemaVersion == 0 {
+		return buildCapabilityManifest(boot.Config, tools, boot.Verification, nil)
 	}
 	card := boot.ProviderCard
 	return buildCapabilityManifest(boot.Config, tools, boot.Verification, &card)

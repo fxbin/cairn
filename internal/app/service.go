@@ -280,7 +280,11 @@ func (service Service) Evidence(ctx context.Context, workspacePath, stateDir str
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
-	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
+	legacyCapability, err := legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
+	if err != nil {
+		return RunResult{ID: options.RunID}, err
+	}
+	boot, err := service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -328,7 +332,11 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 // 返回前关闭 Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
-	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
+	legacyCapability, err := legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
+	if err != nil {
+		return RunResult{ID: options.RunID}, err
+	}
+	boot, err := service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -780,6 +788,45 @@ func requireMatchingConfig(events []domain.Event, configuration config.Config) e
 		return ErrConfigDrift
 	}
 	return nil
+}
+
+// legacyProviderCapabilityResume 只识别一类可逆兼容情形：当前配置与已冻结
+// 配置都没有 provider.capability，且冻结制品通过完整性校验。能力卡是在这类
+// 历史 Run 创建之后才引入的合同，Resume/Reconcile 可在不伪造新卡的前提下按
+// 原语义收尾；新 Run、未知制品、篡改制品或任何显式能力配置都绝不走此路径。
+func legacyProviderCapabilityResume(workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (bool, error) {
+	if configuration.Provider.Capability != nil {
+		return false, nil
+	}
+	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return false, err
+	}
+	journal, err := openReadOnlyJournal(stateDir, workspaceHash)
+	if err != nil {
+		return false, nil
+	}
+	defer journal.Close()
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil || len(events) == 0 {
+		return false, nil
+	}
+	frozenConfig, err := readFrozenRunConfig(events, stateDir, workspaceHash)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	if len(frozenConfig) == 0 {
+		return false, nil
+	}
+	var frozen struct {
+		Provider struct {
+			Capability *json.RawMessage `json:"Capability"`
+		} `json:"Provider"`
+	}
+	if err := json.Unmarshal(frozenConfig, &frozen); err != nil {
+		return false, fmt.Errorf("%w: decode frozen provider capability: %v", ErrStateCorrupt, err)
+	}
+	return frozen.Provider.Capability == nil, nil
 }
 
 // patchObservation 返回目标文件当前摘要或 absent，用于人工 patch 对账。
