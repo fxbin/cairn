@@ -194,10 +194,10 @@ func TestCompletionTrustedRequiresFreshVerification(t *testing.T) {
 	}
 }
 
-// TestManifestReplaysProviderCardAcrossSources 锁定卡回放三态：显式声明产出
-// config 卡（与 Boot 同一解析函数）、无声明命中内建目录产出 builtin 卡、
-// 声明存在但非法时不回退内建（防御路径保持 nil）。
-func TestManifestReplaysProviderCardAcrossSources(t *testing.T) {
+// TestManifestReplaysProviderCardFromConfigOnly 锁定卡回放三态：显式声明产出
+// config 卡（与 Boot 同一解析函数）、声明非法时保持 nil、无声明时保持 nil
+// （能力卡只由显式配置产出，编译期无模型目录）。
+func TestManifestReplaysProviderCardFromConfigOnly(t *testing.T) {
 	events := manifestFixtureEvents(t)
 	declared := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"test-model","Capability":{"ToolCalls":true,"StreamingUsage":true,"ContextWindowTokens":131072}`, 1)
 	manifest, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), json.RawMessage(declared))
@@ -207,26 +207,17 @@ func TestManifestReplaysProviderCardAcrossSources(t *testing.T) {
 	if manifest.Provider.Card == nil || manifest.Provider.Card.Source != ProviderCardSourceConfig || manifest.Provider.Card.ContextWindowTokens != 131072 {
 		t.Fatalf("declared card = %#v", manifest.Provider.Card)
 	}
-	// 无声明 + 内建模型：事件与冻结配置同为 glm-5.2 时 builtin 回放。
-	builtin := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"glm-5.2"`, 1)
-	builtinEvents := make([]domain.Event, len(events))
-	copy(builtinEvents, events)
-	builtinEvents[2].Payload = json.RawMessage(`{"provider":"openai_compatible","model":"glm-5.2"}`)
-	manifest, err = ManifestFromRun(builtinEvents, FreeformTaskSpec("fix the failing test"), json.RawMessage(builtin))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Provider.Card == nil || manifest.Provider.Card.Source != ProviderCardSourceBuiltin || manifest.Provider.Card.ContextWindowTokens != 0 {
-		t.Fatalf("builtin card = %#v", manifest.Provider.Card)
-	}
-	// 声明非法（streaming_usage 缺省为假）时不落入内建回退。
-	broken := strings.Replace(builtin, `"Model":"glm-5.2"`, `"Model":"glm-5.2","Capability":{"ToolCalls":true}`, 1)
-	manifest, err = ManifestFromRun(builtinEvents, FreeformTaskSpec("fix the failing test"), json.RawMessage(broken))
+	// 声明非法（streaming_usage 缺省为假）时保持 nil，不伪造卡。
+	broken := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"test-model","Capability":{"ToolCalls":true}`, 1)
+	brokenEvents := make([]domain.Event, len(events))
+	copy(brokenEvents, events)
+	brokenEvents[2].Payload = json.RawMessage(`{"provider":"openai_compatible","model":"test-model"}`)
+	manifest, err = ManifestFromRun(brokenEvents, FreeformTaskSpec("fix the failing test"), json.RawMessage(broken))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.Provider.Card != nil {
-		t.Fatalf("broken declaration must not fall back to builtin: %#v", manifest.Provider.Card)
+		t.Fatalf("broken declaration must not produce a card: %#v", manifest.Provider.Card)
 	}
 	// 未知模型无声明：nil。
 	unknown := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"mystery"`, 1)

@@ -17,13 +17,27 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-// withTestProvider 为 CLI 测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+// withTestProvider 为 CLI 测试配置补齐能力卡所需的模型与显式声明。
 func withTestProvider(configuration config.Config) config.Config {
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"
 	}
 	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	return configuration
+}
+
+// writeCapabilityConfig 在测试工作区写入仅含能力声明的缺省配置，使 CLI 的
+// run 装配满足"能力卡只由显式配置产出"的失败关闭契约。
+func writeCapabilityConfig(t *testing.T, workspace string) {
+	t.Helper()
+	path := config.DefaultPath(workspace)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "version: 1\nprovider:\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type fakeProvider struct{}
@@ -43,9 +57,11 @@ func (fakeProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(po
 }
 
 func TestRunWritesOnlyNDJSONToStdout(t *testing.T) {
+	workspace := t.TempDir()
+	writeCapabilityConfig(t, workspace)
 	var stdout, stderr bytes.Buffer
 	command := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &stdout, Stderr: &stderr}
-	exitCode := command.Run(context.Background(), []string{"run", "answer this", "--workspace", t.TempDir(), "--state-dir", t.TempDir(), "--model", "glm-5.2", "--json"})
+	exitCode := command.Run(context.Background(), []string{"run", "answer this", "--workspace", workspace, "--state-dir", t.TempDir(), "--model", "glm-5.2", "--json"})
 	if exitCode != ExitOK {
 		t.Fatalf("exit = %d, stderr = %s", exitCode, stderr.String())
 	}
@@ -105,6 +121,7 @@ func TestAbortRunRequiresReason(t *testing.T) {
 func TestDoctorWritesOnlyNDJSONToStdout(t *testing.T) {
 	workspace := t.TempDir()
 	stateDir := t.TempDir()
+	writeCapabilityConfig(t, workspace)
 	// doctor 只读校验既有 journal；先用文本型 fakeProvider 跑一次 run 建立日志。
 	var runStdout, runStderr bytes.Buffer
 	runCommand := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &runStdout, Stderr: &runStderr}
@@ -189,6 +206,7 @@ func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
 // Provider 能力卡，输出不含任务正文。
 func TestEvidenceCommandProjectsUnifiedResult(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeCapabilityConfig(t, workspace)
 	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
 	var runStdout bytes.Buffer
 	runCommand := Command{Service: service, Stdout: &runStdout, Stderr: os.Stderr}
@@ -216,8 +234,8 @@ func TestEvidenceCommandProjectsUnifiedResult(t *testing.T) {
 		t.Fatalf("projected=%#v", projected)
 	}
 	card := projected.Manifest.Provider.Card
-	if card == nil || card.Source != contract.ProviderCardSourceBuiltin || card.Model != "glm-5.2" || !card.ToolCalls {
-		t.Fatalf("builtin provider card = %#v", card)
+	if card == nil || card.Source != contract.ProviderCardSourceConfig || card.Model != "glm-5.2" || !card.ToolCalls || !card.StreamingUsage {
+		t.Fatalf("declared provider card = %#v", card)
 	}
 	if strings.Contains(jsonOut.String(), "evidence probe") {
 		t.Fatalf("evidence leaked task prompt: %s", jsonOut.String())

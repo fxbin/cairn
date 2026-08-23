@@ -293,7 +293,7 @@ func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
 	}
 }
 
-// TestBootFailsClosedOnUnknownProviderCapability 锁定 V1.4 失败关闭：模型既无
+// TestBootFailsClosedOnUnknownProviderCapability 锁定失败关闭：模型既无
 // 显式声明也不在内建目录时，装配在任何资源创建前失败，错误给出可行动指引。
 func TestBootFailsClosedOnUnknownProviderCapability(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())

@@ -24,7 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// withTestProvider 为应用层测试配置补齐 V1.4 能力卡所需的模型与显式声明；
+// withTestProvider 为应用层测试配置补齐能力卡所需的模型与显式声明；
 // 测试替身模型名不在内建目录，必须显式声明才能通过装配期失败关闭。
 func withTestProvider(configuration config.Config) config.Config {
 	if configuration.Provider.Model == "" {

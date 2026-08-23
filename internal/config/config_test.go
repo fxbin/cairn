@@ -536,7 +536,7 @@ func TestUnknownPresetFailsClosedAndFingerprintCoversPreset(t *testing.T) {
 	}
 }
 
-// TestProviderCapabilityBlockValidatesAndChangesFingerprint 锁定 V1.4 能力声明
+// TestProviderCapabilityBlockValidatesAndChangesFingerprint 锁定能力声明
 // 块：YAML 严格解析、非法声明（假能力/负上限/空停止原因）在 Load/Validate 失败
 // 关闭，声明进入配置指纹使在途 run 的能力合同不可漂移。
 func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {

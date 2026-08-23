@@ -41,8 +41,8 @@ type Boot struct {
 	closed        bool
 }
 
-// resolveProviderCard 解析版本化 Provider 能力卡并对照预算：显式声明优先于
-// 内建目录，未知模型失败关闭（V1.4 合同）。解析是纯函数，装配在创建任何
+// resolveProviderCard 解析版本化 Provider 能力卡并对照预算：仅显式配置声明
+// 产出卡，未声明一律失败关闭。解析是纯函数，装配在创建任何
 // 资源之前执行，保证能力未知时绝不启动。
 func resolveProviderCard(configuration config.Config) (contract.ProviderCapabilityCard, error) {
 	var declared *contract.ProviderCapabilityDeclaration

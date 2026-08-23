@@ -15,9 +15,8 @@ const ProviderKindOpenAICompatible = "openai_compatible"
 
 // ProviderIdentity 定位一次运行实际使用的模型服务：线协议种类、端点、模型
 // 与运行期能力卡。BaseURL、Model 与 Card 来自冻结配置，Kind 来自事件中的
-// 真实模型请求。卡回放与 Boot 共用同一解析优先级（显式声明 > 内建目录）：
-// legacy run 无冻结配置但模型命中内建目录时仍回放 builtin 卡；显式声明存在
-// 但解析失败（防御路径，合法 run 不可达）时不回退内建，保持 nil 不伪造。
+// 真实模型请求。卡回放与 Boot 共用同一解析函数：仅显式能力声明产出卡；
+// 声明缺失或解析失败（防御路径，合法 run 不可达）时保持 nil 不伪造。
 type ProviderIdentity struct {
 	Kind    string                  `json:"kind,omitempty"`
 	BaseURL string                  `json:"base_url,omitempty"`
@@ -93,7 +92,6 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
 		return RunManifest{}, errors.New("contract: run events must start with run_created")
 	}
-	declaredCapability := false
 	manifest := RunManifest{SchemaVersion: manifestSchemaV1, RunID: events[0].RunID, WorkspaceHash: events[0].WorkspaceHash, Task: task}
 	var created struct {
 		ConfigFingerprint string                `json:"config_fingerprint"`
@@ -146,16 +144,8 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 			manifest.Policy = PolicyIdentity{Write: view.Policy.Write, Exec: view.Policy.Exec, ProtectedPaths: view.Policy.ProtectedPaths}
 			manifest.Verification.Commands = len(view.Verification.Commands)
 			if view.Provider.Capability != nil {
-				declaredCapability = true
 				manifest.Provider.Card = manifestCapabilityCard(manifest, view)
 			}
-		}
-	}
-	// 无显式声明时仍可按内建目录回放卡；声明存在但解析失败不回退内建
-	// （与 Boot 的失败关闭语义对齐），保持 nil。
-	if !declaredCapability && manifest.Provider.Card == nil && manifest.Provider.Model != "" {
-		if card, err := ResolveProviderCard(ProviderKindOpenAICompatible, manifest.Provider.Model, nil); err == nil {
-			manifest.Provider.Card = &card
 		}
 	}
 	return manifest, nil

@@ -23,7 +23,7 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-// withTestProvider 为测试配置补齐 V1.4 能力卡所需的模型与显式声明。
+// withTestProvider 为测试配置补齐能力卡所需的模型与显式声明。
 func withTestProvider(configuration config.Config) config.Config {
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"

@@ -192,8 +192,9 @@ type ProviderConfig struct {
 	Capability     *ProviderCapabilityConfig `yaml:"capability"`
 }
 
-// ProviderCapabilityConfig 是 provider.capability 显式能力声明块（V1.4）：
-// 为内建目录之外的模型声明工具调用、流式 usage 与可选的上下文/输出上限。
+// ProviderCapabilityConfig 是 provider.capability 显式能力声明块：
+// 为所用模型声明工具调用、流式 usage 与可选的上下文/输出上限；能力事实
+// 只来自配置，编译期不携带模型目录。
 // ToolCalls 与 StreamingUsage 必须显式为 true——Cairn 唯一生产路径依赖两者，
 // 省缺即假值会在配置校验时失败关闭；上限 0 表示未声明。
 type ProviderCapabilityConfig struct {

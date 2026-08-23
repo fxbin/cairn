@@ -9,11 +9,9 @@ import (
 // providerCardSchemaV1 是 Provider Capability Card 的当前产品合同版本。
 const providerCardSchemaV1 = 1
 
-// ProviderCardSourceConfig 表示卡来自用户显式配置声明。
+// ProviderCardSourceConfig 表示卡来自用户显式配置声明；能力模型不进编译期
+// 代码，配置是唯一来源。
 const ProviderCardSourceConfig = "config"
-
-// ProviderCardSourceBuiltin 表示卡来自编译期内建目录。
-const ProviderCardSourceBuiltin = "builtin"
 
 // providerCardProtocolChatCompletions 限定当前唯一生产线协议。
 const providerCardProtocolChatCompletions = "openai-chat-completions"
@@ -48,20 +46,10 @@ type ProviderCapabilityCard struct {
 	Source              string   `json:"source"`
 }
 
-// builtinProviderCards 是编译期内建能力目录，只登记在本仓库真实基准中用过
-// 且由 openaicompat 契约测试验证过工具调用与流式 usage 的模型；上下文/输出
-// 上限没有可信来源，保持未声明。目录演进必须递增 BuiltinProviderCardCatalogVersion。
-var builtinProviderCards = map[string]ProviderCapabilityCard{
-	"deepseek-v4-flash": {ToolCalls: true, StreamingUsage: true},
-	"glm-5.2":           {ToolCalls: true, StreamingUsage: true},
-}
-
-// BuiltinProviderCardCatalogVersion 标识内建目录的当前版本。
-const BuiltinProviderCardCatalogVersion = 1
-
-// ResolveProviderCard 按固定优先级解析能力卡：显式配置声明 > 内建目录 >
-// 失败关闭。Cairn 唯一生产路径依赖工具调用与流式 usage，声明任一为假即
-// 拒绝启动；未知模型必须显式声明，不做静默降级或网络目录查询。
+// ResolveProviderCard 按固定优先级解析能力卡：显式配置声明 > 失败关闭。
+// Cairn 唯一生产路径依赖工具调用与流式 usage，声明任一为假即拒绝启动；
+// 模型能力不由编译期目录承载，未声明一律要求显式配置，不做静默降级或
+// 网络目录查询。
 func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclaration) (ProviderCapabilityCard, error) {
 	if kind != ProviderKindOpenAICompatible {
 		return ProviderCapabilityCard{}, fmt.Errorf("provider kind %q has no capability contract", kind)
@@ -85,16 +73,7 @@ func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclara
 		}
 		return card, nil
 	}
-	if builtin, found := builtinProviderCards[model]; found {
-		builtin.SchemaVersion = providerCardSchemaV1
-		builtin.ProviderKind = kind
-		builtin.Model = model
-		builtin.Protocol = providerCardProtocolChatCompletions
-		builtin.StopReasons = append([]string(nil), chatCompletionStopReasons...)
-		builtin.Source = ProviderCardSourceBuiltin
-		return builtin, nil
-	}
-	return ProviderCapabilityCard{}, fmt.Errorf("provider capability unknown for model %q: declare provider.capability in the workspace config (V1.4 fail-closed contract)", model)
+	return ProviderCapabilityCard{}, fmt.Errorf("provider capability unknown for model %q: declare provider.capability with tool_calls and streaming_usage in the workspace config", model)
 }
 
 // ValidateBudget 用已声明上限对照执行预算：估算输入上限不得超过声明上下文

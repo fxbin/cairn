@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// TestResolveProviderCardPrefersDeclarationOverBuiltin 锁定解析优先级：
-// 显式声明优先（即使与内建同名），未声明时回退内建目录，两者皆无则失败关闭。
-func TestResolveProviderCardPrefersDeclarationOverBuiltin(t *testing.T) {
+// TestResolveProviderCardRequiresExplicitDeclaration 锁定解析边界：显式声明
+// 产出 config 卡；未声明时任何模型都失败关闭（编译期无模型目录），报错
+// 给出可操作的配置指引。
+func TestResolveProviderCardRequiresExplicitDeclaration(t *testing.T) {
 	declared := &ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true, ContextWindowTokens: 131072, StopReasons: []string{"stop", "stop", "length"}}
 	card, err := ResolveProviderCard(ProviderKindOpenAICompatible, "glm-5.2", declared)
 	if err != nil {
@@ -16,19 +17,10 @@ func TestResolveProviderCardPrefersDeclarationOverBuiltin(t *testing.T) {
 	if card.Source != ProviderCardSourceConfig || card.ContextWindowTokens != 131072 || len(card.StopReasons) != 2 || card.StopReasons[0] != "length" {
 		t.Fatalf("declared card = %#v", card)
 	}
-	builtin, err := ResolveProviderCard(ProviderKindOpenAICompatible, "deepseek-v4-flash", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if builtin.Source != ProviderCardSourceBuiltin || !builtin.ToolCalls || !builtin.StreamingUsage || builtin.ContextWindowTokens != 0 || builtin.SchemaVersion != 1 || builtin.Protocol != "openai-chat-completions" || builtin.ProviderKind != ProviderKindOpenAICompatible {
-		t.Fatalf("builtin card = %#v", builtin)
-	}
-	if len(builtin.StopReasons) != 4 || builtin.StopReasons[0] != "content_filter" {
-		t.Fatalf("builtin stop reasons = %#v", builtin.StopReasons)
-	}
-	_, err = ResolveProviderCard(ProviderKindOpenAICompatible, "totally-unknown-model", nil)
-	if err == nil || !strings.Contains(err.Error(), "declare provider.capability") {
-		t.Fatalf("unknown model must fail closed with actionable error: %v", err)
+	for _, model := range []string{"deepseek-v4-flash", "glm-5.2", "totally-unknown-model"} {
+		if _, err := ResolveProviderCard(ProviderKindOpenAICompatible, model, nil); err == nil || !strings.Contains(err.Error(), "declare provider.capability") {
+			t.Fatalf("model %q without declaration must fail closed with actionable error: %v", model, err)
+		}
 	}
 }
 
