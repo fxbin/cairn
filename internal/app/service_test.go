@@ -334,7 +334,9 @@ func TestServicePersistsBudgetFailureWhenWallTimeExpires(t *testing.T) {
 	provider := &waitForDeadlineProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 	configuration := config.Defaults()
-	configuration.Budget.MaxWallTime = "20ms"
+	// 预算需覆盖 race/慢盘下的 Boot 装配耗时，保证断言的"过期发生在模型调用
+	// 期间"稳定成立；provider 阻塞到截止再返回，测试时长受此值控制。
+	configuration.Budget.MaxWallTime = "2s"
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	result, err := service.Run(context.Background(), RunOptions{Task: "wait", Workspace: workspace, StateDir: stateDir, Config: configuration})
 	var exceeded *agent.BudgetExceededError
