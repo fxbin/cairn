@@ -10,6 +10,7 @@
 ## 模块地图
 
 - `internal/domain/`：事件、闭合 payload schema、哈希链与 Run 投影/replay。
+- `internal/contract/`：普通 Run 与 benchmark 共用的版本化产品合同（TaskSpec、RunManifest、Result 与统一失败分类）；全部为事件与冻结配置制品的只读投影，不得成为第二事实源或携带密钥、任务正文、完整路径或 verifier 内容。
 - `internal/ports/`：Provider 与 Journal 的端口；Domain 不依赖 CLI、HTTP、SQLite 或文件系统。
 - `internal/adapters/`：SQLite/内存 Journal，以及 OpenAI-compatible 流式 Chat Completions Provider。
 - `internal/tools/`：固定工具注册表；只读工具为 `list_files`、`read_file`、`search_text`，副作用工具为 `apply_patch`、`exec_command`。
@@ -20,7 +21,7 @@
 - `internal/lock/`：工作区排他锁；当前 Unix 实现面向 Darwin/Linux。
 - `internal/benchmark/`：本地任务合同解析、独立 clone runner 与非敏感结果 schema；不处理模型训练或调参数据。
 - `benchmarks/`：个人本地评测任务、verifier、冻结配置、结果与一次性工作区；整个目录必须忽略且不得进入版本库。
-- `test/integration/`、`test/e2e/`、`test/fault/`：分别覆盖真实 HTTP/SQLite 集成、四个离线 fixture 和故障边界。
+- `test/integration/`、`test/e2e/`、`test/fault/`：分别覆盖真实 HTTP/SQLite 集成、四个离线 fixture 和故障边界；`test/contract/` 锁定普通 Run 与 benchmark 的统一合同投影一致性。
 
 ## 开发约束
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,13 +15,14 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
 func TestClassifyFailurePreservesLoopGuardReason(t *testing.T) {
-	classification := classifyFailure(&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
+	classification := contract.ClassifyError(&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
 	if classification != "loop_guard_periodic_turn_cycle" {
 		t.Fatalf("classification = %q", classification)
 	}
@@ -369,7 +369,7 @@ func TestApplyPrivateVerifierRecordsDigestWithoutPublicContent(t *testing.T) {
 	}
 }
 
-func TestMetricsFromEventsUsesPersistedUsageOnly(t *testing.T) {
+func TestObservationsFromEventsDeriveBenchmarkOnlyMetrics(t *testing.T) {
 	events := []domain.Event{
 		{Type: domain.EventTurnOpened},
 		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"answer.txt"}}`)},
@@ -379,15 +379,13 @@ func TestMetricsFromEventsUsesPersistedUsageOnly(t *testing.T) {
 		{Type: domain.EventVerificationStarted},
 		{Type: domain.EventModelResponseFinished, Payload: json.RawMessage(`{"usage":{"prompt_tokens":5,"completion_tokens":7}}`)},
 	}
-	configuration := config.Defaults()
-	configuration.Pricing = config.PricingConfig{InputTokenUSD: 0.1, OutputTokenUSD: 0.2}
-	metrics := metricsFromEvents(events, configuration)
-	if metrics.Turns != 1 || metrics.ToolCalls != 3 || metrics.InputTokens != 5 || metrics.OutputTokens != 7 || math.Abs(metrics.CostUSD-1.9) > 1e-9 || metrics.FirstPatchTurn != 1 || metrics.FirstVerificationTurn != 1 || metrics.ContextCompactions != 1 || metrics.RepeatedReadSearchCalls != 1 || metrics.ZeroPatchTurnsBudgetExhausted {
-		t.Fatalf("metrics=%#v", metrics)
+	observations := observationsFromEvents(events)
+	if observations.FirstPatchTurn != 1 || observations.FirstVerificationTurn != 1 || observations.RepeatedReadSearchCalls != 1 || observations.ZeroPatchTurnsBudgetExhausted {
+		t.Fatalf("observations=%#v", observations)
 	}
 }
 
-func TestMetricsFromEventsClassifiesZeroPatchTurnsBudgetExhaustion(t *testing.T) {
+func TestObservationsFromEventsClassifiesZeroPatchTurnsBudgetExhaustion(t *testing.T) {
 	tests := []struct {
 		name   string
 		events []domain.Event
@@ -428,15 +426,15 @@ func TestMetricsFromEventsClassifiesZeroPatchTurnsBudgetExhaustion(t *testing.T)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			metrics := metricsFromEvents(test.events, config.Defaults())
-			if metrics.ZeroPatchTurnsBudgetExhausted != test.want {
-				t.Fatalf("ZeroPatchTurnsBudgetExhausted=%t want %t", metrics.ZeroPatchTurnsBudgetExhausted, test.want)
+			observations := observationsFromEvents(test.events)
+			if observations.ZeroPatchTurnsBudgetExhausted != test.want {
+				t.Fatalf("ZeroPatchTurnsBudgetExhausted=%t want %t", observations.ZeroPatchTurnsBudgetExhausted, test.want)
 			}
 		})
 	}
 }
 
-func TestMetricsFromEventsCanonicalizesObjectArgumentsAndSkipsInvalidArguments(t *testing.T) {
+func TestObservationsCanonicalizeObjectArgumentsAndSkipInvalidArguments(t *testing.T) {
 	events := []domain.Event{
 		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"answer.txt","options":{"after":2,"before":1}}}`)},
 		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"options":{"before":1,"after":2},"path":"answer.txt"}}`)},
@@ -444,9 +442,87 @@ func TestMetricsFromEventsCanonicalizesObjectArgumentsAndSkipsInvalidArguments(t
 		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":"not-an-object"}`)},
 		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":["not-an-object"]}`)},
 	}
-	metrics := metricsFromEvents(events, config.Defaults())
-	if metrics.ToolCalls != len(events) || metrics.RepeatedReadSearchCalls != 1 {
-		t.Fatalf("metrics=%#v", metrics)
+	observations := observationsFromEvents(events)
+	if observations.RepeatedReadSearchCalls != 1 {
+		t.Fatalf("observations=%#v", observations)
+	}
+}
+
+// TestAttemptResultEmbedsUnifiedContract 锁定 benchmark 尝试与普通 Run 共用的
+// 产品合同投影：任务身份、配置指纹、Provider、终态与完成证据都由
+// contract.Result 携带，且不泄漏任务正文或本地路径。
+func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
+	source, baseline := localGitRepository(t)
+	pack := testPack(source, baseline)
+	output := t.TempDir()
+	runner := qualificationRunner()
+	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "test-model"
+	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
+	configuration.Policy.Write, configuration.Policy.Exec = "allow", "allow"
+	t.Setenv(configuration.Provider.APIKeyEnv, "test-key")
+	report, err := runner.Run(context.Background(), RunOptions{
+		Pack: pack, Attempts: 1, Configuration: configuration, ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+	})
+	if err != nil || len(report.Results) != 1 {
+		t.Fatalf("report=%#v err=%v", report, err)
+	}
+	attempt := report.Results[0]
+	if attempt.SchemaVersion != 2 || attempt.Run == nil {
+		t.Fatalf("attempt schema=%d run=%#v", attempt.SchemaVersion, attempt.Run)
+	}
+	manifest := attempt.Run.Manifest
+	if manifest.Task.Kind != contract.TaskKindBenchmark || manifest.Task.Benchmark == nil || manifest.Task.Benchmark.TaskID != "LOCAL-001" || manifest.Task.Benchmark.TaskPackFingerprint != pack.Fingerprint() || manifest.Task.Benchmark.VerifierFingerprint != "sha256:test-verifier" || manifest.Task.Benchmark.SourceRevision != baseline {
+		t.Fatalf("task spec=%#v", manifest.Task)
+	}
+	if manifest.RunID == "" || manifest.WorkspaceHash == "" || manifest.ConfigFingerprint == "" || manifest.Build.Fingerprint == "" {
+		t.Fatalf("manifest identity incomplete: %#v", manifest)
+	}
+	if manifest.Provider.Kind != contract.ProviderKindOpenAICompatible || manifest.Provider.BaseURL != "https://example.invalid/v1" || manifest.Provider.Model != "test-model" {
+		t.Fatalf("provider identity=%#v", manifest.Provider)
+	}
+	if manifest.Preset != config.PresetBenchmark || manifest.Policy.Write != "allow" || manifest.Policy.Exec != "allow" {
+		t.Fatalf("preset/policy identity=%#v", manifest)
+	}
+	if attempt.Run.State != string(domain.RunCompleted) || attempt.Run.FailureClass != "" || !attempt.Run.Evidence.Trusted {
+		t.Fatalf("run outcome=%#v", attempt.Run)
+	}
+	// 统一合同（Task/Run 投影）不得携带任务正文、本地路径或密钥；信封中
+	// Workspace/StateDir 是既有本地私有结果字段，仅留在被忽略的结果目录。
+	contractOnly, err := json.Marshal(struct {
+		Task contract.TaskSpec `json:"task"`
+		Run  *contract.Result  `json:"run"`
+	}{Task: attempt.Task, Run: attempt.Run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"修复本地测试任务", attempt.Workspace, attempt.StateDir, "test-key"} {
+		if strings.Contains(string(contractOnly), forbidden) {
+			t.Fatalf("unified contract leaked %q", forbidden)
+		}
+	}
+	if encoded, err := json.Marshal(attempt); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(encoded), "修复本地测试任务") || strings.Contains(string(encoded), "test-key") {
+		t.Fatal("attempt envelope leaked task prompt or credential")
+	}
+}
+
+// TestAttemptResultDecodesSchemaV1Files 锁定旧 schema 1 结果文件仍可解码：
+// 升级不破坏既有本地结果的可读性，运行期字段自然为零值。
+func TestAttemptResultDecodesSchemaV1Files(t *testing.T) {
+	legacy := []byte(`{"schema_version":1,"task_id":"LOCAL-001","attempt":1,"outcome":"failed","failure_class":"budget_turns","workspace":"/tmp/w","state_dir":"/tmp/s","task_pack_fingerprint":"sha256:x","config_fingerprint":"sha256:y","provider_base_url":"https://old.invalid/v1","model":"old-model","run_id":"run-1","run_state":"failed","verification_succeeded":false,"doctor_ok":true,"metrics":{"turns":40,"tool_calls":10,"input_tokens":100,"output_tokens":20,"cost_usd":0.5}}`)
+	var attempt AttemptResult
+	if err := json.Unmarshal(legacy, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if attempt.SchemaVersion != 1 || attempt.TaskID != "LOCAL-001" || attempt.Outcome != "failed" || attempt.FailureClass != "budget_turns" || !attempt.DoctorOK {
+		t.Fatalf("decoded legacy attempt=%#v", attempt)
+	}
+	if attempt.Run != nil {
+		t.Fatalf("legacy file must not invent a contract result: %#v", attempt.Run)
 	}
 }
 

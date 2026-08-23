@@ -18,9 +18,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -112,47 +113,39 @@ type preparedAttempt struct {
 }
 
 // AttemptResult 保存一次 clone、bootstrap、Agent 运行、验证和诊断的非敏感事实。
+// SchemaVersion 2 起运行期身份与结果统一由 contract.TaskSpec 与 contract.Result
+// 携带（与普通 Run 共用同一产品合同投影），本结构只保留基准特有的事实。
 type AttemptResult struct {
-	SchemaVersion         int          `json:"schema_version"`
-	TaskID                string       `json:"task_id"`
-	Attempt               int          `json:"attempt"`
-	StartedAt             time.Time    `json:"started_at"`
-	FinishedAt            time.Time    `json:"finished_at"`
-	Outcome               string       `json:"outcome"`
-	FailureClass          string       `json:"failure_class,omitempty"`
-	Error                 string       `json:"error,omitempty"`
-	Workspace             string       `json:"workspace"`
-	StateDir              string       `json:"state_dir"`
-	SourceRevision        string       `json:"source_revision,omitempty"`
-	TaskPackFingerprint   string       `json:"task_pack_fingerprint"`
-	VerifierFingerprint   string       `json:"verifier_fingerprint,omitempty"`
-	ConfigFingerprint     string       `json:"config_fingerprint,omitempty"`
-	ProviderBaseURL       string       `json:"provider_base_url,omitempty"`
-	Model                 string       `json:"model,omitempty"`
-	DockerImage           string       `json:"docker_image,omitempty"`
-	BootstrapDurationMS   int64        `json:"bootstrap_duration_ms"`
-	AgentDurationMS       int64        `json:"agent_duration_ms"`
-	RunID                 domain.RunID `json:"run_id,omitempty"`
-	RunState              string       `json:"run_state,omitempty"`
-	VerificationSucceeded bool         `json:"verification_succeeded"`
-	DoctorOK              bool         `json:"doctor_ok"`
-	Metrics               RunMetrics   `json:"metrics"`
-	DiffPath              string       `json:"diff_path,omitempty"`
-	DiffSHA256            string       `json:"diff_sha256,omitempty"`
+	SchemaVersion       int               `json:"schema_version"`
+	TaskID              string            `json:"task_id"`
+	Attempt             int               `json:"attempt"`
+	StartedAt           time.Time         `json:"started_at"`
+	FinishedAt          time.Time         `json:"finished_at"`
+	Outcome             string            `json:"outcome"`
+	FailureClass        string            `json:"failure_class,omitempty"`
+	Error               string            `json:"error,omitempty"`
+	Workspace           string            `json:"workspace"`
+	StateDir            string            `json:"state_dir"`
+	Task                contract.TaskSpec `json:"task_spec"`
+	Run                 *contract.Result  `json:"run,omitempty"`
+	DoctorOK            bool              `json:"doctor_ok"`
+	Observations        AttemptMetrics    `json:"observations"`
+	BootstrapDurationMS int64             `json:"bootstrap_duration_ms"`
+	AgentDurationMS     int64             `json:"agent_duration_ms"`
+	DiffPath            string            `json:"diff_path,omitempty"`
+	DiffSHA256          string            `json:"diff_sha256,omitempty"`
 }
 
-// RunMetrics 从持久化事件汇总轮次、工具调用、token 与按冻结单价计算的成本。
-type RunMetrics struct {
-	Turns                         int     `json:"turns"`
-	ToolCalls                     int     `json:"tool_calls"`
-	InputTokens                   int     `json:"input_tokens"`
-	OutputTokens                  int     `json:"output_tokens"`
-	CostUSD                       float64 `json:"cost_usd"`
+// AttemptMetrics 只保存基准特有、不属于核心运行合同的观测：首次 patch、
+// 首次验证所在轮次、重复探索、零 patch 耗尽轮次预算，以及按冻结单价由
+// contract.Result 的 token 事实换算的成本。轮次与 token 总量以
+// Run.Metrics 为准，避免两处统计互相漂移。
+type AttemptMetrics struct {
 	FirstPatchTurn                int     `json:"first_patch_turn,omitempty"`
 	FirstVerificationTurn         int     `json:"first_verification_turn,omitempty"`
-	ContextCompactions            int     `json:"context_compactions"`
 	RepeatedReadSearchCalls       int     `json:"repeated_read_search_calls"`
 	ZeroPatchTurnsBudgetExhausted bool    `json:"zero_patch_turns_budget_exhausted"`
+	CostUSD                       float64 `json:"cost_usd"`
 }
 
 // Run 执行所选任务的每次独立尝试；单次失败会写入结果并继续，只有合同或本地环境错误才返回 error。
@@ -311,7 +304,20 @@ func (runner Runner) prepareAgentAttempt(ctx context.Context, options RunOptions
 	}
 	preparation.Outcome = "prepared"
 	preparation = preparation.finish(runner.now())
-	attemptResult := AttemptResult{SchemaVersion: 1, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, StateDir: stateDirectory, SourceRevision: revision, TaskPackFingerprint: report.TaskPackFingerprint, VerifierFingerprint: verifierFingerprint, ConfigFingerprint: configuration.Fingerprint(), ProviderBaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, DockerImage: configuration.Sandbox.DockerImage, BootstrapDurationMS: preparation.BootstrapDurationMS}
+	// 任务身份在准备阶段即冻结：TaskPack、套件、基线与 verifier 摘要组成
+	// contract.TaskSpec 的 benchmark 投影，prompt 摘要与正式 Agent 提示同源。
+	taskSpec := contract.BenchmarkTaskSpec(task.AgentPrompt(), contract.BenchmarkTaskRef{
+		TaskID:              task.ID,
+		SuiteID:             report.SuiteRunID,
+		TaskPackFingerprint: report.TaskPackFingerprint,
+		RepositoryName:      task.Repository.Name,
+		RepositoryURL:       task.Repository.URL,
+		BaselineCommit:      task.Repository.BaselineCommit,
+		SourceRevision:      revision,
+		VerifierFingerprint: verifierFingerprint,
+		DockerImage:         task.Runtime.DockerImage,
+	})
+	attemptResult := AttemptResult{SchemaVersion: 2, TaskID: task.ID, Attempt: attempt, StartedAt: started, Outcome: "failed", Workspace: workspace, StateDir: stateDirectory, Task: taskSpec, BootstrapDurationMS: preparation.BootstrapDurationMS}
 	return preparedAttempt{Task: task, Attempt: attempt, Result: attemptResult, Configuration: configuration}, preparation
 }
 
@@ -362,19 +368,28 @@ func (runner Runner) qualifyAttempt(ctx context.Context, options RunOptions, rep
 
 // runPreparedAttempt 只在 prepareAgentAttempt 已完整成功后调用 Provider；它
 // 不再执行 clone、verifier、bootstrap 或镜像检查，从而使这些环境失败无法进入
-// Agent 计分结果。
+// Agent 计分结果。运行期身份与结果统一经 contract.ResultFromRun 投影，与普通
+// Run 共用同一产品合同构造器。
 func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAttempt, resultDirectory string) AttemptResult {
 	result := prepared.Result
 	agentStarted := runner.now()
 	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: prepared.Task.AgentPrompt(), Workspace: result.Workspace, StateDir: result.StateDir, Config: prepared.Configuration})
 	result.AgentDurationMS = runner.now().Sub(agentStarted).Milliseconds()
-	result.RunID = run.ID
+	completedVerified := false
 	if run.ID != "" {
 		inspected, inspectErr := runner.Service.Inspect(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID, true)
 		if inspectErr == nil {
-			result.RunState = inspected.Projection.Phase()
-			result.VerificationSucceeded = inspected.Projection.VerificationSucceeded
-			result.Metrics = metricsFromEvents(inspected.Events, prepared.Configuration)
+			completedVerified = inspected.Projection.State == domain.RunCompleted && inspected.Projection.VerificationSucceeded
+			if frozen, frozenErr := json.Marshal(prepared.Configuration); frozenErr == nil {
+				// 与普通 Run 的 config_ref 制品同构：投影输入同样经过结构化
+				// 脱敏，避免两路径在凭据式字段值上产生漂移或泄漏。
+				frozen = artifact.RedactJSON(frozen)
+				if runResult, contractErr := contract.ResultFromRun(inspected.Events, inspected.Projection, prepared.Result.Task, frozen); contractErr == nil {
+					result.Run = &runResult
+					result.Observations.CostUSD = float64(runResult.Metrics.InputTokens)*prepared.Configuration.Pricing.InputTokenUSD + float64(runResult.Metrics.OutputTokens)*prepared.Configuration.Pricing.OutputTokenUSD
+				}
+			}
+			result.Observations = mergeObservations(result.Observations, observationsFromEvents(inspected.Events))
 		}
 		if _, doctorErr := runner.Service.Doctor(context.Background(), result.Workspace, result.StateDir, prepared.Configuration); doctorErr == nil {
 			result.DoctorOK = true
@@ -384,13 +399,23 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 	}
 	result = result.finish(runner.now())
 	if runErr != nil {
-		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(classifyFailure(runErr), runErr))
+		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(contract.ClassifyError(runErr), runErr))
 	}
-	if result.RunState != string(domain.RunCompleted) || !result.VerificationSucceeded || !result.DoctorOK {
-		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail("verification", errors.New("run did not complete with verified and healthy state")))
+	if result.Run == nil || !completedVerified || !result.DoctorOK {
+		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(contract.FailureVerification, errors.New("run did not complete with verified and healthy state")))
 	}
 	result.Outcome = "passed"
 	return runner.captureDiff(ctx, result.Workspace, resultDirectory, result)
+}
+
+// mergeObservations 把事件推导的基准观测合并进已含成本的结果；成本来自
+// contract.Result 的 token 事实，事件侧只补轮次类观测，互不覆盖来源。
+func mergeObservations(target AttemptMetrics, derived AttemptMetrics) AttemptMetrics {
+	target.FirstPatchTurn = derived.FirstPatchTurn
+	target.FirstVerificationTurn = derived.FirstVerificationTurn
+	target.RepeatedReadSearchCalls = derived.RepeatedReadSearchCalls
+	target.ZeroPatchTurnsBudgetExhausted = derived.ZeroPatchTurnsBudgetExhausted
+	return target
 }
 
 // applyPrivateVerifier 将 evaluator-only patch 应用于 disposable clone；补丁内容
@@ -814,32 +839,32 @@ func validatePrepareProxy(value string) error {
 	return nil
 }
 
-// metricsFromEvents 汇总持久化事实，避免从模型文本或 CLI 输出猜测资源消耗。
-func metricsFromEvents(events []domain.Event, configuration config.Config) RunMetrics {
-	var metrics RunMetrics
+// observationsFromEvents 从持久化事件推导基准特有观测（首次 patch/验证轮次、
+// 重复探索与零 patch 耗尽轮次预算）；轮次与 token 总量属于核心合同，由
+// contract.ResultFromRun 统计，此处不重复计数。
+func observationsFromEvents(events []domain.Event) AttemptMetrics {
+	var observations AttemptMetrics
 	currentTurn := 0
 	turnsBudgetExhausted := false
 	seenReadSearch := make(map[string]struct{})
 	for _, event := range events {
 		switch event.Type {
 		case domain.EventTurnOpened:
-			metrics.Turns++
-			currentTurn = metrics.Turns
+			currentTurn++
 		case domain.EventToolCallProposed:
-			metrics.ToolCalls++
 			var payload struct {
 				ToolName  string          `json:"tool_name"`
 				Arguments json.RawMessage `json:"arguments"`
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil {
-				if payload.ToolName == "apply_patch" && metrics.FirstPatchTurn == 0 {
-					metrics.FirstPatchTurn = currentTurn
+				if payload.ToolName == "apply_patch" && observations.FirstPatchTurn == 0 {
+					observations.FirstPatchTurn = currentTurn
 				}
 				if payload.ToolName == "read_file" || payload.ToolName == "search_text" {
 					if arguments, valid := canonicalJSONObject(payload.Arguments); valid {
 						key := payload.ToolName + "\x00" + arguments
 						if _, repeated := seenReadSearch[key]; repeated {
-							metrics.RepeatedReadSearchCalls++
+							observations.RepeatedReadSearchCalls++
 						} else {
 							seenReadSearch[key] = struct{}{}
 						}
@@ -847,21 +872,8 @@ func metricsFromEvents(events []domain.Event, configuration config.Config) RunMe
 				}
 			}
 		case domain.EventVerificationStarted:
-			if metrics.FirstVerificationTurn == 0 {
-				metrics.FirstVerificationTurn = currentTurn
-			}
-		case domain.EventContextCompacted:
-			metrics.ContextCompactions++
-		case domain.EventModelResponseFinished:
-			var payload struct {
-				Usage *struct {
-					PromptTokens     int `json:"prompt_tokens"`
-					CompletionTokens int `json:"completion_tokens"`
-				} `json:"usage"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.Usage != nil {
-				metrics.InputTokens += payload.Usage.PromptTokens
-				metrics.OutputTokens += payload.Usage.CompletionTokens
+			if observations.FirstVerificationTurn == 0 {
+				observations.FirstVerificationTurn = currentTurn
 			}
 		case domain.EventRunFailed:
 			var payload struct {
@@ -872,9 +884,8 @@ func metricsFromEvents(events []domain.Event, configuration config.Config) RunMe
 			}
 		}
 	}
-	metrics.CostUSD = float64(metrics.InputTokens)*configuration.Pricing.InputTokenUSD + float64(metrics.OutputTokens)*configuration.Pricing.OutputTokenUSD
-	metrics.ZeroPatchTurnsBudgetExhausted = turnsBudgetExhausted && metrics.FirstPatchTurn == 0
-	return metrics
+	observations.ZeroPatchTurnsBudgetExhausted = turnsBudgetExhausted && observations.FirstPatchTurn == 0
+	return observations
 }
 
 // canonicalJSONObject 对工具参数递归按 key 排序，确保 JSON 对象成员顺序不影响
@@ -954,30 +965,6 @@ func appendCanonicalJSON(buffer *bytes.Buffer, value any) error {
 		}
 		buffer.Write(encoded)
 		return nil
-	}
-}
-
-// classifyFailure 将可恢复暂停、策略、预算、循环熔断与执行异常归入基准汇总类别。
-func classifyFailure(err error) string {
-	var waiting *agent.WaitingApprovalError
-	var denied *agent.PolicyDeniedError
-	var exhausted *agent.BudgetExceededError
-	var guarded *agent.LoopGuardExceededError
-	switch {
-	case errors.As(err, &waiting):
-		return "approval"
-	case errors.As(err, &denied):
-		return "policy"
-	case errors.As(err, &exhausted):
-		return "budget_" + exhausted.Dimension
-	case errors.As(err, &guarded):
-		return "loop_guard_" + guarded.Reason
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "cancelled"
-	default:
-		return "agent"
 	}
 }
 
