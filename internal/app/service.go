@@ -20,6 +20,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
@@ -55,10 +56,12 @@ type RunOptions struct {
 	OnEvent   EventSink
 }
 
-// RunResult 返回运行标识与可呈现的最终回复。
+// RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
+// 版本化产品合同 Result；投影失败时 Result 为 nil，但不掩盖运行本身的错误。
 type RunResult struct {
 	ID       domain.RunID
 	Response string
+	Result   *contract.Result
 }
 
 // ResumeOptions 描述恢复既有运行与可选审批决定所需的输入。
@@ -95,12 +98,13 @@ type AbortOptions struct {
 	OnEvent   EventSink
 }
 
-// InspectResult 包含当前投影、诊断摘要以及按需附带的完整事件列表；人类视图与
-// --json 机器视图来自同一投影。
+// InspectResult 包含当前投影、诊断摘要、运行身份 manifest 以及按需附带的
+// 完整事件列表；人类视图与 --json 机器视图来自同一投影。
 type InspectResult struct {
-	Projection domain.RunProjection `json:"projection"`
-	Summary    RunSummary           `json:"summary"`
-	Events     []domain.Event       `json:"events,omitempty"`
+	Projection domain.RunProjection  `json:"projection"`
+	Summary    RunSummary            `json:"summary"`
+	Manifest   *contract.RunManifest `json:"manifest,omitempty"`
+	Events     []domain.Event        `json:"events,omitempty"`
 }
 
 // Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
@@ -173,10 +177,27 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
 	}
+	// 运行结束（成功或失败）都从已持久化事件投影产品合同 Result；读取使用
+	// 独立上下文，保证取消/墙钟耗尽路径仍能完成投影。原运行错误优先上报。
+	contractResult, contractErr := projectRunResult(context.Background(), boot.Journal, options.StateDir, boot.WorkspaceHash, runID)
 	if err != nil {
-		return RunResult{ID: runID}, err
+		return RunResult{ID: runID, Result: contractResultOrNil(contractResult, contractErr)}, err
 	}
-	return RunResult{ID: result.RunID, Response: result.Response}, nil
+	// 运行已成功持久化终态时，投影失败不得把成功改报为失败（事件是唯一
+	// 事实源）；降级为无合同附件的成功结果，诊断侧仍可经 inspect 复核。
+	if contractErr != nil {
+		return RunResult{ID: result.RunID, Response: result.Response}, nil
+	}
+	return RunResult{ID: result.RunID, Response: result.Response, Result: &contractResult}, nil
+}
+
+// contractResultOrNil 在投影失败时返回 nil 而不是零值，避免把半成品合同
+// 误当有效结果；调用方仍以原始运行错误为首要上报事实。
+func contractResultOrNil(result contract.Result, err error) *contract.Result {
+	if err != nil {
+		return nil
+	}
+	return &result
 }
 
 // Inspect 只读加载指定运行，验证完整性后返回投影与可选事件历史。
@@ -205,6 +226,11 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	result := InspectResult{Projection: projection, Summary: SummarizeRun(events, projection)}
+	if manifest, manifestErr := runManifest(events, projection, stateDir, hash); manifestErr == nil {
+		result.Manifest = &manifest
+	} else {
+		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, manifestErr)
+	}
 	if includeEvents {
 		result.Events = events
 	}

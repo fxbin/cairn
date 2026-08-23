@@ -8,12 +8,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
@@ -165,6 +167,51 @@ func TestServiceRunThenInspect(t *testing.T) {
 	}
 	if inspected.Projection.ConfigFingerprint != payload.ConfigFingerprint || inspected.Projection.Build == nil || *inspected.Projection.Build != *payload.Build {
 		t.Fatalf("run identity did not replay: projection=%+v payload=%+v", inspected.Projection, payload)
+	}
+}
+
+// TestServiceRunProjectsUnifiedContractResult 锁定普通 Run 的 V1.1 产品合同
+// 投影：Run 返回的 contract.Result 与事后 Inspect 的 manifest 来自同一
+// 构造器，字段一致且不泄漏任务正文或本地路径。
+func TestServiceRunProjectsUnifiedContractResult(t *testing.T) {
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "test-model"
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	result, err := service.Run(context.Background(), RunOptions{Task: "answer the question", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result == nil {
+		t.Fatal("run must project a unified contract result")
+	}
+	manifest := result.Result.Manifest
+	if manifest.RunID != result.ID || manifest.Task.Kind != contract.TaskKindFreeform || manifest.Task.PromptDigest == "" {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+	if manifest.ConfigFingerprint != configuration.Fingerprint() || manifest.Provider.Kind != contract.ProviderKindOpenAICompatible || manifest.Provider.BaseURL != "https://example.invalid/v1" || manifest.Provider.Model != "test-model" {
+		t.Fatalf("manifest identity=%#v", manifest)
+	}
+	if manifest.Build.Fingerprint == "" || manifest.Preset != config.PresetCoding {
+		t.Fatalf("manifest build/preset=%#v", manifest)
+	}
+	if result.Result.State != string(domain.RunCompleted) || !result.Result.Evidence.Trusted {
+		t.Fatalf("result=%#v", result.Result)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+	if err != nil || inspected.Manifest == nil {
+		t.Fatalf("inspect=%#v err=%v", inspected, err)
+	}
+	if !reflect.DeepEqual(*inspected.Manifest, manifest) {
+		t.Fatalf("inspect manifest drifted from run projection:\ninspect=%#v\nrun=%#v", *inspected.Manifest, manifest)
+	}
+	encoded, err := json.Marshal(result.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "answer the question") || strings.Contains(string(encoded), workspace) || strings.Contains(string(encoded), stateDir) {
+		t.Fatalf("contract result leaked prompt or local paths: %s", encoded)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -314,9 +315,9 @@ func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSum
 		}
 	}
 	summary.LastMutationSeq = projection.LastMutationSeq
-	summary.StopReason = terminalStopReason(events)
+	summary.StopReason = contract.TerminalStopReason(events)
 	summary.NextAction = nextActionFor(projection)
-	summary.CompletionTrusted = projection.State == domain.RunCompleted && projection.VerificationSucceeded && projection.LastVerificationSeq != 0 && (projection.LastMutationSeq == 0 || projection.LastVerificationSeq > projection.LastMutationSeq)
+	summary.CompletionTrusted = contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq)
 	return summary
 }
 
@@ -327,46 +328,6 @@ func cloneBuildIdentity(identity *domain.BuildIdentity) *domain.BuildIdentity {
 	}
 	copy := *identity
 	return &copy
-}
-
-// terminalStopReason 从终态事件提取人可读的停止原因；仅读取已脱敏的持久化文本。
-func terminalStopReason(events []domain.Event) string {
-	for index := len(events) - 1; index >= 0; index-- {
-		event := events[index]
-		switch event.Type {
-		case domain.EventRunFailed:
-			var payload struct {
-				Error      string `json:"error"`
-				ErrorClass string `json:"error_class"`
-				Budget     string `json:"budget_dimension"`
-			}
-			if json.Unmarshal(event.Payload, &payload) != nil {
-				return "run failed"
-			}
-			reason := payload.ErrorClass
-			if reason == "" {
-				reason = payload.Budget
-			}
-			if reason == "" {
-				reason = payload.Error
-			}
-			if reason == "" {
-				reason = "run failed"
-			}
-			return reason
-		case domain.EventRunCancelled:
-			var payload struct {
-				Cause string `json:"cause"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.Cause != "" {
-				return "cancelled: " + payload.Cause
-			}
-			return "cancelled"
-		case domain.EventRunCompleted:
-			return ""
-		}
-	}
-	return ""
 }
 
 // nextActionFor 依据投影状态给出可发现的恢复动作提示；与 Run 的 ErrActiveRun

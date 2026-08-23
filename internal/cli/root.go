@@ -16,6 +16,7 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -385,14 +386,24 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	}
 	if *jsonOutput {
 		writeJSON(command.Stdout, struct {
-			Type     string       `json:"type"`
-			RunID    domain.RunID `json:"run_id"`
-			Response string       `json:"response"`
-		}{Type: "result", RunID: result.ID, Response: result.Response})
+			Type     string                `json:"type"`
+			RunID    domain.RunID          `json:"run_id"`
+			Response string                `json:"response"`
+			Manifest *contract.RunManifest `json:"manifest,omitempty"`
+		}{Type: "result", RunID: result.ID, Response: result.Response, Manifest: manifestOf(result)})
 	} else {
 		fmt.Fprintln(command.Stdout, result.Response)
 	}
 	return ExitOK
+}
+
+// manifestOf 从运行结果中提取产品合同 manifest；投影失败或旧路径无合同时
+// 返回 nil，--json 输出省略该字段而不输出空对象。
+func manifestOf(result app.RunResult) *contract.RunManifest {
+	if result.Result == nil {
+		return nil
+	}
+	return &result.Result.Manifest
 }
 
 // exitFor 将领域和应用错误映射为公开稳定的 CLI 退出码。
@@ -460,6 +471,9 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 			writeBuildIdentity(command.Stdout, "build", *summary.Build)
 		} else {
 			fmt.Fprintln(command.Stdout, "build: unavailable (legacy run)")
+		}
+		if result.Manifest != nil {
+			writeRunManifest(command.Stdout, *result.Manifest)
 		}
 		fmt.Fprintf(command.Stdout, "workspace: %s\n", summary.WorkspaceHash)
 		if summary.WorkspaceObservation != "" {
@@ -547,6 +561,37 @@ func writeBuildIdentity(writer io.Writer, label string, identity domain.BuildIde
 		revision = "unknown"
 	}
 	fmt.Fprintf(writer, "%s: revision=%s dirty=%s flavor=%s fingerprint=%s\n", label, revision, identity.Dirty, identity.Flavor, identity.Fingerprint)
+}
+
+// writeRunManifest 输出运行产品合同 manifest 的非敏感身份块；缺失字段直接
+// 省略，不伪造默认值，任务正文与本地路径绝不出现。
+func writeRunManifest(writer io.Writer, manifest contract.RunManifest) {
+	fmt.Fprintf(writer, "task: %s", manifest.Task.Kind)
+	if manifest.Task.Source != "" {
+		fmt.Fprintf(writer, " (%s)", manifest.Task.Source)
+	}
+	if manifest.Task.Benchmark != nil {
+		fmt.Fprintf(writer, " id=%s", manifest.Task.Benchmark.TaskID)
+	}
+	fmt.Fprintf(writer, " prompt=%s\n", manifest.Task.PromptDigest)
+	if provider := manifest.Provider; provider.Kind != "" || provider.BaseURL != "" || provider.Model != "" {
+		parts := make([]string, 0, 3)
+		for _, value := range []string{provider.Kind, provider.BaseURL, provider.Model} {
+			if value != "" {
+				parts = append(parts, value)
+			}
+		}
+		fmt.Fprintf(writer, "provider: %s\n", strings.Join(parts, " "))
+	}
+	if manifest.Preset != "" || manifest.Profile != "" {
+		fmt.Fprintf(writer, "preset: %s profile %s\n", manifest.Preset, manifest.Profile)
+	}
+	if manifest.Policy.Write != "" || manifest.Policy.Exec != "" {
+		fmt.Fprintf(writer, "policy: write=%s exec=%s\n", manifest.Policy.Write, manifest.Policy.Exec)
+	}
+	if manifest.Verification.Fingerprint != "" {
+		fmt.Fprintf(writer, "verification plan: %d command(s) %s\n", manifest.Verification.Commands, manifest.Verification.Fingerprint)
+	}
 }
 
 // loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。

@@ -164,9 +164,12 @@ func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
 	if code := command.Run(context.Background(), []string{"inspect", "--workspace", workspace, "--state-dir", stateDir, string(result.ID)}); code != ExitOK {
 		t.Fatalf("inspect exit=%d stderr=%q", code, stderr.String())
 	}
-	for _, required := range []string{"config fingerprint:", "build: revision=", "workspace:", "workspace observation:", "changes:", "last verification:"} {
+	for _, required := range []string{"config fingerprint:", "build: revision=", "task: freeform (cli) prompt=sha256:", "provider: openai_compatible", "preset: coding profile", "policy: write=", "workspace:", "workspace observation:", "changes:", "last verification:"} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("inspect human output missing %q: %s", required, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "inspect identity") {
+		t.Fatalf("inspect human output leaked task prompt: %s", stdout.String())
 	}
 }
