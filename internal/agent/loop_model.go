@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -40,6 +41,8 @@ type collectedResponse struct {
 	Usage     *ports.Usage
 }
 
+var errSensitiveToolArguments = errors.New("model tool arguments contain a secret-like value")
+
 // callModel 调用 Provider 并严格收集一个以 Done 结束的有效流式响应。
 func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (collectedResponse, error) {
 	var response collectedResponse
@@ -57,6 +60,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 			}
 			if !json.Valid(event.ToolCall.Arguments) {
 				return ports.ErrMalformedToolCallArguments
+			}
+			if containsSensitiveToolCall(*event.ToolCall) {
+				return errSensitiveToolArguments
 			}
 			response.ToolCalls = append(response.ToolCalls, *event.ToolCall)
 		case ports.UsageEvent:
@@ -79,6 +85,38 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 		return collectedResponse{}, errors.New("provider returned without done")
 	}
 	return response, nil
+}
+
+// containsSensitiveToolCall 在模型响应尚未进入事件或上下文前拒绝可能包含凭据的工具
+// 参数。除通用 JSON 脱敏外，exec_command 必须识别短的 --token=value / --token value
+// 形式；这些 argv 元素不能依赖面向长文本的脱敏正则。
+func containsSensitiveToolCall(call ports.ToolCall) bool {
+	if containsSecretJSON(call.Arguments) {
+		return true
+	}
+	if call.Name != "exec_command" {
+		return false
+	}
+	var fields struct {
+		Argv []string `json:"argv"`
+	}
+	if json.Unmarshal(call.Arguments, &fields) != nil {
+		return false
+	}
+	for index, argument := range fields.Argv {
+		option := strings.TrimLeft(argument, "-")
+		key, value, assigned := strings.Cut(option, "=")
+		if option == argument || !credential.Key(key) {
+			continue
+		}
+		if assigned && value != "" {
+			return true
+		}
+		if !assigned && index+1 < len(fields.Argv) && !strings.HasPrefix(fields.Argv[index+1], "-") {
+			return true
+		}
+	}
+	return false
 }
 
 // prompt 返回显式系统提示词，或提供安全工具使用的默认提示词。

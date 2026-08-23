@@ -76,7 +76,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) {
 		return tools.Result{}, errors.New("model returned invalid tool call")
 	}
-	if containsSecretJSON(call.Arguments) {
+	if containsSensitiveToolCall(call) {
 		return tools.Result{}, errors.New("model tool arguments contain a secret-like value")
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {

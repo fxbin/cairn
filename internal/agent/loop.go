@@ -144,6 +144,19 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
+			if errors.Is(err, errSensitiveToolArguments) {
+				failure := modelRequestFailedPayload{Error: errSensitiveToolArguments.Error(), ErrorClass: "sensitive_tool_arguments"}
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(failure)}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); appendErr != nil {
+					return Result{}, appendErr
+				}
+				return Result{}, fmt.Errorf("model request: %w", errSensitiveToolArguments)
+			}
 			if errors.Is(err, ports.ErrMalformedToolCallArguments) {
 				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(struct {
 					Error      string `json:"error"`

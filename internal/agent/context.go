@@ -246,7 +246,7 @@ func toolExplorationTarget(name string, arguments json.RawMessage) string {
 	case fields.Query != "":
 		return clipText(fields.Query, 160)
 	case len(fields.Argv) > 0:
-		return clipText(strings.Join(fields.Argv, " "), 160)
+		return clipText(fields.Argv[0], 160)
 	default:
 		return ""
 	}

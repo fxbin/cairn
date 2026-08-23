@@ -736,6 +736,13 @@ func TestSummarizeMessagesRetainsExplorationInventoryUnderBudgetPressure(t *test
 	}
 }
 
+func TestToolExplorationTargetKeepsOnlyExecProgram(t *testing.T) {
+	target := toolExplorationTarget("exec_command", json.RawMessage(`{"argv":["go","test","./..."]}`))
+	if target != "go" {
+		t.Fatalf("target=%q, want executable only", target)
+	}
+}
+
 func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T) {
 	messages := []ports.Message{
 		{Role: "system", Content: "system"},
@@ -1513,6 +1520,44 @@ func TestLoopRedactsAndRejectsSecretLikeToolArguments(t *testing.T) {
 		if strings.Contains(string(event.Payload), "top-secret-value") {
 			t.Fatalf("secret leaked into event: %#v", event)
 		}
+	}
+}
+
+func TestLoopRejectsShortSecretLikeExecArgumentsBeforePersistence(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ReadFile{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{
+		{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "leak", Name: "exec_command", Arguments: json.RawMessage(`{"argv":["command","--password=short"]}`)}},
+		{Kind: ports.Done},
+	}}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "read")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "read", WorkspaceHash: "workspace"}); !errors.Is(err, errSensitiveToolArguments) {
+		t.Fatalf("err=%v", err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if strings.Contains(string(event.Payload), "--password=short") {
+			t.Fatalf("short command-line credential leaked into event: %#v", event)
+		}
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("requests=%#v", provider.requests)
 	}
 }
 
