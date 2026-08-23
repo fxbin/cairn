@@ -253,10 +253,11 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		}
 		if *jsonOutput {
 			writeJSON(command.Stdout, struct {
-				Type     string       `json:"type"`
-				RunID    domain.RunID `json:"run_id"`
-				Response string       `json:"response"`
-			}{Type: "result", RunID: result.ID, Response: result.Response})
+				Type     string                `json:"type"`
+				RunID    domain.RunID          `json:"run_id"`
+				Response string                `json:"response"`
+				Manifest *contract.RunManifest `json:"manifest,omitempty"`
+			}{Type: "result", RunID: result.ID, Response: result.Response, Manifest: manifestOf(result)})
 		} else {
 			fmt.Fprintln(command.Stdout, result.Response)
 		}
@@ -270,9 +271,10 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		}
 		if *jsonOutput {
 			writeJSON(command.Stdout, struct {
-				Type  string       `json:"type"`
-				RunID domain.RunID `json:"run_id"`
-			}{Type: "aborted", RunID: result.ID})
+				Type     string                `json:"type"`
+				RunID    domain.RunID          `json:"run_id"`
+				Manifest *contract.RunManifest `json:"manifest,omitempty"`
+			}{Type: "aborted", RunID: result.ID, Manifest: manifestOf(result)})
 		}
 		return ExitFailed
 	}
@@ -289,10 +291,11 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	}
 	if *jsonOutput {
 		writeJSON(command.Stdout, struct {
-			Type     string       `json:"type"`
-			RunID    domain.RunID `json:"run_id"`
-			Response string       `json:"response"`
-		}{Type: "result", RunID: result.ID, Response: result.Response})
+			Type     string                `json:"type"`
+			RunID    domain.RunID          `json:"run_id"`
+			Response string                `json:"response"`
+			Manifest *contract.RunManifest `json:"manifest,omitempty"`
+		}{Type: "result", RunID: result.ID, Response: result.Response, Manifest: manifestOf(result)})
 	} else {
 		fmt.Fprintln(command.Stdout, result.Response)
 	}

@@ -177,18 +177,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
 	}
-	// 运行结束（成功或失败）都从已持久化事件投影产品合同 Result；读取使用
-	// 独立上下文，保证取消/墙钟耗尽路径仍能完成投影。原运行错误优先上报。
-	contractResult, contractErr := projectRunResult(context.Background(), boot.Journal, options.StateDir, boot.WorkspaceHash, runID)
-	if err != nil {
-		return RunResult{ID: runID, Result: contractResultOrNil(contractResult, contractErr)}, err
-	}
-	// 运行已成功持久化终态时，投影失败不得把成功改报为失败（事件是唯一
-	// 事实源）；降级为无合同附件的成功结果，诊断侧仍可经 inspect 复核。
-	if contractErr != nil {
-		return RunResult{ID: result.RunID, Response: result.Response}, nil
-	}
-	return RunResult{ID: result.RunID, Response: result.Response, Result: &contractResult}, nil
+	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }
 
 // contractResultOrNil 在投影失败时返回 nil 而不是零值，避免把半成品合同
@@ -198,6 +187,19 @@ func contractResultOrNil(result contract.Result, err error) *contract.Result {
 		return nil
 	}
 	return &result
+}
+
+// projectedRunOutcome 从当前事件日志投影一次产品合同，并把它附加到 Run、
+// Resume、Reconcile 与 Abort 的统一返回值。执行错误永远优先返回；若运行
+// 已成功但投影本身失败，则保留成功事实并省略 Result，供 inspect/evidence
+// 继续诊断，避免把投影层故障伪装成执行失败。
+func projectedRunOutcome(journal *sqlite.Journal, stateDir, workspaceHash string, runID domain.RunID, response string, runErr error) (RunResult, error) {
+	result, projectionErr := projectRunResult(context.Background(), journal, stateDir, workspaceHash, runID)
+	outcome := RunResult{ID: runID, Response: response, Result: contractResultOrNil(result, projectionErr)}
+	if runErr != nil {
+		return outcome, runErr
+	}
+	return outcome, nil
 }
 
 // Inspect 只读加载指定运行，验证完整性后返回投影与可选事件历史。
@@ -320,10 +322,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 		resumeInput.ResumeInvocation = ""
 		result, err = boot.Loop.Resume(expiredContext, resumeInput, options.Approval)
 	}
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
-	}
-	return RunResult{ID: result.RunID, Response: result.Response}, nil
+	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, result.Response, err)
 }
 
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
@@ -427,7 +426,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		}{Error: "reconciliation aborted"}); err != nil {
 			return RunResult{}, err
 		}
-		return RunResult{ID: options.RunID}, nil
+		return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, "", nil)
 	}
 	if err := appendEvent(domain.EventToolResultAppended, tools.Result{OK: options.Verdict == "applied_success", Code: "reconciled_" + options.Verdict, Preview: options.Note}); err != nil {
 		return RunResult{}, err
@@ -469,10 +468,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
 	}
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
-	}
-	return RunResult{ID: result.RunID, Response: result.Response}, nil
+	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, result.Response, err)
 }
 
 // Abort 在不启动模型、工具或 verifier 的情况下终止非悬挂运行；已经开始的副作用
@@ -564,7 +560,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 		}{Cause: "user_interrupt"}); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
-		return RunResult{ID: options.RunID}, nil
+		return projectedRunOutcome(journal, options.StateDir, hash, options.RunID, "", nil)
 	}
 	if err := appendEvent(domain.EventRunFailed, nil, nil, struct {
 		Error  string `json:"error"`
@@ -572,7 +568,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 	}{Error: "user_aborted", Reason: options.Reason}); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	return RunResult{ID: options.RunID}, nil
+	return projectedRunOutcome(journal, options.StateDir, hash, options.RunID, "", nil)
 }
 
 // provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。

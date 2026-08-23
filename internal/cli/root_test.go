@@ -53,7 +53,10 @@ func (fakeProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(po
 	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "answer"}); err != nil {
 		return err
 	}
-	return emit(ports.ModelEvent{Kind: ports.Done})
+	if err := emit(ports.ModelEvent{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}); err != nil {
+		return err
+	}
+	return emit(ports.ModelEvent{Kind: ports.Done, StopReason: "stop"})
 }
 
 func TestRunWritesOnlyNDJSONToStdout(t *testing.T) {

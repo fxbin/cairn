@@ -332,7 +332,7 @@ func TestServiceAbortClosesPendingApprovalWithoutStartingOperation(t *testing.T)
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}
 	aborted, err := service.Abort(context.Background(), AbortOptions{RunID: initial.ID, Reason: "operator stopped the task", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	if err != nil || aborted.ID != initial.ID {
+	if err != nil || aborted.ID != initial.ID || aborted.Result == nil || aborted.Result.State != string(domain.RunFailed) {
 		t.Fatalf("abort=%#v err=%v", aborted, err)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
@@ -375,7 +375,7 @@ func TestServiceResumeConsumesOneMatchingApproval(t *testing.T) {
 		}
 	}
 	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
-	if err != nil || resumed.Response != "patched and verified" {
+	if err != nil || resumed.Response != "patched and verified" || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("resumed = %#v, err = %v", resumed, err)
 	}
 	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}}); err == nil {
@@ -450,7 +450,7 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 		t.Fatalf("initial = %#v, err = %v", initial, err)
 	}
 	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
-	if err != nil || resumed.Response != "patched and verified" {
+	if err != nil || resumed.Response != "patched and verified" || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("resumed = %#v, err = %v", resumed, err)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
@@ -527,7 +527,7 @@ func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
 		t.Fatal("reconciliation without an audit note unexpectedly succeeded")
 	}
 	result, err := service.Reconcile(context.Background(), ReconcileOptions{RunID: runID, OperationID: operationID, Verdict: "not_applied", Note: "crash occurred before rename", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	if err != nil || result.Response != "done" {
+	if err != nil || result.Response != "done" || result.Result == nil || result.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("reconcile = %#v, %v", result, err)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, true)
@@ -828,7 +828,7 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 		t.Fatalf("run against created-state run err = %v", err)
 	}
 	aborted, err := service.Abort(context.Background(), AbortOptions{RunID: runID, Reason: "release stuck workspace", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	if err != nil || aborted.ID != runID {
+	if err != nil || aborted.ID != runID || aborted.Result == nil || aborted.Result.State != string(domain.RunFailed) {
 		t.Fatalf("abort=%#v err=%v", aborted, err)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, true)
@@ -877,7 +877,7 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	aborted, err := service.Abort(context.Background(), AbortOptions{RunID: initial.ID, Reason: "finish interrupted cancellation", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	if err != nil || aborted.ID != initial.ID {
+	if err != nil || aborted.ID != initial.ID || aborted.Result == nil || aborted.Result.State != string(domain.RunCancelled) {
 		t.Fatalf("abort=%#v err=%v", aborted, err)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
