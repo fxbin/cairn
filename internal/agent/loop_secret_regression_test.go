@@ -39,6 +39,7 @@ func TestContainsSensitiveToolCallBlocksCredentialFamily(t *testing.T) {
 		{name: "查询串凭据键", argv: []string{"curl", "https://example.invalid/p?token=short1"}, want: true},
 		{name: "裸环境赋值", argv: []string{"docker", "run", "-e", "PASSWORD=hunter2", "img:latest"}, want: true},
 		{name: "规范长标志保持拒绝", argv: []string{"curl", "--password=short", "https://example.invalid/"}, want: true},
+		{name: "stdin 标志不得内联口令", argv: []string{"docker", "login", "--password-stdin=hunter2", "reg.io"}, want: true},
 		{name: "无口令 docker 登录", argv: []string{"docker", "login", "--password-stdin", "reg.io"}, want: false},
 		{name: "空口令 ssh-keygen", argv: []string{"ssh-keygen", "-N", `""`, "-f", "id_rsa"}, want: false},
 		{name: "附着空口令豁免", argv: []string{"tool", `--password=""`}, want: false},

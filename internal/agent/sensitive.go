@@ -135,7 +135,7 @@ func sensitiveCredentialLongFlag(argv []string, index int, argument string) bool
 	}
 	option := strings.TrimLeft(argument, "-")
 	key, value, assigned := strings.Cut(option, "=")
-	if option == argument || execFlagCredentialExemptions[strings.ReplaceAll(key, "-", "_")] || !credential.Key(key) {
+	if option == argument || (!assigned && execFlagCredentialExemptions[strings.ReplaceAll(key, "-", "_")]) || !credential.Key(key) {
 		return false
 	}
 	if assigned {
