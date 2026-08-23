@@ -39,6 +39,12 @@ var secretPatterns = []*regexp.Regexp{
 // 敏感统一交给 credential.Key，避免文本、JSON、配置和工具各自维护词干。
 var credentialAssignmentPattern = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`)
 
+// credentialEnvAssignmentPattern 只捕获行首的“环境变量=值”赋值（.env 与 shell
+// 导出风格）。与上面的通用赋值模式不同，它行锚定且不限值长度：短的
+// DB_PASSWORD=hunter2 同样必须清除，而代码中带空格的比较或赋值
+// （password == ""、token := x）不会落在行首裸赋值形态上而被误伤。
+var credentialEnvAssignmentPattern = regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)=([^[:space:]"']+)`)
+
 // New 创建仅当前用户可读写的制品根目录。
 func New(root string, previewSize int) (*Store, error) {
 	if root == "" {
@@ -77,6 +83,13 @@ func Redact(content []byte) []byte {
 		}
 		key := strings.Trim(strings.TrimSpace(match[:index]), "\"'")
 		if !credential.Key(key) {
+			return match
+		}
+		return match[:index+1] + "[REDACTED]"
+	})
+	clean = credentialEnvAssignmentPattern.ReplaceAllStringFunc(clean, func(match string) string {
+		index := strings.Index(match, "=")
+		if index < 0 || !credential.Key(match[:index]) {
 			return match
 		}
 		return match[:index+1] + "[REDACTED]"
