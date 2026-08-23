@@ -2199,3 +2199,79 @@ func TestLoopEnforcesOutputBudgetWithEstimatedUsageWhenProviderOmitsUsage(t *tes
 		t.Fatalf("estimated usage was not flagged: %#v", events)
 	}
 }
+
+func TestLoopRejectsProviderResponsesThatViolateCapabilityCard(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		events []ports.ModelEvent
+	}{
+		{name: "missing streaming usage", events: []ports.ModelEvent{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.Done, StopReason: "stop"}}},
+		{name: "undeclared finish reason", events: []ports.ModelEvent{{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, {Kind: ports.Done, StopReason: "length"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			journal := memory.New()
+			runID := domain.NewRunID()
+			appendInitialRunningEvents(t, journal, runID, "capability contract")
+			loop := Loop{
+				Journal: journal, Provider: &scriptedProvider{scripts: [][]ports.ModelEvent{test.events}}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 1,
+				RequireProviderUsage: true, AllowedProviderStopReasons: []string{"stop", "tool_calls"},
+			}
+			_, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "capability contract", WorkspaceHash: "workspace"})
+			var mismatch *ProviderCapabilityMismatchError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("err=%v, want ProviderCapabilityMismatchError", err)
+			}
+			events, loadErr := journal.Load(context.Background(), runID)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if !containsEventPayload(events, domain.EventModelRequestFailed, `"error_class":"provider_capability_mismatch"`) || countEvent(events, domain.EventModelResponseFinished) != 0 || countEvent(events, domain.EventRunFailed) != 1 {
+				t.Fatalf("capability mismatch persistence=%#v", events)
+			}
+		})
+	}
+}
+
+func TestLoopPersistsDeclaredProviderStopReason(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "capability success")
+	loop := Loop{
+		Journal: journal, Provider: &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, {Kind: ports.Done, StopReason: "stop"}}}}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 1,
+		RequireProviderUsage: true, AllowedProviderStopReasons: []string{"stop"},
+	}
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "capability success", WorkspaceHash: "workspace"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsEventPayload(events, domain.EventModelResponseFinished, `"stop_reason":"stop"`) {
+		t.Fatalf("model response did not retain finish reason: %#v", events)
+	}
+}

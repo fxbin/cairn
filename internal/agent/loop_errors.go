@@ -13,6 +13,27 @@ var ErrTurnBudgetExceeded = errors.New("turn budget exhausted")
 // ErrWaitingReconcile 表示已启动的副作用操作没有可确认的终态，必须人工对账。
 var ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
 
+// ProviderCapabilityMismatchError 表示 Provider 的实际响应违背已冻结的能力
+// 卡，例如声明流式 usage 却未返回 usage，或 finish_reason 不在声明集合中。它
+// 是不可重试的配置/协议不一致，必须作为稳定错误分类写入事件。
+type ProviderCapabilityMismatchError struct {
+	Requirement string
+	Observed    string
+}
+
+// Error 返回不含原始模型内容的稳定不匹配描述，避免把 Provider 响应写入日志。
+func (err *ProviderCapabilityMismatchError) Error() string {
+	return fmt.Sprintf("provider capability mismatch: %s (%s)", err.Requirement, err.Observed)
+}
+
+// ErrorClass 返回持久化与产品合同共用的失败分类。
+func (err *ProviderCapabilityMismatchError) ErrorClass() string {
+	return "provider_capability_mismatch"
+}
+
+// IsRetryable 报告能力合同不一致不能由盲目重试修复。
+func (err *ProviderCapabilityMismatchError) IsRetryable() bool { return false }
+
 // BudgetExceededError 标识导致运行停止的持久化预算维度；为兼容调用方，
 // 它会解包为 ErrTurnBudgetExceeded。
 type BudgetExceededError struct{ Dimension string }

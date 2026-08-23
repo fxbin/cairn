@@ -124,6 +124,8 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	}
 	boot.Verification = verification
 	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent)
+	boot.Loop.RequireProviderUsage = card.StreamingUsage
+	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
 	return boot, nil
 }
 

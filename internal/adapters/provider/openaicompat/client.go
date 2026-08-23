@@ -175,6 +175,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	var dataLines []string
 	toolCalls := map[int]*toolCallAccumulator{}
+	stopReason := ""
 	done := false
 	emitEvent := func(event ports.ModelEvent) error {
 		if err := ctx.Err(); err != nil {
@@ -206,7 +207,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 				}
 			}
 			done = true
-			return emitEvent(ports.ModelEvent{Kind: ports.Done})
+			return emitEvent(ports.ModelEvent{Kind: ports.Done, StopReason: stopReason})
 		}
 		var chunk chatChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -219,6 +220,12 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 			}
 		}
 		for _, choice := range chunk.Choices {
+			if choice.FinishReason != "" {
+				if stopReason != "" && stopReason != choice.FinishReason {
+					return &ProviderError{Kind: "invalid_response", Cause: errors.New("received conflicting finish reasons")}
+				}
+				stopReason = choice.FinishReason
+			}
 			if choice.Delta.Content != "" {
 				if err := emitEvent(ports.ModelEvent{Kind: ports.TextDelta, Text: choice.Delta.Content}); err != nil {
 					return err
@@ -342,7 +349,8 @@ type chatChunk struct {
 
 // choice 封装提供方返回的一个增量候选项。
 type choice struct {
-	Delta delta `json:"delta"`
+	Delta        delta  `json:"delta"`
+	FinishReason string `json:"finish_reason"`
 }
 
 // delta 保存候选项新增的文本和工具调用碎片。

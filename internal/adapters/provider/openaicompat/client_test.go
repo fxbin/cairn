@@ -17,7 +17,7 @@ func TestStreamAccumulatesToolCallsAndEmitsDoneLast(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n"))
 		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]}}]}\n\n"))
-		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"main.go\\\"}\"}}]}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n"))
+		_, _ = writer.Write([]byte("data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"main.go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}` + "\n\n"))
 		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -36,6 +36,9 @@ func TestStreamAccumulatesToolCallsAndEmitsDoneLast(t *testing.T) {
 	}
 	if got := string(events[2].ToolCall.Arguments); got != `{"path":"main.go"}` {
 		t.Fatalf("tool args = %s", got)
+	}
+	if events[3].StopReason != "tool_calls" {
+		t.Fatalf("done stop reason = %q", events[3].StopReason)
 	}
 }
 

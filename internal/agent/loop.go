@@ -29,6 +29,8 @@ type Loop struct {
 	MaxCostUSD                 float64
 	InputTokenUSD              float64
 	OutputTokenUSD             float64
+	RequireProviderUsage       bool
+	AllowedProviderStopReasons []string
 	ContextAutoCompact         bool
 	ContextMaxPromptTokens     int
 	ContextMaxSummaryBytes     int
@@ -216,7 +218,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			response.Usage = &ports.Usage{PromptTokens: loop.estimatePromptTokens(messages), CompletionTokens: estimateResponseTokens(response)}
 			response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage, UsageEstimated: usageEstimated})}); err != nil {
+		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage, UsageEstimated: usageEstimated, StopReason: response.StopReason})}); err != nil {
 			return Result{}, err
 		}
 		usage.add(response.Usage)

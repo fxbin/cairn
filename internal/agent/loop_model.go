@@ -17,6 +17,7 @@ type modelResponsePayload struct {
 	ToolCalls      []ports.ToolCall `json:"tool_calls,omitempty"`
 	Usage          *ports.Usage     `json:"usage,omitempty"`
 	UsageEstimated bool             `json:"usage_estimated,omitempty"`
+	StopReason     string           `json:"stop_reason,omitempty"`
 }
 
 // modelRequestPayload 是写入模型请求事件的可审计提供方信息。
@@ -35,9 +36,10 @@ type modelRequestFailedPayload struct {
 
 // collectedResponse 汇集一次流式模型响应的文本、工具调用与 token 用量。
 type collectedResponse struct {
-	Text      string
-	ToolCalls []ports.ToolCall
-	Usage     *ports.Usage
+	Text       string
+	ToolCalls  []ports.ToolCall
+	Usage      *ports.Usage
+	StopReason string
 }
 
 var errSensitiveToolArguments = errors.New("model tool arguments contain a secret-like value")
@@ -74,6 +76,7 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 			usage := *event.Usage
 			response.Usage = &usage
 		case ports.Done:
+			response.StopReason = event.StopReason
 			done = true
 		default:
 			return fmt.Errorf("unknown provider event %q", event.Kind)
@@ -86,7 +89,29 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 	if !done {
 		return collectedResponse{}, errors.New("provider returned without done")
 	}
+	if loop.RequireProviderUsage && response.Usage == nil {
+		return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "streaming usage", Observed: "missing"}
+	}
+	if len(loop.AllowedProviderStopReasons) != 0 {
+		if response.StopReason == "" {
+			return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "finish reason", Observed: "missing"}
+		}
+		if !containsString(loop.AllowedProviderStopReasons, response.StopReason) {
+			return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "declared finish reason", Observed: response.StopReason}
+		}
+	}
 	return response, nil
+}
+
+// containsString 判断稳定能力集合是否包含一个精确值；停止原因来自协议枚举，
+// 不做大小写或模糊归一化，避免模型端返回未知值时被静默接受。
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // containsSensitiveToolCall 在模型响应尚未进入事件或上下文前拒绝可能包含凭据的

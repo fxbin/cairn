@@ -111,7 +111,16 @@ func (finalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(p
 	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "done"}); err != nil {
 		return err
 	}
-	return emit(ports.ModelEvent{Kind: ports.Done})
+	return emitTestCompletion(emit)
+}
+
+// emitTestCompletion 生成满足显式能力卡的最小流终态：每次调用都回报 usage 与
+// 协议 finish_reason，确保应用层测试覆盖真实的运行时能力约束。
+func emitTestCompletion(emit func(ports.ModelEvent) error) error {
+	if err := emit(ports.ModelEvent{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}); err != nil {
+		return err
+	}
+	return emit(ports.ModelEvent{Kind: ports.Done, StopReason: "stop"})
 }
 
 type patchThenFinalProvider struct{ calls int }
@@ -125,7 +134,7 @@ func (provider *patchThenFinalProvider) Stream(_ context.Context, _ ports.ModelR
 	} else if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "patched and verified"}); err != nil {
 		return err
 	}
-	return emit(ports.ModelEvent{Kind: ports.Done})
+	return emitTestCompletion(emit)
 }
 
 type blockingResumeProvider struct {
@@ -148,14 +157,14 @@ func (provider *blockingResumeProvider) Stream(_ context.Context, _ ports.ModelR
 		if err := emit(ports.ModelEvent{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "patch-lock", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"lock.txt","mode":"create","content":"locked"}`)}}); err != nil {
 			return err
 		}
-		return emit(ports.ModelEvent{Kind: ports.Done})
+		return emitTestCompletion(emit)
 	}
 	close(provider.entered)
 	<-provider.release
 	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "resumed once"}); err != nil {
 		return err
 	}
-	return emit(ports.ModelEvent{Kind: ports.Done})
+	return emitTestCompletion(emit)
 }
 
 func TestServiceRunThenInspect(t *testing.T) {

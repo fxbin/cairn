@@ -73,8 +73,9 @@ const (
 
 // ModelEvent 是 Provider 向 Agent 流式发送的统一响应片段。
 type ModelEvent struct {
-	Kind     ModelEventKind
-	Text     string
-	ToolCall *ToolCall
-	Usage    *Usage
+	Kind       ModelEventKind
+	Text       string
+	ToolCall   *ToolCall
+	Usage      *Usage
+	StopReason string
 }
