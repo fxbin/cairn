@@ -645,6 +645,64 @@ func TestDoctorRejectsMissingArtifactReferencedByAnEvent(t *testing.T) {
 	}
 }
 
+// TestEvidenceRejectsMissingOrTamperedFrozenConfigArtifact 锁定 Evidence 的
+// 信任根：run_created 一旦声明 config_ref，该制品缺失或摘要不匹配必须以
+// ErrStateCorrupt 失败关闭，不能退化为一份看似合法的空配置合同。
+func TestEvidenceRejectsMissingOrTamperedFrozenConfigArtifact(t *testing.T) {
+	for _, mutation := range []struct {
+		name  string
+		apply func(t *testing.T, path string)
+	}{
+		{name: "missing", apply: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "tampered", apply: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte(`{"provider":{"model":"tampered"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+			configuration := withTestProvider(config.Defaults())
+			workspace, stateDir := t.TempDir(), t.TempDir()
+			result, err := service.Run(context.Background(), RunOptions{Task: "frozen config evidence", Workspace: workspace, StateDir: stateDir, Config: configuration})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reference *artifact.Ref
+			for _, event := range inspected.Events {
+				if event.Type != domain.EventRunCreated {
+					continue
+				}
+				var payload struct {
+					ConfigRef *artifact.Ref `json:"config_ref"`
+				}
+				if err := json.Unmarshal(event.Payload, &payload); err == nil {
+					reference = payload.ConfigRef
+				}
+			}
+			if reference == nil {
+				t.Fatal("run_created did not retain frozen config reference")
+			}
+			digest := strings.TrimPrefix(reference.SHA256, "sha256:")
+			path := filepath.Join(stateDir, "workspaces", inspected.Projection.WorkspaceHash, "artifacts", "sha256", digest[:2], digest)
+			mutation.apply(t, path)
+			if _, err := service.Evidence(context.Background(), workspace, stateDir, configuration, result.ID); !errors.Is(err, ErrStateCorrupt) {
+				t.Fatalf("evidence accepted %s frozen config artifact: %v", mutation.name, err)
+			}
+		})
+	}
+}
+
 func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()

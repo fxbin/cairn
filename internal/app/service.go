@@ -261,7 +261,18 @@ func (service Service) Evidence(ctx context.Context, workspacePath, stateDir str
 	if err != nil {
 		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	return contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), readFrozenRunConfig(events, stateDir, hash))
+	if err := checkRunArtifactReferences(events, stateDir, hash); err != nil {
+		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	frozenConfig, err := readFrozenRunConfig(events, stateDir, hash)
+	if err != nil {
+		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	result, err := contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), frozenConfig)
+	if err != nil {
+		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return result, nil
 }
 
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
@@ -644,9 +655,6 @@ func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfi
 
 // checkArtifactReferences 验证日志 payload 引用的每一个制品文件及其摘要。
 func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, stateDir, workspaceHash string) error {
-	if stateDir == "" {
-		stateDir = defaultStateDir()
-	}
 	runIDs, err := journal.RunIDs(ctx)
 	if err != nil {
 		return err
@@ -656,29 +664,48 @@ func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, state
 		if err != nil {
 			return err
 		}
-		for _, event := range events {
-			var payload struct {
-				ResultRef   *artifact.Ref `json:"result_ref"`
-				PlanRef     *artifact.Ref `json:"plan_ref"`
-				ConfigRef   *artifact.Ref `json:"config_ref"`
-				EvidenceRef *artifact.Ref `json:"evidence_ref"`
-			}
-			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		if err := checkRunArtifactReferences(events, stateDir, workspaceHash); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRunArtifactReferences 校验单次 Run 的所有制品引用。Evidence 只能读取
+// 指定 Run，不能因其他 Run 的损坏而失去可用性；诊断则复用本函数遍历全部 Run。
+func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash string) error {
+	root := manifestArtifactRoot(stateDir, workspaceHash)
+	for _, event := range events {
+		var payload struct {
+			ResultRef   *artifact.Ref `json:"result_ref"`
+			PlanRef     *artifact.Ref `json:"plan_ref"`
+			ConfigRef   *artifact.Ref `json:"config_ref"`
+			EvidenceRef *artifact.Ref `json:"evidence_ref"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			continue
+		}
+		// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
+		// 存在性与摘要校验，防止被删除或篡改后静默通过诊断。
+		for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef} {
+			if reference == nil {
 				continue
 			}
-			// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
-			// 存在性与摘要校验，防止被删除或篡改后静默通过诊断。
-			for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef} {
-				if reference == nil {
-					continue
-				}
-				if err := checkArtifactReference(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), *reference); err != nil {
-					return fmt.Errorf("run %s event %d: %w", runID, event.Seq, err)
-				}
+			if err := checkArtifactReference(root, *reference); err != nil {
+				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
 			}
 		}
 	}
 	return nil
+}
+
+// manifestArtifactRoot 返回指定工作区制品库的根目录；与 openArtifactStore
+// 使用同一路径布局，保证投影读取与写入视角一致。
+func manifestArtifactRoot(stateDir, workspaceHash string) string {
+	if stateDir == "" {
+		stateDir = defaultStateDir()
+	}
+	return filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts")
 }
 
 // checkArtifactReference 验证单个制品引用的格式、存在性和内容摘要。
