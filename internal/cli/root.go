@@ -187,11 +187,11 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 	return ExitFailed
 }
 
-// memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、explain、inspect、revoke
-// 五个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
+// memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、explain、inspect、revoke、
+// consolidate、reject 七个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
 func (command Command) memory(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, or revoke")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, or reject")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -202,13 +202,103 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 	case "explain":
 		return command.memoryExplain(ctx, arguments[1:])
 	case "inspect":
-		return command.memoryInspect(ctx, arguments[1:])
+		return command.memoryInspectDispatch(ctx, arguments[1:])
 	case "revoke":
 		return command.memoryRevoke(ctx, arguments[1:])
+	case "consolidate":
+		return command.memoryConsolidate(ctx, arguments[1:])
+	case "reject":
+		return command.memoryRejectDerived(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, or revoke")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, or reject")
 		return ExitUsage
 	}
+}
+
+// memoryConsolidate 在工作区锁内执行一次事务化巩固，并把提交的计划、派生候选与
+// 被替代版本以人类或 NDJSON 视图输出；不接入运行时召回。
+func (command Command) memoryConsolidate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory consolidate", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	ttlText := flags.String("ttl", "", "derived candidate retention duration (default: 30d, max: 90d)")
+	minSupport := flags.Int("min-support", 0, "minimum evidence support for pattern and hypothesis (default: 2, cannot be lowered)")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory consolidate does not accept positional arguments")
+		return ExitUsage
+	}
+	var ttl time.Duration
+	var err error
+	if *ttlText != "" {
+		ttl, err = time.ParseDuration(*ttlText)
+		if err != nil {
+			fmt.Fprintln(command.Stderr, "memory consolidate --ttl must be a duration")
+			return ExitUsage
+		}
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	results, err := command.Service.ConsolidateMemory(ctx, app.MemoryConsolidateOptions{Workspace: *workspace, StateDir: *stateDir, Config: configuration, TTL: ttl, MinPatternSupport: *minSupport, MinHypothesisSupport: *minSupport})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory consolidate failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, results)
+		return ExitOK
+	}
+	if len(results) == 0 {
+		fmt.Fprintln(command.Stdout, "consolidation: no derivable candidates from current inputs")
+		return ExitOK
+	}
+	for _, result := range results {
+		fmt.Fprintf(command.Stdout, "consolidation: %s strategy=%s inputs=%d\n", result.Plan.ConsolidationID, result.Plan.Strategy, len(result.Plan.InputIDs))
+		for _, derived := range result.Plan.Derived {
+			fmt.Fprintf(command.Stdout, "derived: %s kind=%s support=%d status=%s\n", derived.ID, derived.Kind, len(derived.Evidence), derived.Status)
+		}
+		for _, superseded := range result.SupersededVersion {
+			fmt.Fprintf(command.Stdout, "superseded: %s consolidation=%s\n", superseded.ID, superseded.ConsolidationID)
+		}
+	}
+	return ExitOK
+}
+
+// memoryRejectDerived 显式拒绝当前 active 的派生候选版本；理由只能是封闭词表。
+func (command Command) memoryRejectDerived(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory reject", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	reason := flags.String("reason", "", "rejection reason: insufficient_evidence or human_request (required)")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 || *reason == "" {
+		fmt.Fprintln(command.Stderr, "memory reject requires a derived candidate ID and --reason")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	key, err := command.Service.RejectDerivedMemory(ctx, app.MemoryRejectDerivedOptions{DerivedID: flags.Arg(0), Reason: *reason, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory reject failed:", err)
+		return exitFor(err)
+	}
+	fmt.Fprintf(command.Stdout, "rejected: %s consolidation=%s\n", key.ID, key.ConsolidationID)
+	return ExitOK
 }
 
 // memoryExplain 显式执行 M2-A 的 sqlite_exact 计划和一次性证据账本投影。它仅接收
@@ -385,6 +475,64 @@ func (command Command) memoryRecall(ctx context.Context, arguments []string) int
 }
 
 // memoryInspect 只读显示当前工作区一个候选及其无自由文本的审计历史。
+func (command Command) memoryInspectDispatch(ctx context.Context, arguments []string) int {
+	for _, argument := range normalizeMemoryPositionals(arguments) {
+		if memory.IsDerivedID(argument) {
+			return command.memoryInspectDerived(ctx, arguments)
+		}
+	}
+	return command.memoryInspect(ctx, arguments)
+}
+
+// memoryInspectDerived 输出派生候选最新版本的候选事实与审计历史；人类与
+// NDJSON 视图共享同一只读投影。
+func (command Command) memoryInspectDerived(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory inspect derived", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(normalizeMemoryPositionals(arguments)); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "memory inspect requires a derived candidate ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	inspected, err := command.Service.InspectDerivedMemory(ctx, app.MemoryInspectDerivedOptions{DerivedID: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory inspect failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, inspected)
+		return ExitOK
+	}
+	candidate := inspected.Candidate
+	fmt.Fprintf(command.Stdout, "derived: %s kind=%s status=%s\n", candidate.ID, candidate.Kind, candidate.Status)
+	fmt.Fprintf(command.Stdout, "consolidation: %s\n", candidate.ConsolidationID)
+	fmt.Fprintf(command.Stdout, "scope: %s\n", candidate.ScopeDigest)
+	fmt.Fprintf(command.Stdout, "payload: %s\n", string(candidate.Payload))
+	fmt.Fprintf(command.Stdout, "retention: %s -> %s\n", candidate.CreatedAt.Format(time.RFC3339), candidate.ExpiresAt.Format(time.RFC3339))
+	for _, evidence := range candidate.Evidence {
+		fmt.Fprintf(command.Stdout, "evidence: %s\n", evidence.CandidateID)
+	}
+	for _, entry := range inspected.Audit {
+		reason := ""
+		if entry.Reason != "" {
+			reason = " reason=" + entry.Reason
+		}
+		fmt.Fprintf(command.Stdout, "audit: %s%s at %s\n", entry.Action, reason, entry.OccurredAt.Format(time.RFC3339))
+	}
+	return ExitOK
+}
+
 func (command Command) memoryInspect(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("memory inspect", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -969,6 +1117,8 @@ Usage:
   cairn memory explain [--task-digest <sha256>] [--outcome <value>] [--failure-class <value>] [--trusted-verification any|required|not_required] [--created-from <UTC-RFC3339>] [--created-until <UTC-RFC3339>] [--limit <n>] [--precision compact|trace] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory revoke --reason evidence_invalid|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
+  cairn memory consolidate [--min-support <n>] [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory reject --reason insufficient_evidence|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] <derived-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 
 Exit status:

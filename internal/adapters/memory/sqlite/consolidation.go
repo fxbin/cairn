@@ -750,28 +750,16 @@ func earliestDerivedAnchor(ctx context.Context, source queryerRows, consolidatio
 }
 
 // derivedAuditFor 返回派生候选版本行的审计历史（含 reason）。
-func derivedAuditFor(ctx context.Context, source queryerRows, derivedID, consolidationID string) ([]struct {
-	Action     string
-	Reason     string
-	OccurredAt time.Time
-}, error) {
+func derivedAuditFor(ctx context.Context, source queryerRows, derivedID, consolidationID string) ([]DerivedAuditEntry, error) {
 	rows, err := source.QueryContext(ctx, `SELECT action, reason, occurred_at FROM derived_audit_log
 		WHERE derived_id = ? AND consolidation_id = ? ORDER BY id ASC`, derivedID, consolidationID)
 	if err != nil {
 		return nil, fmt.Errorf("query derived audit: %w", err)
 	}
 	defer rows.Close()
-	var entries []struct {
-		Action     string
-		Reason     string
-		OccurredAt time.Time
-	}
+	var entries []DerivedAuditEntry
 	for rows.Next() {
-		var entry struct {
-			Action     string
-			Reason     string
-			OccurredAt time.Time
-		}
+		var entry DerivedAuditEntry
 		var reason sql.NullString
 		var occurredAt string
 		if err := rows.Scan(&entry.Action, &reason, &occurredAt); err != nil {
@@ -843,4 +831,45 @@ func storeListDerived(ctx context.Context, source queryerRows) ([]memory.Derived
 		}
 	}
 	return derived, nil
+}
+
+// DerivedAuditEntry 是派生候选版本的一行审计投影；字段与 derived_audit_log 一致。
+type DerivedAuditEntry struct {
+	Action     string
+	Reason     string
+	OccurredAt time.Time
+}
+
+// DerivedInspectResult 是派生候选的只读解释投影：最新版本行及其审计历史。
+type DerivedInspectResult struct {
+	Candidate memory.DerivedCandidate
+	Audit     []DerivedAuditEntry
+}
+
+// InspectDerived 返回派生候选最新版本的候选与审计历史；不存在时返回 ErrNotFound。
+// 读取走只读连接或可写连接，均不改变任何状态。
+func (store *Store) InspectDerived(ctx context.Context, derivedID string) (DerivedInspectResult, error) {
+	version, found, err := latestDerivedVersion(ctx, store.db, derivedID)
+	if err != nil {
+		return DerivedInspectResult{}, err
+	}
+	if !found {
+		return DerivedInspectResult{}, memory.ErrNotFound
+	}
+	version.Evidence, err = derivedEvidenceFor(ctx, store.db, version.ID, version.ConsolidationID)
+	if err != nil {
+		return DerivedInspectResult{}, err
+	}
+	if err := version.Validate(); err != nil {
+		return DerivedInspectResult{}, fmt.Errorf("validate derived candidate: %w", err)
+	}
+	audit, err := derivedAuditFor(ctx, store.db, version.ID, version.ConsolidationID)
+	if err != nil {
+		return DerivedInspectResult{}, err
+	}
+	entries := make([]DerivedAuditEntry, 0, len(audit))
+	for _, entry := range audit {
+		entries = append(entries, DerivedAuditEntry{Action: entry.Action, Reason: entry.Reason, OccurredAt: entry.OccurredAt})
+	}
+	return DerivedInspectResult{Candidate: version, Audit: entries}, nil
 }
