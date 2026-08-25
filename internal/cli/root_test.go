@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -87,10 +88,110 @@ func TestHelpMatchesSupportedCommandsAndExitContract(t *testing.T) {
 		t.Fatalf("help exit=%d", exit)
 	}
 	usage := stderr.String()
-	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn evidence", "cairn doctor", "cairn benchmark run", "--local-config <path>", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
+	for _, required := range []string{"cairn run", "--max-tool-calls", "--max-input-tokens", "--max-output-tokens", "--max-wall-time", "--max-cost-usd", "cairn resume", "--note <text>", "--evidence <ref>", "--abort-run --reason", "cairn inspect", "cairn evidence", "cairn doctor", "cairn memory capture", "memory revoke", "cairn benchmark run", "--local-config <path>", "--prepare-timeout", "--prepare-proxy", "0 completed", "8 state corrupt"} {
 		if !strings.Contains(usage, required) {
 			t.Fatalf("usage omitted %q: %s", required, usage)
 		}
+	}
+}
+
+// TestMemoryCommandsUseOnlyNDJSONAndDoNotLeakTaskText 锁定四个 memory 命令的
+// 公共 CLI 契约：capture 的来源是 Run ID，所有 JSON 输出均为脱敏结构化投影。
+func TestMemoryCommandsUseOnlyNDJSONAndDoNotLeakTaskText(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeCapabilityConfig(t, workspace)
+	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
+	var runOutput, runErrors bytes.Buffer
+	runCommand := Command{Service: service, Stdout: &runOutput, Stderr: &runErrors}
+	if exit := runCommand.Run(context.Background(), []string{"run", "cli-memory-secret-task-sentinel", "--workspace", workspace, "--state-dir", stateDir, "--model", "glm-5.2", "--json"}); exit != ExitOK {
+		t.Fatalf("seed run exit=%d stderr=%s", exit, runErrors.String())
+	}
+	var runResult struct {
+		RunID string `json:"run_id"`
+	}
+	lines := strings.Split(strings.TrimSpace(runOutput.String()), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &runResult); err != nil || runResult.RunID == "" {
+		t.Fatalf("seed run result=%q err=%v", lines[len(lines)-1], err)
+	}
+	var captureOutput, captureErrors bytes.Buffer
+	captureCommand := Command{Service: service, Stdout: &captureOutput, Stderr: &captureErrors}
+	if exit := captureCommand.Run(context.Background(), []string{"memory", "capture", "--run", runResult.RunID, "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK {
+		t.Fatalf("capture exit=%d stderr=%s", exit, captureErrors.String())
+	}
+	if strings.Contains(captureOutput.String(), "cli-memory-secret-task-sentinel") {
+		t.Fatalf("capture output leaked task: %s", captureOutput.String())
+	}
+	var captured struct {
+		Type      string `json:"type"`
+		Candidate struct {
+			ID string `json:"id"`
+		} `json:"candidate"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(captureOutput.String())), &captured); err != nil || captured.Type != "memory_capture" || captured.Candidate.ID == "" {
+		t.Fatalf("capture output=%q err=%v", captureOutput.String(), err)
+	}
+	var recallOutput, recallErrors bytes.Buffer
+	recallCommand := Command{Service: service, Stdout: &recallOutput, Stderr: &recallErrors}
+	if exit := recallCommand.Run(context.Background(), []string{"memory", "recall", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK || !json.Valid([]byte(strings.TrimSpace(recallOutput.String()))) {
+		t.Fatalf("recall exit=%d stdout=%q stderr=%s", exit, recallOutput.String(), recallErrors.String())
+	}
+	var inspectOutput, inspectErrors bytes.Buffer
+	inspectCommand := Command{Service: service, Stdout: &inspectOutput, Stderr: &inspectErrors}
+	if exit := inspectCommand.Run(context.Background(), []string{"memory", "inspect", captured.Candidate.ID, "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK || !json.Valid([]byte(strings.TrimSpace(inspectOutput.String()))) {
+		t.Fatalf("inspect exit=%d stdout=%q stderr=%s", exit, inspectOutput.String(), inspectErrors.String())
+	}
+	var revokeOutput, revokeErrors bytes.Buffer
+	revokeCommand := Command{Service: service, Stdout: &revokeOutput, Stderr: &revokeErrors}
+	if exit := revokeCommand.Run(context.Background(), []string{"memory", "revoke", captured.Candidate.ID, "--reason", "human_request", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK || !json.Valid([]byte(strings.TrimSpace(revokeOutput.String()))) {
+		t.Fatalf("revoke exit=%d stdout=%q stderr=%s", exit, revokeOutput.String(), revokeErrors.String())
+	}
+}
+
+// TestMemoryRecallReturnsCorruptExitForTamperedSource 锁定 CLI 不能把来源事件
+// 损坏降级为空 recall 或普通失败；只读证据校验必须映射到稳定的 ExitCorrupt。
+func TestMemoryRecallReturnsCorruptExitForTamperedSource(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeCapabilityConfig(t, workspace)
+	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
+	var runOutput, runErrors bytes.Buffer
+	runCommand := Command{Service: service, Stdout: &runOutput, Stderr: &runErrors}
+	if exit := runCommand.Run(context.Background(), []string{"run", "corrupt recall source", "--workspace", workspace, "--state-dir", stateDir, "--model", "glm-5.2", "--json"}); exit != ExitOK {
+		t.Fatalf("seed run exit=%d stderr=%s", exit, runErrors.String())
+	}
+	var seeded struct {
+		RunID string `json:"run_id"`
+	}
+	lines := strings.Split(strings.TrimSpace(runOutput.String()), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &seeded); err != nil || seeded.RunID == "" {
+		t.Fatalf("seed run=%q err=%v", lines[len(lines)-1], err)
+	}
+	var captureOutput, captureErrors bytes.Buffer
+	captureCommand := Command{Service: service, Stdout: &captureOutput, Stderr: &captureErrors}
+	if exit := captureCommand.Run(context.Background(), []string{"memory", "capture", "--run", seeded.RunID, "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK {
+		t.Fatalf("capture exit=%d stderr=%s", exit, captureErrors.String())
+	}
+	workspaceEntries, err := os.ReadDir(filepath.Join(stateDir, "workspaces"))
+	if err != nil || len(workspaceEntries) != 1 {
+		t.Fatalf("memory workspace entries=%v err=%v", workspaceEntries, err)
+	}
+	database, err := sql.Open("sqlite", filepath.Join(stateDir, "workspaces", workspaceEntries[0].Name(), "runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE events SET event_hash = ? WHERE run_id = ? AND seq = 1", "0000000000000000000000000000000000000000000000000000000000000000", seeded.RunID); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var recallOutput, recallErrors bytes.Buffer
+	recallCommand := Command{Service: service, Stdout: &recallOutput, Stderr: &recallErrors}
+	if exit := recallCommand.Run(context.Background(), []string{"memory", "recall", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitCorrupt {
+		t.Fatalf("recall exit=%d stdout=%q stderr=%s", exit, recallOutput.String(), recallErrors.String())
+	}
+	if strings.TrimSpace(recallOutput.String()) != "" {
+		t.Fatalf("corrupt recall wrote candidate output: %q", recallOutput.String())
 	}
 }
 

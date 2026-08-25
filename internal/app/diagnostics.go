@@ -41,7 +41,8 @@ type SandboxHealth struct {
 // journal_ok 与 artifacts_ok 对应既有只读完整性检查。ready 是总体就绪判定：
 // 配置有效、能力卡可解析、Provider 前提（基地址、模型、密钥环境变量）在位、
 // Docker 后端镜像存在、journal 完整或尚不存在（支持首次运行前 preflight）。
-// 诊断永远只读。
+// MemoryState/MemoryOK 单独报告二级记忆控制面的状态；它不参与新工作区 ready
+// 判定，诊断永远只读。
 type DoctorReport struct {
 	ConfigValid       bool                             `json:"config_valid"`
 	Ready             bool                             `json:"ready"`
@@ -64,6 +65,8 @@ type DoctorReport struct {
 	JournalState      string                           `json:"journal_state"`
 	JournalOK         bool                             `json:"journal_ok"`
 	ArtifactsOK       bool                             `json:"artifacts_ok"`
+	MemoryState       string                           `json:"memory_state"`
+	MemoryOK          bool                             `json:"memory_ok"`
 }
 
 // PolicyHealth 暴露写入与命令执行策略的非敏感结论；doctor 只报告，不决策。
@@ -97,6 +100,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
+		MemoryState:       "absent",
 		Telemetry:         TelemetryHealth{Status: "disabled"},
 	}
 	report.BuildRevision = report.Build.Revision
@@ -135,6 +139,14 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	journal, err := openReadOnlyJournal(stateDir, hash)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			memoryStore, memoryErr := openReadOnlyMemory(stateDir, hash)
+			if memoryErr == nil {
+				_ = memoryStore.Close()
+				return report, fmt.Errorf("%w: memory store exists but source journal is absent", ErrStateCorrupt)
+			}
+			if !errors.Is(memoryErr, fs.ErrNotExist) {
+				return report, fmt.Errorf("%w: %v", ErrStateCorrupt, memoryErr)
+			}
 			report.evaluateReadiness()
 			return report, nil
 		}
@@ -150,6 +162,11 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.ArtifactsOK = true
+	memoryState, memoryOK, err := checkMemoryReferences(ctx, journal, stateDir, hash)
+	if err != nil {
+		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	report.MemoryState, report.MemoryOK = memoryState, memoryOK
 	report.evaluateReadiness()
 	return report, nil
 }

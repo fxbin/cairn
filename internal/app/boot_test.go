@@ -242,6 +242,7 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 	}
 	allowedAdapters := map[string]bool{
 		"github.com/fxbin/cairn/internal/adapters/journal/sqlite":        true,
+		"github.com/fxbin/cairn/internal/adapters/memory/sqlite":         true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat": true,
 	}
 	for _, imported := range collectImports(".") {

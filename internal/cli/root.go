@@ -64,6 +64,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.evidence(ctx, args[1:])
 	case "doctor":
 		return command.doctor(ctx, args[1:])
+	case "memory":
+		return command.memory(ctx, args[1:])
 	case "resume":
 		return command.resume(ctx, args[1:])
 	case "benchmark":
@@ -182,6 +184,192 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 		return ExitOK
 	}
 	return ExitFailed
+}
+
+// memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、inspect、revoke
+// 四个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
+func (command Command) memory(ctx context.Context, arguments []string) int {
+	if len(arguments) == 0 {
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, inspect, or revoke")
+		return ExitUsage
+	}
+	switch arguments[0] {
+	case "capture":
+		return command.memoryCapture(ctx, arguments[1:])
+	case "recall":
+		return command.memoryRecall(ctx, arguments[1:])
+	case "inspect":
+		return command.memoryInspect(ctx, arguments[1:])
+	case "revoke":
+		return command.memoryRevoke(ctx, arguments[1:])
+	default:
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, inspect, or revoke")
+		return ExitUsage
+	}
+}
+
+// memoryCapture 解析固定 Run 身份与 TTL，从已校验终态 Journal 写入结构化候选。
+func (command Command) memoryCapture(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory capture", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	runID := flags.String("run", "", "terminal run ID (required)")
+	ttlText := flags.String("ttl", "", "memory retention duration (default: 30d, max: 90d)")
+	supersedesID := flags.String("supersedes", "", "active memory candidate ID to atomically supersede")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(command.Stderr, "memory capture requires --run and no positional arguments")
+		return ExitUsage
+	}
+	var ttl time.Duration
+	var err error
+	if *ttlText != "" {
+		ttl, err = time.ParseDuration(*ttlText)
+		if err != nil {
+			fmt.Fprintln(command.Stderr, "memory capture --ttl must be a duration")
+			return ExitUsage
+		}
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.CaptureMemory(ctx, app.MemoryCaptureOptions{RunID: domain.RunID(*runID), Workspace: *workspace, StateDir: *stateDir, Config: configuration, TTL: ttl, SupersedesID: *supersedesID})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory capture failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type      string `json:"type"`
+			Candidate any    `json:"candidate"`
+		}{Type: "memory_capture", Candidate: candidate})
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "memory candidate: %s kind=%s outcome=%s status=%s expires=%s\n", candidate.ID, candidate.Kind, candidate.Outcome, candidate.Status, candidate.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	return ExitOK
+}
+
+// memoryRecall 只读检索当前工作区的 active、未过期 run_outcome 候选。
+func (command Command) memoryRecall(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory recall", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	limit := flags.Int("limit", 0, "maximum recalled candidates (default: 20, max: 100)")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory recall does not accept positional arguments")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidates, err := command.Service.RecallMemory(ctx, app.MemoryRecallOptions{Workspace: *workspace, StateDir: *stateDir, Config: configuration, Limit: *limit})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory recall failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type       string `json:"type"`
+			Candidates any    `json:"candidates"`
+		}{Type: "memory_recall", Candidates: candidates})
+		return ExitOK
+	}
+	for _, candidate := range candidates {
+		fmt.Fprintf(command.Stdout, "memory candidate: %s outcome=%s status=%s created=%s expires=%s\n", candidate.ID, candidate.Outcome, candidate.Status, candidate.CreatedAt.UTC().Format(time.RFC3339Nano), candidate.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	}
+	return ExitOK
+}
+
+// memoryInspect 只读显示当前工作区一个候选及其无自由文本的审计历史。
+func (command Command) memoryInspect(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory inspect", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(normalizeMemoryPositionals(arguments)); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "memory inspect requires a candidate ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	result, err := command.Service.InspectMemory(ctx, app.MemoryInspectOptions{CandidateID: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory inspect failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type   string `json:"type"`
+			Memory any    `json:"memory"`
+		}{Type: "memory_inspect", Memory: result})
+		return ExitOK
+	}
+	candidate := result.Candidate
+	fmt.Fprintf(command.Stdout, "memory candidate: %s kind=%s outcome=%s failure=%s trusted_verification=%t status=%s\n", candidate.ID, candidate.Kind, candidate.Outcome, candidate.FailureClass, candidate.TrustedVerification, candidate.Status)
+	for _, entry := range result.Audit {
+		fmt.Fprintf(command.Stdout, "audit: %s reason=%s at=%s\n", entry.Action, entry.Reason, entry.OccurredAt.UTC().Format(time.RFC3339Nano))
+	}
+	return ExitOK
+}
+
+// memoryRevoke 原子撤销当前工作区的 active 候选，并要求封闭的、无自由文本理由。
+func (command Command) memoryRevoke(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory revoke", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	reason := flags.String("reason", "", "evidence_invalid or human_request (required)")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(normalizeMemoryPositionals(arguments)); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 || (*reason != "evidence_invalid" && *reason != "human_request") {
+		fmt.Fprintln(command.Stderr, "memory revoke requires a candidate ID and --reason evidence_invalid|human_request")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.RevokeMemory(ctx, app.MemoryRevokeOptions{CandidateID: flags.Arg(0), Reason: *reason, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory revoke failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type      string `json:"type"`
+			Candidate any    `json:"candidate"`
+		}{Type: "memory_revoke", Candidate: candidate})
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "memory candidate: %s status=%s\n", candidate.ID, candidate.Status)
+	return ExitOK
 }
 
 // resume 解析恢复、审批、对账或中止参数，并调用相应应用用例。
@@ -317,6 +505,14 @@ func normalizeRunArguments(arguments []string) []string {
 		"--workspace": {}, "--state-dir": {}, "--config": {}, "--base-url": {}, "--model": {},
 		"--api-key-env": {}, "--max-turns": {}, "--max-tool-calls": {}, "--max-input-tokens": {},
 		"--max-output-tokens": {}, "--max-wall-time": {}, "--max-cost-usd": {},
+	})
+}
+
+// normalizeMemoryPositionals 允许 inspect/revoke 的候选标识放在 flags 之前，
+// 同时保持标准 flag 包对公共 workspace/state/config 选项的解析语义。
+func normalizeMemoryPositionals(arguments []string) []string {
+	return normalizeFlagsThenPositionals(arguments, map[string]struct{}{
+		"--workspace": {}, "--state-dir": {}, "--config": {}, "--reason": {},
 	})
 }
 
@@ -609,6 +805,7 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 		fmt.Fprintf(command.Stdout, "resolved %s = %s (%s)\n", entry.Field, entry.Value, entry.Source)
 	}
 	fmt.Fprintf(command.Stdout, "journal: %s ok=%t artifacts=%t\n", report.JournalState, report.JournalOK, report.ArtifactsOK)
+	fmt.Fprintf(command.Stdout, "memory: %s ok=%t\n", report.MemoryState, report.MemoryOK)
 	return ExitOK
 }
 
@@ -678,6 +875,10 @@ Usage:
   cairn inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--events] [--json] <run-id>
   cairn evidence [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <run-id>
   cairn doctor [--workspace <path>] [--state-dir <path>]
+  cairn memory capture --run <run-id> [--ttl <duration>] [--supersedes <candidate-id>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory recall [--limit <n>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
+  cairn memory revoke --reason evidence_invalid|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 
 Exit status:
