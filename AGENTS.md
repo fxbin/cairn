@@ -32,7 +32,7 @@
 - `apply_patch` 是确定性的单文件操作：更新/删除绑定已有 SHA-256，写入采用临时文件、同步与原子重命名。
 - `exec_command` 只接受 argv，不经 shell；它受工作区、环境白名单、输出/超时上限和进程组取消保护。
 - `sandbox.backend` 可选 `host` 或 `docker`；使用 Docker 时必须指定本地已有镜像，并以无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载失败关闭执行。不得在 Docker 不可用时回退到宿主机。
-- `cairn benchmark run` 必须通过 `--local-config` 显式读取 Git 忽略的本机评测配置；配置必须分别给出任务合同、冻结 Agent 配置、私有 verifier、结果、clone 工作区和 state 目录，CLI 不得从 manifest 位置推导这些目录。每次尝试必须有新的 clone、任务专属 Docker 镜像、固定 verifier 和冻结配置。verifier patch 只能从忽略的本地目录注入，结果中只记录其摘要。
+- `cairn benchmark run` 必须通过 `--local-config` 显式读取 Git 忽略的本机评测配置；配置必须分别给出任务合同、冻结 Agent 配置、私有 verifier、结果、clone 工作区和 state 目录，CLI 不得从 manifest 位置推导这些目录。每次尝试必须有新的 clone、任务专属 Docker 镜像、固定 verifier 和冻结配置。基线克隆走本地优先的对象库（`<workspaces>/_mirror`）：基线已在本地镜像时不发起网络请求，缺失才镜像克隆或增量 fetch；每次尝试的工作区仍从镜像全新克隆并校验基线提交，对象内容完整性由 git 哈希保证。verifier patch 只能从忽略的本地目录注入，结果中只记录其摘要。
 - `workspace.ignore` 只能限制工具视图，不能缩小 verifier 的非敏感、非 volatile 工作区观察范围。
 - 新配置字段必须同步更新 `Config`、默认值、严格 YAML 校验与测试；影响执行、审批或预算语义的字段还必须加入 `internal/config` 的 `fingerprintView` 白名单并补充指纹变化测试（运维/展示类字段不得加入，避免在途 run 漂移）。写入和命令的默认策略都是 `ask`。
 - Execution Profile 是版本化产品合同：`profile: default|complex`（空=default；default=40 轮，complex=80 轮并按 gate 实验非等比放大：工具 1.6×、输入 2.8×）。解析优先级固定为 安全默认值 → 命名 Profile → YAML 显式值 → 环境覆盖 → CLI 显式值；任意更高预算值必须显式出现并进入指纹。`Config.Resolution` 是只读的 Resolved Execution Plan（字段→值→来源），随冻结配置制品持久化，不得进入 YAML 解码或配置指纹。

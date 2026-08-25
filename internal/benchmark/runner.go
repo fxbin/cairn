@@ -274,7 +274,7 @@ func (runner Runner) prepareAgentAttempt(ctx context.Context, options RunOptions
 	}
 	prepareContext, cancelPrepare := context.WithTimeout(ctx, options.PrepareTimeout)
 	defer cancelPrepare()
-	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy); err != nil {
+	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy, options.WorkspacesRoot); err != nil {
 		return preparedAttempt{}, preparation.finish(runner.now()).fail("preparation_prepare", err)
 	}
 	revision, err := gitRevision(prepareContext, workspace)
@@ -338,7 +338,7 @@ func (runner Runner) qualifyAttempt(ctx context.Context, options RunOptions, rep
 	}
 	prepareContext, cancelPrepare := context.WithTimeout(ctx, options.PrepareTimeout)
 	defer cancelPrepare()
-	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy); err != nil {
+	if err := runner.cloneAtBaseline(prepareContext, task, workspace, options.PrepareProxy, options.WorkspacesRoot); err != nil {
 		return result.finish(runner.now()).fail("qualification_prepare", err)
 	}
 	revision, err := gitRevision(prepareContext, workspace)
@@ -473,12 +473,12 @@ func configurationForTask(base config.Config, task Task) (config.Config, error) 
 }
 
 // cloneAtBaseline 调用可替换的资格/正式 clone 实现；测试替身只能替换该
-// 受控网络边界，生产默认仍使用固定 argv 的 cloneAtBaseline 函数。
-func (runner Runner) cloneAtBaseline(ctx context.Context, task Task, workspace, prepareProxy string) error {
+// 受控网络边界，生产默认使用本地优先的 mirrorCloneAtBaseline。
+func (runner Runner) cloneAtBaseline(ctx context.Context, task Task, workspace, prepareProxy, workspacesRoot string) error {
 	if runner.CloneAtBaseline != nil {
 		return runner.CloneAtBaseline(ctx, task, workspace, prepareProxy)
 	}
-	return cloneAtBaseline(ctx, task, workspace, prepareProxy)
+	return mirrorCloneAtBaseline(ctx, task, workspace, prepareProxy, workspacesRoot)
 }
 
 // applyPrivateVerifier 调用可替换的 evaluator-only verifier 注入，实现
@@ -507,9 +507,9 @@ func (runner Runner) dockerImageAvailable(ctx context.Context, image string) err
 	return dockerImageAvailable(ctx, image)
 }
 
-// cloneAtBaseline 通过 argv 固定从合同 URL 创建新的 clone 并检出不可变基线提交。
-// 准备网络路径上的瞬态故障（代理吞吐抖动、RPC 中断）按固定次数重试：每次尝试
-// 都从零开始克隆，成功后内容仍由基线提交校验保证不可变。
+// cloneAtBaseline 通过 argv 固定从合同 URL 直接创建新的 clone 并检出不可变
+// 基线提交（历史直连实现，保留为镜像路径的网络兜底语义参照与对照实现；
+// 生产路径见 mirror.go 的 mirrorCloneAtBaseline）。
 func cloneAtBaseline(ctx context.Context, task Task, workspace, prepareProxy string) error {
 	if err := retryTransient(func() error {
 		return runProcessWithProxy(ctx, "", []string{"git", "-c", "http.version=HTTP/1.1", "clone", "--filter=blob:none", "--no-checkout", task.Repository.URL, workspace}, prepareProxy)
