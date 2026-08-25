@@ -37,6 +37,16 @@ type MemoryRecallOptions struct {
 	Limit     int
 }
 
+// MemoryExplainOptions 描述 M2-A 的显式只读召回计划与账本请求。Query 不接受
+// 任务正文；WorkspaceHash 由当前工作区解析并覆盖，防止跨工作区检索。
+type MemoryExplainOptions struct {
+	Query     memory.RecallQuery
+	Workspace string
+	StateDir  string
+	Config    config.Config
+	Now       time.Time
+}
+
 // MemoryInspectOptions 描述当前工作区内单个候选的只读 inspect 边界。
 type MemoryInspectOptions struct {
 	CandidateID string
@@ -130,7 +140,150 @@ func (service Service) RecallMemory(ctx context.Context, options MemoryRecallOpt
 	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	return store.Recall(ctx, memory.RecallOptions{WorkspaceHash: workspaceHash, Limit: options.Limit, Now: time.Now().UTC()})
+	return store.Recall(ctx, memory.RecallOptions{WorkspaceHash: workspaceHash, Precision: memory.RecallPrecisionTrace, Limit: options.Limit, Now: time.Now().UTC()})
+}
+
+// ExplainMemoryRecall 为显式调用生成 sqlite_exact 计划和一次性 Evidence Ledger。
+// 它先验证整个 Memory Store 及其 Journal/Artifact 来源，任一来源无效即返回不含
+// 候选的 source_invalid 账本；该路径从不创建、修复或写入任何状态。
+func (service Service) ExplainMemoryRecall(ctx context.Context, options MemoryExplainOptions) (memory.EvidenceLedger, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.EvidenceLedger{}, err
+	}
+	if options.Query.WorkspaceHash != "" && options.Query.WorkspaceHash != workspaceHash {
+		return memory.EvidenceLedger{}, errors.New("memory explain workspace hash does not match current workspace")
+	}
+	query := options.Query
+	query.WorkspaceHash = workspaceHash
+	plan, err := memory.BuildRecallPlan(query)
+	if err != nil {
+		return memory.EvidenceLedger{}, err
+	}
+	if plan.StopReason == memory.RecallStopEvidenceInsufficient {
+		return memory.NewInsufficientLedger(plan, memory.RecallStopEvidenceInsufficient), nil
+	}
+	store, err := openReadOnlyMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return memory.NewInsufficientLedger(plan, memory.RecallStopNoMatch), nil
+		}
+		return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: open memory store", ErrStateCorrupt)
+	}
+	defer store.Close()
+	journal, err := openReadOnlyJournal(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: open memory source journal", ErrStateCorrupt)
+	}
+	defer journal.Close()
+	if err := verifyMemoryStore(ctx, store, journal, options.StateDir, workspaceHash); err != nil {
+		return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: verify memory sources", ErrStateCorrupt)
+	}
+	now := options.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	candidates, err := store.Recall(ctx, memory.RecallOptions{
+		WorkspaceHash:       plan.NormalizedRequest.WorkspaceHash,
+		TaskPromptDigest:    plan.NormalizedRequest.TaskPromptDigest,
+		Outcomes:            plan.NormalizedRequest.Outcomes,
+		FailureClasses:      plan.NormalizedRequest.FailureClasses,
+		TrustedVerification: plan.NormalizedRequest.TrustedVerification,
+		CreatedFrom:         plan.NormalizedRequest.CreatedFrom,
+		CreatedUntil:        plan.NormalizedRequest.CreatedUntil,
+		Precision:           plan.NormalizedRequest.Precision,
+		Limit:               plan.NormalizedRequest.Limit,
+		Now:                 now,
+	})
+	if err != nil {
+		return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: query memory candidates", ErrStateCorrupt)
+	}
+	entries := make([]memory.LedgerEntry, 0, len(candidates))
+	for _, candidate := range candidates {
+		events, loadErr := journal.Load(ctx, domain.RunID(candidate.RunID))
+		if loadErr != nil || len(events) == 0 {
+			return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: load candidate source", ErrStateCorrupt)
+		}
+		entry, entryErr := memoryLedgerEntry(candidate, events)
+		if entryErr != nil {
+			return memory.NewSourceInvalidLedger(plan), fmt.Errorf("%w: project candidate evidence", ErrStateCorrupt)
+		}
+		entries = append(entries, entry)
+	}
+	return memory.NewEvidenceLedger(plan, entries), nil
+}
+
+// memoryLedgerEntry 将已完成全库验证的 Candidate 和精确事件序列投影为临时账本条目。
+// 它仅复制受限字段和时间锚点，不解析任何 Event payload 或 Artifact 正文。
+func memoryLedgerEntry(candidate memory.Candidate, events []domain.Event) (memory.LedgerEntry, error) {
+	projection, err := domain.Replay(events)
+	if err != nil {
+		return memory.LedgerEntry{}, err
+	}
+	evidence := make([]memory.LedgerEvidence, 0, len(candidate.Evidence))
+	for _, reference := range candidate.Evidence {
+		matched, found := matchingMemoryEvidenceEvent(reference, events)
+		if !found {
+			return memory.LedgerEntry{}, errors.New("memory evidence event is unavailable")
+		}
+		source := memory.LedgerSourceEventJournal
+		if reference.ArtifactSHA256 != "" {
+			source = memory.LedgerSourceArtifactReference
+		}
+		evidence = append(evidence, memory.LedgerEvidence{
+			Source:         source,
+			EventSeq:       reference.EventSeq,
+			EventHash:      reference.EventHash,
+			EventType:      reference.EventType,
+			ArtifactSHA256: reference.ArtifactSHA256,
+			EventTime:      matched.OccurredAt.UTC(),
+		})
+	}
+	verificationStatus := memory.EvidenceSlotUnavailable
+	var verificationTime *time.Time
+	if projection.LastVerificationSeq != 0 {
+		for _, event := range events {
+			if event.Seq == projection.LastVerificationSeq && event.Type == domain.EventVerificationFinished {
+				value := event.OccurredAt.UTC()
+				verificationTime = &value
+				verificationStatus = memory.EvidenceSlotAvailable
+				break
+			}
+		}
+	}
+	trusted := "false"
+	if candidate.TrustedVerification {
+		trusted = "true"
+	}
+	return memory.LedgerEntry{
+		CandidateID:                candidate.ID,
+		Kind:                       candidate.Kind,
+		TaskPromptDigest:           candidate.TaskPromptDigest,
+		Outcome:                    candidate.Outcome,
+		FailureClass:               candidate.FailureClass,
+		TrustedVerification:        candidate.TrustedVerification,
+		MentionTime:                candidate.CreatedAt.UTC(),
+		ExpiresAt:                  candidate.ExpiresAt.UTC(),
+		Status:                     candidate.Status,
+		SupersedesID:               candidate.SupersedesID,
+		VerificationTime:           verificationTime,
+		VerificationTimeStatus:     verificationStatus,
+		Evidence:                   evidence,
+		EventReferenceCount:        memory.CountEventReferences(evidence),
+		EventReferenceCountKind:    memory.EventReferenceCountKind,
+		DerivedTrustedVerification: trusted,
+	}, nil
+}
+
+// matchingMemoryEvidenceEvent 在当前 Run 的已验证事件中精确定位 EvidenceRef，拒绝
+// 仅按序号或类型猜测时间锚点。
+func matchingMemoryEvidenceEvent(reference memory.EventEvidenceRef, events []domain.Event) (domain.Event, bool) {
+	for _, event := range events {
+		if reference.RunID == string(event.RunID) && reference.EventSeq == event.Seq && reference.EventHash == "sha256:"+event.EventHash && reference.EventType == string(event.Type) {
+			return event, true
+		}
+	}
+	return domain.Event{}, false
 }
 
 // InspectMemory 只读返回当前 workspace 的候选与审计历史；跨 workspace 标识即使

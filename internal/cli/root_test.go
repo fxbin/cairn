@@ -124,11 +124,22 @@ func TestMemoryCommandsUseOnlyNDJSONAndDoNotLeakTaskText(t *testing.T) {
 	var captured struct {
 		Type      string `json:"type"`
 		Candidate struct {
-			ID string `json:"id"`
+			ID               string `json:"id"`
+			TaskPromptDigest string `json:"task_prompt_digest"`
 		} `json:"candidate"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(captureOutput.String())), &captured); err != nil || captured.Type != "memory_capture" || captured.Candidate.ID == "" {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(captureOutput.String())), &captured); err != nil || captured.Type != "memory_capture" || captured.Candidate.ID == "" || captured.Candidate.TaskPromptDigest == "" {
 		t.Fatalf("capture output=%q err=%v", captureOutput.String(), err)
+	}
+	var explainOutput, explainErrors bytes.Buffer
+	explainCommand := Command{Service: service, Stdout: &explainOutput, Stderr: &explainErrors}
+	if exit := explainCommand.Run(context.Background(), []string{"memory", "explain", "--task-digest", captured.Candidate.TaskPromptDigest, "--precision", "trace", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitOK || !json.Valid([]byte(strings.TrimSpace(explainOutput.String()))) || strings.Contains(explainOutput.String(), "cli-memory-secret-task-sentinel") {
+		t.Fatalf("explain exit=%d stdout=%q stderr=%s", exit, explainOutput.String(), explainErrors.String())
+	}
+	var invalidOutput, invalidErrors bytes.Buffer
+	invalidCommand := Command{Service: service, Stdout: &invalidOutput, Stderr: &invalidErrors}
+	if exit := invalidCommand.Run(context.Background(), []string{"memory", "explain", "--failure-class", "unbounded", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitUsage || strings.TrimSpace(invalidOutput.String()) != "" {
+		t.Fatalf("invalid explain exit=%d stdout=%q stderr=%s", exit, invalidOutput.String(), invalidErrors.String())
 	}
 	var recallOutput, recallErrors bytes.Buffer
 	recallCommand := Command{Service: service, Stdout: &recallOutput, Stderr: &recallErrors}
@@ -192,6 +203,11 @@ func TestMemoryRecallReturnsCorruptExitForTamperedSource(t *testing.T) {
 	}
 	if strings.TrimSpace(recallOutput.String()) != "" {
 		t.Fatalf("corrupt recall wrote candidate output: %q", recallOutput.String())
+	}
+	var explainOutput, explainErrors bytes.Buffer
+	explainCommand := Command{Service: service, Stdout: &explainOutput, Stderr: &explainErrors}
+	if exit := explainCommand.Run(context.Background(), []string{"memory", "explain", "--outcome", "failed", "--workspace", workspace, "--state-dir", stateDir, "--json"}); exit != ExitCorrupt || !json.Valid([]byte(strings.TrimSpace(explainOutput.String()))) || !strings.Contains(explainOutput.String(), "source_invalid") {
+		t.Fatalf("explain exit=%d stdout=%q stderr=%s", exit, explainOutput.String(), explainErrors.String())
 	}
 }
 

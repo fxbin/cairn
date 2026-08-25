@@ -189,28 +189,54 @@ func (store *Store) Capture(ctx context.Context, candidate memory.Candidate) (me
 // Recall 返回当前 workspace 中 active、未过期且固定 run_outcome kind 的候选；
 // 排序固定为 created_at 倒序、ID 正序，不会执行语义检索或写入状态。
 func (store *Store) Recall(ctx context.Context, options memory.RecallOptions) ([]memory.Candidate, error) {
-	limit, err := memory.NormalizeRecallLimit(options.Limit)
+	precision := options.Precision
+	if precision == "" {
+		precision = memory.RecallPrecisionTrace
+	}
+	normalized, err := (memory.RecallQuery{
+		WorkspaceHash:       options.WorkspaceHash,
+		TaskPromptDigest:    options.TaskPromptDigest,
+		Outcomes:            options.Outcomes,
+		FailureClasses:      options.FailureClasses,
+		TrustedVerification: options.TrustedVerification,
+		CreatedFrom:         options.CreatedFrom,
+		CreatedUntil:        options.CreatedUntil,
+		Precision:           precision,
+		Limit:               options.Limit,
+	}).Normalize()
 	if err != nil {
 		return nil, err
-	}
-	if !validWorkspaceDigest(options.WorkspaceHash) {
-		return nil, errors.New("memory recall workspace hash is invalid")
 	}
 	now := options.Now.UTC()
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	query := candidateSelect + ` WHERE workspace_hash = ? AND kind = ? AND status = ? AND expires_at > ?`
-	arguments := []any{options.WorkspaceHash, memory.KindRunOutcome, memory.StatusActive, now.Format(time.RFC3339Nano)}
-	if options.TaskPromptDigest != "" {
-		if !validWorkspaceDigest(options.TaskPromptDigest) {
-			return nil, errors.New("memory recall task digest is invalid")
-		}
+	arguments := []any{normalized.WorkspaceHash, memory.KindRunOutcome, memory.StatusActive, now.Format(time.RFC3339Nano)}
+	if normalized.TaskPromptDigest != "" {
 		query += " AND task_prompt_digest = ?"
-		arguments = append(arguments, options.TaskPromptDigest)
+		arguments = append(arguments, normalized.TaskPromptDigest)
+	}
+	if len(normalized.Outcomes) != 0 {
+		query += " AND outcome IN (" + placeholders(len(normalized.Outcomes)) + ")"
+		arguments = append(arguments, stringsToAny(normalized.Outcomes)...)
+	}
+	if len(normalized.FailureClasses) != 0 {
+		query += " AND failure_class IN (" + placeholders(len(normalized.FailureClasses)) + ")"
+		arguments = append(arguments, stringsToAny(normalized.FailureClasses)...)
+	}
+	switch normalized.TrustedVerification {
+	case memory.TrustedVerificationRequired:
+		query += " AND trusted_verification = 1"
+	case memory.TrustedVerificationNotRequired:
+		query += " AND trusted_verification = 0"
+	}
+	if normalized.CreatedFrom != nil {
+		query += " AND created_at >= ? AND created_at < ?"
+		arguments = append(arguments, normalized.CreatedFrom.Format(time.RFC3339Nano), normalized.CreatedUntil.Format(time.RFC3339Nano))
 	}
 	query += " ORDER BY created_at DESC, id ASC LIMIT ?"
-	arguments = append(arguments, limit)
+	arguments = append(arguments, normalized.Limit)
 	rows, err := store.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("query memory recall: %w", err)
@@ -242,6 +268,20 @@ func (store *Store) Recall(ctx context.Context, options memory.RecallOptions) ([
 		}
 	}
 	return candidates, nil
+}
+
+// placeholders 返回固定数量的 SQLite 参数占位符；调用方只对已规范化的封闭字段使用它。
+func placeholders(count int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
+}
+
+// stringsToAny 将已验证的受限 token 转为 database/sql 参数，避免拼接业务值到 SQL。
+func stringsToAny(values []string) []any {
+	arguments := make([]any, 0, len(values))
+	for _, value := range values {
+		arguments = append(arguments, value)
+	}
+	return arguments
 }
 
 // Inspect 返回候选及其审计历史；它不按状态过滤，便于解释撤销与替代原因。

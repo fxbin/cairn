@@ -72,6 +72,58 @@ func TestMemoryCaptureRecallRevokeAndDoctor(t *testing.T) {
 	}
 }
 
+// TestExplainMemoryRecallProjectsPrecisionAndPreservesReadOnlyState 锁定 M2-A
+// explain 在来源验证后产生不同精度投影，且不会写入既有 Memory SQLite。
+func TestExplainMemoryRecallProjectsPrecisionAndPreservesReadOnlyState(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	run, err := service.Run(context.Background(), RunOptions{Task: "explain-memory-secret-sentinel", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := service.CaptureMemory(context.Background(), MemoryCaptureOptions{RunID: run.ID, Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memoryPath := memoryDBPath(stateDir, workspaceHash)
+	before, err := os.ReadFile(memoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := service.ExplainMemoryRecall(context.Background(), MemoryExplainOptions{
+		Query:     memory.RecallQuery{TaskPromptDigest: candidate.TaskPromptDigest, Precision: memory.RecallPrecisionCompact},
+		Workspace: workspace,
+		StateDir:  stateDir,
+		Config:    configuration,
+		Now:       candidate.CreatedAt.Add(time.Second),
+	})
+	if err != nil || compact.Status != memory.LedgerStatusSufficient || len(compact.Entries) != 1 || len(compact.Entries[0].Evidence) != 0 {
+		t.Fatalf("compact=%#v err=%v", compact, err)
+	}
+	trace, err := service.ExplainMemoryRecall(context.Background(), MemoryExplainOptions{
+		Query:     memory.RecallQuery{TaskPromptDigest: candidate.TaskPromptDigest, Precision: memory.RecallPrecisionTrace},
+		Workspace: workspace,
+		StateDir:  stateDir,
+		Config:    configuration,
+		Now:       candidate.CreatedAt.Add(time.Second),
+	})
+	if err != nil || len(trace.Entries) != 1 || len(trace.Entries[0].Evidence) == 0 || trace.Entries[0].EventReferenceCount == 0 {
+		t.Fatalf("trace=%#v err=%v", trace, err)
+	}
+	after, err := os.ReadFile(memoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("memory explain changed memory database")
+	}
+}
+
 // TestMemoryCaptureRequiresTerminalRunAndWorkspaceLock 锁定 capture 不会绕过
 // 既有工作区锁，也不会接受非终态或跨工作区的 Journal 事实。
 func TestMemoryCaptureRequiresTerminalRunAndWorkspaceLock(t *testing.T) {
@@ -219,6 +271,10 @@ func TestRecallAndInspectFailClosedOnCorruptMemorySources(t *testing.T) {
 			}
 			if _, err := service.InspectMemory(context.Background(), MemoryInspectOptions{CandidateID: candidate.ID, Workspace: workspace, StateDir: stateDir, Config: configuration}); !errors.Is(err, ErrStateCorrupt) {
 				t.Fatalf("inspect error=%v, want state corrupt", err)
+			}
+			ledger, explainErr := service.ExplainMemoryRecall(context.Background(), MemoryExplainOptions{Query: memory.RecallQuery{TaskPromptDigest: candidate.TaskPromptDigest}, Workspace: workspace, StateDir: stateDir, Config: configuration})
+			if !errors.Is(explainErr, ErrStateCorrupt) || ledger.Status != memory.LedgerStatusSourceInvalid || len(ledger.Entries) != 0 {
+				t.Fatalf("explain ledger=%#v err=%v", ledger, explainErr)
 			}
 			if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
 				t.Fatalf("doctor error=%v, want state corrupt", err)

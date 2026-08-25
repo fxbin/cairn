@@ -95,12 +95,19 @@ type InspectResult struct {
 	Audit     []AuditEntry `json:"audit"`
 }
 
-// RecallOptions 描述当前工作区内的确定性白名单检索条件。
+// RecallOptions 描述当前工作区内的确定性白名单检索条件。M2-A 仅增加受限的
+// SQLite 精确过滤字段，不接受自然语言、近似相似度或跨工作区范围。
 type RecallOptions struct {
-	WorkspaceHash    string
-	TaskPromptDigest string
-	Limit            int
-	Now              time.Time
+	WorkspaceHash       string
+	TaskPromptDigest    string
+	Outcomes            []string
+	FailureClasses      []string
+	TrustedVerification string
+	CreatedFrom         *time.Time
+	CreatedUntil        *time.Time
+	Precision           string
+	Limit               int
+	Now                 time.Time
 }
 
 // NewRunOutcomeCandidate 从已验证的 Run 投影构造固定结构候选；它不会接受或

@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/memory"
 )
 
 const (
@@ -186,11 +187,11 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 	return ExitFailed
 }
 
-// memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、inspect、revoke
-// 四个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
+// memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、explain、inspect、revoke
+// 五个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
 func (command Command) memory(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, inspect, or revoke")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, or revoke")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -198,14 +199,102 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 		return command.memoryCapture(ctx, arguments[1:])
 	case "recall":
 		return command.memoryRecall(ctx, arguments[1:])
+	case "explain":
+		return command.memoryExplain(ctx, arguments[1:])
 	case "inspect":
 		return command.memoryInspect(ctx, arguments[1:])
 	case "revoke":
 		return command.memoryRevoke(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, inspect, or revoke")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, or revoke")
 		return ExitUsage
 	}
+}
+
+// memoryExplain 显式执行 M2-A 的 sqlite_exact 计划和一次性证据账本投影。它仅接收
+// 摘要、枚举和 UTC 时间范围，绝不接收任务正文或把结果注入 Agent Loop。
+func (command Command) memoryExplain(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory explain", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	taskDigest := flags.String("task-digest", "", "exact sha256 task digest")
+	trustedVerification := flags.String("trusted-verification", "any", "any, required, or not_required")
+	createdFromText := flags.String("created-from", "", "UTC RFC3339 start (inclusive)")
+	createdUntilText := flags.String("created-until", "", "UTC RFC3339 end (exclusive)")
+	limit := flags.Int("limit", 0, "candidates: compact default/max 10; trace default 20, max 100")
+	precision := flags.String("precision", "compact", "compact or trace")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	var outcomes, failureClasses stringList
+	flags.Var(&outcomes, "outcome", "completed, failed, or cancelled; repeatable")
+	flags.Var(&failureClasses, "failure-class", "controlled failure class; repeatable")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory explain does not accept positional arguments")
+		return ExitUsage
+	}
+	createdFrom, parseErr := parseUTCTimestamp(*createdFromText)
+	if parseErr != nil {
+		fmt.Fprintln(command.Stderr, "memory explain --created-from must be UTC RFC3339")
+		return ExitUsage
+	}
+	createdUntil, parseErr := parseUTCTimestamp(*createdUntilText)
+	if parseErr != nil {
+		fmt.Fprintln(command.Stderr, "memory explain --created-until must be UTC RFC3339")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	ledger, err := command.Service.ExplainMemoryRecall(ctx, app.MemoryExplainOptions{
+		Query: memory.RecallQuery{
+			TaskPromptDigest:    *taskDigest,
+			Outcomes:            outcomes,
+			FailureClasses:      failureClasses,
+			TrustedVerification: *trustedVerification,
+			CreatedFrom:         createdFrom,
+			CreatedUntil:        createdUntil,
+			Limit:               *limit,
+			Precision:           *precision,
+		},
+		Workspace: *workspace,
+		StateDir:  *stateDir,
+		Config:    configuration,
+	})
+	if err != nil && ledger.SchemaVersion == 0 {
+		fmt.Fprintln(command.Stderr, "memory explain query is invalid")
+		return ExitUsage
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type   string                `json:"type"`
+			Ledger memory.EvidenceLedger `json:"ledger"`
+		}{Type: "memory_explain", Ledger: ledger})
+	} else {
+		fmt.Fprintf(command.Stdout, "memory explain: strategy=%s status=%s candidates=%d conflicts=%d\n", ledger.Plan.Strategy, ledger.Status, len(ledger.Entries), len(ledger.Conflicts))
+	}
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory explain source invalid")
+		return exitFor(err)
+	}
+	return ExitOK
+}
+
+// parseUTCTimestamp 解析 CLI 时间边界；空值表示未提供，非 UTC 表示拒绝而非隐式换算。
+func parseUTCTimestamp(value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.Location() != time.UTC {
+		return nil, errors.New("timestamp is not UTC RFC3339")
+	}
+	return &parsed, nil
 }
 
 // memoryCapture 解析固定 Run 身份与 TTL，从已校验终态 Journal 写入结构化候选。
@@ -877,6 +966,7 @@ Usage:
   cairn doctor [--workspace <path>] [--state-dir <path>]
   cairn memory capture --run <run-id> [--ttl <duration>] [--supersedes <candidate-id>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory recall [--limit <n>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory explain [--task-digest <sha256>] [--outcome <value>] [--failure-class <value>] [--trusted-verification any|required|not_required] [--created-from <UTC-RFC3339>] [--created-until <UTC-RFC3339>] [--limit <n>] [--precision compact|trace] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory revoke --reason evidence_invalid|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]

@@ -96,6 +96,65 @@ func TestStoreRejectsExpiredRecallAndConflictingIdempotency(t *testing.T) {
 	}
 }
 
+// TestStoreRecallAppliesStructuredFiltersWithoutWriting 锁定 M2-A 的 SQLite 精确
+// 过滤与只读边界：受限条件只缩小结果集，查询前后数据库文件保持不变。
+func TestStoreRecallAppliesStructuredFiltersWithoutWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	failed := testCandidate(t, "run_exact_failed", now, memory.DefaultTTL, "")
+	completed := testCandidate(t, "run_exact_completed", now.Add(time.Second), memory.DefaultTTL, "")
+	completed.Outcome = "completed"
+	completed.FailureClass = ""
+	completed.TrustedVerification = true
+	if err := completed.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Capture(context.Background(), failed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Capture(context.Background(), completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	from := now.Add(-time.Second)
+	until := now.Add(2 * time.Second)
+	recalled, err := store.Recall(context.Background(), memory.RecallOptions{
+		WorkspaceHash:       failed.WorkspaceHash,
+		Outcomes:            []string{"completed"},
+		TrustedVerification: memory.TrustedVerificationRequired,
+		CreatedFrom:         &from,
+		CreatedUntil:        &until,
+		Precision:           memory.RecallPrecisionTrace,
+		Limit:               memory.DefaultTraceRecallLimit,
+		Now:                 now,
+	})
+	if err != nil || len(recalled) != 1 || recalled[0].ID != completed.ID {
+		t.Fatalf("recalled=%#v err=%v", recalled, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("read-only exact filter changed memory database")
+	}
+}
+
 // TestStoreMigrationPermissionsAndReadOnlyMode 锁定独立 SQLite 的文件权限、
 // 迁移 checksum/future-version 失败关闭，以及只读句柄不能修改候选。
 func TestStoreMigrationPermissionsAndReadOnlyMode(t *testing.T) {

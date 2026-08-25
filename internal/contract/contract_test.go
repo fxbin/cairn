@@ -149,6 +149,9 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	if guardResult.FailureClass != "loop_guard_repeated_operation_failure" || guardResult.StopReason != "loop_guard_repeated_operation_failure" {
 		t.Fatalf("loop guard result=%#v", guardResult)
 	}
+	if !IsKnownTerminalFailureClass(guardResult.FailureClass) {
+		t.Fatalf("known terminal failure class omitted %q", guardResult.FailureClass)
+	}
 	cancelled := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`), OccurredAt: time.Unix(1005, 0)},
 	)
