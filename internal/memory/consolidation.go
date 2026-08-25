@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -116,14 +117,16 @@ type DerivedCandidate struct {
 // PlannedConsolidation 是一次单写入者事务的完整计划：固定策略、封存的输入
 // 摘要与全部派生候选。存储层在同一 SQLite 事务内提交或整体回滚。
 type PlannedConsolidation struct {
-	ConsolidationID string             `json:"consolidation_id"`
-	SchemaVersion   int                `json:"schema_version"`
-	Strategy        string             `json:"strategy"`
-	WorkspaceHash   string             `json:"workspace_hash"`
-	InputsDigest    string             `json:"inputs_digest"`
-	InputIDs        []string           `json:"input_ids"`
-	CommittedAt     time.Time          `json:"committed_at"`
-	Derived         []DerivedCandidate `json:"derived"`
+	ConsolidationID      string             `json:"consolidation_id"`
+	SchemaVersion        int                `json:"schema_version"`
+	Strategy             string             `json:"strategy"`
+	WorkspaceHash        string             `json:"workspace_hash"`
+	InputsDigest         string             `json:"inputs_digest"`
+	InputIDs             []string           `json:"input_ids"`
+	FactAnchor           time.Time          `json:"fact_anchor"`
+	MinPatternSupport    int                `json:"min_pattern_support"`
+	MinHypothesisSupport int                `json:"min_hypothesis_support"`
+	Derived              []DerivedCandidate `json:"derived"`
 }
 
 // ConsolidationOptions 描述一次归纳的受控参数；下限常量不允许被调低，
@@ -228,10 +231,10 @@ func DeriveConsolidations(inputs ConsolidationInputs, options ConsolidationOptio
 	}
 	inputsDigest := InputsDigest(inputIDs)
 	plans := make([]PlannedConsolidation, 0, 2)
-	if patternPlan, ok := derivePatterns(inputs, inputsDigest, minPattern, ttl, latestInput); ok {
+	if patternPlan, ok := derivePatterns(inputs, inputsDigest, minPattern, minHypothesis, ttl, latestInput); ok {
 		plans = append(plans, patternPlan)
 	}
-	if hypothesisPlan, ok := deriveHypotheses(inputs, inputsDigest, minHypothesis, ttl, latestInput); ok {
+	if hypothesisPlan, ok := deriveHypotheses(inputs, inputsDigest, minPattern, minHypothesis, ttl, latestInput); ok {
 		plans = append(plans, hypothesisPlan)
 	}
 	sort.Slice(plans, func(left, right int) bool {
@@ -242,7 +245,7 @@ func DeriveConsolidations(inputs ConsolidationInputs, options ConsolidationOptio
 
 // derivePatterns 归纳 task_outcome_stability 计划：同任务摘要下 outcome、
 // failure class 与可信验证完全一致且样本足够的组才派生 pattern。
-func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
+func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minPatternSupport, minHypothesisSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
 	groups := make(map[string][]Candidate)
 	for _, candidate := range inputs.Candidates {
 		groups[candidate.TaskPromptDigest] = append(groups[candidate.TaskPromptDigest], candidate)
@@ -250,7 +253,7 @@ func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport 
 	derived := make([]DerivedCandidate, 0)
 	for _, digest := range sortedStringSet(digestKeySet(groups)) {
 		group := groups[digest]
-		if len(group) < minSupport || !consistentRunFacts(group) {
+		if len(group) < minPatternSupport || !consistentRunFacts(group) {
 			continue
 		}
 		first, last := createdBounds(group)
@@ -285,20 +288,22 @@ func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport 
 		return PlannedConsolidation{}, false
 	}
 	return PlannedConsolidation{
-		ConsolidationID: ConsolidationID(StrategyTaskOutcomeStability, inputs.WorkspaceHash, inputsDigest),
-		SchemaVersion:   ConsolidationSchemaVersion,
-		Strategy:        StrategyTaskOutcomeStability,
-		WorkspaceHash:   inputs.WorkspaceHash,
-		InputsDigest:    inputsDigest,
-		InputIDs:        inputIDList(inputs),
-		CommittedAt:     anchor,
-		Derived:         derived,
+		ConsolidationID:      ConsolidationID(StrategyTaskOutcomeStability, inputs.WorkspaceHash, inputsDigest),
+		SchemaVersion:        ConsolidationSchemaVersion,
+		Strategy:             StrategyTaskOutcomeStability,
+		WorkspaceHash:        inputs.WorkspaceHash,
+		InputsDigest:         inputsDigest,
+		InputIDs:             inputIDList(inputs),
+		FactAnchor:           anchor,
+		MinPatternSupport:    minPatternSupport,
+		MinHypothesisSupport: minHypothesisSupport,
+		Derived:              derived,
 	}, true
 }
 
 // deriveHypotheses 归纳 failure_class_recurrence 计划：同一失败类别样本足够
 // 且覆盖多个任务摘要时派生 hypothesis，载荷显式保持未证明状态。
-func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
+func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minPatternSupport, minHypothesisSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
 	groups := make(map[string][]Candidate)
 	for _, candidate := range inputs.Candidates {
 		if candidate.FailureClass == "" {
@@ -310,7 +315,7 @@ func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSuppor
 	for _, failureClass := range sortedStringSet(digestKeySet(groups)) {
 		group := groups[failureClass]
 		distinct := distinctTaskDigests(group)
-		if len(group) < minSupport || distinct < HypothesisMinDistinctTasks {
+		if len(group) < minHypothesisSupport || distinct < HypothesisMinDistinctTasks {
 			continue
 		}
 		first, last := createdBounds(group)
@@ -343,14 +348,16 @@ func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSuppor
 		return PlannedConsolidation{}, false
 	}
 	return PlannedConsolidation{
-		ConsolidationID: ConsolidationID(StrategyFailureClassRecurrence, inputs.WorkspaceHash, inputsDigest),
-		SchemaVersion:   ConsolidationSchemaVersion,
-		Strategy:        StrategyFailureClassRecurrence,
-		WorkspaceHash:   inputs.WorkspaceHash,
-		InputsDigest:    inputsDigest,
-		InputIDs:        inputIDList(inputs),
-		CommittedAt:     anchor,
-		Derived:         derived,
+		ConsolidationID:      ConsolidationID(StrategyFailureClassRecurrence, inputs.WorkspaceHash, inputsDigest),
+		SchemaVersion:        ConsolidationSchemaVersion,
+		Strategy:             StrategyFailureClassRecurrence,
+		WorkspaceHash:        inputs.WorkspaceHash,
+		InputsDigest:         inputsDigest,
+		InputIDs:             inputIDList(inputs),
+		FactAnchor:           anchor,
+		MinPatternSupport:    minPatternSupport,
+		MinHypothesisSupport: minHypothesisSupport,
+		Derived:              derived,
 	}, true
 }
 
@@ -488,11 +495,22 @@ func validateSourceReferences(evidence []SourceCandidateRef) error {
 	return nil
 }
 
-// strictUnmarshal 拒绝未知字段，防止载荷在存储层被附加任何额外语义。
+// strictUnmarshal 拒绝未知字段和任意尾随 JSON 值，防止载荷在存储层被附加
+// 额外语义或拼接成多值流。
 func strictUnmarshal(raw json.RawMessage, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("payload must contain exactly one JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 // consistentRunFacts 判断同组候选的终态事实是否完全一致。

@@ -217,6 +217,11 @@ func TestDerivedCandidateValidateRejectsTampering(t *testing.T) {
 	if err := withExtra.Validate(); err == nil {
 		t.Fatal("unknown payload field must be rejected")
 	}
+	withTrailingValue := pattern
+	withTrailingValue.Payload = append(append(json.RawMessage(nil), pattern.Payload...), []byte(` {}`)...)
+	if err := withTrailingValue.Validate(); err == nil {
+		t.Fatal("trailing JSON value must be rejected")
+	}
 	dropped := pattern
 	dropped.Evidence = pattern.Evidence[:1]
 	if err := dropped.Validate(); err == nil {
@@ -303,8 +308,8 @@ func TestDeriveConsolidationsUsesUniformLatestAnchor(t *testing.T) {
 	}
 	patternCount := 0
 	for _, plan := range plans {
-		if !plan.CommittedAt.Equal(late) {
-			t.Fatalf("plan %s anchor = %s want %s", plan.Strategy, plan.CommittedAt, late)
+		if !plan.FactAnchor.Equal(late) {
+			t.Fatalf("plan %s fact anchor = %s want %s", plan.Strategy, plan.FactAnchor, late)
 		}
 		for _, derived := range plan.Derived {
 			if !derived.CreatedAt.Equal(late) {
@@ -335,7 +340,7 @@ func TestDeriveConsolidationsAnchorDominatesUnrelatedNewerInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, plan := range plans {
-		if plan.CommittedAt.Before(latest) {
+		if plan.FactAnchor.Before(latest) {
 			t.Fatalf("plan %s anchor predates unrelated newest input", plan.Strategy)
 		}
 	}
@@ -350,7 +355,7 @@ func plan0Anchor(plans []PlannedConsolidation) time.Time {
 	if len(plans) == 0 {
 		return time.Date(2026, 8, 25, 12, 1, 0, 0, time.UTC)
 	}
-	return plans[0].CommittedAt
+	return plans[0].FactAnchor
 }
 
 // repeatHex 生成由种子偏移的 64 位十六进制测试摘要，满足 sha256 摘要格式。

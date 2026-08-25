@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	migrationVersion = 2
+	migrationVersion = 3
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -525,31 +525,51 @@ func (store *Store) migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS derived_evidence_by_source ON derived_evidence(source_candidate_id);`); err != nil {
 		return fmt.Errorf("create memory schema: %w", err)
 	}
-	if err := checkMigration(ctx, transaction); err != nil {
-		var version int
-		if queryErr := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); queryErr != nil || (version != 0 && version != 1) {
+	var version int
+	if err := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read memory schema version for migration: %w", err)
+	}
+	if version > migrationVersion || version < 0 {
+		return fmt.Errorf("memory schema version %d cannot be migrated by this Cairn binary", version)
+	}
+	if version == 0 {
+		if err := recordMigration(ctx, transaction, 1, migrationName, migrationHash); err != nil {
 			return err
 		}
-		if version == 1 {
-			var recorded string
-			if verifyErr := transaction.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = 1").Scan(&recorded); verifyErr != nil || recorded != migrationHash {
-				return errors.New("memory v1 migration checksum mismatch before upgrade")
-			}
+		if err := setMigrationVersion(ctx, transaction, 1); err != nil {
+			return err
 		}
-		if version == 0 {
-			if _, insertErr := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", 1, migrationName, migrationHash, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
-				return fmt.Errorf("record memory migration: %w", insertErr)
-			}
-			if _, setErr := transaction.ExecContext(ctx, "PRAGMA user_version = 1"); setErr != nil {
-				return fmt.Errorf("write memory schema version: %w", setErr)
-			}
+		version = 1
+	} else if err := verifyAppliedMigration(ctx, transaction, 1, migrationHash); err != nil {
+		return err
+	}
+	if version < migrationVersionTwo {
+		if err := recordMigration(ctx, transaction, migrationVersionTwo, migrationNameTwo, migrationHashTwo); err != nil {
+			return err
 		}
-		if _, insertErr := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", migrationVersionTwo, migrationNameTwo, migrationHashTwo, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
-			return fmt.Errorf("record memory consolidation migration: %w", insertErr)
+		if err := setMigrationVersion(ctx, transaction, migrationVersionTwo); err != nil {
+			return err
 		}
-		if _, setErr := transaction.ExecContext(ctx, "PRAGMA user_version = 2"); setErr != nil {
-			return fmt.Errorf("write memory consolidation schema version: %w", setErr)
+		version = migrationVersionTwo
+	} else if err := verifyAppliedMigration(ctx, transaction, migrationVersionTwo, migrationHashTwo); err != nil {
+		return err
+	}
+	if version < migrationVersionThree {
+		if _, err := transaction.ExecContext(ctx, `ALTER TABLE consolidations ADD COLUMN min_pattern_support INTEGER NOT NULL DEFAULT 2 CHECK(min_pattern_support >= 2)`); err != nil {
+			return fmt.Errorf("add frozen pattern support to memory consolidations: %w", err)
 		}
+		if _, err := transaction.ExecContext(ctx, `ALTER TABLE consolidations ADD COLUMN min_hypothesis_support INTEGER NOT NULL DEFAULT 2 CHECK(min_hypothesis_support >= 2)`); err != nil {
+			return fmt.Errorf("add frozen hypothesis support to memory consolidations: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionThree, migrationNameThree, migrationHashThree); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionThree); err != nil {
+			return err
+		}
+	}
+	if err := checkMigration(ctx, transaction); err != nil {
+		return err
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit memory migration: %w", err)
@@ -674,8 +694,37 @@ func insertAudit(ctx context.Context, transaction *sql.Tx, candidateID, action, 
 	return nil
 }
 
+// recordMigration 记录一条已经在当前事务内完成的单向 schema 迁移。
+func recordMigration(ctx context.Context, transaction *sql.Tx, version int, name, hash string) error {
+	if _, err := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", version, name, hash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record memory migration %d: %w", version, err)
+	}
+	return nil
+}
+
+// setMigrationVersion 将 SQLite user_version 前移到已经记录的 schema 版本。
+func setMigrationVersion(ctx context.Context, transaction *sql.Tx, version int) error {
+	if _, err := transaction.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		return fmt.Errorf("write memory schema version %d: %w", version, err)
+	}
+	return nil
+}
+
+// verifyAppliedMigration 校验已有迁移的不可变校验和，防止篡改库被继续升级。
+func verifyAppliedMigration(ctx context.Context, source queryer, version int, expectedHash string) error {
+	var recorded string
+	if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", version).Scan(&recorded); err != nil {
+		return fmt.Errorf("read memory migration %d: %w", version, err)
+	}
+	if recorded != expectedHash {
+		return fmt.Errorf("memory migration %d checksum mismatch", version)
+	}
+	return nil
+}
+
 // checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
-// 版本链当前为 1（情节记忆）与 2（巩固事务），单向兼容：旧二进制读新库失败关闭。
+// 版本链当前为 1（情节记忆）、2（巩固事务）和 3（冻结支持度），单向兼容：
+// 旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -687,7 +736,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {

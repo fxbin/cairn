@@ -48,7 +48,7 @@ type MemoryInspectDerivedOptions struct {
 
 // ConsolidateMemory 在既有工作区锁内执行一次事务化巩固：先做与 doctor 同等
 // 严格的跨库验证，再从全部 active、未过期的 run_outcome 候选确定性归纳，最后
-// 逐计划在 Memory Store 单写入者事务中提交。缺少 Memory Store 时失败关闭，
+// 将全部计划作为一个批次在 Memory Store 单写入者事务中提交。缺少 Memory Store 时失败关闭，
 // 绝不为巩固创建新状态；派生候选永不进入运行时召回。
 func (service Service) ConsolidateMemory(ctx context.Context, options MemoryConsolidateOptions) ([]memorysqlite.ConsolidationResult, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
@@ -101,13 +101,9 @@ func (service Service) ConsolidateMemory(ctx context.Context, options MemoryCons
 	if err != nil {
 		return nil, err
 	}
-	results := make([]memorysqlite.ConsolidationResult, 0, len(plans))
-	for _, plan := range plans {
-		result, err := store.Consolidate(ctx, plan)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, result)
+	results, err := store.ConsolidateBatch(ctx, plans)
+	if err != nil {
+		return nil, err
 	}
 	return results, nil
 }

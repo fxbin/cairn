@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -31,6 +32,42 @@ func consolidationStoreFixture(t *testing.T) (*Store, memory.ConsolidationInputs
 		}
 	}
 	return store, inputs, now
+}
+
+// consolidationBatchFixture 打开含两个任务摘要、同一失败类别的输入集合，确保
+// 一次确定性归纳同时产生 hypothesis 与 pattern 两个策略计划。
+func consolidationBatchFixture(t *testing.T) (*Store, memory.ConsolidationInputs, time.Time) {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "memory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	workspaceHash := "sha256:" + consolidationHex(1)
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	inputs := memory.ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []memory.Candidate{
+		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(2), "run_a", now.Add(-4*time.Hour)),
+		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(2), "run_b", now.Add(-3*time.Hour)),
+		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(4), "run_c", now.Add(-2*time.Hour)),
+		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(4), "run_d", now.Add(-time.Hour)),
+	}}
+	for _, candidate := range inputs.Candidates {
+		if _, err := store.Capture(context.Background(), candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return store, inputs, now
+}
+
+// storePath 返回测试 Store 当前主数据库的绝对路径，供关闭后重开耐久性断言使用。
+func storePath(t *testing.T, store *Store) string {
+	t.Helper()
+	var sequence int
+	var name, path string
+	if err := store.db.QueryRowContext(context.Background(), "PRAGMA database_list").Scan(&sequence, &name, &path); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // consolidationInputCandidate 构造一条合法 run_outcome 输入候选。
@@ -128,6 +165,61 @@ func TestConsolidateIsIdempotentOnRetry(t *testing.T) {
 	}
 	if err := store.Check(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestConsolidateExistingPlanIsIdempotentAfterInputsExpire 锁定恢复边界：已完整
+// 提交的同一计划即使其历史输入后来过期，仍按已存事实幂等返回，且不会新增
+// consolidation、派生版本、间接证据或审计；从未提交的新计划仍由过期校验拒绝。
+func TestConsolidateExistingPlanIsIdempotentAfterInputsExpire(t *testing.T) {
+	store, inputs, now := consolidationStoreFixture(t)
+	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+	if err != nil || len(plans) != 1 {
+		t.Fatalf("plans = %#v err = %v", plans, err)
+	}
+	plan := plans[0]
+	if _, err := store.Consolidate(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	var beforeConsolidations, beforeDerived, beforeEvidence, beforeAudit int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM consolidations").Scan(&beforeConsolidations); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_candidates").Scan(&beforeDerived); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_evidence").Scan(&beforeEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_audit_log").Scan(&beforeAudit); err != nil {
+		t.Fatal(err)
+	}
+	expiredAt := now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE candidates SET expires_at = ?", expiredAt); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Consolidate(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("expired historical inputs must not break idempotent recovery: %v", err)
+	}
+	if again.Plan.ConsolidationID != plan.ConsolidationID || len(again.SupersededVersion) != 0 {
+		t.Fatalf("idempotent recovery = %#v", again)
+	}
+	var afterConsolidations, afterDerived, afterEvidence, afterAudit int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM consolidations").Scan(&afterConsolidations); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_candidates").Scan(&afterDerived); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_evidence").Scan(&afterEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM derived_audit_log").Scan(&afterAudit); err != nil {
+		t.Fatal(err)
+	}
+	if beforeConsolidations != afterConsolidations || beforeDerived != afterDerived || beforeEvidence != afterEvidence || beforeAudit != afterAudit {
+		t.Fatalf("idempotent recovery changed rows: before=(%d,%d,%d,%d) after=(%d,%d,%d,%d)", beforeConsolidations, beforeDerived, beforeEvidence, beforeAudit, afterConsolidations, afterDerived, afterEvidence, afterAudit)
 	}
 }
 
@@ -254,6 +346,156 @@ func TestConsolidateRollsBackFullyOnFailure(t *testing.T) {
 	}
 	if err := store.Check(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestConsolidateRejectsInputsThatDriftBeforeWrite 锁定事务内输入复核：计划的
+// 证据不得越出 InputIDs，候选在计划和写入之间若撤销或过期，也必须拒绝且
+// 不产生 consolidation、derived、evidence 或 audit 残留。
+func TestConsolidateRejectsInputsThatDriftBeforeWrite(t *testing.T) {
+	t.Run("evidence outside inputs", func(t *testing.T) {
+		store, inputs, now := consolidationStoreFixture(t)
+		plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+		if err != nil || len(plans) == 0 {
+			t.Fatalf("plans = %#v err = %v", plans, err)
+		}
+		plan := plans[0]
+		outsideID := memory.CandidateID(inputs.WorkspaceHash, "run_outside")
+		plan.Derived[0].Evidence[0].CandidateID = outsideID
+		sort.Slice(plan.Derived[0].Evidence, func(left, right int) bool {
+			return plan.Derived[0].Evidence[left].CandidateID < plan.Derived[0].Evidence[right].CandidateID
+		})
+		if _, err := store.Consolidate(context.Background(), plan); err == nil {
+			t.Fatal("evidence outside input IDs must fail closed")
+		}
+		assertNoConsolidationResidue(t, store)
+	})
+	t.Run("revoked input", func(t *testing.T) {
+		store, inputs, now := consolidationStoreFixture(t)
+		plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+		if err != nil || len(plans) == 0 {
+			t.Fatalf("plans = %#v err = %v", plans, err)
+		}
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE candidates SET status = ? WHERE id = ?", memory.StatusRevoked, inputs.Candidates[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Consolidate(context.Background(), plans[0]); err == nil {
+			t.Fatal("revoked input must fail closed")
+		}
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE candidates SET status = ? WHERE id = ?", memory.StatusActive, inputs.Candidates[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		assertNoConsolidationResidue(t, store)
+	})
+	t.Run("expired input", func(t *testing.T) {
+		store, inputs, now := consolidationStoreFixture(t)
+		plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+		if err != nil || len(plans) == 0 {
+			t.Fatalf("plans = %#v err = %v", plans, err)
+		}
+		expiredAt := now.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE candidates SET expires_at = ? WHERE id = ?", expiredAt, inputs.Candidates[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Consolidate(context.Background(), plans[0]); err == nil {
+			t.Fatal("expired input must fail closed")
+		}
+		restoredAt := inputs.Candidates[0].ExpiresAt.UTC().Format(time.RFC3339Nano)
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE candidates SET expires_at = ? WHERE id = ?", restoredAt, inputs.Candidates[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		assertNoConsolidationResidue(t, store)
+	})
+}
+
+// TestConsolidateBatchRollsBackEarlierPlan 锁定同一应用调用的多策略原子性：
+// 第二个策略触发器失败时，第一个策略写入的所有行也必须随事务整体回滚。
+func TestConsolidateBatchRollsBackEarlierPlan(t *testing.T) {
+	store, inputs, now := consolidationBatchFixture(t)
+	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+	if err != nil || len(plans) != 2 {
+		t.Fatalf("plans = %#v err = %v", plans, err)
+	}
+	if plans[0].Strategy != memory.StrategyFailureClassRecurrence || plans[1].Strategy != memory.StrategyTaskOutcomeStability {
+		t.Fatalf("unexpected strategy order: %#v", plans)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `CREATE TEMP TRIGGER fail_second_consolidation
+		BEFORE INSERT ON derived_candidates WHEN NEW.kind = 'pattern'
+		BEGIN SELECT RAISE(ABORT, 'injected second-plan failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ConsolidateBatch(context.Background(), plans); err == nil {
+		t.Fatal("second plan failure must roll back the full batch")
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DROP TRIGGER fail_second_consolidation"); err != nil {
+		t.Fatal(err)
+	}
+	assertNoConsolidationResidue(t, store)
+}
+
+// TestConsolidateSeparatesFactAnchorFromCommitAuditTime 锁定来源事实时间与真实
+// 写入时间的职责分离：输入历史时间只锚定派生候选，consolidations.committed_at
+// 和 consolidated 审计必须等于当前事务时间且不能回填该锚点。
+func TestConsolidateSeparatesFactAnchorFromCommitAuditTime(t *testing.T) {
+	store, inputs, now := consolidationStoreFixture(t)
+	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+	if err != nil || len(plans) == 0 {
+		t.Fatalf("plans = %#v err = %v", plans, err)
+	}
+	if _, err := store.Consolidate(context.Background(), plans[0]); err != nil {
+		t.Fatal(err)
+	}
+	consolidations, err := store.ListConsolidations(context.Background())
+	if err != nil || len(consolidations) != 1 {
+		t.Fatalf("consolidations = %#v err = %v", consolidations, err)
+	}
+	stored := consolidations[0]
+	if !stored.CommittedAt.After(plans[0].FactAnchor) || stored.CommittedAt.Equal(plans[0].FactAnchor) {
+		t.Fatalf("committed at = %s fact anchor = %s", stored.CommittedAt, plans[0].FactAnchor)
+	}
+	inspected, err := store.InspectDerived(context.Background(), plans[0].Derived[0].ID)
+	if err != nil || len(inspected.Audit) != 1 {
+		t.Fatalf("derived audit = %#v err = %v", inspected.Audit, err)
+	}
+	if !inspected.Audit[0].OccurredAt.Equal(stored.CommittedAt) || inspected.Audit[0].OccurredAt.Equal(plans[0].FactAnchor) {
+		t.Fatalf("audit time = %s committed = %s anchor = %s", inspected.Audit[0].OccurredAt, stored.CommittedAt, plans[0].FactAnchor)
+	}
+}
+
+// TestConsolidatePersistsFrozenSupportForRecompute 锁定非默认最小支持度随计划
+// 入库；重开后 Check 必须使用冻结值重算，不能退回编译期默认阈值。
+func TestConsolidatePersistsFrozenSupportForRecompute(t *testing.T) {
+	store, inputs, now := consolidationStoreFixture(t)
+	extra := consolidationInputCandidate(t, inputs.WorkspaceHash, inputs.Candidates[0].TaskPromptDigest, "run_c", now)
+	if _, err := store.Capture(context.Background(), extra); err != nil {
+		t.Fatal(err)
+	}
+	inputs.Candidates = append(inputs.Candidates, extra)
+	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now.Add(time.Hour), MinPatternSupport: 3, MinHypothesisSupport: 3})
+	if err != nil || len(plans) != 1 {
+		t.Fatalf("plans = %#v err = %v", plans, err)
+	}
+	if _, err := store.Consolidate(context.Background(), plans[0]); err != nil {
+		t.Fatal(err)
+	}
+	consolidations, err := store.ListConsolidations(context.Background())
+	if err != nil || len(consolidations) != 1 {
+		t.Fatalf("consolidations = %#v err = %v", consolidations, err)
+	}
+	if consolidations[0].MinPatternSupport != 3 || consolidations[0].MinHypothesisSupport != 3 {
+		t.Fatalf("frozen supports = %#v", consolidations[0])
+	}
+	path := storePath(t, store)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.Check(context.Background()); err != nil {
+		t.Fatalf("recompute with frozen supports: %v", err)
 	}
 }
 
