@@ -285,6 +285,74 @@ func TestPatternPayloadRejectsInvalidOutcome(t *testing.T) {
 	}
 }
 
+// TestDeriveConsolidationsUsesUniformLatestAnchor 锁定统一锚点：多组输入的
+// 创建时间不同时，全部派生候选与计划锚点都等于全局最新输入时间，任何组内
+// 更早的时间不产生锚点分歧。
+func TestDeriveConsolidationsUsesUniformLatestAnchor(t *testing.T) {
+	workspaceHash := "sha256:" + repeatHex(1)
+	late := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	inputs := ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []Candidate{
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(3), "run_a", "failed", "budget_turns", false, late.Add(-3*time.Hour)),
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(3), "run_b", "failed", "budget_turns", false, late.Add(-2*time.Hour)),
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(4), "run_c", "failed", "policy", false, late.Add(-time.Hour)),
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(4), "run_d", "failed", "policy", false, late),
+	}}
+	plans, err := DeriveConsolidations(inputs, ConsolidationOptions{Now: late.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patternCount := 0
+	for _, plan := range plans {
+		if !plan.CommittedAt.Equal(late) {
+			t.Fatalf("plan %s anchor = %s want %s", plan.Strategy, plan.CommittedAt, late)
+		}
+		for _, derived := range plan.Derived {
+			if !derived.CreatedAt.Equal(late) {
+				t.Fatalf("derived %s anchor = %s want %s", derived.ID, derived.CreatedAt, late)
+			}
+			if derived.Kind == KindPattern {
+				patternCount++
+			}
+		}
+	}
+	if patternCount < 2 {
+		t.Fatalf("expected patterns from both groups, got %d", patternCount)
+	}
+}
+
+// TestDeriveConsolidationsAnchorDominatesUnrelatedNewerInput 锁定守卫一致性：
+// 存在比任何派生组都更新的无关输入时，重算锚点（全局最新输入）不会早于该输入。
+func TestDeriveConsolidationsAnchorDominatesUnrelatedNewerInput(t *testing.T) {
+	workspaceHash := "sha256:" + repeatHex(1)
+	latest := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	inputs := ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []Candidate{
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(3), "run_a", "failed", "budget_turns", false, latest.Add(-2*time.Hour)),
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(3), "run_b", "failed", "budget_turns", false, latest.Add(-time.Hour)),
+		consolidationFixtureCandidate(t, workspaceHash, "sha256:"+repeatHex(4), "run_c", "failed", "malformed_tool_arguments", false, latest),
+	}}
+	plans, err := DeriveConsolidations(inputs, ConsolidationOptions{Now: latest.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range plans {
+		if plan.CommittedAt.Before(latest) {
+			t.Fatalf("plan %s anchor predates unrelated newest input", plan.Strategy)
+		}
+	}
+	recomputed, err := DeriveConsolidations(inputs, ConsolidationOptions{Now: plan0Anchor(plans), MinPatternSupport: PatternMinSupport, MinHypothesisSupport: HypothesisMinSupport})
+	if err != nil || len(recomputed) != len(plans) {
+		t.Fatalf("recompute at stored anchor = %#v err = %v", recomputed, err)
+	}
+}
+
+// plan0Anchor 返回首个计划的锚点，供重算一致性断言使用。
+func plan0Anchor(plans []PlannedConsolidation) time.Time {
+	if len(plans) == 0 {
+		return time.Date(2026, 8, 25, 12, 1, 0, 0, time.UTC)
+	}
+	return plans[0].CommittedAt
+}
+
 // repeatHex 生成由种子偏移的 64 位十六进制测试摘要，满足 sha256 摘要格式。
 func repeatHex(seed int) string {
 	const hexChars = "0123456789abcdef"

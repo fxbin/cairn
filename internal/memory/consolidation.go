@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -171,20 +172,37 @@ func HypothesisScopeDigest(workspaceHash, failureClass string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// IsDerivedID 判断标识是否属于派生候选（pattern 或 hypothesis）的固定前缀；
+// 供展示层路由使用，不参与任何权限或事实判定。
+func IsDerivedID(candidateID string) bool {
+	return strings.HasPrefix(candidateID, patternIDPrefix) || strings.HasPrefix(candidateID, hypothesisIDPrefix)
+}
+
 // ValidRejectionReason 判断派生候选拒绝理由是否属于封闭词表。
 func ValidRejectionReason(reason string) bool {
 	return reason == RejectInsufficientEvidence || reason == RejectHumanRequest
 }
 
 // DeriveConsolidations 从输入候选派生固定策略的巩固计划。它是无 I/O 的
-// 纯函数：样本不足的策略不产生计划；派生候选按 scope 稳定排序；时间与 TTL
-// 来自 options，保证测试可冻结。同范围旧候选的替代关系由存储层事务判定。
+// 纯函数：样本不足的策略不产生计划；派生候选按 scope 稳定排序。派生锚点
+// 取输入组内最后创建时间而非调用时钟——同一输入集合恒产生同一计划，重试
+// 幂等；保留期自全部输入中最新的候选起算，options.Now 仅用于拒绝时钟回拨。
+// 同范围旧候选的替代由存储层事务判定。
 func DeriveConsolidations(inputs ConsolidationInputs, options ConsolidationOptions) ([]PlannedConsolidation, error) {
 	if err := validateConsolidationInputs(inputs); err != nil {
 		return nil, err
 	}
 	if options.Now.IsZero() {
 		return nil, errors.New("consolidation requires an explicit frozen clock")
+	}
+	latestInput := inputs.Candidates[0].CreatedAt
+	for _, candidate := range inputs.Candidates[1:] {
+		if candidate.CreatedAt.After(latestInput) {
+			latestInput = candidate.CreatedAt
+		}
+	}
+	if options.Now.Before(latestInput) {
+		return nil, errors.New("consolidation clock must not predate the newest input candidate")
 	}
 	ttl, err := NormalizeTTL(options.TTL)
 	if err != nil {
@@ -210,10 +228,10 @@ func DeriveConsolidations(inputs ConsolidationInputs, options ConsolidationOptio
 	}
 	inputsDigest := InputsDigest(inputIDs)
 	plans := make([]PlannedConsolidation, 0, 2)
-	if patternPlan, ok := derivePatterns(inputs, inputsDigest, minPattern, options.Now, ttl); ok {
+	if patternPlan, ok := derivePatterns(inputs, inputsDigest, minPattern, ttl, latestInput); ok {
 		plans = append(plans, patternPlan)
 	}
-	if hypothesisPlan, ok := deriveHypotheses(inputs, inputsDigest, minHypothesis, options.Now, ttl); ok {
+	if hypothesisPlan, ok := deriveHypotheses(inputs, inputsDigest, minHypothesis, ttl, latestInput); ok {
 		plans = append(plans, hypothesisPlan)
 	}
 	sort.Slice(plans, func(left, right int) bool {
@@ -224,7 +242,7 @@ func DeriveConsolidations(inputs ConsolidationInputs, options ConsolidationOptio
 
 // derivePatterns 归纳 task_outcome_stability 计划：同任务摘要下 outcome、
 // failure class 与可信验证完全一致且样本足够的组才派生 pattern。
-func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport int, now time.Time, ttl time.Duration) (PlannedConsolidation, bool) {
+func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
 	groups := make(map[string][]Candidate)
 	for _, candidate := range inputs.Candidates {
 		groups[candidate.TaskPromptDigest] = append(groups[candidate.TaskPromptDigest], candidate)
@@ -257,8 +275,8 @@ func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport 
 			WorkspaceHash:   inputs.WorkspaceHash,
 			ScopeDigest:     digest,
 			Payload:         payload,
-			CreatedAt:       now,
-			ExpiresAt:       now.Add(ttl),
+			CreatedAt:       anchor,
+			ExpiresAt:       anchor.Add(ttl),
 			Status:          DerivedStatusActive,
 			Evidence:        sourceReferences(group),
 		})
@@ -273,14 +291,14 @@ func derivePatterns(inputs ConsolidationInputs, inputsDigest string, minSupport 
 		WorkspaceHash:   inputs.WorkspaceHash,
 		InputsDigest:    inputsDigest,
 		InputIDs:        inputIDList(inputs),
-		CommittedAt:     now,
+		CommittedAt:     anchor,
 		Derived:         derived,
 	}, true
 }
 
 // deriveHypotheses 归纳 failure_class_recurrence 计划：同一失败类别样本足够
 // 且覆盖多个任务摘要时派生 hypothesis，载荷显式保持未证明状态。
-func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSupport int, now time.Time, ttl time.Duration) (PlannedConsolidation, bool) {
+func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSupport int, ttl time.Duration, anchor time.Time) (PlannedConsolidation, bool) {
 	groups := make(map[string][]Candidate)
 	for _, candidate := range inputs.Candidates {
 		if candidate.FailureClass == "" {
@@ -315,8 +333,8 @@ func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSuppor
 			WorkspaceHash:   inputs.WorkspaceHash,
 			ScopeDigest:     HypothesisScopeDigest(inputs.WorkspaceHash, failureClass),
 			Payload:         payload,
-			CreatedAt:       now,
-			ExpiresAt:       now.Add(ttl),
+			CreatedAt:       anchor,
+			ExpiresAt:       anchor.Add(ttl),
 			Status:          DerivedStatusActive,
 			Evidence:        sourceReferences(group),
 		})
@@ -331,7 +349,7 @@ func deriveHypotheses(inputs ConsolidationInputs, inputsDigest string, minSuppor
 		WorkspaceHash:   inputs.WorkspaceHash,
 		InputsDigest:    inputsDigest,
 		InputIDs:        inputIDList(inputs),
-		CommittedAt:     now,
+		CommittedAt:     anchor,
 		Derived:         derived,
 	}, true
 }
