@@ -44,6 +44,23 @@ type PatchPlan struct {
 	Exists     bool
 }
 
+// CodeStalePrecondition 标识 Patch 的已给定摘要已过期；调用方应先重新读取文件，
+// 而不是盲目重试或把该安全前置条件错误误报为策略拒绝。
+const CodeStalePrecondition = "stale_precondition"
+
+// PatchPreconditionError 描述 update 或 delete 的已给定摘要与当前文件不一致；
+// 只携带相对路径和摘要，绝不携带文件内容，供上层生成可重放的恢复反馈。
+type PatchPreconditionError struct {
+	Path           string
+	ExpectedSHA256 string
+	ActualSHA256   string
+}
+
+// Error 返回不含文件内容的稳定前置条件失败说明。
+func (err *PatchPreconditionError) Error() string {
+	return "expected_sha256 does not match current file; read_file is required before retrying apply_patch"
+}
+
 // SideEffect 声明 ApplyPatch 会改变工作区内容。
 func (tool ApplyPatch) SideEffect() SideEffectClass { return SideEffectWorkspace }
 
@@ -90,8 +107,11 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 		if !exists || arguments.Content != nil || len(arguments.Replacements) == 0 {
 			return PatchPlan{}, errors.New("update requires an existing file and replacements")
 		}
+		if strings.TrimSpace(arguments.ExpectedSHA256) == "" {
+			return PatchPlan{}, errors.New("update requires expected_sha256")
+		}
 		if !sameSHA256(arguments.ExpectedSHA256, plan.BeforeHash) {
-			return PatchPlan{}, errors.New("expected_sha256 does not match current file")
+			return PatchPlan{}, &PatchPreconditionError{Path: relative, ExpectedSHA256: arguments.ExpectedSHA256, ActualSHA256: plan.BeforeHash}
 		}
 		updated, err := applyReplacements(content, arguments.Replacements)
 		if err != nil {
@@ -102,8 +122,11 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 		if !exists || arguments.Content != nil || len(arguments.Replacements) != 0 {
 			return PatchPlan{}, errors.New("delete requires an existing file and no content or replacements")
 		}
+		if strings.TrimSpace(arguments.ExpectedSHA256) == "" {
+			return PatchPlan{}, errors.New("delete requires expected_sha256")
+		}
 		if !sameSHA256(arguments.ExpectedSHA256, plan.BeforeHash) {
-			return PatchPlan{}, errors.New("expected_sha256 does not match current file")
+			return PatchPlan{}, &PatchPreconditionError{Path: relative, ExpectedSHA256: arguments.ExpectedSHA256, ActualSHA256: plan.BeforeHash}
 		}
 		plan.AfterHash = "absent"
 	default:

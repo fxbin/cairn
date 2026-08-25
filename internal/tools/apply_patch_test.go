@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +23,14 @@ func TestApplyPatchRequiresExactHashAndWritesAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := ApplyPatch{Workspace: workspace}
-	plan, err := tool.Plan(json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"sha256:2268f0a9ad9a5a3e7b413dc6e50f094cbf05ecb89f9f87f7a7300c13e74d5a51","replacements":[{"old":"one","new":"three","occurrence":2}]}`))
-	if err == nil || plan.Path != "" {
+	staleHash := sha256Reference([]byte("stale content"))
+	plan, err := tool.Plan(json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + staleHash + `","replacements":[{"old":"one","new":"three","occurrence":2}]}`))
+	var stale *PatchPreconditionError
+	if err == nil || plan.Path != "" || !errors.As(err, &stale) {
 		t.Fatalf("expected stale hash rejection, got %#v, %v", plan, err)
+	}
+	if stale.Path != "file.txt" || stale.ExpectedSHA256 != staleHash || stale.ActualSHA256 != sha256Reference([]byte("one two one")) || strings.Contains(stale.Error(), "one two one") {
+		t.Fatalf("stale error = %#v", stale)
 	}
 	plan, err = tool.Plan(json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + sha256Reference([]byte("one two one")) + `","replacements":[{"old":"one","new":"three","occurrence":2}]}`))
 	if err != nil || string(plan.After) != "three two three" {

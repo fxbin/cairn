@@ -113,7 +113,14 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
-		result := tools.Failure("policy_denied", decision.Summary)
+		failureCode := decision.FailureCode
+		if failureCode == "" {
+			failureCode = "policy_denied"
+		}
+		result := tools.Failure(failureCode, decision.Summary)
+		if len(decision.FailureData) != 0 {
+			result.Data = append(json.RawMessage(nil), decision.FailureData...)
+		}
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 			return tools.Result{}, err
 		}

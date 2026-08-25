@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -37,6 +38,8 @@ type Decision struct {
 	Fingerprint          string
 	Summary              string
 	WorkspaceObservation string
+	FailureCode          string
+	FailureData          json.RawMessage
 }
 
 // New 解析策略模式并复制受保护路径，构造副作用决策门。
@@ -74,7 +77,7 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		}
 		plan, err := gate.Patch.Plan(raw)
 		if err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: err.Error()}, nil
+			return invalidPatchDecision(raw, err), nil
 		}
 		return Decision{Effect: gate.WriteMode, RuleID: "workspace_write", Fingerprint: patchFingerprint(plan), Summary: fmt.Sprintf("%s %s (%s → %s)", plan.Mode, plan.Path, plan.BeforeHash, plan.AfterHash)}, nil
 	case "exec_command":
@@ -101,6 +104,33 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 	default:
 		return Decision{Effect: Deny, RuleID: "unknown_tool", Fingerprint: fingerprint(toolName, raw), Summary: "tool is not allowed"}, nil
 	}
+}
+
+// invalidPatchDecision 将 Patch 规划失败映射为策略拒绝；摘要过期是可恢复的安全
+// 前置条件，因此额外提供不含文件正文的结构化反馈，其他参数错误保持原有语义。
+func invalidPatchDecision(raw json.RawMessage, cause error) Decision {
+	decision := Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: cause.Error()}
+	var stale *tools.PatchPreconditionError
+	if !errors.As(cause, &stale) {
+		return decision
+	}
+	data, err := json.Marshal(struct {
+		Path          string `json:"path"`
+		CurrentSHA256 string `json:"current_sha256"`
+		NextAction    string `json:"next_action"`
+	}{
+		Path:          stale.Path,
+		CurrentSHA256: stale.ActualSHA256,
+		NextAction:    "call read_file for this path, then copy its sha256 into a new apply_patch request",
+	})
+	if err != nil {
+		return decision
+	}
+	decision.RuleID = "stale_patch_precondition"
+	decision.FailureCode = tools.CodeStalePrecondition
+	decision.FailureData = data
+	decision.Summary = "patch precondition is stale for " + stale.Path + "; call read_file before retrying apply_patch"
+	return decision
 }
 
 // DecideVerification 为冻结验证计划生成独立审批指纹；即使 argv 相同，模型工具

@@ -985,7 +985,7 @@ func TestLoopFeedsPolicyDeniedToolCallBackToModelForRepair(t *testing.T) {
 	if err != nil || result.Response != "I will provide the required hash before retrying." {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
-	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "expected_sha256") {
+	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "expected_sha256") || strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, tools.CodeStalePrecondition) {
 		t.Fatalf("repair feedback was not sent to model: %#v", provider.requests)
 	}
 	events, err := journal.Load(ctx, runID)
@@ -999,6 +999,97 @@ func TestLoopFeedsPolicyDeniedToolCallBackToModelForRepair(t *testing.T) {
 	}
 	if !seenFailure || !seenResult {
 		t.Fatalf("policy denial was not fully recorded: %#v", events)
+	}
+}
+
+// TestLoopFeedsStalePatchPreconditionBackForRecovery 锁定摘要已过期时的恢复
+// 合同：模型得到结构化安全反馈，重新读取后可提交有效 Patch；失败 Patch 绝不
+// 写 operation_started，且重放仍能重建同一工具结果。
+func TestLoopFeedsStalePatchPreconditionBackForRecovery(t *testing.T) {
+	root := t.TempDir()
+	const original = "current file body"
+	if err := os.WriteFile(filepath.Join(root, "answer.txt"), []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationTool := &countingExecTool{}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, tools.ApplyPatch{Workspace: workspace}, verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentDigest := sha256.Sum256([]byte(original))
+	currentHash := "sha256:" + hex.EncodeToString(currentDigest[:])
+	staleDigest := sha256.Sum256([]byte("stale body"))
+	staleHash := "sha256:" + hex.EncodeToString(staleDigest[:])
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "stale_patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"answer.txt","mode":"update","expected_sha256":"` + staleHash + `","replacements":[{"old":"current","new":"updated"}]}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "refresh", Name: "read_file", Arguments: json.RawMessage(`{"path":"answer.txt"}`)}}, {Kind: ports.Done}},
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "fresh_patch", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"answer.txt","mode":"update","expected_sha256":"` + currentHash + `","replacements":[{"old":"current","new":"updated"}]}`)}}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	ctx := context.Background()
+	appendInitialRunningEvents(t, journal, runID, "recover stale patch")
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "recover stale patch", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != automaticVerificationResponse {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "answer.txt"))
+	if err != nil || string(content) != "updated file body" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if len(provider.requests) != 3 || verificationTool.calls != 1 {
+		t.Fatalf("requests=%d verification_calls=%d", len(provider.requests), verificationTool.calls)
+	}
+	feedback := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
+	if !strings.Contains(feedback, tools.CodeStalePrecondition) || !strings.Contains(feedback, `"path":"answer.txt"`) || !strings.Contains(feedback, `"current_sha256":"`+currentHash+`"`) || !strings.Contains(feedback, "read_file") {
+		t.Fatalf("stale feedback=%s", feedback)
+	}
+	if strings.Contains(feedback, original) || strings.Contains(feedback, root) {
+		t.Fatalf("stale feedback leaked file state: %s", feedback)
+	}
+	events, err := journal.Load(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleOperation domain.OperationID
+	for _, event := range events {
+		if event.Type != domain.EventToolCallProposed || event.OperationID == nil {
+			continue
+		}
+		var proposal toolCallPayload
+		if json.Unmarshal(event.Payload, &proposal) == nil && proposal.CallID == "stale_patch" {
+			staleOperation = *event.OperationID
+		}
+	}
+	if staleOperation == "" {
+		t.Fatal("missing stale Patch proposal")
+	}
+	for _, event := range events {
+		if event.OperationID != nil && *event.OperationID == staleOperation && event.Type == domain.EventOperationStarted {
+			t.Fatalf("stale Patch must not start a side effect: %#v", event)
+		}
+	}
+	replayed := loop.messagesFromEvents(events, "recover stale patch")
+	foundReplay := false
+	for _, message := range replayed {
+		if message.Role == "tool" && message.ToolCallID == "stale_patch" {
+			foundReplay = strings.Contains(message.Content, tools.CodeStalePrecondition) && strings.Contains(message.Content, `"current_sha256":"`+currentHash+`"`)
+		}
+	}
+	if !foundReplay {
+		t.Fatalf("stale feedback was not replayable: %#v", replayed)
+	}
+	if projection, err := domain.Replay(events); err != nil || projection.State != domain.RunCompleted {
+		t.Fatalf("projection=%#v err=%v", projection, err)
 	}
 }
 

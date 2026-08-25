@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/tools"
@@ -54,6 +55,38 @@ func TestGateFingerprintsInvalidOperationsForLoopDetection(t *testing.T) {
 		if err != nil || decision.Effect != Deny || decision.Fingerprint == "" {
 			t.Fatalf("decision for %s = %#v err=%v", test.name, decision, err)
 		}
+	}
+}
+
+// TestGateExposesStalePatchAsRecoverablePrecondition 锁定已提供但过期的摘要
+// 不再伪装为普通策略拒绝；反馈仅包含安全恢复所需的路径、当前摘要和固定动作。
+func TestGateExposesStalePatchAsRecoverablePrecondition(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("current file body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := New("allow", "allow", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := gate.Decide("apply_patch", json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"`+patchHash([]byte("stale"))+`","replacements":[{"old":"current","new":"next"}]}`))
+	if err != nil || decision.Effect != Deny || decision.RuleID != "stale_patch_precondition" || decision.FailureCode != tools.CodeStalePrecondition {
+		t.Fatalf("decision=%#v err=%v", decision, err)
+	}
+	var details struct {
+		Path          string `json:"path"`
+		CurrentSHA256 string `json:"current_sha256"`
+		NextAction    string `json:"next_action"`
+	}
+	if err := json.Unmarshal(decision.FailureData, &details); err != nil || details.Path != "file.txt" || details.CurrentSHA256 != patchHash([]byte("current file body")) || !strings.Contains(details.NextAction, "read_file") {
+		t.Fatalf("details=%#v err=%v", details, err)
+	}
+	if strings.Contains(string(decision.FailureData), "current file body") || strings.Contains(decision.Summary, "current file body") {
+		t.Fatalf("stale feedback leaked file body: %#v", decision)
 	}
 }
 
