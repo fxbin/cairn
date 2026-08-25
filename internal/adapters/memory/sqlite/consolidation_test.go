@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func consolidationStoreFixture(t *testing.T) (*Store, memory.ConsolidationInputs
 	workspaceHash := "sha256:" + consolidationHex(1)
 	taskDigest := "sha256:" + consolidationHex(2)
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	inputs := memory.ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []memory.Candidate{
 		consolidationInputCandidate(t, workspaceHash, taskDigest, "run_a", now.Add(-2*time.Hour)),
 		consolidationInputCandidate(t, workspaceHash, taskDigest, "run_b", now.Add(-1*time.Hour)),
@@ -32,6 +34,14 @@ func consolidationStoreFixture(t *testing.T) (*Store, memory.ConsolidationInputs
 		}
 	}
 	return store, inputs, now
+}
+
+// freezeStoreClock 为 Store 注入固定 UTC 时钟，保证到期和审计时间断言不依赖真实时间。
+func freezeStoreClock(t *testing.T, store *Store, now time.Time) {
+	t.Helper()
+	store.now = func() time.Time {
+		return now.UTC()
+	}
 }
 
 // consolidationBatchFixture 打开含两个任务摘要、同一失败类别的输入集合，确保
@@ -45,6 +55,7 @@ func consolidationBatchFixture(t *testing.T) (*Store, memory.ConsolidationInputs
 	t.Cleanup(func() { store.Close() })
 	workspaceHash := "sha256:" + consolidationHex(1)
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	inputs := memory.ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []memory.Candidate{
 		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(2), "run_a", now.Add(-4*time.Hour)),
 		consolidationInputCandidate(t, workspaceHash, "sha256:"+consolidationHex(2), "run_b", now.Add(-3*time.Hour)),
@@ -79,6 +90,101 @@ func consolidationInputCandidate(t *testing.T, workspaceHash, taskDigest, runID 
 		t.Fatalf("input candidate %s: %v", runID, err)
 	}
 	return candidate
+}
+
+// consolidatedDerivedFixture 写入一个确定性巩固计划，并返回其唯一派生候选供生命周期断言使用。
+func consolidatedDerivedFixture(t *testing.T) (*Store, memory.ConsolidationInputs, time.Time, memory.PlannedConsolidation) {
+	t.Helper()
+	store, inputs, now := consolidationStoreFixture(t)
+	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{Now: now})
+	if err != nil || len(plans) != 1 {
+		t.Fatalf("plans = %#v err = %v", plans, err)
+	}
+	if _, err := store.Consolidate(context.Background(), plans[0]); err != nil {
+		t.Fatal(err)
+	}
+	return store, inputs, now, plans[0]
+}
+
+// supersededDerivedFixture 生成同一派生标识的前后两个版本，供血缘完整性断言使用。
+func supersededDerivedFixture(t *testing.T) (*Store, memory.DerivedCandidate, memory.DerivedCandidate) {
+	t.Helper()
+	store, inputs, now, first := consolidatedDerivedFixture(t)
+	extra := consolidationInputCandidate(t, inputs.WorkspaceHash, inputs.Candidates[0].TaskPromptDigest, "run_c", now)
+	if _, err := store.Capture(context.Background(), extra); err != nil {
+		t.Fatal(err)
+	}
+	expanded := memory.ConsolidationInputs{
+		WorkspaceHash: inputs.WorkspaceHash,
+		Candidates:    append(append([]memory.Candidate(nil), inputs.Candidates...), extra),
+	}
+	plans, err := memory.DeriveConsolidations(expanded, memory.ConsolidationOptions{Now: now})
+	if err != nil || len(plans) != 1 {
+		t.Fatalf("expanded plans = %#v err = %v", plans, err)
+	}
+	if plans[0].ConsolidationID == first.ConsolidationID {
+		t.Fatal("expanded input set must produce a new consolidation")
+	}
+	if _, err := store.Consolidate(context.Background(), plans[0]); err != nil {
+		t.Fatal(err)
+	}
+	derived, err := store.ListDerived(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, successor := range derived {
+		if successor.SupersedesID == "" {
+			continue
+		}
+		for _, predecessor := range derived {
+			if predecessor.ID == successor.SupersedesID && predecessor.ConsolidationID == successor.SupersedesConsolidationID {
+				return store, predecessor, successor
+			}
+		}
+	}
+	t.Fatal("missing complete derived predecessor/successor pair")
+	return nil, memory.DerivedCandidate{}, memory.DerivedCandidate{}
+}
+
+// sameAnchorSuccessorFixture 生成同一 FactAnchor 的前后派生版本，并刻意选择字典序
+// 更小的后继 consolidation ID，避免测试意外依赖哈希排序。
+func sameAnchorSuccessorFixture(t *testing.T, commitOffset time.Duration) (*Store, memory.PlannedConsolidation, memory.PlannedConsolidation) {
+	t.Helper()
+	store, inputs, now, first := consolidatedDerivedFixture(t)
+	const sameAnchorSearchLimit = 128
+	var extra memory.Candidate
+	var second memory.PlannedConsolidation
+	for attempt := 0; attempt < sameAnchorSearchLimit; attempt++ {
+		candidate := consolidationInputCandidate(t, inputs.WorkspaceHash, inputs.Candidates[0].TaskPromptDigest,
+			"run_same_anchor_"+strconv.Itoa(attempt), now.Add(-time.Hour))
+		expanded := memory.ConsolidationInputs{
+			WorkspaceHash: inputs.WorkspaceHash,
+			Candidates:    append(append([]memory.Candidate(nil), inputs.Candidates...), candidate),
+		}
+		plans, err := memory.DeriveConsolidations(expanded, memory.ConsolidationOptions{Now: now})
+		if err != nil || len(plans) != 1 {
+			t.Fatalf("same-anchor plans = %#v err = %v", plans, err)
+		}
+		if plans[0].ConsolidationID < first.ConsolidationID {
+			extra = candidate
+			second = plans[0]
+			break
+		}
+	}
+	if second.ConsolidationID == "" {
+		t.Fatal("could not construct a successor that disproves consolidation ID ordering")
+	}
+	if !second.FactAnchor.Equal(first.FactAnchor) || second.Derived[0].ID != first.Derived[0].ID {
+		t.Fatalf("same-anchor plans differ unexpectedly: first=%#v second=%#v", first, second)
+	}
+	if _, err := store.Capture(context.Background(), extra); err != nil {
+		t.Fatal(err)
+	}
+	freezeStoreClock(t, store, now.Add(commitOffset))
+	if _, err := store.Consolidate(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	return store, first, second
 }
 
 // consolidationHex 生成测试用 sha256 形式十六进制摘要。
@@ -277,6 +383,237 @@ func TestConsolidateSupersedesPreviousScopeVersion(t *testing.T) {
 	}
 	if err := store.Check(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestInspectDerivedOrdersByCommittedVersion 锁定 InspectDerived 的版本选择：同一
+// FactAnchor 的后继不能由 consolidation ID 哈希决定，而必须按真实提交顺序；
+// 提交时间相同时以 consolidated 审计的写入顺序选择后继。
+func TestInspectDerivedOrdersByCommittedVersion(t *testing.T) {
+	t.Run("same second fractional successor", func(t *testing.T) {
+		store, first, second := sameAnchorSuccessorFixture(t, 100*time.Millisecond)
+		inspected, err := store.InspectDerived(context.Background(), first.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.ConsolidationID != second.ConsolidationID || inspected.Candidate.Status != memory.DerivedStatusActive || !inspected.Current || !inspected.Eligible {
+			t.Fatalf("fractional-committed-at inspect = %#v", inspected)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("later committed at", func(t *testing.T) {
+		store, first, second := sameAnchorSuccessorFixture(t, time.Second)
+		inspected, err := store.InspectDerived(context.Background(), first.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.ConsolidationID != second.ConsolidationID || inspected.Candidate.Status != memory.DerivedStatusActive || !inspected.Current || !inspected.Eligible {
+			t.Fatalf("later-committed inspect = %#v", inspected)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("same committed at", func(t *testing.T) {
+		store, first, second := sameAnchorSuccessorFixture(t, 0)
+		inspected, err := store.InspectDerived(context.Background(), first.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.ConsolidationID != second.ConsolidationID || inspected.Candidate.Status != memory.DerivedStatusActive || !inspected.Current || !inspected.Eligible {
+			t.Fatalf("same-committed-at inspect = %#v", inspected)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestExplicitSourceLifecycleClosesCurrentDerived 锁定来源撤销和替代的原子级联：
+// 当前派生版本必须在同一事务内关闭为 rejected/insufficient_evidence，重复操作
+// 不能追加审计，重开后 Check 仍可验证历史。
+func TestExplicitSourceLifecycleClosesCurrentDerived(t *testing.T) {
+	t.Run("revoke", func(t *testing.T) {
+		store, inputs, now, plan := consolidatedDerivedFixture(t)
+		if _, err := store.Revoke(context.Background(), inputs.Candidates[0].ID, memory.RevokeEvidenceInvalid, now); err != nil {
+			t.Fatal(err)
+		}
+		inspected, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.Status != memory.DerivedStatusRejected || inspected.Current || inspected.Eligible {
+			t.Fatalf("revoked-source derived projection = %#v", inspected)
+		}
+		if len(inspected.Audit) != 2 || inspected.Audit[1].Action != memory.DerivedAuditRejected || inspected.Audit[1].Reason != memory.RejectInsufficientEvidence {
+			t.Fatalf("revoked-source derived audit = %#v", inspected.Audit)
+		}
+		if _, err := store.Revoke(context.Background(), inputs.Candidates[0].ID, memory.RevokeEvidenceInvalid, now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		repeated, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil || len(repeated.Audit) != len(inspected.Audit) {
+			t.Fatalf("idempotent source revoke audit = %#v err = %v", repeated.Audit, err)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		path := storePath(t, store)
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close()
+		freezeStoreClock(t, reopened, now)
+		if err := reopened.Check(context.Background()); err != nil {
+			t.Fatalf("check after reopen = %v", err)
+		}
+	})
+
+	t.Run("supersede", func(t *testing.T) {
+		store, inputs, now, plan := consolidatedDerivedFixture(t)
+		replacement := consolidationInputCandidate(t, inputs.WorkspaceHash, inputs.Candidates[0].TaskPromptDigest, "run_replacement", now.Add(time.Minute))
+		replacement.SupersedesID = inputs.Candidates[0].ID
+		if err := replacement.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Capture(context.Background(), replacement); err != nil {
+			t.Fatal(err)
+		}
+		inspected, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.Status != memory.DerivedStatusRejected || inspected.Current || inspected.Eligible {
+			t.Fatalf("superseded-source derived projection = %#v", inspected)
+		}
+		if len(inspected.Audit) != 2 || inspected.Audit[1].Action != memory.DerivedAuditRejected || inspected.Audit[1].Reason != memory.RejectInsufficientEvidence {
+			t.Fatalf("superseded-source derived audit = %#v", inspected.Audit)
+		}
+		if _, err := store.Capture(context.Background(), replacement); err != nil {
+			t.Fatal(err)
+		}
+		repeated, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil || len(repeated.Audit) != len(inspected.Audit) {
+			t.Fatalf("idempotent source supersede audit = %#v err = %v", repeated.Audit, err)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestNaturalExpiryRemainsHistoricalButNotCurrent 锁定自然到期：候选行和审计
+// 仍可供 Check 验证，但来源或派生到期后 Inspect 必须明确为非当前、非 eligible，
+// 且拒绝写入不得把它们重新当作 active。
+func TestNaturalExpiryRemainsHistoricalButNotCurrent(t *testing.T) {
+	t.Run("source expiry", func(t *testing.T) {
+		store, inputs, _, plan := consolidatedDerivedFixture(t)
+		freezeStoreClock(t, store, inputs.Candidates[0].ExpiresAt.Add(time.Second))
+		inspected, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.Status != memory.DerivedStatusActive || inspected.Current || inspected.Eligible {
+			t.Fatalf("source-expired derived projection = %#v", inspected)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatalf("source natural expiry must remain checkable: %v", err)
+		}
+	})
+
+	t.Run("derived expiry", func(t *testing.T) {
+		store, _, _, plan := consolidatedDerivedFixture(t)
+		freezeStoreClock(t, store, plan.Derived[0].ExpiresAt.Add(time.Second))
+		inspected, err := store.InspectDerived(context.Background(), plan.Derived[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inspected.Candidate.Status != memory.DerivedStatusActive || inspected.Current || inspected.Eligible {
+			t.Fatalf("derived-expired projection = %#v", inspected)
+		}
+		if _, err := store.RejectDerived(context.Background(), plan.Derived[0].ID, memory.RejectHumanRequest, time.Time{}); err == nil {
+			t.Fatal("expired derived candidate must not be rejected as current")
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatalf("derived natural expiry must remain checkable: %v", err)
+		}
+	})
+}
+
+// TestCheckRejectsInvalidDerivedLineage 锁定完整复合 predecessor key、逆边和
+// 单 active 版本的不变量；任何孤儿、自指向错误版本或重复 active 都必须失败关闭。
+func TestCheckRejectsInvalidDerivedLineage(t *testing.T) {
+	t.Run("orphan predecessor", func(t *testing.T) {
+		store, _, successor := supersededDerivedFixture(t)
+		if _, err := store.db.ExecContext(context.Background(), `UPDATE derived_candidates
+			SET supersedes_id = NULL, supersedes_consolidation_id = NULL
+			WHERE id = ? AND consolidation_id = ?`, successor.ID, successor.ConsolidationID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Check(context.Background()); err == nil {
+			t.Fatal("orphan predecessor must fail Check")
+		}
+	})
+
+	t.Run("wrong composite predecessor", func(t *testing.T) {
+		store, _, successor := supersededDerivedFixture(t)
+		if _, err := store.db.ExecContext(context.Background(), `UPDATE derived_candidates
+			SET supersedes_consolidation_id = ? WHERE id = ? AND consolidation_id = ?`,
+			successor.ConsolidationID, successor.ID, successor.ConsolidationID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Check(context.Background()); err == nil {
+			t.Fatal("wrong composite predecessor must fail Check")
+		}
+	})
+
+	t.Run("duplicate active", func(t *testing.T) {
+		store, predecessor, _ := supersededDerivedFixture(t)
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE derived_candidates SET status = ? WHERE id = ? AND consolidation_id = ?", memory.DerivedStatusActive, predecessor.ID, predecessor.ConsolidationID); err == nil {
+			t.Fatal("unique active version index must reject duplicate active versions")
+		}
+		if _, err := store.db.ExecContext(context.Background(), "DROP INDEX derived_candidates_one_active"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE derived_candidates SET status = ? WHERE id = ? AND consolidation_id = ?", memory.DerivedStatusActive, predecessor.ID, predecessor.ConsolidationID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Check(context.Background()); err == nil {
+			t.Fatal("duplicate active versions must fail Check when legacy index is absent")
+		}
+	})
+}
+
+// TestMigrationFailsClosedForExistingDuplicateActiveDerived 锁定旧库升级边界：
+// 若历史数据已含同标识的多个 active 派生版本，v4 唯一索引迁移必须拒绝打开。
+func TestMigrationFailsClosedForExistingDuplicateActiveDerived(t *testing.T) {
+	store, predecessor, _ := supersededDerivedFixture(t)
+	path := storePath(t, store)
+	if _, err := store.db.ExecContext(context.Background(), "DROP INDEX derived_candidates_one_active"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE derived_candidates SET status = ? WHERE id = ? AND consolidation_id = ?", memory.DerivedStatusActive, predecessor.ID, predecessor.ConsolidationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DELETE FROM schema_migrations WHERE version = ?", migrationVersionFour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "PRAGMA user_version = "+strconv.Itoa(migrationVersionThree)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(path); err == nil {
+		t.Fatal("v4 migration must reject existing duplicate active derived versions")
 	}
 }
 

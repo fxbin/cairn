@@ -515,7 +515,7 @@ func (command Command) memoryInspectDerived(ctx context.Context, arguments []str
 		return ExitOK
 	}
 	candidate := inspected.Candidate
-	fmt.Fprintf(command.Stdout, "derived: %s kind=%s status=%s\n", candidate.ID, candidate.Kind, candidate.Status)
+	fmt.Fprintf(command.Stdout, "derived: %s kind=%s status=%s current=%t eligible=%t\n", candidate.ID, candidate.Kind, candidate.Status, inspected.Current, inspected.Eligible)
 	fmt.Fprintf(command.Stdout, "consolidation: %s\n", candidate.ConsolidationID)
 	fmt.Fprintf(command.Stdout, "scope: %s\n", candidate.ScopeDigest)
 	fmt.Fprintf(command.Stdout, "payload: %s\n", string(candidate.Payload))

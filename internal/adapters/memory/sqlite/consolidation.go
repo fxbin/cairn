@@ -24,6 +24,9 @@ const (
 	migrationVersionThree    = 3
 	migrationNameThree       = "003_consolidation_frozen_supports_v3"
 	migrationHashThree       = "cairn-schema-v3-trusted-memory-consolidation-frozen-supports"
+	migrationVersionFour     = 4
+	migrationNameFour        = "004_derived_lifecycle_v4"
+	migrationHashFour        = "cairn-schema-v4-trusted-memory-derived-lifecycle"
 	consolidationSelectBase  = `SELECT id, schema_version, strategy, workspace_hash, inputs_digest, input_ids, input_count, committed_at, derived_ttl_seconds, min_pattern_support, min_hypothesis_support, status FROM consolidations`
 	derivedSelectBase        = `SELECT id, schema_version, kind, consolidation_id, workspace_hash, scope_digest, payload_json, created_at, expires_at, status, supersedes_id, supersedes_consolidation_id FROM derived_candidates`
 	maxDerivedPerConsolidate = 100
@@ -84,7 +87,7 @@ func (store *Store) ConsolidateBatch(ctx context.Context, plans []memory.Planned
 		return nil, fmt.Errorf("start memory consolidation batch: %w", err)
 	}
 	defer transaction.Rollback()
-	committedAt := time.Now().UTC()
+	committedAt := store.currentUTC()
 	results := make([]ConsolidationResult, len(plans))
 	newPlans := make([]bool, len(plans))
 	for index, plan := range plans {
@@ -154,7 +157,8 @@ func persistConsolidationPlan(ctx context.Context, transaction *sql.Tx, plan mem
 		}
 		version := derived
 		version.SupersedesID = previous.ID
-		if err := insertDerived(ctx, transaction, version, plan.ConsolidationID, previous.ConsolidationID, committedAt); err != nil {
+		version.SupersedesConsolidationID = previous.ConsolidationID
+		if err := insertDerived(ctx, transaction, version, plan.ConsolidationID, committedAt); err != nil {
 			return ConsolidationResult{}, err
 		}
 	}
@@ -175,14 +179,14 @@ func (store *Store) RejectDerived(ctx context.Context, derivedID, reason string,
 		return DerivedVersionKey{}, errors.New("derived candidate rejection reason is invalid")
 	}
 	if occurredAt.IsZero() {
-		occurredAt = time.Now().UTC()
+		occurredAt = store.currentUTC()
 	}
 	transaction, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return DerivedVersionKey{}, fmt.Errorf("start derived rejection: %w", err)
 	}
 	defer transaction.Rollback()
-	version, found, err := activeDerivedVersion(ctx, transaction, derivedID)
+	version, found, err := activeDerivedVersion(ctx, transaction, derivedID, store.currentUTC())
 	if err != nil {
 		return DerivedVersionKey{}, err
 	}
@@ -440,9 +444,9 @@ func hasDuplicate(values []string) bool {
 	return false
 }
 
-// supersedeActiveDerived 将同 scope 的旧 active 版本置为 superseded 并返回其
-// 版本键；没有旧版本时返回零值与 false。审计时间由当前提交事务传入，绝不
-// 复用任何输入或派生事实锚点。
+// supersedeActiveDerived 为同一派生标识关闭数据库状态仍为 active 的历史版本，
+// 以便写入其真实后继并维持唯一 active 索引；它不将过期版本视为当前事实。审计
+// 时间由当前提交事务传入，绝不复用任何输入或派生事实锚点。
 func supersedeActiveDerived(ctx context.Context, transaction *sql.Tx, derived memory.DerivedCandidate, consolidationID string, occurredAt time.Time) (DerivedVersionKey, bool, error) {
 	rows, err := transaction.QueryContext(ctx, derivedSelectBase+" WHERE id = ? AND status = ?", derived.ID, memory.DerivedStatusActive)
 	if err != nil {
@@ -481,15 +485,16 @@ func supersedeActiveDerived(ctx context.Context, transaction *sql.Tx, derived me
 }
 
 // insertDerived 写入派生候选版本行、间接证据与 consolidated 审计。候选的
-// CreatedAt 保持来源事实锚点，而审计使用当前事务的真实提交时间。
-func insertDerived(ctx context.Context, transaction *sql.Tx, derived memory.DerivedCandidate, consolidationID, supersedesConsolidationID string, committedAt time.Time) error {
+// CreatedAt 保持来源事实锚点，完整 predecessor key 从候选自身取得，而审计使用
+// 当前事务的真实提交时间。
+func insertDerived(ctx context.Context, transaction *sql.Tx, derived memory.DerivedCandidate, consolidationID string, committedAt time.Time) error {
 	if _, err := transaction.ExecContext(ctx, `INSERT INTO derived_candidates(
 		id, schema_version, kind, consolidation_id, workspace_hash, scope_digest, payload_json,
 		created_at, expires_at, status, supersedes_id, supersedes_consolidation_id
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		derived.ID, derived.SchemaVersion, derived.Kind, consolidationID, derived.WorkspaceHash, derived.ScopeDigest, string(derived.Payload),
 		derived.CreatedAt.UTC().Format(time.RFC3339Nano), derived.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		memory.DerivedStatusActive, nullableString(derived.SupersedesID), nullableString(supersedesConsolidationID)); err != nil {
+		memory.DerivedStatusActive, nullableString(derived.SupersedesID), nullableString(derived.SupersedesConsolidationID)); err != nil {
 		return fmt.Errorf("insert derived candidate: %w", err)
 	}
 	for ordinal, reference := range derived.Evidence {
@@ -567,6 +572,9 @@ func scanDerived(scanner interface{ Scan(...any) error }) (memory.DerivedCandida
 	if supersedesID.Valid {
 		candidate.SupersedesID = supersedesID.String
 	}
+	if supersedesConsolidation.Valid {
+		candidate.SupersedesConsolidationID = supersedesConsolidation.String
+	}
 	return candidate, nil
 }
 
@@ -592,26 +600,34 @@ func derivedEvidenceFor(ctx context.Context, source queryerRows, derivedID, cons
 	return references, nil
 }
 
-// activeDerivedVersion 返回指定派生候选当前 active 的唯一版本行。
-func activeDerivedVersion(ctx context.Context, source queryerRows, derivedID string) (memory.DerivedCandidate, bool, error) {
-	rows, err := source.QueryContext(ctx, derivedSelectBase+" WHERE id = ? AND status = ?", derivedID, memory.DerivedStatusActive)
+// activeDerivedVersion 返回指定派生候选当前可操作的唯一版本行；除数据库状态为
+// active 外，派生自身和所有来源候选也必须未过期且仍为 active，避免把历史到期
+// 或显式失效的事实用于拒绝等写入操作。
+func activeDerivedVersion(ctx context.Context, source queryerRows, derivedID string, now time.Time) (memory.DerivedCandidate, bool, error) {
+	now = now.UTC()
+	rows, err := source.QueryContext(ctx, derivedSelectBase+" WHERE id = ? AND status = ? AND expires_at > ?", derivedID, memory.DerivedStatusActive, now.Format(time.RFC3339Nano))
 	if err != nil {
 		return memory.DerivedCandidate{}, false, fmt.Errorf("query active derived candidate: %w", err)
 	}
-	defer rows.Close()
 	var found *memory.DerivedCandidate
 	for rows.Next() {
 		candidate, err := scanDerived(rows)
 		if err != nil {
+			rows.Close()
 			return memory.DerivedCandidate{}, false, err
 		}
 		if found != nil {
+			rows.Close()
 			return memory.DerivedCandidate{}, false, errors.New("derived candidate has multiple active versions")
 		}
 		found = &candidate
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return memory.DerivedCandidate{}, false, fmt.Errorf("iterate active derived candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return memory.DerivedCandidate{}, false, fmt.Errorf("close active derived candidates: %w", err)
 	}
 	if found == nil {
 		return memory.DerivedCandidate{}, false, nil
@@ -620,12 +636,29 @@ func activeDerivedVersion(ctx context.Context, source queryerRows, derivedID str
 	if err != nil {
 		return memory.DerivedCandidate{}, false, err
 	}
+	current, err := derivedCurrent(ctx, source, *found, now)
+	if err != nil {
+		return memory.DerivedCandidate{}, false, err
+	}
+	if !current {
+		return memory.DerivedCandidate{}, false, nil
+	}
 	return *found, true, nil
 }
 
-// latestDerivedVersion 返回派生候选的最新版本行；不存在时 found 为 false。
+// latestDerivedVersion 返回派生候选的最新版本行；版本先后以 SQLite 解析后的真实
+// committed_at 为第一顺序，避免变长 RFC3339Nano 文本的字节序歧义，并以同一事务
+// 写入的 consolidated 审计自增标识作稳定次序，绝不以 consolidation ID 哈希决定
+// 版本新旧。不存在时 found 为 false。
 func latestDerivedVersion(ctx context.Context, source queryer, derivedID string) (memory.DerivedCandidate, bool, error) {
-	candidate, err := scanDerived(source.QueryRowContext(ctx, derivedSelectBase+" WHERE id = ? ORDER BY created_at DESC, consolidation_id DESC LIMIT 1", derivedID))
+	candidate, err := scanDerived(source.QueryRowContext(ctx, derivedSelectBase+` WHERE id = ?
+		ORDER BY
+			julianday((SELECT committed_at FROM consolidations WHERE consolidations.id = derived_candidates.consolidation_id)) DESC,
+			(SELECT id FROM derived_audit_log
+				WHERE derived_audit_log.derived_id = derived_candidates.id
+					AND derived_audit_log.consolidation_id = derived_candidates.consolidation_id
+					AND derived_audit_log.action = ?) DESC
+		LIMIT 1`, derivedID, memory.DerivedAuditConsolidated))
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.DerivedCandidate{}, false, nil
 	}
@@ -774,8 +807,16 @@ func checkDerivedInvariants(ctx context.Context, source queryerRows) error {
 	if err != nil {
 		return err
 	}
+	versionByKey := make(map[DerivedVersionKey]memory.DerivedCandidate, len(derived))
+	for _, candidate := range derived {
+		key := DerivedVersionKey{ID: candidate.ID, ConsolidationID: candidate.ConsolidationID}
+		if _, exists := versionByKey[key]; exists {
+			return fmt.Errorf("derived candidate version %s/%s is duplicated", key.ID, key.ConsolidationID)
+		}
+		versionByKey[key] = candidate
+	}
 	activeCounts := make(map[string]int)
-	successorCounts := make(map[string]int)
+	successorCounts := make(map[DerivedVersionKey]int)
 	for _, candidate := range derived {
 		if _, exists := consolidationByID[candidate.ConsolidationID]; !exists {
 			return fmt.Errorf("derived candidate %s references a missing consolidation", candidate.ID)
@@ -794,6 +835,16 @@ func checkDerivedInvariants(ctx context.Context, source queryerRows) error {
 		}
 		if candidate.Status == memory.DerivedStatusActive {
 			activeCounts[candidate.ID]++
+		}
+		if candidate.SupersedesID != "" {
+			predecessorKey := DerivedVersionKey{ID: candidate.SupersedesID, ConsolidationID: candidate.SupersedesConsolidationID}
+			predecessor, found := versionByKey[predecessorKey]
+			if !found || (predecessorKey.ID == candidate.ID && predecessorKey.ConsolidationID == candidate.ConsolidationID) ||
+				predecessor.Status != memory.DerivedStatusSuperseded || predecessor.WorkspaceHash != candidate.WorkspaceHash ||
+				predecessor.Kind != candidate.Kind || predecessor.ScopeDigest != candidate.ScopeDigest {
+				return fmt.Errorf("derived candidate %s has an invalid predecessor version key", candidate.ID)
+			}
+			successorCounts[predecessorKey]++
 		}
 		audit, err := derivedAuditFor(ctx, source, candidate.ID, candidate.ConsolidationID)
 		if err != nil {
@@ -838,7 +889,6 @@ func checkDerivedInvariants(ctx context.Context, source queryerRows) error {
 			if rejected != 0 || superseded != 1 {
 				return fmt.Errorf("superseded derived candidate %s has invalid audit state", candidate.ID)
 			}
-			successorCounts[candidate.ID]++
 		}
 	}
 	for id, count := range activeCounts {
@@ -847,8 +897,8 @@ func checkDerivedInvariants(ctx context.Context, source queryerRows) error {
 		}
 	}
 	for _, candidate := range derived {
-		if candidate.Status == memory.DerivedStatusSuperseded && successorCounts[candidate.ID] == 0 {
-			return fmt.Errorf("superseded derived candidate %s has no successor version", candidate.ID)
+		if candidate.Status == memory.DerivedStatusSuperseded && successorCounts[DerivedVersionKey{ID: candidate.ID, ConsolidationID: candidate.ConsolidationID}] != 1 {
+			return fmt.Errorf("superseded derived candidate %s must have exactly one successor version", candidate.ID)
 		}
 	}
 	return checkDerivedFactsRecompute(ctx, source, consolidations)
@@ -1018,6 +1068,8 @@ type DerivedAuditEntry struct {
 type DerivedInspectResult struct {
 	Candidate memory.DerivedCandidate
 	Audit     []DerivedAuditEntry
+	Current   bool
+	Eligible  bool
 }
 
 // InspectDerived 返回派生候选最新版本的候选与审计历史；不存在时返回 ErrNotFound。
@@ -1037,6 +1089,10 @@ func (store *Store) InspectDerived(ctx context.Context, derivedID string) (Deriv
 	if err := version.Validate(); err != nil {
 		return DerivedInspectResult{}, fmt.Errorf("validate derived candidate: %w", err)
 	}
+	current, err := derivedCurrent(ctx, store.db, version, store.currentUTC())
+	if err != nil {
+		return DerivedInspectResult{}, err
+	}
 	audit, err := derivedAuditFor(ctx, store.db, version.ID, version.ConsolidationID)
 	if err != nil {
 		return DerivedInspectResult{}, err
@@ -1045,5 +1101,104 @@ func (store *Store) InspectDerived(ctx context.Context, derivedID string) (Deriv
 	for _, entry := range audit {
 		entries = append(entries, DerivedAuditEntry{Action: entry.Action, Reason: entry.Reason, OccurredAt: entry.OccurredAt})
 	}
-	return DerivedInspectResult{Candidate: version, Audit: entries}, nil
+	return DerivedInspectResult{Candidate: version, Audit: entries, Current: current, Eligible: current}, nil
+}
+
+// derivedCurrent 判断派生版本在给定 UTC 时刻能否作为当前事实：版本自身及其每个
+// 来源候选都必须为 active 且尚未过期。自然到期返回 false 而不是把历史记录当作
+// 损坏；缺失或跨工作区来源仍按完整性错误失败关闭。
+func derivedCurrent(ctx context.Context, source queryerRows, candidate memory.DerivedCandidate, now time.Time) (bool, error) {
+	if candidate.Status != memory.DerivedStatusActive || !candidate.ExpiresAt.After(now) {
+		return false, nil
+	}
+	for _, reference := range candidate.Evidence {
+		sourceCandidate, found, err := lookupCandidate(ctx, source, reference.CandidateID)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			return false, fmt.Errorf("derived candidate %s references a missing source %s", candidate.ID, reference.CandidateID)
+		}
+		if sourceCandidate.WorkspaceHash != candidate.WorkspaceHash {
+			return false, fmt.Errorf("derived candidate %s evidence crosses workspaces", candidate.ID)
+		}
+		if sourceCandidate.Status != memory.StatusActive || !sourceCandidate.ExpiresAt.After(now) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// rejectDependentDerived 在来源候选被显式撤销或替代前的同一 SQLite 事务中，关闭
+// 所有当前可操作且引用该来源的派生版本。到期版本或已含失效来源的历史版本不会
+// 被当作当前事实；每个关闭版本仅写一次 insufficient_evidence 审计，历史候选、
+// 证据和原有 consolidation 永不删除。
+func rejectDependentDerived(ctx context.Context, transaction *sql.Tx, sourceCandidateID string, occurredAt time.Time) error {
+	rows, err := transaction.QueryContext(ctx, `SELECT derived_candidates.id, derived_candidates.consolidation_id, derived_candidates.created_at
+		FROM derived_candidates
+		JOIN derived_evidence ON derived_evidence.derived_id = derived_candidates.id
+			AND derived_evidence.consolidation_id = derived_candidates.consolidation_id
+		WHERE derived_evidence.source_candidate_id = ? AND derived_candidates.status = ?
+			AND derived_candidates.expires_at > ?
+			AND NOT EXISTS (
+				SELECT 1 FROM derived_evidence AS all_evidence
+				JOIN candidates AS source_candidate ON source_candidate.id = all_evidence.source_candidate_id
+				WHERE all_evidence.derived_id = derived_candidates.id
+					AND all_evidence.consolidation_id = derived_candidates.consolidation_id
+					AND (source_candidate.status != ? OR source_candidate.expires_at <= ?)
+			)
+		ORDER BY derived_candidates.id ASC, derived_candidates.consolidation_id ASC`,
+		sourceCandidateID, memory.DerivedStatusActive, occurredAt.UTC().Format(time.RFC3339Nano),
+		memory.StatusActive, occurredAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("query source-dependent derived candidates: %w", err)
+	}
+	type dependentVersion struct {
+		key       DerivedVersionKey
+		createdAt time.Time
+	}
+	versions := make([]dependentVersion, 0)
+	for rows.Next() {
+		var version dependentVersion
+		var createdAt string
+		if err := rows.Scan(&version.key.ID, &version.key.ConsolidationID, &createdAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan source-dependent derived candidate: %w", err)
+		}
+		version.createdAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("parse source-dependent derived creation time: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate source-dependent derived candidates: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close source-dependent derived candidates: %w", err)
+	}
+	for _, version := range versions {
+		closedAt := occurredAt
+		if closedAt.Before(version.createdAt) {
+			closedAt = version.createdAt
+		}
+		updated, err := transaction.ExecContext(ctx, `UPDATE derived_candidates SET status = ?
+			WHERE id = ? AND consolidation_id = ? AND status = ?`, memory.DerivedStatusRejected, version.key.ID, version.key.ConsolidationID, memory.DerivedStatusActive)
+		if err != nil {
+			return fmt.Errorf("close source-dependent derived candidate: %w", err)
+		}
+		affected, err := updated.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count source-dependent derived closure: %w", err)
+		}
+		if affected != 1 {
+			return errors.New("source-dependent derived candidate changed during closure")
+		}
+		if err := insertDerivedAudit(ctx, transaction, version.key.ID, version.key.ConsolidationID, memory.DerivedAuditRejected, memory.RejectInsufficientEvidence, closedAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

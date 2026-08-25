@@ -20,14 +20,15 @@ import (
 )
 
 const (
-	migrationVersion = 3
+	migrationVersion = 4
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
 
 // Store 管理一个工作区专属、单连接的 Memory SQLite 数据库。
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 // Open 创建或打开可写 Memory Store，并执行受校验迁移与严格 SQLite 耐久性配置。
@@ -49,7 +50,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db}
+	store := &Store{db: db, now: time.Now}
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -101,7 +102,16 @@ func OpenReadOnly(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("configure read-only memory SQLite: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, now: time.Now}, nil
+}
+
+// currentUTC 返回 Store 当前的 UTC 时钟。生产入口使用系统时钟，测试可注入
+// 固定时钟以稳定验证到期与当前资格边界。
+func (store *Store) currentUTC() time.Time {
+	if store.now == nil {
+		return time.Now().UTC()
+	}
+	return store.now().UTC()
 }
 
 // Close 关闭 Memory SQLite 连接并释放文件描述符。
@@ -145,15 +155,18 @@ func (store *Store) Capture(ctx context.Context, candidate memory.Candidate) (me
 		if err != nil {
 			return memory.Candidate{}, err
 		}
-		if !found || superseded.WorkspaceHash != candidate.WorkspaceHash || superseded.Status != memory.StatusActive {
-			return memory.Candidate{}, errors.New("memory supersede target must be an active candidate in the same workspace")
+		if !found || superseded.WorkspaceHash != candidate.WorkspaceHash || superseded.Status != memory.StatusActive || !superseded.ExpiresAt.After(store.currentUTC()) {
+			return memory.Candidate{}, errors.New("memory supersede target must be a current candidate in the same workspace")
+		}
+		supersededAt := store.currentUTC()
+		if supersededAt.Before(superseded.CreatedAt) {
+			supersededAt = superseded.CreatedAt
+		}
+		if err := rejectDependentDerived(ctx, transaction, superseded.ID, supersededAt); err != nil {
+			return memory.Candidate{}, err
 		}
 		if _, err := transaction.ExecContext(ctx, "UPDATE candidates SET status = ? WHERE id = ?", memory.StatusSuperseded, superseded.ID); err != nil {
 			return memory.Candidate{}, fmt.Errorf("supersede memory candidate: %w", err)
-		}
-		supersededAt := time.Now().UTC()
-		if supersededAt.Before(superseded.CreatedAt) {
-			supersededAt = superseded.CreatedAt
 		}
 		if err := insertAudit(ctx, transaction, superseded.ID, memory.AuditSuperseded, "", supersededAt); err != nil {
 			return memory.Candidate{}, err
@@ -209,7 +222,7 @@ func (store *Store) Recall(ctx context.Context, options memory.RecallOptions) ([
 	}
 	now := options.Now.UTC()
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = store.currentUTC()
 	}
 	query := candidateSelect + ` WHERE workspace_hash = ? AND kind = ? AND status = ? AND expires_at > ?`
 	arguments := []any{normalized.WorkspaceHash, memory.KindRunOutcome, memory.StatusActive, now.Format(time.RFC3339Nano)}
@@ -314,7 +327,7 @@ func (store *Store) Revoke(ctx context.Context, candidateID, reason string, occu
 		return memory.Candidate{}, errors.New("memory revoke reason is invalid")
 	}
 	if occurredAt.IsZero() {
-		occurredAt = time.Now().UTC()
+		occurredAt = store.currentUTC()
 	}
 	transaction, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -341,8 +354,14 @@ func (store *Store) Revoke(ctx context.Context, candidateID, reason string, occu
 	if candidate.Status != memory.StatusActive {
 		return memory.Candidate{}, errors.New("only active memory candidates can be revoked")
 	}
+	if !candidate.ExpiresAt.After(store.currentUTC()) {
+		return memory.Candidate{}, errors.New("only current memory candidates can be revoked")
+	}
 	if occurredAt.Before(candidate.CreatedAt) {
 		occurredAt = candidate.CreatedAt
+	}
+	if err := rejectDependentDerived(ctx, transaction, candidateID, occurredAt); err != nil {
+		return memory.Candidate{}, err
 	}
 	if _, err := transaction.ExecContext(ctx, "UPDATE candidates SET status = ? WHERE id = ?", memory.StatusRevoked, candidateID); err != nil {
 		return memory.Candidate{}, fmt.Errorf("revoke memory candidate: %w", err)
@@ -567,6 +586,19 @@ func (store *Store) migrate(ctx context.Context) error {
 		if err := setMigrationVersion(ctx, transaction, migrationVersionThree); err != nil {
 			return err
 		}
+		version = migrationVersionThree
+	}
+	if version < migrationVersionFour {
+		if _, err := transaction.ExecContext(ctx, `CREATE UNIQUE INDEX derived_candidates_one_active
+			ON derived_candidates(id) WHERE status = 'active'`); err != nil {
+			return fmt.Errorf("enforce unique active derived candidate version: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionFour, migrationNameFour, migrationHashFour); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionFour); err != nil {
+			return err
+		}
 	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		return err
@@ -723,8 +755,8 @@ func verifyAppliedMigration(ctx context.Context, source queryer, version int, ex
 }
 
 // checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
-// 版本链当前为 1（情节记忆）、2（巩固事务）和 3（冻结支持度），单向兼容：
-// 旧二进制读新库失败关闭。
+// 版本链当前为 1（情节记忆）、2（巩固事务）、3（冻结支持度）和 4（派生
+// 生命周期），单向兼容：旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -736,7 +768,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {

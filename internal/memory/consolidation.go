@@ -100,18 +100,19 @@ type SourceCandidateRef struct {
 // DerivedCandidate 是巩固事务写入的 pattern 或 hypothesis 候选。Payload 是
 // 与 Kind 对应的封闭载荷序列化结果，Validate 会按 Kind 解析并全量校验。
 type DerivedCandidate struct {
-	ID              string               `json:"id"`
-	SchemaVersion   int                  `json:"schema_version"`
-	Kind            string               `json:"kind"`
-	ConsolidationID string               `json:"consolidation_id"`
-	WorkspaceHash   string               `json:"workspace_hash"`
-	ScopeDigest     string               `json:"scope_digest"`
-	Payload         json.RawMessage      `json:"payload"`
-	CreatedAt       time.Time            `json:"created_at"`
-	ExpiresAt       time.Time            `json:"expires_at"`
-	Status          string               `json:"status"`
-	SupersedesID    string               `json:"supersedes_id,omitempty"`
-	Evidence        []SourceCandidateRef `json:"evidence"`
+	ID                        string               `json:"id"`
+	SchemaVersion             int                  `json:"schema_version"`
+	Kind                      string               `json:"kind"`
+	ConsolidationID           string               `json:"consolidation_id"`
+	WorkspaceHash             string               `json:"workspace_hash"`
+	ScopeDigest               string               `json:"scope_digest"`
+	Payload                   json.RawMessage      `json:"payload"`
+	CreatedAt                 time.Time            `json:"created_at"`
+	ExpiresAt                 time.Time            `json:"expires_at"`
+	Status                    string               `json:"status"`
+	SupersedesID              string               `json:"supersedes_id,omitempty"`
+	SupersedesConsolidationID string               `json:"supersedes_consolidation_id,omitempty"`
+	Evidence                  []SourceCandidateRef `json:"evidence"`
 }
 
 // PlannedConsolidation 是一次单写入者事务的完整计划：固定策略、封存的输入
@@ -379,8 +380,11 @@ func (candidate DerivedCandidate) Validate() error {
 	if candidate.CreatedAt.IsZero() || candidate.ExpiresAt.IsZero() || !candidate.ExpiresAt.After(candidate.CreatedAt) || candidate.ExpiresAt.Sub(candidate.CreatedAt) > MaxTTL {
 		return errors.New("derived candidate retention period is invalid")
 	}
-	if candidate.SupersedesID != "" && !validIdentifier(candidate.SupersedesID) {
-		return errors.New("derived candidate supersedes id is invalid")
+	if (candidate.SupersedesID == "") != (candidate.SupersedesConsolidationID == "") {
+		return errors.New("derived candidate supersedes version key is incomplete")
+	}
+	if candidate.SupersedesID != "" && (!validIdentifier(candidate.SupersedesID) || !validIdentifier(candidate.SupersedesConsolidationID)) {
+		return errors.New("derived candidate supersedes version key is invalid")
 	}
 	switch candidate.Status {
 	case DerivedStatusActive, DerivedStatusRejected, DerivedStatusSuperseded:
