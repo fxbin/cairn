@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	migrationVersion = 1
+	migrationVersion = 2
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -414,7 +414,10 @@ func (store *Store) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return checkAuditInvariants(ctx, store.db, candidates)
+	if err := checkAuditInvariants(ctx, store.db, candidates); err != nil {
+		return err
+	}
+	return checkDerivedInvariants(ctx, store.db)
 }
 
 // migrate 配置耐久性选项并以迁移校验和初始化唯一支持的 schema 版本。
@@ -471,20 +474,81 @@ func (store *Store) migrate(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS candidates_recall ON candidates(workspace_hash, kind, status, expires_at, created_at DESC, id ASC);
 		CREATE INDEX IF NOT EXISTS evidence_refs_by_event ON evidence_refs(run_id, event_seq, event_hash);
-		CREATE INDEX IF NOT EXISTS audit_log_by_candidate ON audit_log(candidate_id, id);`); err != nil {
+		CREATE INDEX IF NOT EXISTS audit_log_by_candidate ON audit_log(candidate_id, id);
+		CREATE TABLE IF NOT EXISTS consolidations (
+			id TEXT PRIMARY KEY,
+			schema_version INTEGER NOT NULL,
+			strategy TEXT NOT NULL CHECK(strategy IN ('task_outcome_stability', 'failure_class_recurrence')),
+			workspace_hash TEXT NOT NULL,
+			inputs_digest TEXT NOT NULL,
+			input_ids TEXT NOT NULL,
+			input_count INTEGER NOT NULL,
+			committed_at TEXT NOT NULL,
+			derived_ttl_seconds INTEGER NOT NULL CHECK(derived_ttl_seconds > 0),
+			status TEXT NOT NULL CHECK(status IN ('committed'))
+		);
+		CREATE TABLE IF NOT EXISTS derived_candidates (
+			id TEXT NOT NULL,
+			schema_version INTEGER NOT NULL,
+			kind TEXT NOT NULL CHECK(kind IN ('pattern', 'hypothesis')),
+			consolidation_id TEXT NOT NULL REFERENCES consolidations(id),
+			workspace_hash TEXT NOT NULL,
+			scope_digest TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('active', 'rejected', 'superseded')),
+			supersedes_id TEXT,
+			supersedes_consolidation_id TEXT,
+			PRIMARY KEY(id, consolidation_id),
+			FOREIGN KEY (supersedes_id, supersedes_consolidation_id) REFERENCES derived_candidates(id, consolidation_id)
+		);
+		CREATE TABLE IF NOT EXISTS derived_evidence (
+			derived_id TEXT NOT NULL,
+			consolidation_id TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			source_candidate_id TEXT NOT NULL REFERENCES candidates(id),
+			PRIMARY KEY(derived_id, consolidation_id, ordinal),
+			FOREIGN KEY (derived_id, consolidation_id) REFERENCES derived_candidates(id, consolidation_id) ON DELETE CASCADE
+		);
+		CREATE TABLE IF NOT EXISTS derived_audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			derived_id TEXT NOT NULL,
+			consolidation_id TEXT NOT NULL,
+			action TEXT NOT NULL CHECK(action IN ('consolidated', 'rejected', 'superseded')),
+			reason TEXT CHECK(reason IS NULL OR reason IN ('insufficient_evidence', 'human_request')),
+			occurred_at TEXT NOT NULL,
+			FOREIGN KEY (derived_id, consolidation_id) REFERENCES derived_candidates(id, consolidation_id)
+		);
+		CREATE INDEX IF NOT EXISTS consolidations_by_workspace ON consolidations(workspace_hash, id);
+		CREATE INDEX IF NOT EXISTS derived_candidates_by_scope ON derived_candidates(workspace_hash, kind, scope_digest, status);
+		CREATE INDEX IF NOT EXISTS derived_evidence_by_source ON derived_evidence(source_candidate_id);`); err != nil {
 		return fmt.Errorf("create memory schema: %w", err)
 	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		var version int
-		if queryErr := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); queryErr == nil && version == 0 {
-			if _, insertErr := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", migrationVersion, migrationName, migrationHash, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
+		if queryErr := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); queryErr != nil || (version != 0 && version != 1) {
+			return err
+		}
+		if version == 1 {
+			var recorded string
+			if verifyErr := transaction.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = 1").Scan(&recorded); verifyErr != nil || recorded != migrationHash {
+				return errors.New("memory v1 migration checksum mismatch before upgrade")
+			}
+		}
+		if version == 0 {
+			if _, insertErr := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", 1, migrationName, migrationHash, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
 				return fmt.Errorf("record memory migration: %w", insertErr)
 			}
 			if _, setErr := transaction.ExecContext(ctx, "PRAGMA user_version = 1"); setErr != nil {
 				return fmt.Errorf("write memory schema version: %w", setErr)
 			}
-		} else {
-			return err
+		}
+		if _, insertErr := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES (?, ?, ?, ?)", migrationVersionTwo, migrationNameTwo, migrationHashTwo, time.Now().UTC().Format(time.RFC3339Nano)); insertErr != nil {
+			return fmt.Errorf("record memory consolidation migration: %w", insertErr)
+		}
+		if _, setErr := transaction.ExecContext(ctx, "PRAGMA user_version = 2"); setErr != nil {
+			return fmt.Errorf("write memory consolidation schema version: %w", setErr)
 		}
 	}
 	if err := transaction.Commit(); err != nil {
@@ -610,7 +674,8 @@ func insertAudit(ctx context.Context, transaction *sql.Tx, candidateID, action, 
 	return nil
 }
 
-// checkMigration 读取已存在的版本与校验和；未来版本、缺失记录与篡改均失败关闭。
+// checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
+// 版本链当前为 1（情节记忆）与 2（巩固事务），单向兼容：旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -622,12 +687,15 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	var recorded string
-	if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationVersion).Scan(&recorded); err != nil {
-		return fmt.Errorf("read memory migration: %w", err)
-	}
-	if recorded != migrationHash {
-		return errors.New("memory migration checksum mismatch")
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo}
+	for migrationID, hash := range expected {
+		var recorded string
+		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {
+			return fmt.Errorf("read memory migration %d: %w", migrationID, err)
+		}
+		if recorded != hash {
+			return fmt.Errorf("memory migration %d checksum mismatch", migrationID)
+		}
 	}
 	return nil
 }
