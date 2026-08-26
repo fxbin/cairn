@@ -209,10 +209,214 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 		return command.memoryConsolidate(ctx, arguments[1:])
 	case "reject":
 		return command.memoryRejectDerived(ctx, arguments[1:])
+	case "candidate":
+		return command.memoryCandidate(ctx, arguments[1:])
 	default:
 		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, or reject")
 		return ExitUsage
 	}
+}
+
+// memoryCandidate 分派演化候选的固定动作：创建必须由人工显式提供闭合变体
+// 参数；拒绝使用封闭理由；解释只读。不存在任何自动生成入口。
+func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
+	if len(arguments) == 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, or inspect")
+		return ExitUsage
+	}
+	switch arguments[0] {
+	case "create":
+		return command.memoryCandidateCreate(ctx, arguments[1:])
+	case "reject":
+		return command.memoryCandidateReject(ctx, arguments[1:])
+	case "invalidate":
+		return command.memoryCandidateInvalidate(ctx, arguments[1:])
+	case "inspect":
+		return command.memoryCandidateInspect(ctx, arguments[1:])
+	default:
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, or inspect")
+		return ExitUsage
+	}
+}
+
+// memoryCandidateCreate 从人工提供的闭合变体参数创建 draft 演化候选；
+// 来源派生版本复合键与基线指纹为必填，不接受任务正文。
+func (command Command) memoryCandidateCreate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate create", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	sourceDerived := flags.String("source-derived", "", "source derived candidate ID (required)")
+	sourceConsolidation := flags.String("source-consolidation", "", "source consolidation ID (required)")
+	baselineFingerprint := flags.String("baseline-fingerprint", "", "baseline configuration fingerprint sha256 (required)")
+	noteDigest := flags.String("note-digest", "", "optional sha256 digest of an operator note artifact")
+	maxPromptTokens := flags.Int("max-prompt-tokens", 0, "variant max prompt tokens (required)")
+	maxSummaryBytes := flags.Int("max-summary-bytes", 0, "variant max summary bytes (required)")
+	inventoryPercent := flags.Int("inventory-percent", 0, "variant inventory budget percent (required)")
+	reservePercent := flags.Int("reserve-percent", 0, "variant threshold reserve percent (required)")
+	ttlText := flags.String("ttl", "", "candidate retention duration (default: 30d, max: 90d)")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 || *sourceDerived == "" || *sourceConsolidation == "" || *baselineFingerprint == "" || *maxPromptTokens == 0 || *maxSummaryBytes == 0 || *inventoryPercent == 0 || *reservePercent == 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate create requires source, baseline fingerprint and all variant parameters")
+		return ExitUsage
+	}
+	var ttl time.Duration
+	var err error
+	if *ttlText != "" {
+		ttl, err = time.ParseDuration(*ttlText)
+		if err != nil {
+			fmt.Fprintln(command.Stderr, "memory candidate create --ttl must be a duration")
+			return ExitUsage
+		}
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.CreateEvolutionCandidate(ctx, app.MemoryEvolutionCreateOptions{
+		Workspace:             *workspace,
+		StateDir:              *stateDir,
+		Config:                configuration,
+		SourceDerivedID:       *sourceDerived,
+		SourceConsolidationID: *sourceConsolidation,
+		BaselineFingerprint:   *baselineFingerprint,
+		NoteDigest:            *noteDigest,
+		Variant: memory.CompactionParamsVariant{
+			SchemaVersion:           memory.EvolutionSchemaVersion,
+			MaxPromptTokens:         *maxPromptTokens,
+			MaxSummaryBytes:         *maxSummaryBytes,
+			InventoryBudgetPercent:  *inventoryPercent,
+			ThresholdReservePercent: *reservePercent,
+		},
+		TTL: ttl,
+	})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate create failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, candidate)
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "candidate: %s status=%s target=%s variant=%s source=%s/%s\n", candidate.ID, candidate.Status, candidate.TargetKind, candidate.VariantFingerprint, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
+	return ExitOK
+}
+
+// memoryCandidateReject 以封闭理由拒绝演化候选并落入冷却。
+func (command Command) memoryCandidateReject(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate reject", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	reason := flags.String("reason", "", "rejection reason from the closed lexicon (required)")
+	cooldownText := flags.String("cooldown", "", "cooldown duration (default: 7d, max: 90d)")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 || *reason == "" {
+		fmt.Fprintln(command.Stderr, "memory candidate reject requires a candidate ID and --reason")
+		return ExitUsage
+	}
+	var cooldown time.Duration
+	var err error
+	if *cooldownText != "" {
+		cooldown, err = time.ParseDuration(*cooldownText)
+		if err != nil {
+			fmt.Fprintln(command.Stderr, "memory candidate reject --cooldown must be a duration")
+			return ExitUsage
+		}
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.RejectEvolutionCandidate(ctx, app.MemoryEvolutionActionOptions{CandidateID: flags.Arg(0), Reason: *reason, Workspace: *workspace, StateDir: *stateDir, Config: configuration, Cooldown: cooldown})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate reject failed:", err)
+		return exitFor(err)
+	}
+	fmt.Fprintf(command.Stdout, "rejected: %s status=%s\n", candidate.ID, candidate.Status)
+	return ExitOK
+}
+
+// memoryCandidateInvalidate 显式作废来源失效的演化候选。
+func (command Command) memoryCandidateInvalidate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate invalidate", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "memory candidate invalidate requires a candidate ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.InvalidateEvolutionCandidate(ctx, app.MemoryEvolutionActionOptions{CandidateID: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate invalidate failed:", err)
+		return exitFor(err)
+	}
+	fmt.Fprintf(command.Stdout, "invalidated: %s status=%s\n", candidate.ID, candidate.Status)
+	return ExitOK
+}
+
+// memoryCandidateInspect 输出演化候选与审计历史的只读解释。
+func (command Command) memoryCandidateInspect(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate inspect", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(normalizeMemoryPositionals(arguments)); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "memory candidate inspect requires a candidate ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate inspect failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, inspected)
+		return ExitOK
+	}
+	candidate := inspected.Candidate
+	fmt.Fprintf(command.Stdout, "candidate: %s status=%s target=%s\n", candidate.ID, candidate.Status, candidate.TargetKind)
+	fmt.Fprintf(command.Stdout, "source: %s/%s\n", candidate.Source.DerivedID, candidate.Source.ConsolidationID)
+	fmt.Fprintf(command.Stdout, "variant: %s spec=%s\n", candidate.VariantFingerprint, candidate.VariantSpecSHA256)
+	fmt.Fprintf(command.Stdout, "baseline: %s\n", candidate.BaselineFingerprint)
+	fmt.Fprintf(command.Stdout, "retention: %s -> %s\n", candidate.CreatedAt.Format(time.RFC3339), candidate.ExpiresAt.Format(time.RFC3339))
+	for _, entry := range inspected.Audit {
+		reason := ""
+		if entry.Reason != "" {
+			reason = " reason=" + entry.Reason
+		}
+		fmt.Fprintf(command.Stdout, "audit: %s%s at %s\n", entry.Action, reason, entry.OccurredAt.Format(time.RFC3339))
+	}
+	return ExitOK
 }
 
 // memoryConsolidate 在工作区锁内执行一次事务化巩固，并把提交的计划、派生候选与
@@ -1119,6 +1323,9 @@ Usage:
   cairn memory revoke --reason evidence_invalid|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory consolidate [--min-support <n>] [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory reject --reason insufficient_evidence|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] <derived-id>
+  cairn memory candidate create --source-derived <id> --source-consolidation <id> --baseline-fingerprint <sha256> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate reject --reason insufficient_evidence|evaluation_failed|safety_violation|inconclusive_limit|human_request [--cooldown <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
+  cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 
 Exit status:

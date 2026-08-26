@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/fxbin/cairn/internal/memory"
@@ -387,14 +386,14 @@ func evolutionAuditFor(ctx context.Context, source queryerRows, candidateID stri
 	return entries, nil
 }
 
-// evolutionCandidateEquivalent 比较候选的全部不可变事实；状态列不参与。
+// evolutionCandidateEquivalent 比较候选的身份与闭合事实。状态与时间列不参与：
+// 创建时刻由首次写入的时钟锚定，同 ID 重试必然携带不同时钟，若参与比较会
+// 把幂等重试误判为事实冲突。
 func evolutionCandidateEquivalent(left, right memory.EvolutionCandidate) bool {
 	return left.ID == right.ID && left.SchemaVersion == right.SchemaVersion && left.WorkspaceHash == right.WorkspaceHash &&
 		left.Source == right.Source && left.TargetKind == right.TargetKind && left.VariantSpecSHA256 == right.VariantSpecSHA256 &&
 		left.VariantFingerprint == right.VariantFingerprint && left.BaselineFingerprint == right.BaselineFingerprint &&
-		left.EvalSetFingerprint == right.EvalSetFingerprint && left.CreatedAt.Equal(right.CreatedAt) &&
-		left.ExpiresAt.Equal(right.ExpiresAt) && left.NoteDigest == right.NoteDigest &&
-		reflect.DeepEqual(left.ExpiresAt, right.ExpiresAt)
+		left.EvalSetFingerprint == right.EvalSetFingerprint && left.NoteDigest == right.NoteDigest
 }
 
 // checkEvolutionInvariants 验证演化候选的结构不变量：审计时间线、状态与
