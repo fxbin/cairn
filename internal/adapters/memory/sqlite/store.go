@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	migrationVersion = 4
+	migrationVersion = 5
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -512,7 +512,10 @@ func (store *Store) Check(ctx context.Context) error {
 	if err := checkAuditInvariants(ctx, store.db, candidates); err != nil {
 		return err
 	}
-	return checkDerivedInvariants(ctx, store.db)
+	if err := checkDerivedInvariants(ctx, store.db); err != nil {
+		return err
+	}
+	return checkEvolutionInvariants(ctx, store.db)
 }
 
 // migrate 配置耐久性选项并以迁移校验和初始化唯一支持的 schema 版本。
@@ -673,6 +676,51 @@ func (store *Store) migrate(ctx context.Context) error {
 			return err
 		}
 		if err := setMigrationVersion(ctx, transaction, migrationVersionFour); err != nil {
+			return err
+		}
+		version = migrationVersionFour
+	}
+	if version < migrationVersionFive {
+		if _, err := transaction.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS evolution_candidates (
+				id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL,
+				workspace_hash TEXT NOT NULL,
+				source_derived_id TEXT NOT NULL,
+				source_consolidation_id TEXT NOT NULL,
+				target_kind TEXT NOT NULL CHECK(target_kind IN ('context_compaction_params')),
+				variant_spec_sha256 TEXT NOT NULL,
+				variant_fingerprint TEXT NOT NULL,
+				baseline_fingerprint TEXT NOT NULL,
+				eval_set_fingerprint TEXT,
+				created_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				status TEXT NOT NULL CHECK(status IN ('draft', 'ready', 'evaluating', 'evaluated_passed', 'evaluated_failed', 'inconclusive', 'invalidated', 'promoted', 'rejected', 'expired')),
+				note_digest TEXT,
+				UNIQUE(source_derived_id, source_consolidation_id, target_kind, variant_fingerprint)
+			);
+			CREATE TABLE IF NOT EXISTS evolution_audit_log (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				candidate_id TEXT NOT NULL REFERENCES evolution_candidates(id),
+				action TEXT NOT NULL CHECK(action IN ('created', 'rejected', 'invalidated', 'expired')),
+				reason TEXT CHECK(reason IS NULL OR reason IN ('insufficient_evidence', 'evaluation_failed', 'safety_violation', 'inconclusive_limit', 'human_request')),
+				occurred_at TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS evolution_audit_by_candidate ON evolution_audit_log(candidate_id, id);
+			CREATE TABLE IF NOT EXISTS evolution_cooldowns (
+				source_derived_id TEXT NOT NULL,
+				source_consolidation_id TEXT NOT NULL,
+				target_kind TEXT NOT NULL,
+				variant_fingerprint TEXT NOT NULL,
+				cooldown_until TEXT NOT NULL,
+				PRIMARY KEY(source_derived_id, source_consolidation_id, target_kind, variant_fingerprint)
+			);`); err != nil {
+			return fmt.Errorf("create evolution registry schema: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionFive, migrationNameFive, migrationHashFive); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionFive); err != nil {
 			return err
 		}
 	}
@@ -860,7 +908,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {
