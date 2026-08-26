@@ -71,6 +71,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.resume(ctx, args[1:])
 	case "benchmark":
 		return command.benchmark(ctx, args[1:])
+	case "check-provider":
+		return command.checkProvider(ctx, args[1:])
 	case "help", "--help", "-h":
 		command.usage()
 		return ExitOK
@@ -1360,6 +1362,7 @@ Usage:
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
+  cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed
