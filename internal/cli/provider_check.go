@@ -130,8 +130,11 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	}
 	if generation := configuration.Provider.Generation; generation != nil {
 		client.Generation = &openaicompat.GenerationOptions{
-			MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
-			TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+			TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+		}
+		if generation.MaxOutputTokens != nil {
+			client.Generation.MaxOutputTokens = *generation.MaxOutputTokens
 		}
 	}
 	request := ports.ModelRequest{Model: configuration.Provider.Model}
@@ -177,10 +180,14 @@ func providerGenerationDeclaration(configuration config.Config) *contract.Provid
 	if generation == nil {
 		return nil
 	}
-	return &contract.ProviderGenerationDeclaration{
-		MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
-		TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+	declaration := &contract.ProviderGenerationDeclaration{
+		TemperatureMilli: generation.TemperatureMilli,
+		TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
 	}
+	if generation.MaxOutputTokens != nil {
+		declaration.MaxOutputTokens = *generation.MaxOutputTokens
+	}
+	return declaration
 }
 
 // providerCapabilityDeclaration 把配置层能力声明投影为合同层解析输入。

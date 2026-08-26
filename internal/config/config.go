@@ -197,10 +197,11 @@ type ProviderConfig struct {
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段
 // 只有显式值或未声明两态，显式值必须原样序列化进模型请求，未声明字段在
 // Resolved Execution Plan 与指纹投影中记录为 unsupported，不允许静默采用
-// 提供方默认值。 Milli 后缀表示千分位整数（指纹禁浮点）；该块是冻结评测
+// 提供方默认值。 Milli 后缀表示千分位整数（指纹禁浮点）；输出上限采用指针
+// 使显式写入的 0 可被失败关闭识别，而不是被误当作未声明。该块是冻结评测
 // 资产属性，只来自 YAML 显式值，不提供环境变量或 CLI 覆盖。
 type ProviderGenerationConfig struct {
-	MaxOutputTokens  int    `yaml:"max_output_tokens"`
+	MaxOutputTokens  *int   `yaml:"max_output_tokens"`
 	TemperatureMilli *int   `yaml:"temperature_milli"`
 	TopPMilli        *int   `yaml:"top_p_milli"`
 	ReasoningEffort  string `yaml:"reasoning_effort"`
@@ -582,11 +583,13 @@ func validateProviderGeneration(generation *ProviderGenerationConfig, capability
 	if generation == nil {
 		return nil
 	}
-	if generation.MaxOutputTokens < 0 {
-		return fmt.Errorf("provider.generation.max_output_tokens cannot be negative")
-	}
-	if generation.MaxOutputTokens > 0 && capability != nil && capability.MaxOutputTokens > 0 && generation.MaxOutputTokens > capability.MaxOutputTokens {
-		return fmt.Errorf("provider.generation.max_output_tokens %d exceeds declared provider capability limit %d", generation.MaxOutputTokens, capability.MaxOutputTokens)
+	if generation.MaxOutputTokens != nil {
+		if *generation.MaxOutputTokens <= 0 {
+			return fmt.Errorf("provider.generation.max_output_tokens %d must be a positive integer", *generation.MaxOutputTokens)
+		}
+		if capability != nil && capability.MaxOutputTokens > 0 && *generation.MaxOutputTokens > capability.MaxOutputTokens {
+			return fmt.Errorf("provider.generation.max_output_tokens %d exceeds declared provider capability limit %d", *generation.MaxOutputTokens, capability.MaxOutputTokens)
+		}
 	}
 	if generation.TemperatureMilli != nil && (*generation.TemperatureMilli < 0 || *generation.TemperatureMilli > generationTemperatureMaxMilli) {
 		return fmt.Errorf("provider.generation.temperature_milli %d outside supported range [0,%d]", *generation.TemperatureMilli, generationTemperatureMaxMilli)
@@ -734,7 +737,7 @@ func recordExplicitGeneration(generation *ProviderGenerationConfig, recorder *re
 		set   bool
 		value string
 	}{
-		{"provider.generation.max_output_tokens", generation.MaxOutputTokens > 0, strconv.Itoa(generation.MaxOutputTokens)},
+		{"provider.generation.max_output_tokens", generation.MaxOutputTokens != nil, itoaOrEmpty(generation.MaxOutputTokens)},
 		{"provider.generation.temperature_milli", generation.TemperatureMilli != nil, itoaOrEmpty(generation.TemperatureMilli)},
 		{"provider.generation.top_p_milli", generation.TopPMilli != nil, itoaOrEmpty(generation.TopPMilli)},
 		{"provider.generation.reasoning_effort", generation.ReasoningEffort != "", generation.ReasoningEffort},
@@ -819,8 +822,11 @@ func providerFingerprintFor(config Config) providerFingerprint {
 	}
 	if generation := config.Provider.Generation; generation != nil {
 		view.Generation = &providerGenerationFingerprint{
-			MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
-			TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+			TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+		}
+		if generation.MaxOutputTokens != nil {
+			view.Generation.MaxOutputTokens = *generation.MaxOutputTokens
 		}
 	}
 	return view

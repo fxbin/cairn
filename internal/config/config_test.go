@@ -590,7 +590,7 @@ func TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint(t *testing.
 		t.Fatal(err)
 	}
 	generation := configuration.Provider.Generation
-	if generation == nil || generation.MaxOutputTokens != 4096 || generation.TemperatureMilli == nil || *generation.TemperatureMilli != 700 || generation.ReasoningEffort != ReasoningEffortMedium {
+	if generation == nil || generation.MaxOutputTokens == nil || *generation.MaxOutputTokens != 4096 || generation.TemperatureMilli == nil || *generation.TemperatureMilli != 700 || generation.ReasoningEffort != ReasoningEffortMedium {
 		t.Fatalf("generation = %#v", generation)
 	}
 	values := map[string]string{}
@@ -672,6 +672,7 @@ func TestValidateRejectsInvalidGenerationValues(t *testing.T) {
 		"unknown reasoning effort":       head + "  generation:\n    reasoning_effort: ultra\n",
 		"unknown tool choice":            head + "  generation:\n    tool_choice: required\n",
 		"negative output tokens":         head + "  generation:\n    max_output_tokens: -5\n",
+		"zero output tokens":             head + "  generation:\n    max_output_tokens: 0\n",
 		"output beyond capability limit": head + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    max_output_tokens: 100\n  generation:\n    max_output_tokens: 101\n",
 	}
 	for name, body := range cases {

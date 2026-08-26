@@ -607,8 +607,11 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	}
 	if generation := configuration.Provider.Generation; generation != nil {
 		client.Generation = &openaicompat.GenerationOptions{
-			MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
-			TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+			TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+		}
+		if generation.MaxOutputTokens != nil {
+			client.Generation.MaxOutputTokens = *generation.MaxOutputTokens
 		}
 	}
 	return client, nil

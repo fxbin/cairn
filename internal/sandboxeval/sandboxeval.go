@@ -211,8 +211,10 @@ func AuthorizeLease(lease CredentialLease, policy CredentialPolicy, suiteStart t
 		return fmt.Errorf("credential lease rejected: %w", err)
 	}
 	suiteDeadline := suiteStart.Add(time.Duration(policy.SuiteMaxWallMilliseconds) * time.Millisecond)
-	if lease.ExpiresAt.Before(suiteDeadline) {
-		return fmt.Errorf("lease expires at %s before the suite deadline %s", lease.ExpiresAt.UTC().Format(time.RFC3339), suiteDeadline.UTC().Format(time.RFC3339))
+	// ADR 合同要求到期"必须晚于"套件截止：恰等边界同样拒绝，避免把评测
+	// 结束时刻钉死在租约失效的最后一瞬。
+	if !lease.ExpiresAt.After(suiteDeadline) {
+		return fmt.Errorf("lease expires at %s, no later than the suite deadline %s", lease.ExpiresAt.UTC().Format(time.RFC3339), suiteDeadline.UTC().Format(time.RFC3339))
 	}
 	if lease.IssuedAt.After(suiteStart) {
 		return errors.New("lease issued after the suite start")
