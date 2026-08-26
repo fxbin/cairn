@@ -190,6 +190,30 @@ type ProviderConfig struct {
 	APIKeyEnv      string                    `yaml:"api_key_env"`
 	RequestTimeout string                    `yaml:"request_timeout"`
 	Capability     *ProviderCapabilityConfig `yaml:"capability"`
+	Generation     *ProviderGenerationConfig `yaml:"generation"`
+}
+
+// 生成参数的闭合取值词表：ReasoningEffort 与 ToolChoice 只接受下列常量；
+// 空串表示未声明（unsupported），配置与指纹中不存在静默的提供方默认值。
+const (
+	GenerationToolChoiceAuto = "auto"
+	ReasoningEffortOff       = "off"
+	ReasoningEffortLow       = "low"
+	ReasoningEffortMedium    = "medium"
+	ReasoningEffortHigh      = "high"
+)
+
+// ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段
+// 只有显式值或未声明两态，显式值必须原样序列化进模型请求，未声明字段在
+// Resolved Execution Plan 与指纹投影中记录为 unsupported，不允许静默采用
+// 提供方默认值。 Milli 后缀表示千分位整数（指纹禁浮点）；该块是冻结评测
+// 资产属性，只来自 YAML 显式值，不提供环境变量或 CLI 覆盖。
+type ProviderGenerationConfig struct {
+	MaxOutputTokens  int    `yaml:"max_output_tokens"`
+	TemperatureMilli *int   `yaml:"temperature_milli"`
+	TopPMilli        *int   `yaml:"top_p_milli"`
+	ReasoningEffort  string `yaml:"reasoning_effort"`
+	ToolChoice       string `yaml:"tool_choice"`
 }
 
 // ProviderCapabilityConfig 是 provider.capability 显式能力声明块：
@@ -379,6 +403,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 			applyProfilePreset(&config, &probe.Budget, preset, profile, recorder)
 		}
 	}
+	recordProviderGenerationResolution(config.Provider.Generation, recorder)
 	if err := normalizePreset(&config, recorder, presetSource); err != nil {
 		return Config{}, err
 	}
@@ -473,6 +498,9 @@ func Validate(config Config) error {
 			}
 		}
 	}
+	if err := validateProviderGeneration(config.Provider.Generation, config.Provider.Capability); err != nil {
+		return err
+	}
 	if config.Provider.RequestTimeout == "" {
 		return fmt.Errorf("provider.request_timeout is required")
 	}
@@ -533,6 +561,46 @@ func Validate(config Config) error {
 				return fmt.Errorf("verification.commands[%d].env %q is not in policy.env_allow", index, key)
 			}
 		}
+	}
+	return nil
+}
+
+// 生成参数的 Milli 边界：温度千分位上限与 top_p 千分位区间，指纹禁浮点。
+const (
+	generationTemperatureMaxMilli = 2000
+	generationTopPMinMilli        = 1
+	generationTopPMaxMilli        = 1000
+)
+
+// validateProviderGeneration 校验生成参数块的闭合取值与边界：Milli 整数必须
+// 落在合同区间，枚举字段只接受声明的常量；显式的输出上限不得超过能力卡声明
+// 的提供方上限（双方都声明时对照），防止生成配置越过已知模型边界。任何非法
+// 值都在 Load 阶段失败关闭，而不是发送请求后才暴露。
+func validateProviderGeneration(generation *ProviderGenerationConfig, capability *ProviderCapabilityConfig) error {
+	if generation == nil {
+		return nil
+	}
+	if generation.MaxOutputTokens < 0 {
+		return fmt.Errorf("provider.generation.max_output_tokens cannot be negative")
+	}
+	if generation.MaxOutputTokens > 0 && capability != nil && capability.MaxOutputTokens > 0 && generation.MaxOutputTokens > capability.MaxOutputTokens {
+		return fmt.Errorf("provider.generation.max_output_tokens %d exceeds declared provider capability limit %d", generation.MaxOutputTokens, capability.MaxOutputTokens)
+	}
+	if generation.TemperatureMilli != nil && (*generation.TemperatureMilli < 0 || *generation.TemperatureMilli > generationTemperatureMaxMilli) {
+		return fmt.Errorf("provider.generation.temperature_milli %d outside supported range [0,%d]", *generation.TemperatureMilli, generationTemperatureMaxMilli)
+	}
+	if generation.TopPMilli != nil && (*generation.TopPMilli < generationTopPMinMilli || *generation.TopPMilli > generationTopPMaxMilli) {
+		return fmt.Errorf("provider.generation.top_p_milli %d outside supported range [%d,%d]", *generation.TopPMilli, generationTopPMinMilli, generationTopPMaxMilli)
+	}
+	switch generation.ReasoningEffort {
+	case "", ReasoningEffortOff, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+	default:
+		return fmt.Errorf("unknown provider.generation.reasoning_effort %q (supported: %s, %s, %s, %s)", generation.ReasoningEffort, ReasoningEffortOff, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh)
+	}
+	switch generation.ToolChoice {
+	case "", GenerationToolChoiceAuto:
+	default:
+		return fmt.Errorf("unknown provider.generation.tool_choice %q (supported: %s)", generation.ToolChoice, GenerationToolChoiceAuto)
 	}
 	return nil
 }
@@ -629,6 +697,64 @@ func (config Config) TerminateGrace() (time.Duration, error) {
 	return duration, nil
 }
 
+// resolutionUnsupportedValue 标记 Resolved Execution Plan 中未声明的生成参数：
+// 两态合同要求缺席也被显式记录，不允许消费方把缺省误解为提供方默认值。
+const resolutionUnsupportedValue = "unsupported"
+
+// recordProviderGenerationResolution 把生成参数五字段的最终值与来源写入
+// Resolved Execution Plan：显式值来源 yaml，未声明字段统一记录 unsupported
+// 与 default 来源。该块没有 Profile 预设、环境变量或 CLI 覆盖路径。
+func recordProviderGenerationResolution(generation *ProviderGenerationConfig, recorder *resolutionRecorder) {
+	if generation == nil {
+		for _, field := range generationResolutionFields {
+			recorder.record(field, resolutionUnsupportedValue, "default")
+		}
+		return
+	}
+	recordExplicitGeneration(generation, recorder)
+}
+
+// generationResolutionFields 是生成参数在 Resolved Execution Plan 中的字段名，
+// 与 ProviderGenerationConfig 的 YAML 键一一对应。
+var generationResolutionFields = []string{
+	"provider.generation.max_output_tokens",
+	"provider.generation.temperature_milli",
+	"provider.generation.top_p_milli",
+	"provider.generation.reasoning_effort",
+	"provider.generation.tool_choice",
+}
+
+// recordExplicitGeneration 记录已声明生成参数块的逐字段两态：显式值保留
+// yaml 来源，块内缺省字段仍记为 unsupported。
+func recordExplicitGeneration(generation *ProviderGenerationConfig, recorder *resolutionRecorder) {
+	valueOf := []struct {
+		field string
+		set   bool
+		value string
+	}{
+		{"provider.generation.max_output_tokens", generation.MaxOutputTokens > 0, strconv.Itoa(generation.MaxOutputTokens)},
+		{"provider.generation.temperature_milli", generation.TemperatureMilli != nil, itoaOrEmpty(generation.TemperatureMilli)},
+		{"provider.generation.top_p_milli", generation.TopPMilli != nil, itoaOrEmpty(generation.TopPMilli)},
+		{"provider.generation.reasoning_effort", generation.ReasoningEffort != "", generation.ReasoningEffort},
+		{"provider.generation.tool_choice", generation.ToolChoice != "", generation.ToolChoice},
+	}
+	for _, item := range valueOf {
+		if item.set {
+			recorder.record(item.field, item.value, "yaml")
+			continue
+		}
+		recorder.record(item.field, resolutionUnsupportedValue, "default")
+	}
+}
+
+// itoaOrEmpty 把可选 Milli 整数转换为文本；nil 返回空串由调用方判空。
+func itoaOrEmpty(value *int) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.Itoa(*value)
+}
+
 // fingerprintView 显式列出参与冻结指纹的字段：只覆盖影响执行语义、审批授权
 // 与预算终止的配置。展示与运维类字段（request_timeout、terminate_grace、output
 // 限额）被刻意排除，使后续版本新增非语义字段或调整展示参数不会令在途 run 的
@@ -655,6 +781,7 @@ type providerFingerprint struct {
 	Model      string                         `json:"model"`
 	APIKeyEnv  string                         `json:"api_key_env"`
 	Capability *providerCapabilityFingerprint `json:"capability,omitempty"`
+	Generation *providerGenerationFingerprint `json:"generation,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -666,6 +793,17 @@ type providerCapabilityFingerprint struct {
 	StopReasons         []string `json:"stop_reasons"`
 }
 
+// providerGenerationFingerprint 是进入指纹的生成参数投影：未声明字段经
+// omitempty 缺席表达 unsupported，显式值与缺席在字节层面可区分；块未声明时
+// 整个投影为 nil 且键整体缺席，保证既有配置的指纹逐位不变。
+type providerGenerationFingerprint struct {
+	MaxOutputTokens  int    `json:"max_output_tokens,omitempty"`
+	TemperatureMilli *int   `json:"temperature_milli,omitempty"`
+	TopPMilli        *int   `json:"top_p_milli,omitempty"`
+	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
+	ToolChoice       string `json:"tool_choice,omitempty"`
+}
+
 // providerFingerprintFor 组装提供方指纹视图；能力声明存在时整体进入指纹，
 // 使在途 run 的能力合同漂移被 resume 拒绝。
 func providerFingerprintFor(config Config) providerFingerprint {
@@ -675,6 +813,12 @@ func providerFingerprintFor(config Config) providerFingerprint {
 			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
 			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
 			StopReasons: capability.StopReasons,
+		}
+	}
+	if generation := config.Provider.Generation; generation != nil {
+		view.Generation = &providerGenerationFingerprint{
+			MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
 		}
 	}
 	return view

@@ -574,3 +574,113 @@ func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint 锁定生成参数
+// 块：显式值进入解析结果与 Resolved Execution Plan（yaml 来源），块内未声明
+// 字段记录 unsupported；块整体参与配置指纹，使在途 run 的生成合同不可漂移；
+// 显式输出上限不得超过能力卡声明上限。
+func TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	valid := "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    max_output_tokens: 8192\n  generation:\n    max_output_tokens: 4096\n    temperature_milli: 700\n    reasoning_effort: medium\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := configuration.Provider.Generation
+	if generation == nil || generation.MaxOutputTokens != 4096 || generation.TemperatureMilli == nil || *generation.TemperatureMilli != 700 || generation.ReasoningEffort != ReasoningEffortMedium {
+		t.Fatalf("generation = %#v", generation)
+	}
+	values := map[string]string{}
+	for _, entry := range configuration.Resolution {
+		values[entry.Field] = entry.Value + "@" + entry.Source
+	}
+	for field, want := range map[string]string{
+		"provider.generation.max_output_tokens": "4096@yaml",
+		"provider.generation.temperature_milli": "700@yaml",
+		"provider.generation.reasoning_effort":  "medium@yaml",
+		"provider.generation.top_p_milli":       "unsupported@default",
+		"provider.generation.tool_choice":       "unsupported@default",
+	} {
+		if values[field] != want {
+			t.Fatalf("resolution %s = %q, want %q", field, values[field], want)
+		}
+	}
+	baseline := "version: 1\nprovider:\n  api_key_env: K\n"
+	base := filepath.Join(t.TempDir(), "baseline.yaml")
+	if err := os.WriteFile(base, []byte(baseline), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := Load(base, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Fingerprint() == configuration.Fingerprint() {
+		t.Fatal("generation block must participate in the fingerprint")
+	}
+	partial := configuration
+	cloned := *partial.Provider.Generation
+	cloned.TemperatureMilli = nil
+	partial.Provider.Generation = &cloned
+	if partial.Fingerprint() == configuration.Fingerprint() {
+		t.Fatal("generation explicit-value changes must change the fingerprint")
+	}
+}
+
+// TestProviderGenerationAbsentBlockKeepsFingerprintAndRecordsUnsupported 验证
+// 未声明生成参数块的配置不改变既有指纹形态，且五字段在 Resolution 中全部
+// 记录 unsupported，两态合同不允许静默缺省。
+func TestProviderGenerationAbsentBlockKeepsFingerprintAndRecordsUnsupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Provider.Generation != nil {
+		t.Fatal("absent block must not materialize")
+	}
+	expected := Defaults()
+	expected.Provider.APIKeyEnv = "K"
+	if configuration.Fingerprint() != expected.Fingerprint() {
+		t.Fatal("absent generation block must keep the fingerprint identical to the equivalent default config")
+	}
+	recorded := 0
+	for _, entry := range configuration.Resolution {
+		if strings.HasPrefix(entry.Field, "provider.generation.") && entry.Value == "unsupported" {
+			recorded++
+		}
+	}
+	if recorded != 5 {
+		t.Fatalf("expected 5 unsupported generation records, got %d", recorded)
+	}
+}
+
+// TestValidateRejectsInvalidGenerationValues 表驱动锁定非法生成参数的失败关闭：
+// Milli 越界、未知枚举、负上限与越能力卡上限都必须在 Load 拒绝。
+func TestValidateRejectsInvalidGenerationValues(t *testing.T) {
+	head := "version: 1\nprovider:\n  api_key_env: K\n"
+	cases := map[string]string{
+		"negative temperature milli":     head + "  generation:\n    temperature_milli: -1\n",
+		"temperature above 2000 milli":   head + "  generation:\n    temperature_milli: 2001\n",
+		"top p below one milli":          head + "  generation:\n    top_p_milli: 0\n",
+		"top p above 1000 milli":         head + "  generation:\n    top_p_milli: 1001\n",
+		"unknown reasoning effort":       head + "  generation:\n    reasoning_effort: ultra\n",
+		"unknown tool choice":            head + "  generation:\n    tool_choice: required\n",
+		"negative output tokens":         head + "  generation:\n    max_output_tokens: -5\n",
+		"output beyond capability limit": head + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    max_output_tokens: 100\n  generation:\n    max_output_tokens: 101\n",
+	}
+	for name, body := range cases {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path, Overrides{}); err == nil {
+			t.Fatalf("expected config rejection for %s", name)
+		}
+	}
+}
