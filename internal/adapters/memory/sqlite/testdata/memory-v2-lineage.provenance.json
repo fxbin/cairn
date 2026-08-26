@@ -1,0 +1,56 @@
+{
+  "artifact": "memory-v2-lineage.db",
+  "sha256": "1377a80a118cb563ebb4f212e8752956a30b6ce5149f51d323c105b872fec6c6",
+  "source_revision": "410342449079ede71a7ff0912c38b03aba9d8604",
+  "source_schema_version": 2,
+  "generation": {
+    "isolation": "independent temporary git worktree detached at source_revision",
+    "commands": [
+      "git worktree add --detach <temporary-worktree> 410342449079ede71a7ff0912c38b03aba9d8604",
+      "go -C <temporary-worktree> run ./cmd/r3fixture <fixture-output>"
+    ],
+    "historical_public_apis": [
+      "sqlite.Open",
+      "Store.Capture",
+      "memory.DeriveConsolidations",
+      "Store.Consolidate",
+      "Store.Close"
+    ],
+    "generation_rule": "fixture construction did not execute handwritten DDL or INSERT; read-only SQL inspection occurred only after Store.Close."
+  },
+  "pre_upgrade_contract": {
+    "pragma_user_version": 2,
+    "schema_migrations": [
+      {
+        "version": 1,
+        "name": "001_trusted_memory_v1",
+        "sha256": "cairn-schema-v1-trusted-memory"
+      },
+      {
+        "version": 2,
+        "name": "002_consolidation_v2",
+        "sha256": "cairn-schema-v2-trusted-memory-consolidation"
+      }
+    ],
+    "absent_consolidations_columns": [
+      "min_pattern_support",
+      "min_hypothesis_support"
+    ],
+    "absent_indexes": [
+      "derived_candidates_one_active"
+    ]
+  },
+  "non_sensitive_content_summary": {
+    "consolidations": 4,
+    "derived_candidates": {
+      "active": 2,
+      "superseded": 2
+    },
+    "required_lineage": "one superseded pattern with one active successor; one active hypothesis",
+    "derived_evidence_refs": 12,
+    "derived_audit_actions": {
+      "consolidated": 4,
+      "superseded": 2
+    }
+  }
+}

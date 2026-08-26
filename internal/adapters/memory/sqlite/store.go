@@ -25,6 +25,11 @@ const (
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
 
+// ErrLegacyV2ConsolidationIncompatible 标识含巩固事实的历史 v2 Memory SQLite
+// 数据库无法以当前唯一派生语义打开。调用方可用 errors.Is 提示开发期重建，且该
+// 拒绝路径在任何迁移或持久化写入前完成。
+var ErrLegacyV2ConsolidationIncompatible = errors.New("legacy v2 memory consolidation database is incompatible")
+
 // Store 管理一个工作区专属、单连接的 Memory SQLite 数据库。
 type Store struct {
 	db  *sql.DB
@@ -43,6 +48,9 @@ func Open(path string) (*Store, error) {
 	}
 	if err := os.Chmod(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("secure memory directory: %w", err)
+	}
+	if err := preflightLegacyV2(context.Background(), path); err != nil {
+		return nil, err
 	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -84,6 +92,9 @@ func OpenReadOnly(path string) (*Store, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		return nil, errors.New("read-only memory SQLite must be a non-symlink regular 0600 file")
 	}
+	if err := preflightLegacyV2(context.Background(), path); err != nil {
+		return nil, err
+	}
 	// immutable=1 使 SQLite 不尝试创建 -wal/-shm 辅助文件；只读 recall/doctor
 	// 接受的是一个关闭后可校验的 Memory Store，若文件处于未检查点写入状态应由
 	// 后续完整性校验失败关闭，而不是在诊断路径写入辅助状态。
@@ -103,6 +114,52 @@ func OpenReadOnly(path string) (*Store, error) {
 		return nil, fmt.Errorf("configure read-only memory SQLite: %w", err)
 	}
 	return &Store{db: db, now: time.Now}, nil
+}
+
+// preflightLegacyV2 在只读不可变连接中检查既有数据库的物理 schema 版本。它用
+// Stat 跟随末端符号链接至物理目标；仅当版本为 v2 时，先验证 v1/v2 迁移摘要，随后
+// 拒绝含巩固事实的历史库。该函数不会开启事务、配置 journal_mode、执行 DDL 或修改
+// 数据库文件。
+func preflightLegacyV2(ctx context.Context, path string) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat legacy memory SQLite preflight: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open legacy memory SQLite preflight: %w", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read legacy memory schema version: %w", err)
+	}
+	if version != migrationVersionTwo {
+		return nil
+	}
+	if err := verifyLegacyV2Migration(ctx, db, 1, migrationName, migrationHash); err != nil {
+		return fmt.Errorf("verify legacy memory migration: %w", err)
+	}
+	if err := verifyLegacyV2Migration(ctx, db, migrationVersionTwo, migrationNameTwo, migrationHashTwo); err != nil {
+		return fmt.Errorf("verify legacy memory migration: %w", err)
+	}
+	var consolidationCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM consolidations").Scan(&consolidationCount); err != nil {
+		return fmt.Errorf("read legacy memory consolidations: %w", err)
+	}
+	if consolidationCount == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w; rebuild the development memory database", ErrLegacyV2ConsolidationIncompatible)
 }
 
 // currentUTC 返回 Store 当前的 UTC 时钟。生产入口使用系统时钟，测试可注入
@@ -749,6 +806,22 @@ func verifyAppliedMigration(ctx context.Context, source queryer, version int, ex
 		return fmt.Errorf("read memory migration %d: %w", version, err)
 	}
 	if recorded != expectedHash {
+		return fmt.Errorf("memory migration %d checksum mismatch", version)
+	}
+	return nil
+}
+
+// verifyLegacyV2Migration 校验历史 v2 迁移记录的名称与摘要。它只供只读预检调用，
+// 用于确保损坏记录先作为完整性错误失败，而不会被误报为产品不兼容。
+func verifyLegacyV2Migration(ctx context.Context, source queryer, version int, expectedName, expectedHash string) error {
+	var recordedName, recordedHash string
+	if err := source.QueryRowContext(ctx, "SELECT name, sha256 FROM schema_migrations WHERE version = ?", version).Scan(&recordedName, &recordedHash); err != nil {
+		return fmt.Errorf("read memory migration %d: %w", version, err)
+	}
+	if recordedName != expectedName {
+		return fmt.Errorf("memory migration %d name mismatch", version)
+	}
+	if recordedHash != expectedHash {
 		return fmt.Errorf("memory migration %d checksum mismatch", version)
 	}
 	return nil
