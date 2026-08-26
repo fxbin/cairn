@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
 	"gopkg.in/yaml.v3"
 )
@@ -192,16 +193,6 @@ type ProviderConfig struct {
 	Capability     *ProviderCapabilityConfig `yaml:"capability"`
 	Generation     *ProviderGenerationConfig `yaml:"generation"`
 }
-
-// 生成参数的闭合取值词表：ReasoningEffort 与 ToolChoice 只接受下列常量；
-// 空串表示未声明（unsupported），配置与指纹中不存在静默的提供方默认值。
-const (
-	GenerationToolChoiceAuto = "auto"
-	ReasoningEffortOff       = "off"
-	ReasoningEffortLow       = "low"
-	ReasoningEffortMedium    = "medium"
-	ReasoningEffortHigh      = "high"
-)
 
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段
 // 只有显式值或未声明两态，显式值必须原样序列化进模型请求，未声明字段在
@@ -565,11 +556,22 @@ func Validate(config Config) error {
 	return nil
 }
 
-// 生成参数的 Milli 边界：温度千分位上限与 top_p 千分位区间，指纹禁浮点。
+// 生成参数枚举取值来自 contract 包的单一事实源；此处只保留引用别名以维持
+// 校验函数的可读性，任何取值变更都必须发生在合同层。
 const (
-	generationTemperatureMaxMilli = 2000
-	generationTopPMinMilli        = 1
-	generationTopPMaxMilli        = 1000
+	GenerationToolChoiceAuto = contract.GenerationToolChoiceAuto
+	ReasoningEffortOff       = contract.ReasoningEffortOff
+	ReasoningEffortLow       = contract.ReasoningEffortLow
+	ReasoningEffortMedium    = contract.ReasoningEffortMedium
+	ReasoningEffortHigh      = contract.ReasoningEffortHigh
+)
+
+// 生成参数的 Milli 边界引用合同层常量：温度千分位上限与 top_p 千分位区间，
+// 指纹禁浮点。
+const (
+	generationTemperatureMaxMilli = contract.GenerationTempMaxMilli
+	generationTopPMinMilli        = contract.GenerationTopPMinMilli
+	generationTopPMaxMilli        = contract.GenerationTopPMaxMilli
 )
 
 // validateProviderGeneration 校验生成参数块的闭合取值与边界：Milli 整数必须
