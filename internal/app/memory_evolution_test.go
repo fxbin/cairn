@@ -140,3 +140,88 @@ func TestEvolutionCandidateFailsClosedWithoutStore(t *testing.T) {
 		t.Fatalf("missing memory store err = %v", err)
 	}
 }
+
+// TestEvolutionInvalidationRecoversDoctorAfterSourceSuperseded 锁定验收场景：
+// 来源被合法替代 → doctor 因非终态候选引用失效来源而失败 → 受限作废成功 →
+// doctor 恢复通过；活跃来源的作废尝试始终失败关闭。
+func TestEvolutionInvalidationRecoversDoctorAfterSourceSuperseded(t *testing.T) {
+	service, workspace, stateDir, configuration, source := evolutionAppFixture(t)
+	baseline := "sha256:" + strings.Repeat("ab", 32)
+	created, err := service.CreateEvolutionCandidate(context.Background(), MemoryEvolutionCreateOptions{
+		Workspace: workspace, StateDir: stateDir, Config: configuration,
+		SourceDerivedID: source.DerivedID, SourceConsolidationID: source.ConsolidationID,
+		BaselineFingerprint: baseline, Variant: evolutionVariantFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.InvalidateEvolutionCandidate(context.Background(), MemoryEvolutionActionOptions{
+		CandidateID: created.ID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+	}); err == nil {
+		t.Fatal("active source must block invalidation at the service boundary")
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
+		t.Fatalf("doctor must pass before source supersession: %v", err)
+	}
+	third, err := service.Run(context.Background(), RunOptions{Task: "evolution-fixture-task", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CaptureMemory(context.Background(), MemoryCaptureOptions{RunID: third.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, TTL: 12 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConsolidateMemory(context.Background(), MemoryConsolidateOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, TTL: 12 * time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil {
+		t.Fatal("doctor must fail closed after source supersession")
+	}
+	invalidated, err := service.InvalidateEvolutionCandidate(context.Background(), MemoryEvolutionActionOptions{
+		CandidateID: created.ID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+	})
+	if err != nil || invalidated.Status != memory.CandidateStateInvalidated {
+		t.Fatalf("restricted invalidation = %#v err = %v", invalidated, err)
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
+		t.Fatalf("doctor must recover after invalidation: %v", err)
+	}
+	inspected, err := service.InspectEvolutionCandidate(context.Background(), MemoryEvolutionInspectOptions{
+		CandidateID: created.ID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+	})
+	if err != nil || inspected.Candidate.Status != memory.CandidateStateInvalidated || len(inspected.Audit) != 2 {
+		t.Fatalf("inspect after invalidation = %#v err = %v", inspected, err)
+	}
+}
+
+// TestEvolutionServiceRejectBlocksUntilCooldownExpiry 锁定冷却到期语义：
+// 拒绝落冷却后同键重建被阻断，冷却极短到期后同事实重建仍因终态不复活
+// 失败关闭（唯一键永久阻断），拒绝审计与冷却记录可经 inspect 与 doctor 复核。
+func TestEvolutionServiceRejectBlocksUntilCooldownExpiry(t *testing.T) {
+	service, workspace, stateDir, configuration, source := evolutionAppFixture(t)
+	baseline := "sha256:" + strings.Repeat("ef", 32)
+	created, err := service.CreateEvolutionCandidate(context.Background(), MemoryEvolutionCreateOptions{
+		Workspace: workspace, StateDir: stateDir, Config: configuration,
+		SourceDerivedID: source.DerivedID, SourceConsolidationID: source.ConsolidationID,
+		BaselineFingerprint: baseline, Variant: evolutionVariantFixture(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := service.RejectEvolutionCandidate(context.Background(), MemoryEvolutionActionOptions{
+		CandidateID: created.ID, Reason: memory.RejectReasonInsufficientEvidence,
+		Workspace: workspace, StateDir: stateDir, Config: configuration, Cooldown: time.Nanosecond,
+	})
+	if err != nil || rejected.Status != memory.CandidateStateRejected {
+		t.Fatalf("reject = %#v err = %v", rejected, err)
+	}
+	if _, err := service.CreateEvolutionCandidate(context.Background(), MemoryEvolutionCreateOptions{
+		Workspace: workspace, StateDir: stateDir, Config: configuration,
+		SourceDerivedID: source.DerivedID, SourceConsolidationID: source.ConsolidationID,
+		BaselineFingerprint: baseline, Variant: evolutionVariantFixture(),
+	}); err == nil {
+		t.Fatal("terminal state must permanently block same-key recreation")
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
+		t.Fatalf("doctor after rejection: %v", err)
+	}
+}

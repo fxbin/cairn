@@ -147,7 +147,10 @@ func (service Service) RejectEvolutionCandidate(ctx context.Context, options Mem
 	return store.RejectEvolutionCandidate(ctx, options.CandidateID, options.Reason, time.Now().UTC(), options.Cooldown)
 }
 
-// InvalidateEvolutionCandidate 在工作区锁内把来源失效的候选显式作废。
+// InvalidateEvolutionCandidate 在工作区锁内执行受限原子作废：来源被合法替代
+// 后全库校验会失败关闭，因此本用例不以前置全库 Check 阻断自身——它走存储层
+// 的资格受限路径（同事务证明该候选来源确已失效），提交后再执行完整跨库验证
+// 断言一致性已恢复；断言失败说明存在本路径未覆盖的其他损坏，原样上报。
 func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options MemoryEvolutionActionOptions) (memory.EvolutionCandidate, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -163,9 +166,6 @@ func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options
 		return memory.EvolutionCandidate{}, err
 	}
 	defer store.Close()
-	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
-		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
 	inspected, err := store.InspectEvolutionCandidate(ctx, options.CandidateID)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
@@ -173,7 +173,14 @@ func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
 		return memory.EvolutionCandidate{}, memory.ErrNotFound
 	}
-	return store.InvalidateEvolutionCandidate(ctx, options.CandidateID, time.Now().UTC())
+	candidate, err := store.InvalidateEvolutionCandidateForInactiveSource(ctx, options.CandidateID, time.Now().UTC())
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return candidate, nil
 }
 
 // ExpireEvolutionCandidate 在工作区锁内把保留期耗尽的候选显式置为 expired。

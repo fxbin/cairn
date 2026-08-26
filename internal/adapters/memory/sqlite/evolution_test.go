@@ -88,11 +88,11 @@ func TestEvolutionExpireTransitionPermitsAndCloses(t *testing.T) {
 	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
 		t.Fatal(err)
 	}
-	expired, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, now.Add(time.Minute))
+	expired, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, candidate.ExpiresAt)
 	if err != nil || expired.Status != memory.CandidateStateExpired {
 		t.Fatalf("expire = %#v err = %v", expired, err)
 	}
-	repeat, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, now.Add(2*time.Minute))
+	repeat, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, candidate.ExpiresAt.Add(time.Minute))
 	if err != nil || repeat.Status != memory.CandidateStateExpired {
 		t.Fatalf("idempotent expire = %#v err = %v", repeat, err)
 	}
@@ -228,21 +228,96 @@ func TestEvolutionRejectBlocksRecreationAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestEvolutionTransitionsClosedForFuturePhases 锁定本切片外迁移失败关闭：
-// 无法从 draft 直接进入 ready/evaluating/promoted。
+// TestEvolutionTransitionsClosedForFuturePhases 锁定本切片外状态失败关闭：
+// 直接把状态篡改为 ready 或 promoted 后 Check 必须拒绝，而非接受未知状态。
 func TestEvolutionTransitionsClosedForFuturePhases(t *testing.T) {
 	store, candidate, now := evolutionFixture(t)
 	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.transitionEvolutionCandidate(context.Background(), candidate.ID, memory.CandidateStateReady, memory.EvolutionAuditCreated, now); err == nil {
-		t.Fatal("draft -> ready must be closed in this slice")
+	for _, tampered := range []string{memory.CandidateStateReady, memory.CandidateStateEvaluating, memory.CandidateStateEvaluatedPassed, memory.CandidateStatePromoted} {
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_candidates SET status = ? WHERE id = ?", tampered, candidate.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Check(context.Background()); err == nil {
+			t.Fatalf("tampered status %s must fail Check", tampered)
+		}
+		if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_candidates SET status = ? WHERE id = ?", memory.CandidateStateDraft, candidate.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := store.transitionEvolutionCandidate(context.Background(), candidate.ID, memory.CandidateStatePromoted, memory.EvolutionAuditCreated, now); err == nil {
-		t.Fatal("draft -> promoted must be closed in this slice")
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := store.transitionEvolutionCandidate(context.Background(), candidate.ID, memory.CandidateStateInvalidated, memory.EvolutionAuditInvalidated, now); err != nil {
-		t.Fatalf("draft -> invalidated must be permitted: %v", err)
+}
+
+// TestEvolutionInvalidationRequiresInactiveSource 锁定作废资格条件：
+// 来源仍活跃时受限作废失败关闭且状态不变。
+func TestEvolutionInvalidationRequiresInactiveSource(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InvalidateEvolutionCandidateForInactiveSource(context.Background(), candidate.ID, now.Add(time.Minute)); err == nil {
+		t.Fatal("active source must block invalidation")
+	}
+	inspected, err := store.InspectEvolutionCandidate(context.Background(), candidate.ID)
+	if err != nil || inspected.Candidate.Status != memory.CandidateStateDraft {
+		t.Fatalf("candidate must stay draft after refused invalidation: %#v err=%v", inspected, err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEvolutionExpireRequiresDeadlineReached 锁定过期资格条件：
+// 未到保留期截止的过期迁移失败关闭且状态不变。
+func TestEvolutionExpireRequiresDeadlineReached(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, candidate.ExpiresAt.Add(-time.Second)); err == nil {
+		t.Fatal("premature expiry must fail closed")
+	}
+	inspected, err := store.InspectEvolutionCandidate(context.Background(), candidate.ID)
+	if err != nil || inspected.Candidate.Status != memory.CandidateStateDraft {
+		t.Fatalf("candidate must stay draft after refused expiry: %#v err=%v", inspected, err)
+	}
+	if _, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, candidate.ExpiresAt); err != nil {
+		t.Fatalf("expiry at deadline must succeed: %v", err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEvolutionRejectReadBackFailureLeavesNoResidue 锁定拒绝路径的读回
+// 零残留：审计读回比对被触发器注入失败后，状态与冷却全部回滚。
+func TestEvolutionRejectReadBackFailureLeavesNoResidue(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `CREATE TEMP TRIGGER duplicate_reject_audit BEFORE INSERT ON evolution_audit_log WHEN NEW.action = 'rejected' BEGIN INSERT INTO evolution_audit_log(candidate_id, action, reason, occurred_at) VALUES (NEW.candidate_id, NEW.action, NEW.reason, NEW.occurred_at); SELECT RAISE(ABORT, 'injected duplicate'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RejectEvolutionCandidate(context.Background(), candidate.ID, memory.RejectReasonHumanRequest, now.Add(time.Minute), 0); err == nil {
+		t.Fatal("read-back mismatch must roll back rejection")
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DROP TRIGGER duplicate_reject_audit"); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := store.InspectEvolutionCandidate(context.Background(), candidate.ID)
+	if err != nil || inspected.Candidate.Status != memory.CandidateStateDraft || len(inspected.Audit) != 1 {
+		t.Fatalf("rejection must leave no residue: %#v err=%v", inspected, err)
+	}
+	var cooldownRows int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM evolution_cooldowns").Scan(&cooldownRows); err != nil {
+		t.Fatal(err)
+	}
+	if cooldownRows != 0 {
+		t.Fatalf("rejected rollback must not persist cooldown rows, got %d", cooldownRows)
 	}
 	if err := store.Check(context.Background()); err != nil {
 		t.Fatal(err)
@@ -307,7 +382,7 @@ func TestEvolutionCheckDetectsInactiveSource(t *testing.T) {
 	if err := store.Check(context.Background()); err == nil {
 		t.Fatal("inactive source with non-terminal candidate must fail Check")
 	}
-	if _, err := store.InvalidateEvolutionCandidate(context.Background(), candidate.ID, now); err != nil {
+	if _, err := store.InvalidateEvolutionCandidateForInactiveSource(context.Background(), candidate.ID, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Check(context.Background()); err != nil {
