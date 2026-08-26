@@ -579,7 +579,9 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 	return projectedRunOutcome(journal, options.StateDir, hash, options.RunID, "", nil)
 }
 
-// provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。
+// provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。能力
+// 卡声明的 usage 与 stop reason 合同随适配器下发，由 Provider 层在每次流结束
+// 时失败关闭校验；显式生成参数原样透传，不在此层引入默认值。
 func (service Service) provider(configuration config.Config) (ports.Provider, error) {
 	if service.NewProvider != nil {
 		return service.NewProvider(configuration)
@@ -591,7 +593,38 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	if err != nil {
 		return nil, err
 	}
-	return openaicompat.Client{BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv), HTTPClient: &http.Client{Timeout: timeout}}, nil
+	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, capabilityDeclarationFromConfig(configuration))
+	if err != nil {
+		return nil, fmt.Errorf("resolve provider card for stream requirements: %w", err)
+	}
+	client := openaicompat.Client{
+		BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+		HTTPClient: &http.Client{Timeout: timeout},
+		Requirements: openaicompat.Requirements{
+			RequireUsage:       card.StreamingUsage,
+			AllowedStopReasons: append([]string(nil), card.StopReasons...),
+		},
+	}
+	if generation := configuration.Provider.Generation; generation != nil {
+		client.Generation = &openaicompat.GenerationOptions{
+			MaxOutputTokens: generation.MaxOutputTokens, TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli: generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+		}
+	}
+	return client, nil
+}
+
+// capabilityDeclarationFromConfig 把配置层能力声明投影为合同层声明输入。
+func capabilityDeclarationFromConfig(configuration config.Config) *contract.ProviderCapabilityDeclaration {
+	capability := configuration.Provider.Capability
+	if capability == nil {
+		return nil
+	}
+	return &contract.ProviderCapabilityDeclaration{
+		ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
+		ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
+		StopReasons: capability.StopReasons,
+	}
 }
 
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。

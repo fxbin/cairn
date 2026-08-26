@@ -2,7 +2,9 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,5 +167,96 @@ func TestRetryDelayCapsServerProvidedWait(t *testing.T) {
 	}
 	if got := retryDelay(0, 1); got != 200*time.Millisecond {
 		t.Fatalf("retryDelay(0, 1) = %v, want 200ms", got)
+	}
+}
+
+// TestContractSerializesExplicitGenerationAndOmitsUnsupported 锁定生成参数的
+// 线协议合同：显式值进入载荷（temperature=0 也不缺席），unsupported 字段整
+// 键缺席，reasoning_effort=off 表达为字段省略；越界值在拨号前失败关闭。
+func TestContractSerializesExplicitGenerationAndOmitsUnsupported(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		captured = body
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	temperature := 0
+	client := Client{BaseURL: server.URL, Generation: &GenerationOptions{
+		MaxOutputTokens: 4096, TemperatureMilli: &temperature, ToolChoice: "auto",
+	}}
+	if err := client.Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(captured, &payload); err != nil {
+		t.Fatalf("decode captured payload: %v", err)
+	}
+	for key, want := range map[string]any{"max_tokens": float64(4096), "temperature": float64(0), "tool_choice": "auto"} {
+		got, present := payload[key]
+		if !present || got != want {
+			t.Fatalf("payload[%q] = %v (present=%v), want %v", key, got, present, want)
+		}
+	}
+	for _, absent := range []string{"top_p", "reasoning_effort"} {
+		if _, present := payload[absent]; present {
+			t.Fatalf("unsupported field %q must be omitted from the wire payload", absent)
+		}
+	}
+	badTemperature := 2001
+	rejecting := Client{BaseURL: server.URL, Generation: &GenerationOptions{TemperatureMilli: &badTemperature}}
+	requestsBefore := len(payload)
+	_ = requestsBefore
+	err := rejecting.Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	var providerError *ProviderError
+	if !errors.As(err, &providerError) || providerError.Kind != "invalid_request" {
+		t.Fatalf("out-of-contract generation must fail as invalid_request before dialing, got %v", err)
+	}
+}
+
+// TestContractFailsClosedOnMissingUsage 验证声明流式 usage 的提供方在流结束
+// 未回 usage 时按响应合同漂移失败关闭。
+func TestContractFailsClosedOnMissingUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	client := Client{BaseURL: server.URL, Requirements: Requirements{RequireUsage: true, AllowedStopReasons: []string{"stop"}}}
+	err := client.Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	if !strings.Contains(err.Error(), "without usage") {
+		t.Fatalf("missing usage must fail closed, got %v", err)
+	}
+}
+
+// TestContractFailsClosedOnUndeclaredStopReason 覆盖两种 stop reason 漂移：
+// 声明集合外的取值与完全缺失的 finish reason 都必须在 Provider 层被拒。
+func TestContractFailsClosedOnUndeclaredStopReason(t *testing.T) {
+	writeStream := func(finish string) http.HandlerFunc {
+		return func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			frame := "{\"choices\":[{\"delta\":{\"content\":\"x\"}"
+			if finish != "" {
+				frame += ",\"finish_reason\":\"" + finish + "\""
+			}
+			frame += "}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}"
+			_, _ = writer.Write([]byte("data: " + frame + "\n\n"))
+			_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+		}
+	}
+	server := httptest.NewServer(writeStream("weird_stop"))
+	defer server.Close()
+	undeclared := Client{BaseURL: server.URL, Requirements: Requirements{AllowedStopReasons: []string{"stop", "length"}}}
+	if err := undeclared.Stream(context.Background(), ports.ModelRequest{Model: "m"}, func(ports.ModelEvent) error { return nil }); err == nil || !strings.Contains(err.Error(), "undeclared finish reason") {
+		t.Fatalf("undeclared reason must fail closed, got %v", err)
+	}
+	noFinishServer := httptest.NewServer(writeStream(""))
+	defer noFinishServer.Close()
+	missing := Client{BaseURL: noFinishServer.URL, Requirements: Requirements{RequireUsage: true, AllowedStopReasons: []string{"stop"}}}
+	if err := missing.Stream(context.Background(), ports.ModelRequest{Model: "m"}, func(ports.ModelEvent) error { return nil }); err == nil || !strings.Contains(err.Error(), "without a finish reason") {
+		t.Fatalf("missing finish reason must fail closed, got %v", err)
 	}
 }

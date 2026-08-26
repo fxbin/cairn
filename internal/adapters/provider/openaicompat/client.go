@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -23,6 +24,110 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	HTTPClient *http.Client
+	// Generation 携带显式生成参数；nil 表示整块未声明（全部 unsupported），
+	// 请求载荷不会出现任何采样字段。
+	Generation *GenerationOptions
+	// Requirements 是由能力卡推导的响应合同要求：声明 streaming_usage 的
+	// 提供方若不返回 usage、或 Done 携带未声明的 stop reason，都属于响应
+	// 合同漂移，必须在 Provider 层失败关闭。
+	Requirements Requirements
+}
+
+// GenerationOptions 是进入 Chat Completions 载荷的显式生成参数：仅显式值会
+// 被序列化，指针与空串表达 unsupported；Milli 整数是配置与指纹的唯一形态，
+// 浮点换算只发生在本层 wire 序列化边界。
+type GenerationOptions struct {
+	MaxOutputTokens  int
+	TemperatureMilli *int
+	TopPMilli        *int
+	ReasoningEffort  string
+	ToolChoice       string
+}
+
+// Requirements 是 Provider 层的响应闭合合同。
+type Requirements struct {
+	// RequireUsage 要求每次成功完成的流必须携带 usage 统计。
+	RequireUsage bool
+	// AllowedStopReasons 为空时不做 stop reason 校验；非空时 Done 必须携带
+	// 集合内的原因且不允许缺失。
+	AllowedStopReasons []string
+}
+
+// generationWireTemperatureDivisor 把 Milli 整数换算为线协议浮点温度/top_p。
+const generationWireTemperatureDivisor = 1000.0
+
+// applyGeneration 把显式生成参数写入线协议载荷：Milli 换算为浮点只在此处发
+// 生；reasoning_effort=off 表示明确声明不使用推理档，线协议省略该字段；
+// unsupported 字段一律不出现在载荷中。
+func applyGeneration(target *chatRequest, options *GenerationOptions) error {
+	if options == nil {
+		return nil
+	}
+	if options.MaxOutputTokens > 0 {
+		tokens := options.MaxOutputTokens
+		target.MaxTokens = &tokens
+	}
+	if options.TemperatureMilli != nil {
+		if err := validateRange("temperature_milli", *options.TemperatureMilli, 0, contract.GenerationTempMaxMilli); err != nil {
+			return err
+		}
+		value := float64(*options.TemperatureMilli) / generationWireTemperatureDivisor
+		target.Temperature = &value
+	}
+	if options.TopPMilli != nil {
+		if err := validateRange("top_p_milli", *options.TopPMilli, contract.GenerationTopPMinMilli, contract.GenerationTopPMaxMilli); err != nil {
+			return err
+		}
+		value := float64(*options.TopPMilli) / generationWireTemperatureDivisor
+		target.TopP = &value
+	}
+	switch options.ReasoningEffort {
+	case "":
+	case contract.ReasoningEffortOff:
+		// off 属于显式决策而非缺省：指纹与 Resolution 记录 off，线协议无
+		// 对应取值，故省略字段本身即该决策的表达形式。
+	case contract.ReasoningEffortLow, contract.ReasoningEffortMedium, contract.ReasoningEffortHigh:
+		target.ReasoningEffort = options.ReasoningEffort
+	default:
+		return fmt.Errorf("unknown reasoning_effort %q", options.ReasoningEffort)
+	}
+	switch options.ToolChoice {
+	case "":
+	case contract.GenerationToolChoiceAuto:
+		target.ToolChoice = options.ToolChoice
+	default:
+		return fmt.Errorf("unknown tool_choice %q", options.ToolChoice)
+	}
+	return nil
+}
+
+// validateRange 报告 Milli 参数越界；适配器在发起请求前拒绝越界输入，
+// 与 config 与 contract 层构成三重失败关闭。
+func validateRange(name string, value, minimum, maximum int) error {
+	if value < minimum || value > maximum {
+		return fmt.Errorf("%s %d outside supported range [%d,%d]", name, value, minimum, maximum)
+	}
+	return nil
+}
+
+// checkStreamContract 在一次流成功完成后核对响应闭合合同：usage 缺失或
+// stop reason 缺失/未声明都按 invalid_response 失败关闭，不做重试。
+func (client Client) checkStreamContract(usageSeen bool, stopReason string) error {
+	if client.Requirements.RequireUsage && !usageSeen {
+		return &ProviderError{Kind: "invalid_response", Cause: errors.New("provider stream ended without usage")}
+	}
+	if len(client.Requirements.AllowedStopReasons) == 0 {
+		return nil
+	}
+	if stopReason == "" {
+		return &ProviderError{Kind: "invalid_response", Cause: errors.New("provider stream ended without a finish reason")}
+	}
+	for _, allowed := range client.Requirements.AllowedStopReasons {
+		if allowed == stopReason {
+			return nil
+		}
+	}
+	return &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("undeclared finish reason %q", stopReason)}
 }
 
 // ProviderError 保留提供方失败分类、HTTP 状态、重试信息与原始原因。
@@ -51,7 +156,8 @@ func (err *ProviderError) ErrorClass() string { return err.Kind }
 // IsRetryable 报告失败是否属于瞬态可重试类别，实现 ports.ClassifiedError。
 func (err *ProviderError) IsRetryable() bool { return err.Retryable }
 
-// Stream 以最多三次无语义输出的可重试请求转发模型流事件。
+// Stream 以最多三次无语义输出的可重试请求转发模型流事件；显式生成参数在
+// 构造载荷阶段即被校验，越界或未知枚举在发起网络请求前失败关闭。
 func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	if emit == nil {
 		return errors.New("provider emit callback is required")
@@ -60,13 +166,31 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 	if err != nil {
 		return &ProviderError{Kind: "invalid_request", Cause: err}
 	}
-	body, err := json.Marshal(chatRequest{Model: request.Model, Messages: toOpenAIMessages(request.Messages), Tools: toOpenAITools(request.Tools), Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}})
+	payload := chatRequest{Model: request.Model, Messages: toOpenAIMessages(request.Messages), Tools: toOpenAITools(request.Tools), Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}}
+	if err := applyGeneration(&payload, client.Generation); err != nil {
+		return &ProviderError{Kind: "invalid_request", Cause: err}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return &ProviderError{Kind: "invalid_request", Cause: err}
 	}
+	usageSeen := false
+	stopReason := ""
+	wrapped := func(event ports.ModelEvent) error {
+		switch event.Kind {
+		case ports.UsageEvent:
+			usageSeen = true
+		case ports.Done:
+			stopReason = event.StopReason
+		}
+		return emit(event)
+	}
 	for attempt := 0; attempt < 3; attempt++ {
-		semantic, err := client.streamOnce(ctx, endpoint, body, emit)
+		semantic, err := client.streamOnce(ctx, endpoint, body, wrapped)
 		if err == nil {
+			if err := client.checkStreamContract(usageSeen, stopReason); err != nil {
+				return err
+			}
 			return nil
 		}
 		var providerError *ProviderError
@@ -271,13 +395,20 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 	return nil
 }
 
-// chatRequest 是 OpenAI-compatible Chat Completions 的流式请求载荷。
+// chatRequest 是 OpenAI-compatible Chat Completions 的流式请求载荷；生成参
+// 数字段全部为指针/条件赋值，unsupported 时键整体缺席，显式零值（如
+// temperature=0）仍会被序列化。
 type chatRequest struct {
-	Model         string          `json:"model"`
-	Messages      []openAIMessage `json:"messages"`
-	Tools         []openAITool    `json:"tools,omitempty"`
-	Stream        bool            `json:"stream"`
-	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
+	Model           string          `json:"model"`
+	Messages        []openAIMessage `json:"messages"`
+	Tools           []openAITool    `json:"tools,omitempty"`
+	Stream          bool            `json:"stream"`
+	StreamOptions   *streamOptions  `json:"stream_options,omitempty"`
+	MaxTokens       *int            `json:"max_tokens,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	ToolChoice      string          `json:"tool_choice,omitempty"`
 }
 
 // openAIMessage 是提供方 API 中的单条会话消息。
