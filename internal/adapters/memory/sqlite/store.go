@@ -49,6 +49,9 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("secure memory directory: %w", err)
 	}
+	if err := preflightWritablePath(path); err != nil {
+		return nil, err
+	}
 	if err := preflightLegacyV2(context.Background(), path); err != nil {
 		return nil, err
 	}
@@ -116,10 +119,26 @@ func OpenReadOnly(path string) (*Store, error) {
 	return &Store{db: db, now: time.Now}, nil
 }
 
+// preflightWritablePath 在父目录已私有化后拒绝末端链接和非常规文件，确保后续的
+// legacy 预检与 SQLite 打开不会跟随它们。不存在的末端路径保留给 SQLite 创建。
+func preflightWritablePath(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lstat writable memory SQLite: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("writable memory SQLite must be a non-symlink regular file")
+	}
+	return nil
+}
+
 // preflightLegacyV2 在只读不可变连接中检查既有数据库的物理 schema 版本。它用
-// Stat 跟随末端符号链接至物理目标；仅当版本为 v2 时，先验证 v1/v2 迁移摘要，随后
-// 拒绝含巩固事实的历史库。该函数不会开启事务、配置 journal_mode、执行 DDL 或修改
-// 数据库文件。
+// Stat 读取调用方已验证为普通文件的物理目标；仅当版本为 v2 时，先验证 v1/v2
+// 迁移摘要，随后拒绝含巩固事实的历史库。该函数不会开启事务、配置 journal_mode、
+// 执行 DDL 或修改数据库文件。
 func preflightLegacyV2(ctx context.Context, path string) error {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {

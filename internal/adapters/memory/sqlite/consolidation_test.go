@@ -447,7 +447,7 @@ func TestMigrationRejectsPersistentV2(t *testing.T) {
 		}
 	})
 
-	t.Run("write open follows symlink to reject physical v2 without writes", func(t *testing.T) {
+	t.Run("write open rejects terminal symlink without following physical v2", func(t *testing.T) {
 		path := copyPersistentV2Fixture(t)
 		linkPath := filepath.Join(filepath.Dir(path), "memory-v2-link.db")
 		if err := os.Symlink(path, linkPath); err != nil {
@@ -462,8 +462,15 @@ func TestMigrationRejectsPersistentV2(t *testing.T) {
 			store.Close()
 			t.Fatal("symlinked authenticated legacy v2 consolidation database must be rejected")
 		}
-		if !errors.Is(err, ErrLegacyV2ConsolidationIncompatible) {
-			t.Fatalf("symlinked open error = %v, want legacy v2 incompatible sentinel", err)
+		if errors.Is(err, ErrLegacyV2ConsolidationIncompatible) {
+			t.Fatalf("symlinked open followed legacy v2 target: %v", err)
+		}
+		info, lstatErr := os.Lstat(linkPath)
+		if lstatErr != nil {
+			t.Fatalf("lstat terminal link: %v", lstatErr)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("terminal link changed: mode=%v", info.Mode())
 		}
 		assertPersistentFixtureUnchanged(t, path, before, true)
 	})

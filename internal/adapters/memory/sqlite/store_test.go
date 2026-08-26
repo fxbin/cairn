@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -223,6 +224,111 @@ func TestStoreMigrationPermissionsAndReadOnlyMode(t *testing.T) {
 	if _, err := Open(futurePath); err == nil {
 		t.Fatal("future schema version unexpectedly opened")
 	}
+}
+
+// TestOpenRejectsTerminalSymlinkWithoutFollowingOrCreatingTarget 锁定可写入口
+// 在私有化父目录后、所有 SQLite 打开前拒绝末端链接，既不创建悬空目标也不修改既有
+// 目标数据库。
+func TestOpenRejectsTerminalSymlinkWithoutFollowingOrCreatingTarget(t *testing.T) {
+	t.Run("dangling target remains absent", func(t *testing.T) {
+		root := t.TempDir()
+		directory := filepath.Join(root, "state")
+		target := filepath.Join(root, "outside", "memory.db")
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		linkPath := filepath.Join(directory, "memory.db")
+		if err := os.Symlink(target, linkPath); err != nil {
+			t.Fatal(err)
+		}
+		if store, err := Open(linkPath); err == nil || store != nil {
+			if store != nil {
+				_ = store.Close()
+			}
+			t.Fatalf("dangling terminal symlink opened writable: store=%v err=%v", store, err)
+		}
+		if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("dangling symlink target changed: %v", err)
+		}
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("lstat terminal link: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("terminal link changed: mode=%v", info.Mode())
+		}
+		directoryInfo, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("stat memory directory: %v", err)
+		}
+		if directoryInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("memory directory permissions=%v", directoryInfo.Mode().Perm())
+		}
+	})
+
+	t.Run("existing SQLite target remains unchanged", func(t *testing.T) {
+		root := t.TempDir()
+		targetDirectory := filepath.Join(root, "outside")
+		target := filepath.Join(targetDirectory, "memory.db")
+		store, err := Open(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		beforeBytes, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeInfo, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeDirectory := directorySnapshot(t, targetDirectory)
+		directory := filepath.Join(root, "state")
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		linkPath := filepath.Join(directory, "memory.db")
+		if err := os.Symlink(target, linkPath); err != nil {
+			t.Fatal(err)
+		}
+		if store, err := Open(linkPath); err == nil || store != nil {
+			if store != nil {
+				_ = store.Close()
+			}
+			t.Fatalf("terminal symlink opened writable: store=%v err=%v", store, err)
+		}
+		afterBytes, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(beforeBytes, afterBytes) {
+			t.Fatal("rejected writable symlink changed SQLite target bytes")
+		}
+		afterInfo, err := os.Stat(target)
+		if err != nil || afterInfo.Mode().Perm() != beforeInfo.Mode().Perm() {
+			t.Fatalf("rejected writable symlink changed SQLite target permissions: before=%v after=%v err=%v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm(), err)
+		}
+		if afterDirectory := directorySnapshot(t, targetDirectory); !reflect.DeepEqual(beforeDirectory, afterDirectory) {
+			t.Fatalf("rejected writable symlink changed SQLite target directory: before=%v after=%v", beforeDirectory, afterDirectory)
+		}
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Fatalf("lstat terminal link: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("terminal link changed: mode=%v", info.Mode())
+		}
+		directoryInfo, err := os.Stat(directory)
+		if err != nil {
+			t.Fatalf("stat memory directory: %v", err)
+		}
+		if directoryInfo.Mode().Perm() != 0o700 {
+			t.Fatalf("memory directory permissions=%v", directoryInfo.Mode().Perm())
+		}
+	})
 }
 
 // TestOpenReadOnlyRejectsUnsafePathsWithoutRepair 锁定只读入口会拒绝权限放宽、
