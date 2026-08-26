@@ -200,7 +200,12 @@ func (store *Store) InvalidateEvolutionCandidateForInactiveSource(ctx context.Co
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	sourceInactive := !sourceFound || sourceVersion.Status != memory.DerivedStatusActive || !sourceVersion.ExpiresAt.After(now)
+	// 来源行缺失是数据损坏而非合法失效：作废不得把删除行"洗白"为终态，
+	// 必须留给 ErrStateCorrupt 的完整跨库校验强制调查。
+	if !sourceFound {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s source version row is missing", candidateID)
+	}
+	sourceInactive := sourceVersion.Status != memory.DerivedStatusActive || !sourceVersion.ExpiresAt.After(now)
 	if !sourceInactive {
 		return memory.EvolutionCandidate{}, errors.New("evolution candidate cannot be invalidated while its source version is still active")
 	}

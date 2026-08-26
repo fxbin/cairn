@@ -184,6 +184,9 @@ func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options
 }
 
 // ExpireEvolutionCandidate 在工作区锁内把保留期耗尽的候选显式置为 expired。
+// 语义不对称说明：来源派生版本先于候选自然过期时，本用例的前置全库校验会
+// 因"来源过期"失败关闭——该场景的唯一修复路径是 InvalidateEvolutionCandidate
+// 的受限作废（其资格条件覆盖来源过期），本用例不复制该例外。
 func (service Service) ExpireEvolutionCandidate(ctx context.Context, options MemoryEvolutionActionOptions) (memory.EvolutionCandidate, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {

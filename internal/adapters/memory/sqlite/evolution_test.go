@@ -101,6 +101,64 @@ func TestEvolutionExpireTransitionPermitsAndCloses(t *testing.T) {
 	}
 }
 
+// TestEvolutionInvalidationClosedForMissingSourceRow 锁定 R1 语义：来源行被
+// 删除属数据损坏，受限作废必须失败关闭而不是把损坏洗白为终态。
+func TestEvolutionInvalidationClosedForMissingSourceRow(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DELETE FROM derived_evidence WHERE derived_id = ?", candidate.Source.DerivedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DELETE FROM derived_audit_log WHERE derived_id = ?", candidate.Source.DerivedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "DELETE FROM derived_candidates WHERE id = ? AND consolidation_id = ?", candidate.Source.DerivedID, candidate.Source.ConsolidationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InvalidateEvolutionCandidateForInactiveSource(context.Background(), candidate.ID, now.Add(time.Minute)); err == nil {
+		t.Fatal("missing source row must fail closed instead of laundering corruption")
+	}
+	inspected, err := store.InspectEvolutionCandidate(context.Background(), candidate.ID)
+	if err != nil || inspected.Candidate.Status != memory.CandidateStateDraft {
+		t.Fatalf("candidate must stay draft after refused invalidation: %#v err=%v", inspected, err)
+	}
+}
+
+// TestEvolutionCheckRejectsCooldownTampering 锁定冷却截止一致性负例：
+// 冷却截止早于拒绝审计时间的库必须失败关闭。
+func TestEvolutionCheckRejectsCooldownTampering(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RejectEvolutionCandidate(context.Background(), candidate.ID, memory.RejectReasonHumanRequest, now.Add(time.Minute), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_cooldowns SET cooldown_until = ? WHERE source_derived_id = ? AND source_consolidation_id = ?",
+		now.Add(-24*time.Hour).UTC().Format(time.RFC3339Nano), candidate.Source.DerivedID, candidate.Source.ConsolidationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Check(context.Background()); err == nil {
+		t.Fatal("cooldown deadline before rejection audit must fail Check")
+	}
+}
+
+// TestEvolutionCreateConflictsOnDifferentTTL 锁定 TTL 差值参与幂等等价：
+// 同标识但不同保留期的重建必须冲突，而不是静默吞掉保留期事实。
+func TestEvolutionCreateConflictsOnDifferentTTL(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	variant := candidate
+	variant.ExpiresAt = variant.CreatedAt.Add(memory.DefaultCandidateTTL + 24*time.Hour)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), variant, now); err == nil {
+		t.Fatal("same identity with a different retention period must conflict")
+	}
+}
+
 // evolutionHex 生成测试用 sha256 形式十六进制摘要。
 func evolutionHex(seed int) string {
 	const hexChars = "0123456789abcdef"
@@ -293,19 +351,20 @@ func TestEvolutionExpireRequiresDeadlineReached(t *testing.T) {
 }
 
 // TestEvolutionRejectReadBackFailureLeavesNoResidue 锁定拒绝路径的读回
-// 零残留：审计读回比对被触发器注入失败后，状态与冷却全部回滚。
+// 零残留：触发器静默吞掉状态更新（RAISE IGNORE），使事务后的状态读回
+// 捕获不一致并整体回滚，审计与冷却行全部零残留。
 func TestEvolutionRejectReadBackFailureLeavesNoResidue(t *testing.T) {
 	store, candidate, now := evolutionFixture(t)
 	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(context.Background(), `CREATE TEMP TRIGGER duplicate_reject_audit BEFORE INSERT ON evolution_audit_log WHEN NEW.action = 'rejected' BEGIN INSERT INTO evolution_audit_log(candidate_id, action, reason, occurred_at) VALUES (NEW.candidate_id, NEW.action, NEW.reason, NEW.occurred_at); SELECT RAISE(ABORT, 'injected duplicate'); END`); err != nil {
+	if _, err := store.db.ExecContext(context.Background(), `CREATE TEMP TRIGGER swallow_reject_status BEFORE UPDATE ON evolution_candidates WHEN NEW.status = 'rejected' BEGIN SELECT RAISE(IGNORE); END`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RejectEvolutionCandidate(context.Background(), candidate.ID, memory.RejectReasonHumanRequest, now.Add(time.Minute), 0); err == nil {
-		t.Fatal("read-back mismatch must roll back rejection")
+		t.Fatal("swallowed status update must fail the read-back and roll back rejection")
 	}
-	if _, err := store.db.ExecContext(context.Background(), "DROP TRIGGER duplicate_reject_audit"); err != nil {
+	if _, err := store.db.ExecContext(context.Background(), "DROP TRIGGER swallow_reject_status"); err != nil {
 		t.Fatal(err)
 	}
 	inspected, err := store.InspectEvolutionCandidate(context.Background(), candidate.ID)
