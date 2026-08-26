@@ -188,10 +188,10 @@ func (command Command) benchmark(ctx context.Context, arguments []string) int {
 }
 
 // memory 分派受限可信记忆控制面命令。它只暴露 capture、recall、explain、inspect、revoke、
-// consolidate、reject 七个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
+// consolidate、reject、candidate 八个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
 func (command Command) memory(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, or reject")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, or candidate")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -212,16 +212,17 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 	case "candidate":
 		return command.memoryCandidate(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, or reject")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, or candidate")
 		return ExitUsage
 	}
 }
 
 // memoryCandidate 分派演化候选的固定动作：创建必须由人工显式提供闭合变体
-// 参数；拒绝使用封闭理由；解释只读。不存在任何自动生成入口。
+// 参数；拒绝使用封闭理由；作废与过期为显式终态迁移；解释只读。不存在任何
+// 自动生成候选、评测或晋升入口。
 func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -231,10 +232,12 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 		return command.memoryCandidateReject(ctx, arguments[1:])
 	case "invalidate":
 		return command.memoryCandidateInvalidate(ctx, arguments[1:])
+	case "expire":
+		return command.memoryCandidateExpire(ctx, arguments[1:])
 	case "inspect":
 		return command.memoryCandidateInspect(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 }
@@ -371,6 +374,34 @@ func (command Command) memoryCandidateInvalidate(ctx context.Context, arguments 
 		return exitFor(err)
 	}
 	fmt.Fprintf(command.Stdout, "invalidated: %s status=%s\n", candidate.ID, candidate.Status)
+	return ExitOK
+}
+
+// memoryCandidateExpire 显式把保留期耗尽的演化候选置为 expired 终态。
+func (command Command) memoryCandidateExpire(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate expire", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "memory candidate expire requires a candidate ID")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	candidate, err := command.Service.ExpireEvolutionCandidate(ctx, app.MemoryEvolutionActionOptions{CandidateID: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate expire failed:", err)
+		return exitFor(err)
+	}
+	fmt.Fprintf(command.Stdout, "expired: %s status=%s\n", candidate.ID, candidate.Status)
 	return ExitOK
 }
 
@@ -1325,6 +1356,8 @@ Usage:
   cairn memory reject --reason insufficient_evidence|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] <derived-id>
   cairn memory candidate create --source-derived <id> --source-consolidation <id> --baseline-fingerprint <sha256> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory candidate reject --reason insufficient_evidence|evaluation_failed|safety_violation|inconclusive_limit|human_request [--cooldown <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
+  cairn memory candidate invalidate [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
+  cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
 

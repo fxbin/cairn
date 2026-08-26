@@ -58,6 +58,49 @@ func evolutionFixture(t *testing.T) (*Store, memory.EvolutionCandidate, time.Tim
 	return store, candidate, now
 }
 
+// TestEvolutionOrphanCooldownBlocksCreation 直接钉住冷却门的纵深防御语义：
+// 即使候选唯一键与终态不复活规则被未来放宽，孤立冷却行仍必须阻断同键重建。
+func TestEvolutionOrphanCooldownBlocksCreation(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	fingerprint, err := memory.VariantFingerprint(memory.TargetKindContextCompactionParams, memory.CompactionParamsVariant{
+		SchemaVersion: memory.EvolutionSchemaVersion, MaxPromptTokens: 50_000, MaxSummaryBytes: 16_384,
+		InventoryBudgetPercent: 25, ThresholdReservePercent: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `INSERT INTO evolution_cooldowns(
+		source_derived_id, source_consolidation_id, target_kind, variant_fingerprint, cooldown_until
+	) VALUES (?, ?, ?, ?, ?)`,
+		candidate.Source.DerivedID, candidate.Source.ConsolidationID, candidate.TargetKind, fingerprint,
+		now.Add(memory.DefaultCooldown).UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err == nil {
+		t.Fatal("orphan cooldown row must block creation via the cooldown gate")
+	}
+}
+
+// TestEvolutionExpireTransitionPermitsAndCloses 锁定过期迁移：draft 可显式过期、
+// 幂等重入、过期后审计与 Check 全部一致。
+func TestEvolutionExpireTransitionPermitsAndCloses(t *testing.T) {
+	store, candidate, now := evolutionFixture(t)
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, now.Add(time.Minute))
+	if err != nil || expired.Status != memory.CandidateStateExpired {
+		t.Fatalf("expire = %#v err = %v", expired, err)
+	}
+	repeat, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, now.Add(2*time.Minute))
+	if err != nil || repeat.Status != memory.CandidateStateExpired {
+		t.Fatalf("idempotent expire = %#v err = %v", repeat, err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // evolutionHex 生成测试用 sha256 形式十六进制摘要。
 func evolutionHex(seed int) string {
 	const hexChars = "0123456789abcdef"

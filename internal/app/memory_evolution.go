@@ -176,6 +176,35 @@ func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options
 	return store.InvalidateEvolutionCandidate(ctx, options.CandidateID, time.Now().UTC())
 }
 
+// ExpireEvolutionCandidate 在工作区锁内把保留期耗尽的候选显式置为 expired。
+func (service Service) ExpireEvolutionCandidate(ctx context.Context, options MemoryEvolutionActionOptions) (memory.EvolutionCandidate, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	inspected, err := store.InspectEvolutionCandidate(ctx, options.CandidateID)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if inspected.Candidate.WorkspaceHash != workspaceHash {
+		return memory.EvolutionCandidate{}, memory.ErrNotFound
+	}
+	return store.ExpireEvolutionCandidate(ctx, options.CandidateID, time.Now().UTC())
+}
+
 // InspectEvolutionCandidate 只读返回候选与审计历史；跨工作区失败关闭。
 func (service Service) InspectEvolutionCandidate(ctx context.Context, options MemoryEvolutionInspectOptions) (memorysqlite.EvolutionInspectResult, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)

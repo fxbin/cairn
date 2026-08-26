@@ -195,36 +195,6 @@ func (store *Store) transitionEvolutionCandidate(ctx context.Context, candidateI
 	return candidate, nil
 }
 
-// ListEvolutionCandidates 返回全部演化候选供诊断与校验；不做状态过滤。
-func (store *Store) ListEvolutionCandidates(ctx context.Context) ([]memory.EvolutionCandidate, error) {
-	rows, err := store.db.QueryContext(ctx, evolutionCandidateSelect+" ORDER BY id ASC")
-	if err != nil {
-		return nil, fmt.Errorf("list evolution candidates: %w", err)
-	}
-	var candidates []memory.EvolutionCandidate
-	for rows.Next() {
-		candidate, err := scanEvolutionCandidate(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("iterate evolution candidates: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close evolution candidate rows: %w", err)
-	}
-	for index := range candidates {
-		if err := candidates[index].Validate(); err != nil {
-			return nil, fmt.Errorf("validate evolution candidate: %w", err)
-		}
-	}
-	return candidates, nil
-}
-
 // InspectEvolutionCandidate 返回候选与审计历史；不存在返回 ErrNotFound。
 func (store *Store) InspectEvolutionCandidate(ctx context.Context, candidateID string) (EvolutionInspectResult, error) {
 	candidate, found, err := lookupEvolutionCandidate(ctx, store.db, candidateID)
@@ -244,35 +214,9 @@ func (store *Store) InspectEvolutionCandidate(ctx context.Context, candidateID s
 	return EvolutionInspectResult{Candidate: candidate, Audit: audit}, nil
 }
 
-// ActiveEvolutionCooldown 在给定时刻返回冷却键的剩余冷却截止；未命中返回零值。
-func (store *Store) ActiveEvolutionCooldown(ctx context.Context, key memory.CooldownKey, now time.Time) (time.Time, error) {
-	if err := key.Validate(); err != nil {
-		return time.Time{}, err
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	var until string
-	err := store.db.QueryRowContext(ctx, `SELECT cooldown_until FROM evolution_cooldowns
-		WHERE source_derived_id = ? AND source_consolidation_id = ? AND target_kind = ? AND variant_fingerprint = ?`,
-		key.Source.DerivedID, key.Source.ConsolidationID, key.TargetKind, key.VariantFingerprint).Scan(&until)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, fmt.Errorf("query evolution cooldown: %w", err)
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, until)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse evolution cooldown: %w", err)
-	}
-	if !parsed.After(now) {
-		return time.Time{}, nil
-	}
-	return parsed, nil
-}
-
-// ensureNoActiveCooldown 在创建事务内拒绝冷却期内的候选重建。
+// ensureNoActiveCooldown 在创建事务内拒绝冷却期内的候选重建。同键重建在
+// 正常路径已先被候选唯一键与终态不复活规则永久阻断，本检查是纵深防御：
+// 防止未来终态语义被放宽后静默绕过冷却，也覆盖孤立冷却行等异常状态。
 func ensureNoActiveCooldown(ctx context.Context, transaction *sql.Tx, key memory.CooldownKey, now time.Time) error {
 	if err := key.Validate(); err != nil {
 		return err
@@ -390,6 +334,9 @@ func evolutionAuditFor(ctx context.Context, source queryerRows, candidateID stri
 // 创建时刻由首次写入的时钟锚定，同 ID 重试必然携带不同时钟，若参与比较会
 // 把幂等重试误判为事实冲突。
 func evolutionCandidateEquivalent(left, right memory.EvolutionCandidate) bool {
+	if left.ExpiresAt.Sub(left.CreatedAt) != right.ExpiresAt.Sub(right.CreatedAt) {
+		return false
+	}
 	return left.ID == right.ID && left.SchemaVersion == right.SchemaVersion && left.WorkspaceHash == right.WorkspaceHash &&
 		left.Source == right.Source && left.TargetKind == right.TargetKind && left.VariantSpecSHA256 == right.VariantSpecSHA256 &&
 		left.VariantFingerprint == right.VariantFingerprint && left.BaselineFingerprint == right.BaselineFingerprint &&

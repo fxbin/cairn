@@ -110,6 +110,16 @@ func TestEvolutionCandidateLifecycleClosedAtAppLevel(t *testing.T) {
 	if err != nil || len(inspected.Audit) != 2 {
 		t.Fatalf("inspect = %#v err = %v", inspected, err)
 	}
+	if _, err := service.ExpireEvolutionCandidate(context.Background(), MemoryEvolutionActionOptions{
+		CandidateID: created.ID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+	}); err == nil {
+		t.Fatal("rejected candidate must not transition into expired")
+	}
+	if _, err := service.InvalidateEvolutionCandidate(context.Background(), MemoryEvolutionActionOptions{
+		CandidateID: created.ID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+	}); err == nil {
+		t.Fatal("rejected candidate must not transition into invalidated")
+	}
 	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
 		t.Fatalf("doctor after evolution lifecycle: %v", err)
 	}
