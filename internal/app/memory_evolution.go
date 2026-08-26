@@ -51,7 +51,8 @@ type MemoryEvolutionInspectOptions struct {
 
 // CreateEvolutionCandidate 在工作区锁内创建一条 draft 演化候选：先做全库
 // 跨库验证，再复核来源派生版本存在、active、未过期且属于当前工作区，最后
-// 由变体参数确定性派生指纹并写入登记事务。缺少记忆库或来源失效即失败关闭。
+// 由变体参数确定性派生指纹并写入登记事务。提交后再运行与 Doctor 一致的
+// 只读验证；缺少记忆库或来源失效即失败关闭。
 func (service Service) CreateEvolutionCandidate(ctx context.Context, options MemoryEvolutionCreateOptions) (memory.EvolutionCandidate, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -111,11 +112,19 @@ func (service Service) CreateEvolutionCandidate(ctx context.Context, options Mem
 		Status:              memory.CandidateStateDraft,
 		NoteDigest:          options.NoteDigest,
 	}
-	return store.CreateEvolutionCandidate(ctx, candidate, now)
+	created, err := store.CreateEvolutionCandidate(ctx, candidate, now)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return created, nil
 }
 
 // RejectEvolutionCandidate 在工作区锁内以封闭理由拒绝候选并落入冷却；
-// 全库验证先行，跨工作区标识失败关闭。
+// 全库验证先行，跨工作区标识失败关闭；提交后再次完整验证，不向调用方返回
+// 不能由 Doctor 接受的持久状态。
 func (service Service) RejectEvolutionCandidate(ctx context.Context, options MemoryEvolutionActionOptions) (memory.EvolutionCandidate, error) {
 	if !memory.ValidEvolutionRejectionReason(options.Reason) {
 		return memory.EvolutionCandidate{}, errors.New("evolution rejection reason is invalid")
@@ -144,7 +153,14 @@ func (service Service) RejectEvolutionCandidate(ctx context.Context, options Mem
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
 		return memory.EvolutionCandidate{}, memory.ErrNotFound
 	}
-	return store.RejectEvolutionCandidate(ctx, options.CandidateID, options.Reason, time.Now().UTC(), options.Cooldown)
+	rejected, err := store.RejectEvolutionCandidate(ctx, options.CandidateID, options.Reason, time.Now().UTC(), options.Cooldown)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return rejected, nil
 }
 
 // InvalidateEvolutionCandidate 在工作区锁内执行受限原子作废：来源被合法替代
@@ -186,7 +202,8 @@ func (service Service) InvalidateEvolutionCandidate(ctx context.Context, options
 // ExpireEvolutionCandidate 在工作区锁内把保留期耗尽的候选显式置为 expired。
 // 语义不对称说明：来源派生版本先于候选自然过期时，本用例的前置全库校验会
 // 因"来源过期"失败关闭——该场景的唯一修复路径是 InvalidateEvolutionCandidate
-// 的受限作废（其资格条件覆盖来源过期），本用例不复制该例外。
+// 的受限作废（其资格条件覆盖来源过期），本用例不复制该例外。提交后再次
+// 完整验证，确保显式到期不会返回失真的持久状态。
 func (service Service) ExpireEvolutionCandidate(ctx context.Context, options MemoryEvolutionActionOptions) (memory.EvolutionCandidate, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -212,7 +229,14 @@ func (service Service) ExpireEvolutionCandidate(ctx context.Context, options Mem
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
 		return memory.EvolutionCandidate{}, memory.ErrNotFound
 	}
-	return store.ExpireEvolutionCandidate(ctx, options.CandidateID, time.Now().UTC())
+	expired, err := store.ExpireEvolutionCandidate(ctx, options.CandidateID, time.Now().UTC())
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.EvolutionCandidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return expired, nil
 }
 
 // InspectEvolutionCandidate 只读返回候选与审计历史；跨工作区失败关闭。

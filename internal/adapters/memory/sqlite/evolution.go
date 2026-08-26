@@ -44,6 +44,9 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 		return memory.EvolutionCandidate{}, fmt.Errorf("start evolution candidate creation: %w", err)
 	}
 	defer transaction.Rollback()
+	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
 	existing, found, err := lookupEvolutionCandidate(ctx, transaction, candidate.ID)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
@@ -53,7 +56,11 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 		if err != nil {
 			return memory.EvolutionCandidate{}, err
 		}
-		if existing.Status == memory.CandidateStateDraft && evolutionCandidateEquivalent(existing, candidate) && len(existingAudit) >= 1 && existingAudit[0].Action == memory.EvolutionAuditCreated {
+		if existing.Status == memory.CandidateStateDraft && evolutionCandidateIdempotentEquivalent(existing, candidate) && evolutionAuditMatches(existingAudit, []memory.EvolutionAuditEntry{{
+			CandidateID: candidate.ID,
+			Action:      memory.EvolutionAuditCreated,
+			OccurredAt:  existing.CreatedAt,
+		}}) {
 			if err := transaction.Commit(); err != nil {
 				return memory.EvolutionCandidate{}, fmt.Errorf("commit idempotent evolution candidate: %w", err)
 			}
@@ -79,8 +86,19 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 		return memory.EvolutionCandidate{}, err
 	}
 	readBack, found, err := lookupEvolutionCandidate(ctx, transaction, candidate.ID)
-	if err != nil || !found || !evolutionCandidateEquivalent(readBack, candidate) {
+	if err != nil || !found || !evolutionCandidateReadBackMatches(readBack, candidate) {
 		return memory.EvolutionCandidate{}, errors.New("evolution candidate read-back verification failed")
+	}
+	audit, err := evolutionAuditFor(ctx, transaction, candidate.ID)
+	if err != nil {
+		return memory.EvolutionCandidate{}, err
+	}
+	if !evolutionAuditMatches(audit, []memory.EvolutionAuditEntry{{
+		CandidateID: candidate.ID,
+		Action:      memory.EvolutionAuditCreated,
+		OccurredAt:  candidate.CreatedAt,
+	}}) {
+		return memory.EvolutionCandidate{}, errors.New("evolution creation audit read-back verification failed")
 	}
 	if err := transaction.Commit(); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("commit evolution candidate: %w", err)
@@ -88,8 +106,9 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 	return candidate, nil
 }
 
-// RejectEvolutionCandidate 将非终态候选按合法迁移置为 rejected，写入封闭理由
-// 审计并落一条冷却记录；同候选重复拒绝幂等返回且不重复落冷却。
+// RejectEvolutionCandidate 只将 draft 候选置为 rejected，写入封闭理由审计并
+// 落一条冷却记录；同候选重复拒绝幂等返回且不重复落冷却。它在事务中复核
+// 来源仍 active、未过期且同工作区，防止 Store 直连写入失真终态。
 func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, reason string, now time.Time, cooldown time.Duration) (memory.EvolutionCandidate, error) {
 	if !memory.ValidEvolutionRejectionReason(reason) {
 		return memory.EvolutionCandidate{}, errors.New("evolution rejection reason is invalid")
@@ -119,7 +138,10 @@ func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, r
 		}
 		return candidate, nil
 	}
-	if err := memory.ValidCandidateTransition(candidate.Status, memory.CandidateStateRejected); err != nil {
+	if candidate.Status != memory.CandidateStateDraft {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before rejection", candidateID)
+	}
+	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
 	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_candidates SET status = ? WHERE id = ?", memory.CandidateStateRejected, candidateID); err != nil {
@@ -139,14 +161,19 @@ func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, r
 		return memory.EvolutionCandidate{}, fmt.Errorf("record evolution cooldown: %w", err)
 	}
 	readBack, readBackFound, err := lookupEvolutionCandidate(ctx, transaction, candidateID)
-	if err != nil || !readBackFound || readBack.Status != memory.CandidateStateRejected {
+	expected := candidate
+	expected.Status = memory.CandidateStateRejected
+	if err != nil || !readBackFound || !evolutionCandidateReadBackMatches(readBack, expected) {
 		return memory.EvolutionCandidate{}, errors.New("evolution rejection read-back verification failed")
 	}
 	audit, err := evolutionAuditFor(ctx, transaction, candidateID)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	if len(audit) < 2 || audit[len(audit)-1].Action != memory.EvolutionAuditRejected || audit[len(audit)-1].Reason != reason || !audit[len(audit)-1].OccurredAt.Equal(now) {
+	if !evolutionAuditMatches(audit, []memory.EvolutionAuditEntry{
+		{CandidateID: candidateID, Action: memory.EvolutionAuditCreated, OccurredAt: candidate.CreatedAt},
+		{CandidateID: candidateID, Action: memory.EvolutionAuditRejected, Reason: reason, OccurredAt: now},
+	}) {
 		return memory.EvolutionCandidate{}, errors.New("evolution rejection audit read-back verification failed")
 	}
 	var storedUntil string
@@ -159,7 +186,6 @@ func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, r
 	if err != nil || !parsedUntil.Equal(cooldownUntil) {
 		return memory.EvolutionCandidate{}, errors.New("evolution cooldown read-back verification failed")
 	}
-	readBack.Status = memory.CandidateStateRejected
 	if err := transaction.Commit(); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("commit evolution rejection: %w", err)
 	}
@@ -193,21 +219,11 @@ func (store *Store) InvalidateEvolutionCandidateForInactiveSource(ctx context.Co
 		}
 		return candidate, nil
 	}
-	if err := memory.ValidCandidateTransition(candidate.Status, memory.CandidateStateInvalidated); err != nil {
+	if candidate.Status != memory.CandidateStateDraft {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before invalidation", candidateID)
+	}
+	if err := requireEvolutionSourceInactive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
-	}
-	sourceVersion, sourceFound, err := lookupDerivedVersionExact(ctx, transaction, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
-	if err != nil {
-		return memory.EvolutionCandidate{}, err
-	}
-	// 来源行缺失是数据损坏而非合法失效：作废不得把删除行"洗白"为终态，
-	// 必须留给 ErrStateCorrupt 的完整跨库校验强制调查。
-	if !sourceFound {
-		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s source version row is missing", candidateID)
-	}
-	sourceInactive := sourceVersion.Status != memory.DerivedStatusActive || !sourceVersion.ExpiresAt.After(now)
-	if !sourceInactive {
-		return memory.EvolutionCandidate{}, errors.New("evolution candidate cannot be invalidated while its source version is still active")
 	}
 	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_candidates SET status = ? WHERE id = ?", memory.CandidateStateInvalidated, candidateID); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("invalidate evolution candidate: %w", err)
@@ -216,17 +232,21 @@ func (store *Store) InvalidateEvolutionCandidateForInactiveSource(ctx context.Co
 		return memory.EvolutionCandidate{}, err
 	}
 	readBack, readBackFound, err := lookupEvolutionCandidate(ctx, transaction, candidateID)
-	if err != nil || !readBackFound || readBack.Status != memory.CandidateStateInvalidated {
+	expected := candidate
+	expected.Status = memory.CandidateStateInvalidated
+	if err != nil || !readBackFound || !evolutionCandidateReadBackMatches(readBack, expected) {
 		return memory.EvolutionCandidate{}, errors.New("evolution invalidation read-back verification failed")
 	}
 	audit, err := evolutionAuditFor(ctx, transaction, candidateID)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	if len(audit) < 2 || audit[len(audit)-1].Action != memory.EvolutionAuditInvalidated || !audit[len(audit)-1].OccurredAt.Equal(now) {
+	if !evolutionAuditMatches(audit, []memory.EvolutionAuditEntry{
+		{CandidateID: candidateID, Action: memory.EvolutionAuditCreated, OccurredAt: candidate.CreatedAt},
+		{CandidateID: candidateID, Action: memory.EvolutionAuditInvalidated, OccurredAt: now},
+	}) {
 		return memory.EvolutionCandidate{}, errors.New("evolution invalidation audit read-back verification failed")
 	}
-	readBack.Status = memory.CandidateStateInvalidated
 	if err := transaction.Commit(); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("commit evolution invalidation: %w", err)
 	}
@@ -257,7 +277,10 @@ func (store *Store) ExpireEvolutionCandidate(ctx context.Context, candidateID st
 		}
 		return candidate, nil
 	}
-	if err := memory.ValidCandidateTransition(candidate.Status, memory.CandidateStateExpired); err != nil {
+	if candidate.Status != memory.CandidateStateDraft {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before expiry", candidateID)
+	}
+	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
 	if now.Before(candidate.ExpiresAt) {
@@ -270,17 +293,21 @@ func (store *Store) ExpireEvolutionCandidate(ctx context.Context, candidateID st
 		return memory.EvolutionCandidate{}, err
 	}
 	readBack, readBackFound, err := lookupEvolutionCandidate(ctx, transaction, candidateID)
-	if err != nil || !readBackFound || readBack.Status != memory.CandidateStateExpired {
+	expected := candidate
+	expected.Status = memory.CandidateStateExpired
+	if err != nil || !readBackFound || !evolutionCandidateReadBackMatches(readBack, expected) {
 		return memory.EvolutionCandidate{}, errors.New("evolution expiry read-back verification failed")
 	}
 	audit, err := evolutionAuditFor(ctx, transaction, candidateID)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	if len(audit) < 2 || audit[len(audit)-1].Action != memory.EvolutionAuditExpired || !audit[len(audit)-1].OccurredAt.Equal(now) {
+	if !evolutionAuditMatches(audit, []memory.EvolutionAuditEntry{
+		{CandidateID: candidateID, Action: memory.EvolutionAuditCreated, OccurredAt: candidate.CreatedAt},
+		{CandidateID: candidateID, Action: memory.EvolutionAuditExpired, OccurredAt: now},
+	}) {
 		return memory.EvolutionCandidate{}, errors.New("evolution expiry audit read-back verification failed")
 	}
-	readBack.Status = memory.CandidateStateExpired
 	if err := transaction.Commit(); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("commit evolution expiry: %w", err)
 	}
@@ -422,10 +449,24 @@ func evolutionAuditFor(ctx context.Context, source queryerRows, candidateID stri
 	return entries, nil
 }
 
-// evolutionCandidateEquivalent 比较候选的身份与闭合事实。状态与时间列不参与：
+// evolutionAuditMatches 按条数、顺序及全部闭合字段比较审计读回值；状态写入
+// 只能同时带有创建审计和本次唯一终态审计，避免隐藏审计被静默提交。
+func evolutionAuditMatches(actual, expected []memory.EvolutionAuditEntry) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for index := range expected {
+		if actual[index].CandidateID != expected[index].CandidateID || actual[index].Action != expected[index].Action || actual[index].Reason != expected[index].Reason || !actual[index].OccurredAt.Equal(expected[index].OccurredAt) {
+			return false
+		}
+	}
+	return true
+}
+
+// evolutionCandidateIdempotentEquivalent 比较候选的身份与闭合事实。状态与时间列不参与：
 // 创建时刻由首次写入的时钟锚定，同 ID 重试必然携带不同时钟，若参与比较会
 // 把幂等重试误判为事实冲突。
-func evolutionCandidateEquivalent(left, right memory.EvolutionCandidate) bool {
+func evolutionCandidateIdempotentEquivalent(left, right memory.EvolutionCandidate) bool {
 	if left.ExpiresAt.Sub(left.CreatedAt) != right.ExpiresAt.Sub(right.CreatedAt) {
 		return false
 	}
@@ -433,6 +474,14 @@ func evolutionCandidateEquivalent(left, right memory.EvolutionCandidate) bool {
 		left.Source == right.Source && left.TargetKind == right.TargetKind && left.VariantSpecSHA256 == right.VariantSpecSHA256 &&
 		left.VariantFingerprint == right.VariantFingerprint && left.BaselineFingerprint == right.BaselineFingerprint &&
 		left.EvalSetFingerprint == right.EvalSetFingerprint && left.NoteDigest == right.NoteDigest
+}
+
+// evolutionCandidateReadBackMatches 比较一次写入后应持久化的完整候选值。
+// 它刻意不复用幂等等价：状态和两个绝对时间也必须逐字段一致，防止触发器
+// 在 SQL 写入后静默改写候选而仍被事务提交。
+func evolutionCandidateReadBackMatches(actual, expected memory.EvolutionCandidate) bool {
+	return evolutionCandidateIdempotentEquivalent(actual, expected) && actual.Status == expected.Status &&
+		actual.CreatedAt.Equal(expected.CreatedAt) && actual.ExpiresAt.Equal(expected.ExpiresAt)
 }
 
 // checkEvolutionInvariants 验证演化候选的结构不变量：审计时间线、状态与
@@ -490,6 +539,10 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 		if created != 1 {
 			return fmt.Errorf("evolution candidate %s must have exactly one creation audit", candidate.ID)
 		}
+		sourceVersion, err := evolutionSourceForCandidate(ctx, source, candidate)
+		if err != nil {
+			return err
+		}
 		switch candidate.Status {
 		case memory.CandidateStateDraft:
 			// M4-1 只实现 draft 与三个显式终态；ready/evaluating/evaluated_*、
@@ -497,21 +550,14 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			if rejected != 0 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("draft evolution candidate %s has terminal audit", candidate.ID)
 			}
-			sourceVersion, foundVersion, err := lookupDerivedVersionExact(ctx, source, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
-			if err != nil || !foundVersion {
-				return fmt.Errorf("draft evolution candidate %s references a missing source version: %v", candidate.ID, err)
-			}
 			if sourceVersion.Status != memory.DerivedStatusActive {
 				return fmt.Errorf("draft evolution candidate %s has an inactive source version", candidate.ID)
-			}
-			if sourceVersion.WorkspaceHash != candidate.WorkspaceHash {
-				return fmt.Errorf("evolution candidate %s source crosses workspaces", candidate.ID)
 			}
 			if !sourceVersion.ExpiresAt.After(checkNow) {
 				return fmt.Errorf("draft evolution candidate %s has an expired source version", candidate.ID)
 			}
 		case memory.CandidateStateRejected:
-			if rejected != 1 {
+			if rejected != 1 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("rejected evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			until, exists := cooldowns[cooldownKeyOf(candidate)]
@@ -528,18 +574,69 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("rejected evolution candidate %s has an incoherent cooldown deadline", candidate.ID)
 			}
 		case memory.CandidateStateInvalidated:
-			if invalidated != 1 {
+			if rejected != 0 || invalidated != 1 || expired != 0 {
 				return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
 			}
+			if sourceVersion.Status == memory.DerivedStatusActive && sourceVersion.ExpiresAt.After(checkNow) {
+				return fmt.Errorf("invalidated evolution candidate %s has an active source version", candidate.ID)
+			}
 		case memory.CandidateStateExpired:
-			if expired != 1 {
+			if rejected != 0 || invalidated != 0 || expired != 1 {
 				return fmt.Errorf("expired evolution candidate %s has invalid audit state", candidate.ID)
+			}
+			for _, entry := range audit {
+				if entry.Action == memory.EvolutionAuditExpired && entry.OccurredAt.Before(candidate.ExpiresAt) {
+					return fmt.Errorf("expired evolution candidate %s has an early expiry audit", candidate.ID)
+				}
 			}
 		case memory.CandidateStatePromoted:
 			return fmt.Errorf("evolution candidate %s is promoted outside the permitted slice", candidate.ID)
 		default:
 			return fmt.Errorf("evolution candidate %s has state %q that is not implemented in this slice", candidate.ID, candidate.Status)
 		}
+	}
+	return nil
+}
+
+// evolutionSourceForCandidate 精确读取候选来源并验证工作区归属；来源缺失或跨
+// 工作区均属于损坏，不能由终态迁移或完整性检查忽略。
+func evolutionSourceForCandidate(ctx context.Context, source queryer, candidate memory.EvolutionCandidate) (memory.DerivedCandidate, error) {
+	sourceVersion, foundVersion, err := lookupDerivedVersionExact(ctx, source, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
+	if err != nil || !foundVersion {
+		return memory.DerivedCandidate{}, fmt.Errorf("evolution candidate %s references a missing source version: %v", candidate.ID, err)
+	}
+	if sourceVersion.WorkspaceHash != candidate.WorkspaceHash {
+		return memory.DerivedCandidate{}, fmt.Errorf("evolution candidate %s source crosses workspaces", candidate.ID)
+	}
+	return sourceVersion, nil
+}
+
+// requireEvolutionSourceActive 复核 draft 候选写入所需的来源资格：精确版本
+// 必须同工作区、active 且未过期。创建、拒绝和显式到期都以此为提交前条件。
+func requireEvolutionSourceActive(ctx context.Context, source queryer, candidate memory.EvolutionCandidate, now time.Time) error {
+	sourceVersion, err := evolutionSourceForCandidate(ctx, source, candidate)
+	if err != nil {
+		return err
+	}
+	if sourceVersion.Status != memory.DerivedStatusActive {
+		return fmt.Errorf("evolution candidate %s has an inactive source version", candidate.ID)
+	}
+	if !sourceVersion.ExpiresAt.After(now) {
+		return fmt.Errorf("evolution candidate %s has an expired source version", candidate.ID)
+	}
+	return nil
+}
+
+// requireEvolutionSourceInactive 复核受限作废的反向来源资格：精确版本必须
+// 存在且同工作区，并且已经不是 active 或已过期；活跃且未过期的来源不能被
+// 作废路径洗白。
+func requireEvolutionSourceInactive(ctx context.Context, source queryer, candidate memory.EvolutionCandidate, now time.Time) error {
+	sourceVersion, err := evolutionSourceForCandidate(ctx, source, candidate)
+	if err != nil {
+		return err
+	}
+	if sourceVersion.Status == memory.DerivedStatusActive && sourceVersion.ExpiresAt.After(now) {
+		return errors.New("evolution candidate cannot be invalidated while its source version is still active")
 	}
 	return nil
 }
