@@ -375,3 +375,65 @@ func TestEvidenceCommandProjectsUnifiedResult(t *testing.T) {
 		t.Fatalf("evidence human view leaked task prompt: %s", humanOut.String())
 	}
 }
+
+// TestCandidateEvaluateUsageRequiresFrozenAssets 锁定评测动词的用法合同：缺
+// 少冻结资产或变体参数即拒绝并提示先创建候选，usage 词表包含 evaluate。
+func TestCandidateEvaluateUsageRequiresFrozenAssets(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	if exit := command.Run(context.Background(), []string{"memory", "candidate"}); exit != ExitUsage || !strings.Contains(stderr.String(), "evaluate") {
+		t.Fatalf("candidate dispatch must mention evaluate: exit=%d stderr=%q", exit, stderr.String())
+	}
+	if exit := command.Run(context.Background(), []string{"memory", "candidate", "evaluate", "--candidate", "c-1"}); exit != ExitUsage || !strings.Contains(stderr.String(), "create the candidate first") {
+		t.Fatalf("missing frozen assets must fail with creation hint: exit=%d stderr=%q", exit, stderr.String())
+	}
+}
+
+// TestCandidateEvaluateFailsClosedForUnknownCandidate 验证对不存在候选的失败
+// 关闭：完整提供本地资产后仍因候选缺失而退出，错误文本明确提示先用 create。
+func TestCandidateEvaluateFailsClosedForUnknownCandidate(t *testing.T) {
+	workspace := t.TempDir()
+	writeCapabilityConfig(t, workspace)
+	assets := t.TempDir()
+	localConfigPath := filepath.Join(assets, "local.yaml")
+	placeholderPaths := map[string]string{
+		"paths.manifest":       filepath.Join(assets, "tasks.yaml"),
+		"paths.agent_config":   filepath.Join(assets, "agent.yaml"),
+		"paths.private_dir":    filepath.Join(assets, "private"),
+		"paths.results_dir":    filepath.Join(assets, "results"),
+		"paths.workspaces_dir": filepath.Join(assets, "workspaces"),
+		"paths.state_dir":      filepath.Join(assets, "state"),
+	}
+	content := "version: 1\npaths:\n"
+	for name, path := range placeholderPaths {
+		content += "  " + name[strings.Index(name, ".")+1:] + ": " + path + "\n"
+	}
+	content += "execution:\n  prepare_timeout: 1m\n"
+	if err := os.WriteFile(localConfigPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	frozenFiles := map[string]string{
+		"--eval-set": filepath.Join(assets, "eval-set.json"),
+		"--lease":    filepath.Join(assets, "lease.json"),
+		"--policy":   filepath.Join(assets, "policy.json"),
+	}
+	for _, path := range frozenFiles {
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	arguments := []string{"memory", "candidate", "evaluate",
+		"--candidate", "does-not-exist", "--local-config", localConfigPath,
+		"--workspace", workspace, "--state-dir", filepath.Join(t.TempDir(), "state"),
+		"--max-prompt-tokens", "4096", "--max-summary-bytes", "8192",
+		"--inventory-percent", "40", "--reserve-percent", "25"}
+	for flag, path := range frozenFiles {
+		arguments = append(arguments, flag, path)
+	}
+	exit := command.Run(context.Background(), arguments)
+	if exit == ExitOK || !strings.Contains(stderr.String(), "create the candidate first") {
+		t.Fatalf("unknown candidate must fail closed with a creation hint: exit=%d stderr=%q stdout=%q", exit, stderr.String(), stdout.String())
+	}
+}

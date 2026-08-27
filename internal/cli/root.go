@@ -19,6 +19,7 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
 const (
@@ -220,16 +221,18 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 }
 
 // memoryCandidate 分派演化候选的固定动作：创建必须由人工显式提供闭合变体
-// 参数；拒绝使用封闭理由；作废与过期为显式终态迁移；解释只读。不存在任何
-// 自动生成候选、评测或晋升入口。
+// 参数；评测驱动沙箱执行器并要求候选已就绪；拒绝使用封闭理由；作废与过期
+// 为显式终态迁移；解释只读。不存在任何自动生成候选或晋升入口。
 func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 	switch arguments[0] {
 	case "create":
 		return command.memoryCandidateCreate(ctx, arguments[1:])
+	case "evaluate":
+		return command.memoryCandidateEvaluate(ctx, arguments[1:])
 	case "reject":
 		return command.memoryCandidateReject(ctx, arguments[1:])
 	case "invalidate":
@@ -239,7 +242,7 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 	case "inspect":
 		return command.memoryCandidateInspect(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 }
@@ -310,6 +313,179 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 	}
 	fmt.Fprintf(command.Stdout, "candidate: %s status=%s target=%s variant=%s source=%s/%s\n", candidate.ID, candidate.Status, candidate.TargetKind, candidate.VariantFingerprint, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
 	return ExitOK
+}
+
+// decodeCredentialPolicyFile 严格解码本地忽略目录中的冻结凭据策略文件：拒绝
+// 未知字段与尾随内容，解析后立即复核结构合同。Key 不存在于此文件。
+func decodeCredentialPolicyFile(path string) (sandboxeval.CredentialPolicy, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return sandboxeval.CredentialPolicy{}, fmt.Errorf("read credential policy file: %w", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(content)))
+	decoder.DisallowUnknownFields()
+	var policy sandboxeval.CredentialPolicy
+	if err := decoder.Decode(&policy); err != nil {
+		return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: %w", path, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: file must contain exactly one JSON document", path)
+		}
+		return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: %w", path, err)
+	}
+	if err := policy.Validate(); err != nil {
+		return sandboxeval.CredentialPolicy{}, fmt.Errorf("credential policy %q rejected: %w", path, err)
+	}
+	return policy, nil
+}
+
+// memoryCandidateEvaluate 驱动沙箱执行器对已就绪候选发起受控评测：评测集、
+// 租约与凭据策略都来自 Git 忽略的本地冻结文件；变体参数必须人工重述并经候
+// 选登记的规格摘要复核。--dry-run 只跑离线预筛，不开事务也不调用模型。
+func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate evaluate", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	candidateID := flags.String("candidate", "", "evolution candidate ID (required)")
+	localConfigPath := flags.String("local-config", "", "Git-ignored local evaluation configuration (required)")
+	evalSetPath := flags.String("eval-set", "", "frozen eval set JSON file (required)")
+	leasePath := flags.String("lease", "", "credential lease description JSON file (required)")
+	policyPath := flags.String("policy", "", "frozen credential policy JSON file (required)")
+	maxPromptTokens := flags.Int("max-prompt-tokens", 0, "variant max prompt tokens, must match the registration (required)")
+	maxSummaryBytes := flags.Int("max-summary-bytes", 0, "variant max summary bytes (required)")
+	inventoryPercent := flags.Int("inventory-percent", 0, "variant inventory budget percent (required)")
+	reservePercent := flags.Int("reserve-percent", 0, "variant threshold reserve percent (required)")
+	workspace := flags.String("workspace", "", "workspace the candidate was created against (default: current directory)")
+	stateDir := flags.String("state-dir", "", "candidate state directory")
+	configPath := flags.String("config", "", "configuration path used when the candidate was created")
+	cairnRoot := flags.String("cairn-root", "", "Cairn repository used for asset boundary checks")
+	dryRun := flags.Bool("dry-run", false, "run offline prescreen only: no transaction, no model calls")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if *candidateID == "" || *localConfigPath == "" || *evalSetPath == "" || *leasePath == "" || *policyPath == "" ||
+		flags.NArg() != 0 || *maxPromptTokens == 0 || *maxSummaryBytes == 0 || *inventoryPercent == 0 || *reservePercent == 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate evaluate requires --candidate, --local-config, --eval-set, --lease, --policy and all variant parameters; create the candidate first if it does not exist")
+		return ExitUsage
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "resolve current directory:", err)
+		return ExitFailed
+	}
+	if *cairnRoot == "" {
+		*cairnRoot = root
+	}
+	localConfiguration, err := benchmark.LoadLocalConfig(*localConfigPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "local benchmark configuration error:", err)
+		return ExitUsage
+	}
+	evalAssets := append([]string{*localConfigPath}, localConfiguration.AssetPaths()...)
+	evalAssets = append(evalAssets, *evalSetPath, *leasePath, *policyPath)
+	if err := benchmark.EnsureLocalAssetsIgnored(*cairnRoot, evalAssets...); err != nil {
+		fmt.Fprintln(command.Stderr, "evaluation asset boundary error:", err)
+		return ExitUsage
+	}
+	memoryConfiguration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	baselineConfiguration, err := config.Load(localConfiguration.Paths.AgentConfig, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "frozen agent configuration error:", err)
+		return ExitUsage
+	}
+	variant := memory.CompactionParamsVariant{
+		SchemaVersion:           memory.EvolutionSchemaVersion,
+		MaxPromptTokens:         *maxPromptTokens,
+		MaxSummaryBytes:         *maxSummaryBytes,
+		InventoryBudgetPercent:  *inventoryPercent,
+		ThresholdReservePercent: *reservePercent,
+	}
+	specDigest, err := memory.VariantSpecDigest(variant)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "variant parameters rejected:", err)
+		return ExitUsage
+	}
+	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: *candidateID, Workspace: *workspace, StateDir: *stateDir, Config: memoryConfiguration})
+	if err != nil {
+		fmt.Fprintf(command.Stderr, "memory candidate evaluate failed: %v; create the candidate first with memory candidate create\n", err)
+		return exitFor(err)
+	}
+	if inspected.Candidate.Status != memory.CandidateStateReady {
+		fmt.Fprintf(command.Stderr, "memory candidate evaluate requires a ready candidate, got %s; create it first or resolve its current state\n", inspected.Candidate.Status)
+		return ExitFailed
+	}
+	if inspected.Candidate.VariantSpecSHA256 != specDigest {
+		fmt.Fprintln(command.Stderr, "restated variant parameters diverge from the registered candidate specification")
+		return ExitFailed
+	}
+	evalSet, err := sandboxeval.LoadEvalSet(*evalSetPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "frozen eval set error:", err)
+		return ExitUsage
+	}
+	lease, err := sandboxeval.LoadCredentialLease(*leasePath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "credential lease error:", err)
+		return ExitUsage
+	}
+	policy, err := decodeCredentialPolicyFile(*policyPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "credential policy error:", err)
+		return ExitUsage
+	}
+	pack, err := benchmark.LoadTaskPack(localConfiguration.Paths.Manifest)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "benchmark manifest error:", err)
+		return ExitUsage
+	}
+	prepareDuration, err := time.ParseDuration(localConfiguration.Execution.PrepareTimeout)
+	if err != nil || prepareDuration <= 0 {
+		fmt.Fprintln(command.Stderr, "local benchmark prepare_timeout must be a positive duration")
+		return ExitUsage
+	}
+	executor := benchmark.SandboxExecutor{Runner: benchmark.Runner{Service: command.Service}}
+	outcome, err := executor.Run(ctx, benchmark.SandboxExecutorOptions{
+		Pack:            pack,
+		EvalSet:         evalSet,
+		Lease:           lease,
+		Policy:          policy,
+		CandidateID:     *candidateID,
+		MemoryWorkspace: *workspace,
+		MemoryStateDir:  *stateDir,
+		MemoryConfig:    memoryConfiguration,
+		BaselineConfig:  baselineConfiguration,
+		Variant:         variant,
+		StateRoot:       localConfiguration.Paths.StateDir,
+		WorkspacesRoot:  localConfiguration.Paths.WorkspacesDir,
+		PrivateRoot:     localConfiguration.Paths.PrivateDir,
+		CairnRoot:       *cairnRoot,
+		PrepareTimeout:  prepareDuration,
+		DryRun:          *dryRun,
+	})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate evaluate failed:", err)
+		return ExitFailed
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, outcome)
+		return ExitOK
+	}
+	if outcome.DryRun {
+		fmt.Fprintln(command.Stdout, "evaluate dry-run: prescreen passed; no transaction opened, no model called")
+		return ExitOK
+	}
+	conclusion := outcome.Conclusion
+	fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
+	if conclusion.Status == sandboxeval.ConclusionPassed {
+		return ExitOK
+	}
+	return ExitFailed
 }
 
 // memoryCandidateReject 以封闭理由拒绝演化候选并落入冷却。
