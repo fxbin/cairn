@@ -456,7 +456,11 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		return ExitOK
 	}
 	conclusion := outcome.Conclusion
-	fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
+	if outcome.StopDetail != "" {
+		fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s stop_detail=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.StopDetail, outcome.RunsCompleted, outcome.ResultDigest)
+	} else {
+		fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
+	}
 	if conclusion.Status == sandboxeval.ConclusionPassed {
 		return ExitOK
 	}

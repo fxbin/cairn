@@ -86,6 +86,20 @@ const (
 // verificationFailedClass 是有效失败样本（有终态但验证未通过）的稳定类别词。
 const verificationFailedClass = "verification_failed"
 
+// 停止明细的封闭取值：它们只描述"停止发生在哪一步"，绝不携带命令输出、
+// 路径或镜像名等本机细节。
+const (
+	// sandboxStopDetailTaskImageDigest 表示任务镜像自省摘要失败。
+	sandboxStopDetailTaskImageDigest = "task_docker_image_self_digest"
+)
+
+// scheduleStop 是调度停止信号：原因词进入套件结果的 StopReason，明细进入
+// StopDetail；二者都是封闭分类词，供人工定位中断环节而不泄露本机事实。
+type scheduleStop struct {
+	reason string
+	detail string
+}
+
 // sandboxRecordSchemaV1 是沙箱执行器本地记录与套件结果的当前 schema 版本。
 const sandboxRecordSchemaV1 = 1
 
@@ -165,6 +179,7 @@ type SandboxSuiteResult struct {
 	Status        string             `json:"status"`
 	Trigger       string             `json:"trigger,omitempty"`
 	StopReason    string             `json:"stop_reason,omitempty"`
+	StopDetail    string             `json:"stop_detail,omitempty"`
 	Records       []SandboxRunRecord `json:"records"`
 }
 
@@ -178,6 +193,7 @@ type SandboxExecutionOutcome struct {
 	ResultDigest  string
 	RunsCompleted int
 	StopReason    string
+	StopDetail    string
 }
 
 // precheck 结构化承载启动前检查的派生产物：展开后两臂配置、变体展开指纹与
@@ -417,7 +433,7 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		}
 	}
 	conclusion := sandboxeval.Conclusion{}
-	stopReason := ""
+	stopReason, stopDetail := "", ""
 	var records []SandboxRunRecord
 	var scheduleErr error
 	if len(prescreenIssues) > 0 {
@@ -425,14 +441,14 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		// 保证"评测结果为 invalid"存在可审计的一次评测事实。
 		conclusion = sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerOfflinePrescreenFailed}
 	} else {
-		conclusion, stopReason, records, _, scheduleErr = executor.runSchedule(ctx, options, precheck)
+		conclusion, stopReason, stopDetail, records, _, scheduleErr = executor.runSchedule(ctx, options, precheck)
 	}
 	if conclusion.Status == "" {
 		// 结论为空意味着执行链在合法判定前遭遇 I/O 故障：不落盘、不闭合、
 		// 保留 running 状态由人工对账，绝不伪造结论。
 		return outcome, fmt.Errorf("suite execution failed before a legal conclusion: %w", scheduleErr)
 	}
-	resultPath, resultDigest, persistErr := executor.persistSuiteResult(options, precheck.evaluationID, outcome.Evaluation.StartedAt, conclusion, stopReason, records)
+	resultPath, resultDigest, persistErr := executor.persistSuiteResult(options, precheck.evaluationID, outcome.Evaluation.StartedAt, conclusion, stopReason, stopDetail, records)
 	if persistErr != nil {
 		return outcome, fmt.Errorf("persist suite result: %w", persistErr)
 	}
@@ -440,6 +456,7 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 	outcome.ResultDigest = resultDigest
 	outcome.Conclusion = conclusion
 	outcome.StopReason = stopReason
+	outcome.StopDetail = stopDetail
 	outcome.RunsCompleted = len(records)
 	concluded, err := executor.finishEvaluationTransaction(ctx, options, precheck.evaluationID, conclusion.Status, resultDigest)
 	if err != nil {
@@ -497,21 +514,21 @@ func (abort *scheduleAbort) Error() string {
 func (abort *scheduleAbort) Unwrap() error { return abort.err }
 
 // runSchedule 按成对交错顺序驱动全部计划 Run：每步即时准备即时执行，正常
-// 样本累计 verdict 与 record。停止原因只中断调度并把剩余样本留空——套件交
+// 样本累计 verdict 与 record。停止信号只中断调度并把剩余样本留空——套件交
 // 由比较器的完备性检查自然收敛为 inconclusive；遇到立即短路信号则把结论固
 // 定为 invalid。
-func (executor SandboxExecutor) runSchedule(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult) (sandboxeval.Conclusion, string, []SandboxRunRecord, []sandboxeval.SuiteVerdict, error) {
+func (executor SandboxExecutor) runSchedule(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult) (sandboxeval.Conclusion, string, string, []SandboxRunRecord, []sandboxeval.SuiteVerdict, error) {
 	conclusion := sandboxeval.Conclusion{}
-	stopReason := ""
+	stopReason, stopDetail := "", ""
 	records := make([]SandboxRunRecord, 0)
 	verdicts := make([]sandboxeval.SuiteVerdict, 0)
 	steps, err := SandboxSchedule(options.EvalSet.TaskIDs, options.EvalSet.AttemptsPerTask)
 	if err != nil {
-		return conclusion, stopReason, records, verdicts, err
+		return conclusion, stopReason, stopDetail, records, verdicts, err
 	}
 	tasks, err := options.Pack.SelectedTasks(options.EvalSet.TaskIDs)
 	if err != nil {
-		return conclusion, stopReason, records, verdicts, err
+		return conclusion, stopReason, stopDetail, records, verdicts, err
 	}
 	taskByID := make(map[string]Task, len(tasks))
 	for _, task := range tasks {
@@ -519,18 +536,19 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 	}
 	evaluationDir := evaluationDirectory(options.StateRoot, precheck.evaluationID)
 	if err := os.MkdirAll(filepath.Join(evaluationDir, "runs"), 0o700); err != nil {
-		return conclusion, stopReason, records, verdicts, fmt.Errorf("create runs directory: %w", err)
+		return conclusion, stopReason, stopDetail, records, verdicts, fmt.Errorf("create runs directory: %w", err)
 	}
 	ledger := &leaseLedger{}
+	stop := &scheduleStop{}
 	for _, step := range steps {
 		if ctx.Err() != nil {
 			stopReason = sandboxStopContextCancelled
 			break
 		}
-		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir, &stopReason)
+		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir, stop)
 		if record != nil {
 			if writeErr := writeJSON(filepath.Join(evaluationDir, "runs", sandboxRecordFileName(step)), record); writeErr != nil {
-				return conclusion, stopReason, records, verdicts, fmt.Errorf("persist sandbox run record: %w", writeErr)
+				return conclusion, stopReason, stopDetail, records, verdicts, fmt.Errorf("persist sandbox run record: %w", writeErr)
 			}
 			records = append(records, *record)
 		}
@@ -538,9 +556,10 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 			verdicts = append(verdicts, *verdict)
 		}
 		if stepAbort != nil {
-			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, stopReason, records, verdicts, nil
+			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, stopReason, stopDetail, records, verdicts, nil
 		}
-		if stopReason != "" {
+		if stop.reason != "" {
+			stopReason, stopDetail = stop.reason, stop.detail
 			break
 		}
 		if record != nil && ledger.exceedsLease(options.Lease) {
@@ -552,17 +571,17 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 	if err != nil {
 		// 受检运算溢出、证据臂归属漂移等属于可计算性合同破坏：按无效闭合而
 		// 不是遗留 running，让套件终态始终合法可读；底层诊断随错误回传调用方。
-		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerComparisonNotComputable}, stopReason, records, verdicts, fmt.Errorf("judge suite: %w", err)
+		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerComparisonNotComputable}, stopReason, stopDetail, records, verdicts, fmt.Errorf("judge suite: %w", err)
 	}
-	return conclusion, stopReason, records, verdicts, nil
+	return conclusion, stopReason, stopDetail, records, verdicts, nil
 }
 
 // executeScheduledStep 准备并执行单个调度步：record 始终如实留档，verdict
 // 只在产生可计入评分的有效终态样本时非空；stepAbort 表示隔离或证据合同破坏
-// 必须 invalid 闭合。环境准备失败与 Provider 无终态不产 abort，经 stopReason
-// 出口中断调度并收敛为不确定。租约账面由循环层在每步后统一判定，超出的瞬
-// 时风险由租约合同强制的服务端配额兜底。
-func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult, task Task, step SandboxPairStep, ledger *leaseLedger, evaluationDir string, stopReason *string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+// 必须 invalid 闭合。环境准备失败与 Provider 无终态不产 abort，经停止信号出
+// 口中断调度并收敛为不确定；明细只携带步骤级分类词。租约账面由循环层在每步
+// 后统一判定，超出的瞬时风险由租约合同强制的服务端配额兜底。
+func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult, task Task, step SandboxPairStep, ledger *leaseLedger, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	armConfig := precheck.baselineConfig
 	if step.Arm == sandboxeval.ArmVariant {
 		armConfig = precheck.variantConfig
@@ -585,7 +604,8 @@ func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, option
 	report := SuiteResult{SuiteRunID: suiteSegmentForArm(precheck.evaluationID, step.Arm), TaskPackFingerprint: options.Pack.Fingerprint()}
 	prepared, preparation := executor.prepareAgentAttempt(ctx, runOptions, report, task, step.Try)
 	if preparation.Outcome != "prepared" {
-		*stopReason = sandboxStopEnvironmentFailure
+		stop.reason = sandboxStopEnvironmentFailure
+		stop.detail = preparation.FailureClass
 		return nil, nil, nil
 	}
 	frozenContract, found := sandboxTaskContract(options.EvalSet, task.ID)
@@ -597,10 +617,11 @@ func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, option
 		if errors.As(err, &divergence) {
 			return nil, nil, &scheduleAbort{trigger: sandboxTriggerFrozenAssetDivergence, err: err}
 		}
-		*stopReason = sandboxStopEnvironmentFailure
+		stop.reason = sandboxStopEnvironmentFailure
+		stop.detail = sandboxStopDetailTaskImageDigest
 		return nil, nil, nil
 	}
-	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, armConfig, prepared, runID, precheck.evaluationID, step, evaluationDir, stopReason)
+	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, armConfig, prepared, runID, precheck.evaluationID, step, evaluationDir, stop)
 	if verdict == nil {
 		return record, verdict, stepAbort
 	}
@@ -667,7 +688,7 @@ func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
 // 归档与泄漏扫描。任何终局出口（含 Provider 无终态与证据合同破坏）都先补齐
 // 当步泄漏扫描再封口——未扫描的表面不得冒充干净证据。错误文本只保留分类词，
 // 原文一律不落盘。
-func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stopReason *string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	record := &SandboxRunRecord{
 		SchemaVersion: sandboxRecordSchemaV1,
 		RunID:         runID,
@@ -685,8 +706,10 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		return record, nil, &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: fmt.Errorf("create diff archive directory: %w", err)}
 	}
 	// finalizeSurfaces 是所有出口共用的封口段：归档工作区 diff、枚举全部持久
-	// 化表面并用内存中的原始 Key 扫描，扫描结论写回 record 后才允许返回。
+	// 化表面并用内存中的原始 Key 扫描，扫描结论写回 record 后才允许返回；自
+	// 身失败也必须补齐结束时间戳，任何终局 record 都不得停留在零值时刻。
 	finalizeSurfaces := func() *scheduleAbort {
+		record.FinishedAt = executor.now()
 		captured := executor.captureDiff(ctx, prepared.Result.Workspace, diffDirectory, AttemptResult{TaskID: step.TaskID, Attempt: step.Try})
 		scanSurfaces, surfaceErr := fileSurfacePathsUnder(prepared.Result.Workspace, prepared.Result.StateDir)
 		if surfaceErr != nil {
@@ -738,7 +761,8 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		if err != nil {
 			class = contract.ClassifyError(err)
 		}
-		*stopReason = sandboxStopProviderFailure
+		stop.reason = sandboxStopProviderFailure
+		stop.detail = class
 		return failWithoutVerdict(class)
 	}
 	inspected, inspectErr := executor.Service.Inspect(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig, result.ID, true)
@@ -887,7 +911,7 @@ func sandboxRecordFileName(step SandboxPairStep) string {
 
 // persistSuiteResult 把套件结论原子落盘并读回计算字节摘要：Memory 侧只保存
 // 该 sha256 引用，读回环节保证留存正文与其引用不可静默漂移。
-func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOptions, evaluationID string, startedAt time.Time, conclusion sandboxeval.Conclusion, stopReason string, records []SandboxRunRecord) (string, string, error) {
+func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOptions, evaluationID string, startedAt time.Time, conclusion sandboxeval.Conclusion, stopReason, stopDetail string, records []SandboxRunRecord) (string, string, error) {
 	result := SandboxSuiteResult{
 		SchemaVersion: sandboxRecordSchemaV1,
 		EvaluationID:  evaluationID,
@@ -897,6 +921,7 @@ func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOption
 		Status:        conclusion.Status,
 		Trigger:       conclusion.Trigger,
 		StopReason:    stopReason,
+		StopDetail:    stopDetail,
 		Records:       append([]SandboxRunRecord(nil), records...),
 	}
 	resultPath := filepath.Join(evaluationDirectory(options.StateRoot, evaluationID), "suite-result.json")
