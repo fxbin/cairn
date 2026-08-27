@@ -673,14 +673,20 @@ func verifySandboxFrozenAssets(ctx context.Context, preparation PreparationResul
 	return nil
 }
 
-// dockerImageSelfDigest 读取本地镜像的自描述配置摘要；与存在性检查不同，摘
-// 要参与冻结身份比对，任何偏差都在启动 Provider 前暴露。
-func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
+// dockerImageSelfDigestLookup 是本地镜像自省的受控进程边界；生产实现经无
+// shell 的 docker argv 读取镜像配置摘要，测试以替身替换后必须还原。
+var dockerImageSelfDigestLookup = func(ctx context.Context, image string) (string, error) {
 	output, err := runProcessOutput(ctx, "", []string{"docker", "image", "inspect", "--format", "{{.Id}}", image})
 	if err != nil {
 		return "", fmt.Errorf("inspect task docker image digest: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// dockerImageSelfDigest 读取本地镜像的自描述配置摘要；与存在性检查不同，摘
+// 要参与冻结身份比对，任何偏差都在启动 Provider 前暴露。
+func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
+	return dockerImageSelfDigestLookup(ctx, image)
 }
 
 // runSandboxAttempt 对已就绪的工作区发起一次 Agent 运行并完成全链证据提取：

@@ -118,6 +118,10 @@ func indexOf(haystack, needle string) int {
 // 侧检查点前缀的清单字句保持同源，丢失即视为清单证据被破坏。
 const explorationInventoryAnchor = "已检查对象"
 
+// SandboxScheduleVersion 是成对交错调度的算法世代标识：EvalSet 冻结与执行器
+// 双侧引用同一常量，调度语义漂移必然改变冻结身份。
+const SandboxScheduleVersion = "pair-alternating-v1"
+
 // SandboxPairStep 是成对交错调度中的单步：任务升序排列，pair 相邻，奇数次
 // 尝试先跑基线再跑变体，偶数次尝试反向。
 type SandboxPairStep struct {

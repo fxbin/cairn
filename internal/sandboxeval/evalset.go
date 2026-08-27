@@ -16,6 +16,15 @@ const (
 	comparatorContractSchemaV1 = 1
 )
 
+// EvalSetSchemaVersionV1 与 CredentialPolicySchemaVersionV1 是面向装配方的当
+// 前评测集与凭据策略 schema 版本导出常量；构造冻结输入必须经此表达版本事实，
+// 不得散落字面量。
+const (
+	EvalSetSchemaVersionV1          = evalSetSchemaV1
+	CredentialPolicySchemaVersionV1 = policySchemaV1
+	LeaseSchemaVersionV1            = leaseSchemaV1
+)
+
 // evalSetFingerprintPrefix 是 EvalSet 指纹的版本化域前缀。
 const evalSetFingerprintPrefix = "cairn-eval-set-v1"
 
