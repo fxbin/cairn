@@ -206,9 +206,10 @@ func ValidEvolutionRejectionReason(reason string) bool {
 	}
 }
 
-// ValidCandidateTransition 判断状态迁移是否合法。M4-1 只开放创建后的
-// rejected/invalidated/expired 三个终态入口；evaluating、evaluated_* 与
-// promoted 的迁移属于 M4-2/M4-3，当前一律失败关闭。
+// ValidCandidateTransition 判断状态迁移是否合法。开放面覆盖创建后的三个
+// 手工终态入口，以及评测生命周期：ready→evaluating 启动、evaluating→
+// evaluated_passed/evaluated_failed/inconclusive 三个结论态；promoted 仍
+// 属于后续人工晋升切片，当前失败关闭。
 func ValidCandidateTransition(from, to string) error {
 	switch {
 	case from == CandidateStateDraft && to == CandidateStateRejected:
@@ -223,17 +224,28 @@ func ValidCandidateTransition(from, to string) error {
 		return nil
 	case from == CandidateStateReady && to == CandidateStateExpired:
 		return nil
+	case from == CandidateStateReady && to == CandidateStateEvaluating:
+		return nil
 	case from == CandidateStateEvaluating && to == CandidateStateInvalidated:
+		return nil
+	case from == CandidateStateEvaluating && to == CandidateStateEvaluatedPassed:
+		return nil
+	case from == CandidateStateEvaluating && to == CandidateStateEvaluatedFailed:
+		return nil
+	case from == CandidateStateEvaluating && to == CandidateStateInconclusive:
 		return nil
 	default:
 		return fmt.Errorf("evolution candidate transition %s -> %s is not permitted in this slice", from, to)
 	}
 }
 
-// IsTerminalCandidateState 判断候选状态是否为不可再迁移的终态。
+// IsTerminalCandidateState 判断候选状态是否为不可再迁移的终态。三个评测
+// 结论态一经写入即固定（同一候选只允许一次评测），与手工终态和晋升态同等
+// 不可逆。
 func IsTerminalCandidateState(state string) bool {
 	switch state {
-	case CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted:
+	case CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted,
+		CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed, CandidateStateInconclusive:
 		return true
 	default:
 		return false

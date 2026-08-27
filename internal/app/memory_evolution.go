@@ -265,3 +265,83 @@ func (service Service) InspectEvolutionCandidate(ctx context.Context, options Me
 	}
 	return inspected, nil
 }
+
+// MemoryEvaluationStartOptions 描述为演化候选启动评测的输入：评测身份由
+// memory.EvaluationID 从冻结五元组派生，携带的冻结字段必须与候选登记一致。
+type MemoryEvaluationStartOptions struct {
+	Evaluation memory.Evaluation
+	Workspace  string
+	StateDir   string
+	Config     config.Config
+}
+
+// StartEvolutionEvaluation 在工作区锁内执行评测启动事务：候选来源、冻结
+// 指纹与租约策略的一致性复核位于同一事务；事务前后各执行一次全库只读
+// 验证，保证无隐藏破坏被带过边界。
+func (service Service) StartEvolutionEvaluation(ctx context.Context, options MemoryEvaluationStartOptions) (memory.Evaluation, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Evaluation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	inspected, err := store.InspectEvolutionCandidate(ctx, options.Evaluation.CandidateID)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	if inspected.Candidate.WorkspaceHash != workspaceHash {
+		return memory.Evaluation{}, memory.ErrNotFound
+	}
+	started, err := store.StartEvaluation(ctx, options.Evaluation.CandidateID, options.Evaluation, time.Now().UTC())
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Evaluation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return started, nil
+}
+
+// FinishEvolutionEvaluation 在工作区锁内执行评测闭合事务：结论四态映射到
+// 候选终态并写入证据摘要引用，事务前后全库只读验证确保零残留。
+func (service Service) FinishEvolutionEvaluation(ctx context.Context, evaluationID string, workspace, stateDir string, configuration config.Config, status string, suiteResultDigest string) (memory.Evaluation, error) {
+	if !memory.ValidEvaluationStatus(status) || status == memory.EvaluationStatusRunning {
+		return memory.Evaluation{}, errors.New("evaluation conclusion must be one of passed, failed, inconclusive or invalid")
+	}
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(stateDir, workspaceHash)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(stateDir, workspaceHash)
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, stateDir, workspaceHash); err != nil {
+		return memory.Evaluation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	concluded, err := store.FinishEvaluation(ctx, evaluationID, status, suiteResultDigest, time.Now().UTC())
+	if err != nil {
+		return memory.Evaluation{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, stateDir, workspaceHash); err != nil {
+		return memory.Evaluation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return concluded, nil
+}

@@ -7,9 +7,15 @@ package memory
 
 import (
 	"errors"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
+
+// evaluationSchemaV1 是 Evaluation 行的当前合同版本。
+const evaluationSchemaV1 = 1
 
 // evaluationIDPrefix 是 Evaluation 标识的版本化域前缀。
 const evaluationIDPrefix = "cairn-evaluation-v1"
@@ -42,6 +48,108 @@ const (
 	EvolutionAuditEvaluatedFailed        = "evaluation_failed"
 	EvolutionAuditEvaluationInconclusive = "evaluation_inconclusive"
 )
+
+// Evaluation 是一次候选评测的持久化事实：五元组身份冻结输入，状态只允许
+// 从 running 单向进入一个结论态。SuiteResultDigest 是本地评测目录正文的最
+// 小留存引用；FinishedAt 零值表示评测尚未闭合。
+type Evaluation struct {
+	ID                        string    `json:"evaluation_id"`
+	SchemaVersion             int       `json:"schema_version"`
+	CandidateID               string    `json:"candidate_id"`
+	EvalSetFingerprint        string    `json:"eval_set_fingerprint"`
+	BaselineConfigFingerprint string    `json:"baseline_config_fingerprint"`
+	VariantConfigFingerprint  string    `json:"variant_config_fingerprint"`
+	ComparatorVersion         string    `json:"comparator_version"`
+	Status                    string    `json:"status"`
+	SuiteResultDigest         string    `json:"suite_result_digest,omitempty"`
+	StartedAt                 time.Time `json:"started_at"`
+	FinishedAt                time.Time `json:"finished_at,omitempty"`
+}
+
+// Validate 校验评测行的结构合同：schema 版本、身份词表、状态合法性与
+// running/结论两态的完整性约束（running 不得携带结论产物；结论态必须齐全）。
+func (evaluation Evaluation) Validate() error {
+	if evaluation.SchemaVersion != evaluationSchemaV1 {
+		return fmt.Errorf("evaluation schema_version %d is not supported", evaluation.SchemaVersion)
+	}
+	if evaluation.ID == "" || evaluation.CandidateID == "" {
+		return errors.New("evaluation identity fields must not be empty")
+	}
+	for name, value := range map[string]string{
+		"eval_set_fingerprint":        evaluation.EvalSetFingerprint,
+		"baseline_config_fingerprint": evaluation.BaselineConfigFingerprint,
+		"variant_config_fingerprint":  evaluation.VariantConfigFingerprint,
+	} {
+		if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+			return fmt.Errorf("evaluation %s must be a sha256 digest", name)
+		}
+	}
+	if evaluation.ComparatorVersion == "" {
+		return errors.New("evaluation comparator version must not be empty")
+	}
+	if !ValidEvaluationStatus(evaluation.Status) {
+		return fmt.Errorf("evaluation status %q is not in the closed lexicon", evaluation.Status)
+	}
+	if evaluation.StartedAt.IsZero() {
+		return errors.New("evaluation started_at is required")
+	}
+	if evaluation.Status == EvaluationStatusRunning {
+		if evaluation.SuiteResultDigest != "" || !evaluation.FinishedAt.IsZero() {
+			return errors.New("running evaluation cannot carry conclusion artifacts")
+		}
+		return nil
+	}
+	if !DigestHexShape(evaluation.SuiteResultDigest) {
+		return errors.New("concluded evaluation requires a sha256 suite result digest")
+	}
+	if evaluation.FinishedAt.IsZero() || evaluation.FinishedAt.Before(evaluation.StartedAt) {
+		return errors.New("concluded evaluation requires a finished_at no earlier than started_at")
+	}
+	return nil
+}
+
+// DigestHexShape 报告字符串是否为形态完整的 sha256 摘要引用；存储层入口
+// 前置校验与行级合同校验共用同一形态结论。
+func DigestHexShape(value string) bool {
+	return strings.HasPrefix(value, "sha256:") && len(value) == len("sha256:")+64
+}
+
+// CandidateStatusForEvaluation 返回评测状态对应的候选终态：三个业务结论各
+// 有专属候选态，invalid 映射为候选 invalidated（作废即安全事件终态），
+// running 对应 evaluating。
+func CandidateStatusForEvaluation(status string) (string, error) {
+	switch status {
+	case EvaluationStatusRunning:
+		return CandidateStateEvaluating, nil
+	case EvaluationStatusPassed:
+		return CandidateStateEvaluatedPassed, nil
+	case EvaluationStatusFailed:
+		return CandidateStateEvaluatedFailed, nil
+	case EvaluationStatusInconclusive:
+		return CandidateStateInconclusive, nil
+	case EvaluationStatusInvalid:
+		return CandidateStateInvalidated, nil
+	default:
+		return "", fmt.Errorf("unknown evaluation status %q", status)
+	}
+}
+
+// ConclusionAuditActionForEvaluation 返回评测结论对应的候选审计动作；
+// invalid 复用作废动作，与既有作废词表保持一致。
+func ConclusionAuditActionForEvaluation(status string) (string, error) {
+	switch status {
+	case EvaluationStatusPassed:
+		return EvolutionAuditEvaluatedPassed, nil
+	case EvaluationStatusFailed:
+		return EvolutionAuditEvaluatedFailed, nil
+	case EvaluationStatusInconclusive:
+		return EvolutionAuditEvaluationInconclusive, nil
+	case EvaluationStatusInvalid:
+		return EvolutionAuditInvalidated, nil
+	default:
+		return "", fmt.Errorf("evaluation status %q has no conclusion audit action", status)
+	}
+}
 
 // EvaluationID 由候选标识、冻结指纹组与比较器版本派生确定性标识：
 // sha256("cairn-evaluation-v1\x00" || canonical_json(五字段))。同一输入恒得

@@ -145,9 +145,9 @@ func TestEvolutionCandidateValidateLocksContract(t *testing.T) {
 	}
 }
 
-// TestCandidateTransitionMatrixClosesM4LateralMoves 锁定状态机：本切片只允许
-// draft/ready 到三个终态与 evaluating 中断作废；evaluated_* 与 promoted 的
-// 迁移入口在存储层之前就在合同层失败关闭。
+// TestCandidateTransitionMatrixClosesM4LateralMoves 锁定状态机：手工终态
+// 入口、评测生命周期（ready→evaluating 与三个结论态）与 evaluating 中断作废
+// 全部开放；promoted 迁移与其他旁路在合同层失败关闭。
 func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 	permitted := [][2]string{
 		{CandidateStateDraft, CandidateStateRejected},
@@ -156,7 +156,11 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 		{CandidateStateReady, CandidateStateRejected},
 		{CandidateStateReady, CandidateStateInvalidated},
 		{CandidateStateReady, CandidateStateExpired},
+		{CandidateStateReady, CandidateStateEvaluating},
 		{CandidateStateEvaluating, CandidateStateInvalidated},
+		{CandidateStateEvaluating, CandidateStateEvaluatedPassed},
+		{CandidateStateEvaluating, CandidateStateEvaluatedFailed},
+		{CandidateStateEvaluating, CandidateStateInconclusive},
 	}
 	for _, pair := range permitted {
 		if err := ValidCandidateTransition(pair[0], pair[1]); err != nil {
@@ -166,9 +170,14 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 	forbidden := [][2]string{
 		{CandidateStateDraft, CandidateStateReady},
 		{CandidateStateDraft, CandidateStateEvaluating},
-		{CandidateStateReady, CandidateStateEvaluating},
-		{CandidateStateEvaluating, CandidateStateEvaluatedPassed},
+		{CandidateStateReady, CandidateStateEvaluatedPassed},
+		{CandidateStateReady, CandidateStateInconclusive},
+		{CandidateStateEvaluating, CandidateStateReady},
+		{CandidateStateEvaluating, CandidateStateRejected},
+		{CandidateStateEvaluating, CandidateStateExpired},
 		{CandidateStateEvaluatedPassed, CandidateStatePromoted},
+		{CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed},
+		{CandidateStateInconclusive, CandidateStateEvaluating},
 		{CandidateStateRejected, CandidateStateDraft},
 		{CandidateStatePromoted, CandidateStateRejected},
 	}
@@ -177,10 +186,14 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 			t.Fatalf("expected %s -> %s to be closed in this slice", pair[0], pair[1])
 		}
 	}
-	for _, state := range []string{CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted} {
+	for _, state := range []string{CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted,
+		CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed, CandidateStateInconclusive} {
 		if !IsTerminalCandidateState(state) {
 			t.Fatalf("%s must be terminal", state)
 		}
+	}
+	if IsTerminalCandidateState(CandidateStateEvaluating) || IsTerminalCandidateState(CandidateStateReady) || IsTerminalCandidateState(CandidateStateDraft) {
+		t.Fatal("non-conclusion states must not be terminal")
 	}
 }
 

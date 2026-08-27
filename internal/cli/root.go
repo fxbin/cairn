@@ -449,7 +449,23 @@ func (command Command) memoryCandidateInspect(ctx context.Context, arguments []s
 		}
 		fmt.Fprintf(command.Stdout, "audit: %s%s at %s\n", entry.Action, reason, entry.OccurredAt.Format(time.RFC3339))
 	}
+	if evaluation := inspected.Evaluation; evaluation != nil {
+		finished := "-"
+		if !evaluation.FinishedAt.IsZero() {
+			finished = evaluation.FinishedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(command.Stdout, "evaluation: %s status=%s evidence=%s started=%s finished=%s\n",
+			evaluation.ID, evaluation.Status, evidenceRef(evaluation.SuiteResultDigest), evaluation.StartedAt.Format(time.RFC3339), finished)
+	}
 	return ExitOK
+}
+
+// evidenceRef 把证据摘要引用收敛为展示形态：空值显示 pending。
+func evidenceRef(digest string) string {
+	if digest == "" {
+		return "pending"
+	}
+	return digest
 }
 
 // memoryConsolidate 在工作区锁内执行一次事务化巩固，并把提交的计划、派生候选与

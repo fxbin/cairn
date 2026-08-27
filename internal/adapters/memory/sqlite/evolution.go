@@ -27,21 +27,24 @@ const (
 	migrationHashSix    = "cairn-schema-v6-trusted-memory-evaluation-registry"
 )
 
-// EvolutionInspectResult 是演化候选及其只读审计历史的投影。
+// EvolutionInspectResult 是演化候选及其只读审计历史与评测行的投影；
+// 尚未启动评测时 Evaluation 为 nil。
 type EvolutionInspectResult struct {
-	Candidate memory.EvolutionCandidate
-	Audit     []memory.EvolutionAuditEntry
+	Candidate  memory.EvolutionCandidate
+	Audit      []memory.EvolutionAuditEntry
+	Evaluation *memory.Evaluation
 }
 
 // CreateEvolutionCandidate 在单一事务内写入候选与 created 审计：同 ID 重试
 // 按不可变事实幂等返回；冷却键命中或事实冲突失败关闭；写入后读回比对，
-// 任一失败整体回滚。
+// 任一失败整体回滚。允许两种初始形态：draft（评测集待定）与携带冻结指纹
+// 的 ready（评测集随创建显式冻结），避免为后者单独引入二次绑定事件。
 func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memory.EvolutionCandidate, now time.Time) (memory.EvolutionCandidate, error) {
 	if err := candidate.Validate(); err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	if candidate.Status != memory.CandidateStateDraft {
-		return memory.EvolutionCandidate{}, errors.New("evolution candidate must be created in draft state")
+	if candidate.Status != memory.CandidateStateDraft && candidate.Status != memory.CandidateStateReady {
+		return memory.EvolutionCandidate{}, errors.New("evolution candidate must be created in draft or ready state")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -63,7 +66,7 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 		if err != nil {
 			return memory.EvolutionCandidate{}, err
 		}
-		if existing.Status == memory.CandidateStateDraft && evolutionCandidateIdempotentEquivalent(existing, candidate) && evolutionAuditMatches(existingAudit, []memory.EvolutionAuditEntry{{
+		if (existing.Status == memory.CandidateStateDraft || existing.Status == memory.CandidateStateReady) && evolutionCandidateIdempotentEquivalent(existing, candidate) && evolutionAuditMatches(existingAudit, []memory.EvolutionAuditEntry{{
 			CandidateID: candidate.ID,
 			Action:      memory.EvolutionAuditCreated,
 			OccurredAt:  existing.CreatedAt,
@@ -337,7 +340,15 @@ func (store *Store) InspectEvolutionCandidate(ctx context.Context, candidateID s
 	if err != nil {
 		return EvolutionInspectResult{}, err
 	}
-	return EvolutionInspectResult{Candidate: candidate, Audit: audit}, nil
+	result := EvolutionInspectResult{Candidate: candidate, Audit: audit}
+	evaluation, evalErr := store.LookupEvolutionEvaluationByCandidate(ctx, candidateID)
+	if evalErr == nil {
+		row := evaluation
+		result.Evaluation = &row
+	} else if !errors.Is(evalErr, memory.ErrNotFound) {
+		return EvolutionInspectResult{}, evalErr
+	}
+	return result, nil
 }
 
 // ensureNoActiveCooldown 在创建事务内拒绝冷却期内的候选重建。同键重建在
@@ -514,6 +525,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			return err
 		}
 		created, rejected, invalidated, expired := 0, 0, 0, 0
+		evaluationStarted, evaluationPassed, evaluationFailed, evaluationInconclusive := 0, 0, 0, 0
 		for _, entry := range audit {
 			if entry.CandidateID != candidate.ID || entry.OccurredAt.Before(candidate.CreatedAt) {
 				return fmt.Errorf("evolution candidate %s has an invalid audit timeline", candidate.ID)
@@ -539,6 +551,26 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 					return fmt.Errorf("evolution candidate %s has an invalid expiry audit", candidate.ID)
 				}
 				expired++
+			case memory.EvolutionAuditEvaluationStarted:
+				if entry.Reason != "" {
+					return fmt.Errorf("evolution candidate %s has an invalid evaluation start audit", candidate.ID)
+				}
+				evaluationStarted++
+			case memory.EvolutionAuditEvaluatedPassed:
+				if entry.Reason != "" {
+					return fmt.Errorf("evolution candidate %s has an invalid evaluation pass audit", candidate.ID)
+				}
+				evaluationPassed++
+			case memory.EvolutionAuditEvaluatedFailed:
+				if entry.Reason != "" {
+					return fmt.Errorf("evolution candidate %s has an invalid evaluation fail audit", candidate.ID)
+				}
+				evaluationFailed++
+			case memory.EvolutionAuditEvaluationInconclusive:
+				if entry.Reason != "" {
+					return fmt.Errorf("evolution candidate %s has an invalid evaluation inconclusive audit", candidate.ID)
+				}
+				evaluationInconclusive++
 			default:
 				return fmt.Errorf("evolution candidate %s has an unknown audit action", candidate.ID)
 			}
@@ -550,11 +582,15 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 		if err != nil {
 			return err
 		}
+		evaluationRow, hasEvaluation, err := lookupEvolutionEvaluationForCandidate(ctx, source, candidate.ID)
+		if err != nil {
+			return err
+		}
+		terminalEvaluationAudits := evaluationPassed + evaluationFailed + evaluationInconclusive
 		switch candidate.Status {
 		case memory.CandidateStateDraft:
-			// M4-1 只实现 draft 与三个显式终态；ready/evaluating/evaluated_*、
-			// inconclusive 与 promoted 属于后续切片合同，出现在当前库即为篡改。
-			if rejected != 0 || invalidated != 0 || expired != 0 {
+			// draft 只允许 created 审计与活跃来源；评测生命周期尚未开始。
+			if rejected != 0 || invalidated != 0 || expired != 0 || evaluationStarted != 0 || terminalEvaluationAudits != 0 {
 				return fmt.Errorf("draft evolution candidate %s has terminal audit", candidate.ID)
 			}
 			if sourceVersion.Status != memory.DerivedStatusActive {
@@ -563,7 +599,51 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			if !sourceVersion.ExpiresAt.After(checkNow) {
 				return fmt.Errorf("draft evolution candidate %s has an expired source version", candidate.ID)
 			}
+		case memory.CandidateStateReady:
+			// ready 表示冻结输入就绪但评测未启动：禁止一切终态与评测审计，
+			// 冻结指纹必须随登记写入。
+			if rejected != 0 || invalidated != 0 || expired != 0 || evaluationStarted != 0 || terminalEvaluationAudits != 0 {
+				return fmt.Errorf("ready evolution candidate %s has terminal or evaluation audit", candidate.ID)
+			}
+			if sourceVersion.Status != memory.DerivedStatusActive {
+				return fmt.Errorf("ready evolution candidate %s has an inactive source version", candidate.ID)
+			}
+			if !sourceVersion.ExpiresAt.After(checkNow) {
+				return fmt.Errorf("ready evolution candidate %s has an expired source version", candidate.ID)
+			}
+		case memory.CandidateStateEvaluating:
+			if evaluationStarted != 1 || terminalEvaluationAudits != 0 || rejected != 0 || expired != 0 {
+				return fmt.Errorf("evaluating evolution candidate %s has invalid audit state", candidate.ID)
+			}
+			if !hasEvaluation || evaluationRow.Status != memory.EvaluationStatusRunning {
+				return fmt.Errorf("evaluating evolution candidate %s lacks a running evaluation row", candidate.ID)
+			}
+			if sourceVersion.Status != memory.DerivedStatusActive {
+				return fmt.Errorf("evaluating evolution candidate %s has an inactive source version", candidate.ID)
+			}
+			if !sourceVersion.ExpiresAt.After(checkNow) {
+				return fmt.Errorf("evaluating evolution candidate %s has an expired source version", candidate.ID)
+			}
+		case memory.CandidateStateEvaluatedPassed, memory.CandidateStateEvaluatedFailed, memory.CandidateStateInconclusive:
+			expectedConclusion := 0
+			rowStatus := ""
+			if candidate.Status == memory.CandidateStateEvaluatedPassed {
+				expectedConclusion, rowStatus = evaluationPassed, memory.EvaluationStatusPassed
+			} else if candidate.Status == memory.CandidateStateEvaluatedFailed {
+				expectedConclusion, rowStatus = evaluationFailed, memory.EvaluationStatusFailed
+			} else {
+				expectedConclusion, rowStatus = evaluationInconclusive, memory.EvaluationStatusInconclusive
+			}
+			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 {
+				return fmt.Errorf("%s evolution candidate %s has invalid evaluation audit state", candidate.Status, candidate.ID)
+			}
+			if !hasEvaluation || evaluationRow.Status != rowStatus {
+				return fmt.Errorf("%s evolution candidate %s lacks a matching evaluation row", candidate.Status, candidate.ID)
+			}
 		case memory.CandidateStateRejected:
+			if evaluationStarted != 0 || terminalEvaluationAudits != 0 {
+				return fmt.Errorf("rejected evolution candidate %s carries evaluation audits", candidate.ID)
+			}
 			if rejected != 1 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("rejected evolution candidate %s has invalid audit state", candidate.ID)
 			}
@@ -581,11 +661,23 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("rejected evolution candidate %s has an incoherent cooldown deadline", candidate.ID)
 			}
 		case memory.CandidateStateInvalidated:
-			if rejected != 0 || invalidated != 1 || expired != 0 {
+			if rejected != 0 || expired != 0 {
 				return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
 			}
-			if sourceVersion.Status == memory.DerivedStatusActive && sourceVersion.ExpiresAt.After(checkNow) {
-				return fmt.Errorf("invalidated evolution candidate %s has an active source version", candidate.ID)
+			if hasEvaluation && evaluationRow.Status != memory.EvaluationStatusInvalid {
+				return fmt.Errorf("invalidated evolution candidate %s carries a non-invalid evaluation row", candidate.ID)
+			}
+			if hasEvaluation && evaluationRow.Status == memory.EvaluationStatusInvalid && evaluationStarted == 1 && evaluationPassed+evaluationFailed+evaluationInconclusive == 0 {
+				// 评测安全作废路径：隔离或证据合同破坏令结论为 invalid，
+				// 候选随之 invalidated；来源活性不再是必要条件。
+			} else {
+				// 来源失效驱动的受限作废：来源必须已经不处于可用状态。
+				if invalidated != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 {
+					return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
+				}
+				if sourceVersion.Status == memory.DerivedStatusActive && sourceVersion.ExpiresAt.After(checkNow) {
+					return fmt.Errorf("invalidated evolution candidate %s has an active source version", candidate.ID)
+				}
 			}
 		case memory.CandidateStateExpired:
 			if rejected != 0 || invalidated != 0 || expired != 1 {

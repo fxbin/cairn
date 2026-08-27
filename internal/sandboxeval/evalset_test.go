@@ -27,8 +27,9 @@ func validEvalSet(t *testing.T) EvalSet {
 	return EvalSet{
 		SchemaVersion:       evalSetSchemaV1,
 		TaskPackFingerprint: validProfileDigest,
-		TaskIDs:             []string{"TokenTracker", "TopicEye"},
+		TaskIDs:             []string{"AgentScope", "TokenTracker", "TopicEye"},
 		TaskContracts: []TaskContract{
+			{TaskID: "AgentScope", BaselineCommit: "def67890", VerifierDigest: thirdDigest, DockerImageDigest: companionDigest, BootstrapContractDigest: validProfileDigest},
 			{TaskID: "TokenTracker", BaselineCommit: "abc12345", VerifierDigest: thirdDigest, DockerImageDigest: companionDigest, BootstrapContractDigest: validProfileDigest},
 			{TaskID: "TopicEye", BaselineCommit: "2dfeb260", VerifierDigest: thirdDigest, DockerImageDigest: companionDigest, BootstrapContractDigest: validProfileDigest},
 		},
