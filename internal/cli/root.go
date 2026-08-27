@@ -271,8 +271,15 @@ func (command Command) benchmarkFreezeEvalSet(ctx context.Context, arguments []s
 		fmt.Fprintln(command.Stderr, "--suite-max-wall must be a positive duration")
 		return ExitUsage
 	}
+	// 首轮冻结合同要求显式三任务清单：缺省展开为清单全部任务。
+	freezeTaskIDs := taskIDs
+	if len(freezeTaskIDs) == 0 {
+		for _, task := range pack.Tasks {
+			freezeTaskIDs = append(freezeTaskIDs, task.ID)
+		}
+	}
 	report, err := benchmark.FreezeEvaluationAssets(ctx, benchmark.FreezeEvalSetOptions{
-		Pack: pack, TaskIDs: taskIDs, AttemptsPerTask: *attemptsPerTask,
+		Pack: pack, TaskIDs: freezeTaskIDs, AttemptsPerTask: *attemptsPerTask,
 		BaselineConfig: configuration,
 		Variant: memory.CompactionParamsVariant{
 			SchemaVersion:           memory.EvolutionSchemaVersion,
