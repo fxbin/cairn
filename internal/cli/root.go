@@ -315,32 +315,6 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 	return ExitOK
 }
 
-// decodeCredentialPolicyFile 严格解码本地忽略目录中的冻结凭据策略文件：拒绝
-// 未知字段与尾随内容，解析后立即复核结构合同。Key 不存在于此文件。
-func decodeCredentialPolicyFile(path string) (sandboxeval.CredentialPolicy, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return sandboxeval.CredentialPolicy{}, fmt.Errorf("read credential policy file: %w", err)
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(content)))
-	decoder.DisallowUnknownFields()
-	var policy sandboxeval.CredentialPolicy
-	if err := decoder.Decode(&policy); err != nil {
-		return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: %w", path, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: file must contain exactly one JSON document", path)
-		}
-		return sandboxeval.CredentialPolicy{}, fmt.Errorf("decode credential policy %q: %w", path, err)
-	}
-	if err := policy.Validate(); err != nil {
-		return sandboxeval.CredentialPolicy{}, fmt.Errorf("credential policy %q rejected: %w", path, err)
-	}
-	return policy, nil
-}
-
 // memoryCandidateEvaluate 驱动沙箱执行器对已就绪候选发起受控评测：评测集、
 // 租约与凭据策略都来自 Git 忽略的本地冻结文件；变体参数必须人工重述并经候
 // 选登记的规格摘要复核。--dry-run 只跑离线预筛，不开事务也不调用模型。
@@ -434,7 +408,7 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		fmt.Fprintln(command.Stderr, "credential lease error:", err)
 		return ExitUsage
 	}
-	policy, err := decodeCredentialPolicyFile(*policyPath)
+	policy, err := sandboxeval.LoadCredentialPolicy(*policyPath)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "credential policy error:", err)
 		return ExitUsage
@@ -466,6 +440,7 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		PrivateRoot:     localConfiguration.Paths.PrivateDir,
 		CairnRoot:       *cairnRoot,
 		PrepareTimeout:  prepareDuration,
+		PrepareProxy:    localConfiguration.Execution.PrepareProxy,
 		DryRun:          *dryRun,
 	})
 	if err != nil {

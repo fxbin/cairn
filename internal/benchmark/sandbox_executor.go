@@ -1,3 +1,9 @@
+// 本文件承载候选评测的沙箱执行器：启动前的失败关闭检查、单事务评测启动、
+// 成对交错 Run 循环、租约记账、持久化表面泄漏扫描、判定收尾与套件结果留档。
+// 隔离破坏与证据合同破坏立即以无效闭合；环境类故障按停止原因收敛为不确定，
+// 不烧毁候选的唯一评测机会。
+//
+// Author: fxbin
 package benchmark
 
 import (
@@ -22,7 +28,8 @@ import (
 	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
-// 沙箱评测执行器的闭合状态词：停止原因与立即短路触发名，全部进入本地评测
+// 沙箱评测执行器的闭合状态词：停止原因表示未完成计划但合同未被破坏的情形，
+// 一律收敛为不确定；触发名表示立即以无效闭合的合同破坏，两者都进入本地评测
 // 结果供人工复核追溯。
 const (
 	// sandboxStopLeaseExhausted 表示租约任一配额维度耗尽，按计划缺口进入
@@ -34,13 +41,62 @@ const (
 	// sandboxStopProviderFailure 表示 Provider 调用未能产生可校验终态，计入
 	// 计划 pair 缺失而非有效失败样本。
 	sandboxStopProviderFailure = "provider_failure"
+	// sandboxStopEnvironmentFailure 表示 clone/bootstrap/镜像检查等环境准备
+	// 无法把工作区带入合同状态：停止发起新 Run 而不是烧毁候选的唯一评测机会，
+	// 摘要确实漂移才走无效轨。
+	sandboxStopEnvironmentFailure = "environment_failure"
+)
+
+// 立即无效闭合的触发名词表；与套件结果一起留档，任何取值都必须可追溯到具
+// 体的合同破坏面。
+const (
 	// sandboxTriggerCredentialLeak 是泄漏扫描命中的触发名：隔离破坏安全事件，
 	// 无论发生于哪一臂都立即以 invalid 闭合。
 	sandboxTriggerCredentialLeak = "credential_leak_detected"
+	// sandboxTriggerOfflinePrescreenFailed 表示离线预筛在启动事务后发现冻结
+	// 输入破坏（ADR §3.3）：评测以 invalid 闭合且绝不调用模型。
+	sandboxTriggerOfflinePrescreenFailed = "offline_prescreen_failed"
+	// sandboxTriggerFrozenAssetDivergence 表示运行期取得的镜像或 verifier 摘
+	// 要与冻结合同不符。
+	sandboxTriggerFrozenAssetDivergence = "frozen_asset_divergence"
+	// sandboxTriggerCostUnitsOverflow 表示成本单位计算受检溢出。
+	sandboxTriggerCostUnitsOverflow = "cost_units_overflow"
+	// sandboxTriggerEvidenceUnverifiable 表示 Inspect 无法返回可核证的事件流。
+	sandboxTriggerEvidenceUnverifiable = "evidence_unverifiable"
+	// sandboxTriggerEvidenceIntegrityBroken 表示哈希链校验或确定性回放本身失败。
+	sandboxTriggerEvidenceIntegrityBroken = "evidence_integrity_broken"
+	// sandboxTriggerReplayDivergence 表示回放重建的终态与持久化投影不一致。
+	sandboxTriggerReplayDivergence = "replay_divergence"
+	// sandboxTriggerContractProjectionFailed 表示统一产品合同投影失败关闭。
+	sandboxTriggerContractProjectionFailed = "contract_projection_failed"
+	// sandboxTriggerToolPairingExtraction 表示配对提取器遇到结构漂移。
+	sandboxTriggerToolPairingExtraction = "tool_pairing_extraction"
+	// sandboxTriggerExplorationSignatureMissing 表示 continue 关轮缺失探索签名。
+	sandboxTriggerExplorationSignatureMissing = "exploration_signature_missing"
+	// sandboxTriggerLeakScanFailed 表示扫描表面无法读取：无法证明干净即不作
+	// 干净声明。
+	sandboxTriggerLeakScanFailed = "leak_scan_failed"
+	// sandboxTriggerComparisonNotComputable 表示比较器因可计算性合同破坏拒绝
+	// 产出结论。
+	sandboxTriggerComparisonNotComputable = "comparison_not_computable"
+	// sandboxTriggerRunIdentityDerivation 表示运行身份派生输入残缺。
+	sandboxTriggerRunIdentityDerivation = "run_identity_derivation"
 )
+
+// verificationFailedClass 是有效失败样本（有终态但验证未通过）的稳定类别词。
+const verificationFailedClass = "verification_failed"
 
 // sandboxRecordSchemaV1 是沙箱执行器本地记录与套件结果的当前 schema 版本。
 const sandboxRecordSchemaV1 = 1
+
+// sandboxArmTag 返回臂的稳定短标识，用于按臂分离的目录段、记录与 diff 文件
+// 命名；基线与变体永不共享可写归档路径。
+func sandboxArmTag(arm sandboxeval.SuiteArm) string {
+	if arm == sandboxeval.ArmVariant {
+		return "va"
+	}
+	return "bl"
+}
 
 // SandboxExecutor 复用基准 Runner 的准备链与测试替身字段编排一次受控演化候
 // 选评测：启动事务、成对交错 Run 循环、租约记账、泄漏扫描与比较器收尾都由
@@ -155,11 +211,7 @@ func evaluationDirectory(stateRoot, evaluationID string) string {
 // suiteSegmentForArm 生成按臂分离的套件段标识：Workspace、状态目录与任务身
 // 份投影都以它区分基线臂与变体臂，两臂永不共享可写边界。
 func suiteSegmentForArm(evaluationID string, arm sandboxeval.SuiteArm) string {
-	tag := "bl"
-	if arm == sandboxeval.ArmVariant {
-		tag = "va"
-	}
-	return "sandboxeval-" + tag + "-" + safePathComponent(evaluationID)
+	return "sandboxeval-" + sandboxArmTag(arm) + "-" + safePathComponent(evaluationID)
 }
 
 // BootstrapContractDigest 以规范化 JSON 计算 bootstrap 合同摘要：命令序列经
@@ -177,89 +229,94 @@ func BootstrapContractDigest(commands []Command) (string, error) {
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
-// runPrecheck 执行启动事务前的全量失败关闭检查：固定 Key 环境名与宿主注入、
-// 两臂配置展开校验、指纹一致性预筛、任务清单结构性对照、凭据策略归属、租约
-// 授权与评测身份派生。全部步骤只做纯内存判定，任何一项失败都保持候选 ready
-// 且零持久化；dry-run 与正式运行共用同一检查面，保证两个入口等价。
-func (executor SandboxExecutor) runPrecheck(options SandboxExecutorOptions) (precheckResult, error) {
+// runPrecheck 执行启动事务前的全量失败关闭检查。拒绝轨错误（结构与身份残缺、
+// 租约不足等）以 error 返回，候选保持 ready 零持久化；离线预筛的冻结指纹破
+// 坏不属拒绝轨，以第二返回值携带失败面——按 ADR 合同它将在开评测行后立即以
+// invalid 闭合，绝不调用模型。dry-run 与正式运行共用同一检查面，保证两个入
+// 口等价。
+func (executor SandboxExecutor) runPrecheck(options SandboxExecutorOptions) (precheckResult, []string, error) {
 	precheck := precheckResult{}
 	if options.CandidateID == "" || options.StateRoot == "" || options.WorkspacesRoot == "" || options.PrivateRoot == "" {
-		return precheck, errors.New("sandbox evaluation requires candidate id and state, workspaces, private roots")
+		return precheck, nil, errors.New("sandbox evaluation requires candidate id and state, workspaces, private roots")
+	}
+	if err := validatePrepareProxy(options.PrepareProxy); err != nil {
+		return precheck, nil, fmt.Errorf("prepare proxy: %w", err)
 	}
 	if err := options.Pack.Validate(); err != nil {
-		return precheck, fmt.Errorf("task pack invalid: %w", err)
+		return precheck, nil, fmt.Errorf("task pack invalid: %w", err)
 	}
 	if packFingerprint := options.Pack.Fingerprint(); packFingerprint != options.EvalSet.TaskPackFingerprint {
-		return precheck, fmt.Errorf("task pack fingerprint %q diverges from frozen %q", packFingerprint, options.EvalSet.TaskPackFingerprint)
+		return precheck, nil, fmt.Errorf("task pack fingerprint %q diverges from frozen %q", packFingerprint, options.EvalSet.TaskPackFingerprint)
 	}
 	if _, err := options.Pack.SelectedTasks(options.EvalSet.TaskIDs); err != nil {
-		return precheck, fmt.Errorf("frozen task selection: %w", err)
+		return precheck, nil, fmt.Errorf("frozen task selection: %w", err)
 	}
 	if err := validateSandboxTaskStructures(options); err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	if strings.TrimSpace(options.BaselineConfig.Provider.APIKeyEnv) != sandboxeval.SandboxProviderKeyEnv {
-		return precheck, fmt.Errorf("frozen config must name %s as its provider api_key_env", sandboxeval.SandboxProviderKeyEnv)
+		return precheck, nil, fmt.Errorf("frozen config must name %s as its provider api_key_env", sandboxeval.SandboxProviderKeyEnv)
 	}
 	if strings.TrimSpace(os.Getenv(sandboxeval.SandboxProviderKeyEnv)) == "" {
-		return precheck, fmt.Errorf("host environment must inject %s for this evaluation", sandboxeval.SandboxProviderKeyEnv)
+		return precheck, nil, fmt.Errorf("host environment must inject %s for this evaluation", sandboxeval.SandboxProviderKeyEnv)
 	}
 	if err := config.Validate(options.BaselineConfig); err != nil {
-		return precheck, fmt.Errorf("baseline config invalid: %w", err)
+		return precheck, nil, fmt.Errorf("baseline config invalid: %w", err)
 	}
 	variantConfig, err := ExpandCompactionVariant(options.BaselineConfig, options.Variant)
 	if err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	if err := sandboxeval.TaskEnvironmentViolation(sandboxEnvironmentNames(options.BaselineConfig)); err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	if err := sandboxeval.TaskEnvironmentViolation(sandboxEnvironmentNames(variantConfig)); err != nil {
-		return precheck, err
-	}
-	if err := options.Policy.Validate(); err != nil {
-		return precheck, fmt.Errorf("credential policy rejected: %w", err)
+		return precheck, nil, err
 	}
 	if err := options.EvalSet.Validate(); err != nil {
-		return precheck, fmt.Errorf("frozen eval set rejected: %w", err)
+		return precheck, nil, fmt.Errorf("frozen eval set rejected: %w", err)
+	}
+	if err := options.Policy.Validate(); err != nil {
+		return precheck, nil, fmt.Errorf("credential policy rejected: %w", err)
 	}
 	policyFingerprint, err := options.Policy.Fingerprint()
 	if err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	if policyFingerprint != options.EvalSet.CredentialPolicyFingerprint {
-		return precheck, fmt.Errorf("credential policy fingerprint %q diverges from frozen %q", policyFingerprint, options.EvalSet.CredentialPolicyFingerprint)
-	}
-	report, err := RunOfflinePrescreen(options.EvalSet, options.BaselineConfig, variantConfig, options.Variant, nil)
-	if err != nil {
-		return precheck, err
-	}
-	if !report.Passed() {
-		return precheck, &prescreenFailure{issues: report.Issues}
+		return precheck, nil, fmt.Errorf("credential policy fingerprint %q diverges from frozen %q", policyFingerprint, options.EvalSet.CredentialPolicyFingerprint)
 	}
 	suiteStart := executor.now()
 	if err := sandboxeval.AuthorizeLease(options.Lease, options.Policy, suiteStart); err != nil {
-		return precheck, fmt.Errorf("credential lease authorization failed before any persistence: %w", err)
+		return precheck, nil, fmt.Errorf("credential lease authorization failed before any persistence: %w", err)
 	}
 	evalSetFingerprint, err := options.EvalSet.Fingerprint()
 	if err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	baselineFingerprint := options.BaselineConfig.Fingerprint()
 	variantFingerprint, err := VariantExpandedFingerprint(baselineFingerprint, options.Variant)
 	if err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
 	evaluationID, err := memory.EvaluationID(options.CandidateID, evalSetFingerprint,
 		baselineFingerprint, variantFingerprint, options.EvalSet.ComparatorContract.ComparatorVersion)
 	if err != nil {
-		return precheck, err
+		return precheck, nil, err
 	}
-	return precheckResult{
+	precheck = precheckResult{
 		baselineConfig: options.BaselineConfig, variantConfig: variantConfig,
 		variantFingerprint: variantFingerprint, evaluationID: evaluationID,
 		evalSetFingerprint: evalSetFingerprint, baselineFingerprint: baselineFingerprint,
-	}, nil
+	}
+	report, err := RunOfflinePrescreen(options.EvalSet, options.BaselineConfig, variantConfig, options.Variant, nil)
+	if err != nil {
+		return precheck, nil, err
+	}
+	if !report.Passed() {
+		return precheck, report.Issues, nil
+	}
+	return precheck, nil, nil
 }
 
 // validateSandboxTaskStructures 对照冻结任务合同做纯内存的结构性核验：每个
@@ -332,19 +389,18 @@ func ensureEmptyEvaluationDirectory(directory string) error {
 // 闭合时如实报错保留 running 状态，不做启发式改写。
 func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutorOptions) (SandboxExecutionOutcome, error) {
 	outcome := SandboxExecutionOutcome{}
-	precheck, err := executor.runPrecheck(options)
-	failure := &prescreenFailure{}
-	if errors.As(err, &failure) {
-		return outcome, failure
-	}
+	precheck, prescreenIssues, err := executor.runPrecheck(options)
 	if err != nil {
 		return outcome, err
 	}
+	evaluationDir := evaluationDirectory(options.StateRoot, precheck.evaluationID)
 	if options.DryRun {
 		outcome.DryRun = true
+		if len(prescreenIssues) > 0 {
+			return outcome, &prescreenFailure{issues: prescreenIssues}
+		}
 		return outcome, nil
 	}
-	evaluationDir := evaluationDirectory(options.StateRoot, precheck.evaluationID)
 	if err := ensureEmptyEvaluationDirectory(evaluationDir); err != nil {
 		return outcome, err
 	}
@@ -360,7 +416,17 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 			return outcome, fmt.Errorf("credential lease no longer covers the resumed evaluation window: %w", err)
 		}
 	}
-	conclusion, stopReason, records, _, scheduleErr := executor.runSchedule(ctx, options, precheck)
+	conclusion := sandboxeval.Conclusion{}
+	stopReason := ""
+	var records []SandboxRunRecord
+	var scheduleErr error
+	if len(prescreenIssues) > 0 {
+		// 预筛失败属冻结合同破坏：开评测行后立即以无效闭合且绝不调用模型，
+		// 保证"评测结果为 invalid"存在可审计的一次评测事实。
+		conclusion = sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerOfflinePrescreenFailed}
+	} else {
+		conclusion, stopReason, records, _, scheduleErr = executor.runSchedule(ctx, options, precheck)
+	}
 	if conclusion.Status == "" {
 		// 结论为空意味着执行链在合法判定前遭遇 I/O 故障：不落盘、不闭合、
 		// 保留 running 状态由人工对账，绝不伪造结论。
@@ -380,6 +446,9 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		return outcome, fmt.Errorf("finish evaluation transaction: %w", err)
 	}
 	outcome.Evaluation = concluded
+	if scheduleErr != nil {
+		return outcome, fmt.Errorf("suite reached a legal %s conclusion with suppressed diagnostics: %w", conclusion.Status, scheduleErr)
+	}
 	return outcome, nil
 }
 
@@ -428,9 +497,9 @@ func (abort *scheduleAbort) Error() string {
 func (abort *scheduleAbort) Unwrap() error { return abort.err }
 
 // runSchedule 按成对交错顺序驱动全部计划 Run：每步即时准备即时执行，正常
-// 样本累计 verdict 与 record；遇到立即短路信号则停止后续步骤并把结论固定为
-// invalid。租约耗尽、上下文取消与 Provider 失效都以停止原因返回，交由不完
-// 备套件的自然语义收敛为 inconclusive。
+// 样本累计 verdict 与 record。停止原因只中断调度并把剩余样本留空——套件交
+// 由比较器的完备性检查自然收敛为 inconclusive；遇到立即短路信号则把结论固
+// 定为 invalid。
 func (executor SandboxExecutor) runSchedule(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult) (sandboxeval.Conclusion, string, []SandboxRunRecord, []sandboxeval.SuiteVerdict, error) {
 	conclusion := sandboxeval.Conclusion{}
 	stopReason := ""
@@ -455,9 +524,10 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 	ledger := &leaseLedger{}
 	for _, step := range steps {
 		if ctx.Err() != nil {
-			return conclusion, sandboxStopContextCancelled, records, verdicts, nil
+			stopReason = sandboxStopContextCancelled
+			break
 		}
-		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir)
+		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir, &stopReason)
 		if record != nil {
 			if writeErr := writeJSON(filepath.Join(evaluationDir, "runs", sandboxRecordFileName(step)), record); writeErr != nil {
 				return conclusion, stopReason, records, verdicts, fmt.Errorf("persist sandbox run record: %w", writeErr)
@@ -470,31 +540,36 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 		if stepAbort != nil {
 			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, stopReason, records, verdicts, nil
 		}
+		if stopReason != "" {
+			break
+		}
 		if record != nil && ledger.exceedsLease(options.Lease) {
-			return conclusion, sandboxStopLeaseExhausted, records, verdicts, nil
+			stopReason = sandboxStopLeaseExhausted
+			break
 		}
 	}
 	conclusion, err = sandboxeval.JudgeSuite(options.EvalSet, verdicts)
 	if err != nil {
 		// 受检运算溢出、证据臂归属漂移等属于可计算性合同破坏：按无效闭合而
-		// 不是遗留 running，让套件终态始终合法可读。
-		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: "comparison_not_computable"}, stopReason, records, verdicts, fmt.Errorf("judge suite: %w", err)
+		// 不是遗留 running，让套件终态始终合法可读；底层诊断随错误回传调用方。
+		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerComparisonNotComputable}, stopReason, records, verdicts, fmt.Errorf("judge suite: %w", err)
 	}
 	return conclusion, stopReason, records, verdicts, nil
 }
 
 // executeScheduledStep 准备并执行单个调度步：record 始终如实留档，verdict
 // 只在产生可计入评分的有效终态样本时非空；stepAbort 表示隔离或证据合同破坏
-// 必须 invalid 闭合。租约账面由循环层在每步后统一判定，超出即停止发起新的
-// Run——最后一步的瞬时超额风险由服务端配额硬限兜底。
-func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult, task Task, step SandboxPairStep, ledger *leaseLedger, evaluationDir string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+// 必须 invalid 闭合。环境准备失败与 Provider 无终态不产 abort，经 stopReason
+// 出口中断调度并收敛为不确定。租约账面由循环层在每步后统一判定，超出的瞬
+// 时风险由租约合同强制的服务端配额兜底。
+func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult, task Task, step SandboxPairStep, ledger *leaseLedger, evaluationDir string, stopReason *string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	armConfig := precheck.baselineConfig
 	if step.Arm == sandboxeval.ArmVariant {
 		armConfig = precheck.variantConfig
 	}
 	runID, err := sandboxeval.SandboxRunID(precheck.evaluationID, step.Arm, step.TaskID, step.Try)
 	if err != nil {
-		return nil, nil, &scheduleAbort{trigger: "run_identity_derivation", err: err}
+		return nil, nil, &scheduleAbort{trigger: sandboxTriggerRunIdentityDerivation, err: err}
 	}
 	runOptions := RunOptions{
 		Pack:           options.Pack,
@@ -510,16 +585,22 @@ func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, option
 	report := SuiteResult{SuiteRunID: suiteSegmentForArm(precheck.evaluationID, step.Arm), TaskPackFingerprint: options.Pack.Fingerprint()}
 	prepared, preparation := executor.prepareAgentAttempt(ctx, runOptions, report, task, step.Try)
 	if preparation.Outcome != "prepared" {
-		return nil, nil, &scheduleAbort{trigger: "preparation_failed", err: errors.New(strings.TrimPrefix(preparation.FailureClass, "preparation_"))}
+		*stopReason = sandboxStopEnvironmentFailure
+		return nil, nil, nil
 	}
 	frozenContract, found := sandboxTaskContract(options.EvalSet, task.ID)
 	if !found {
-		return nil, nil, &scheduleAbort{trigger: "frozen_asset_divergence", err: fmt.Errorf("frozen contract for task %q vanished", task.ID)}
+		return nil, nil, &scheduleAbort{trigger: sandboxTriggerFrozenAssetDivergence, err: fmt.Errorf("frozen contract for task %q vanished", task.ID)}
 	}
 	if err := verifySandboxFrozenAssets(ctx, preparation, frozenContract); err != nil {
-		return nil, nil, &scheduleAbort{trigger: "frozen_asset_divergence", err: err}
+		var divergence *frozenAssetDivergenceError
+		if errors.As(err, &divergence) {
+			return nil, nil, &scheduleAbort{trigger: sandboxTriggerFrozenAssetDivergence, err: err}
+		}
+		*stopReason = sandboxStopEnvironmentFailure
+		return nil, nil, nil
 	}
-	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, armConfig, prepared, runID, precheck.evaluationID, step, evaluationDir)
+	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, armConfig, prepared, runID, precheck.evaluationID, step, evaluationDir, stopReason)
 	if verdict == nil {
 		return record, verdict, stepAbort
 	}
@@ -527,12 +608,21 @@ func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, option
 		int64(options.EvalSet.PricingSnapshot.InputPriceMicrousdPerMillionTokens),
 		int64(options.EvalSet.PricingSnapshot.OutputPriceMicrousdPerMillionTokens))
 	if costErr != nil {
-		return record, nil, &scheduleAbort{trigger: "cost_units_overflow", err: costErr}
+		return record, nil, &scheduleAbort{trigger: sandboxTriggerCostUnitsOverflow, err: costErr}
 	}
 	ledger.chargeUnits(units)
 	ledger.chargeUsage(verdict.InputTokens, verdict.OutputTokens, 1)
 	return record, verdict, stepAbort
 }
+
+// frozenAssetDivergenceError 把"摘要已取得但与冻结值不符"从环境执行失败中区
+// 分出来：前者是冻结合同破坏必须以无效闭合，后者只是基础设施故障。
+type frozenAssetDivergenceError struct {
+	detail string
+}
+
+// Error 返回漂移面描述。
+func (err *frozenAssetDivergenceError) Error() string { return err.detail }
 
 // sandboxTaskContract 返回指定任务的冻结执行合同。
 func sandboxTaskContract(evalSet sandboxeval.EvalSet, taskID string) (sandboxeval.TaskContract, bool) {
@@ -546,17 +636,18 @@ func sandboxTaskContract(evalSet sandboxeval.EvalSet, taskID string) (sandboxeva
 
 // verifySandboxFrozenAssets 复核只能在真实工作区上取得的冻结资产摘要：私有
 // verifier 摘要在准备阶段已随工作区注入产生，任务镜像摘要经本地镜像自省取
-// 得。任一与冻结合同不符都意味着评测资产漂移，必须失败关闭。
+// 得。摘要取得即返回 divergence 错误（无效轨）；取不到摘要属环境故障（停止
+// 轨），两者绝不混同。
 func verifySandboxFrozenAssets(ctx context.Context, preparation PreparationResult, frozen sandboxeval.TaskContract) error {
 	if preparation.VerifierFingerprint != frozen.VerifierDigest {
-		return errors.New("applied verifier digest diverges from the frozen task contract")
+		return &frozenAssetDivergenceError{detail: "applied verifier digest diverges from the frozen task contract"}
 	}
 	digest, err := dockerImageSelfDigest(ctx, preparation.DockerImage)
 	if err != nil {
-		return err
+		return fmt.Errorf("inspect task docker image digest: %w", err)
 	}
 	if digest != frozen.DockerImageDigest {
-		return errors.New("task docker image self digest diverges from the frozen task contract")
+		return &frozenAssetDivergenceError{detail: "task docker image self digest diverges from the frozen task contract"}
 	}
 	return nil
 }
@@ -572,10 +663,11 @@ func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
 }
 
 // runSandboxAttempt 对已就绪的工作区发起一次 Agent 运行并完成全链证据提取：
-// Inspect、哈希链与二次确定性回放比对、合同投影、工具配对与探索计数、泄漏
-// 扫描与 diff 归档。无终态的 Provider 失效不产 verdict，由套件按计划缺口收
-// 敛为 inconclusive；错误文本只保留分类词，原文一律不落盘。
-func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+// Inspect、哈希链与二次确定性回放比对、合同投影、工具配对与探索计数、diff
+// 归档与泄漏扫描。任何终局出口（含 Provider 无终态与证据合同破坏）都先补齐
+// 当步泄漏扫描再封口——未扫描的表面不得冒充干净证据。错误文本只保留分类词，
+// 原文一律不落盘。
+func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stopReason *string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	record := &SandboxRunRecord{
 		SchemaVersion: sandboxRecordSchemaV1,
 		RunID:         runID,
@@ -586,15 +678,49 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		StartedAt:     executor.now(),
 		LeakScan:      sandboxeval.LeakScanReport{Outcome: sandboxeval.LeakClean},
 	}
-	failWithoutVerdict := func(class string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
-		record.FailureClass = class
-		record.FinishedAt = executor.now()
-		return record, nil, nil
+	diffDirectory := filepath.Join(evaluationDir, "diffs", sandboxArmTag(step.Arm))
+	if err := os.MkdirAll(diffDirectory, 0o700); err != nil {
+		return record, nil, &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: fmt.Errorf("create diff archive directory: %w", err)}
+	}
+	// finalizeSurfaces 是所有出口共用的封口段：归档工作区 diff、枚举全部持久
+	// 化表面并用内存中的原始 Key 扫描，扫描结论写回 record 后才允许返回。
+	finalizeSurfaces := func() *scheduleAbort {
+		captured := executor.captureDiff(ctx, prepared.Result.Workspace, diffDirectory, AttemptResult{TaskID: step.TaskID, Attempt: step.Try})
+		scanSurfaces, surfaceErr := fileSurfacePathsUnder(prepared.Result.Workspace, prepared.Result.StateDir)
+		if surfaceErr != nil {
+			return &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: surfaceErr}
+		}
+		if captured.DiffPath != "" {
+			scanSurfaces = append(scanSurfaces, filepath.Join(diffDirectory, captured.DiffPath))
+		}
+		report, scanErr := sandboxeval.ScanPersistenceSurfaces(scanSurfaces, []byte(os.Getenv(sandboxeval.SandboxProviderKeyEnv)))
+		if scanErr != nil {
+			return &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: scanErr}
+		}
+		record.LeakScan = report
+		if report.Outcome == sandboxeval.LeakDetected {
+			record.SecurityIncidents = 1
+			return &scheduleAbort{trigger: sandboxTriggerCredentialLeak, err: errors.New("persistence surfaces carried the sandbox provider key")}
+		}
+		return nil
 	}
 	abortInvalid := func(trigger string, cause error) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 		record.FailureClass = trigger
+		if scanErr := finalizeSurfaces(); scanErr != nil && trigger != sandboxTriggerLeakScanFailed {
+			record.FailureClass = scanErr.trigger
+			return record, nil, scanErr
+		}
 		record.FinishedAt = executor.now()
 		return record, nil, &scheduleAbort{trigger: trigger, err: cause}
+	}
+	failWithoutVerdict := func(class string) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+		record.FailureClass = class
+		if scanErr := finalizeSurfaces(); scanErr != nil {
+			record.FailureClass = scanErr.trigger
+			return record, nil, scanErr
+		}
+		record.FinishedAt = executor.now()
+		return record, nil, nil
 	}
 	result, err := executor.Service.Run(ctx, app.RunOptions{
 		Task:      prepared.Task.AgentPrompt(),
@@ -602,70 +728,61 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		StateDir:  prepared.Result.StateDir,
 		Config:    armConfig,
 	})
-	if err != nil {
-		record.WallTimeMS = executor.now().Sub(record.StartedAt).Milliseconds()
-		return failWithoutVerdict(contract.ClassifyError(err))
+	record.WallTimeMS = executor.now().Sub(record.StartedAt).Milliseconds()
+	if err != nil || result.ID == "" {
+		// 无终态的 Provider 失效或装配异常：当步证据照常封口留档，调度以停
+		// 止原因中断，套件按计划缺口收敛为不确定。
+		class := sandboxStopProviderFailure
+		if err != nil {
+			class = contract.ClassifyError(err)
+		}
+		*stopReason = sandboxStopProviderFailure
+		return failWithoutVerdict(class)
 	}
-	agentFinished := executor.now()
-	record.WallTimeMS = agentFinished.Sub(record.StartedAt).Milliseconds()
 	inspected, inspectErr := executor.Service.Inspect(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig, result.ID, true)
 	if inspectErr != nil {
-		return abortInvalid("evidence_unverifiable", inspectErr)
+		return abortInvalid(sandboxTriggerEvidenceUnverifiable, inspectErr)
 	}
 	completedVerified := inspected.Projection.State == domain.RunCompleted && inspected.Projection.VerificationSucceeded
 	replayConsistent, replayErr := replayConsistentWithProjection(inspected.Projection, inspected.Events)
 	if replayErr != nil {
-		return abortInvalid("evidence_integrity_broken", replayErr)
+		return abortInvalid(sandboxTriggerEvidenceIntegrityBroken, replayErr)
 	}
 	if !replayConsistent {
-		return abortInvalid("replay_divergence", errors.New("deterministic replay diverges from the persisted projection"))
+		return abortInvalid(sandboxTriggerReplayDivergence, errors.New("deterministic replay diverges from the persisted projection"))
 	}
 	record.ReplayConsistent = true
 	frozen, marshalErr := json.Marshal(armConfig)
 	if marshalErr != nil {
-		return abortInvalid("contract_projection_failed", marshalErr)
+		return abortInvalid(sandboxTriggerContractProjectionFailed, marshalErr)
 	}
 	runResult, projectionErr := contract.ResultFromRun(inspected.Events, inspected.Projection, prepared.Result.Task, artifact.RedactJSON(frozen))
 	if projectionErr != nil {
-		return abortInvalid("contract_projection_failed", projectionErr)
+		return abortInvalid(sandboxTriggerContractProjectionFailed, projectionErr)
 	}
 	pairingBreaks, pairingErr := domain.ToolCallPairingBreaks(inspected.Events)
 	if pairingErr != nil {
-		return abortInvalid("tool_pairing_extraction", pairingErr)
+		return abortInvalid(sandboxTriggerToolPairingExtraction, pairingErr)
 	}
 	evidence, evidenceErr := domain.CollectRunEvidenceMetrics(inspected.Events)
 	if evidenceErr != nil {
-		return abortInvalid("exploration_signature_missing", evidenceErr)
+		return abortInvalid(sandboxTriggerExplorationSignatureMissing, evidenceErr)
 	}
 	doctorOK := true
 	if _, doctorErr := executor.Service.Doctor(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig); doctorErr != nil {
 		doctorOK = false
 	}
-	captured := executor.captureDiff(ctx, prepared.Result.Workspace, evaluationDir, AttemptResult{TaskID: step.TaskID, Attempt: step.Try})
 	record.InputTokens = runResult.Metrics.InputTokens
 	record.OutputTokens = runResult.Metrics.OutputTokens
 	record.ToolPairingBreaks = pairingBreaks
 	record.RepeatedExplorations = evidence.RepeatedExplorations
 	record.DoctorOK = doctorOK
-	scanSurfaces, surfaceErr := fileSurfacePathsUnder(prepared.Result.Workspace, prepared.Result.StateDir)
-	if surfaceErr != nil {
-		return abortInvalid("leak_scan_failed", surfaceErr)
-	}
-	if captured.DiffPath != "" {
-		scanSurfaces = append(scanSurfaces, filepath.Join(evaluationDir, captured.DiffPath))
-	}
-	report, scanErr := sandboxeval.ScanPersistenceSurfaces(scanSurfaces, []byte(os.Getenv(sandboxeval.SandboxProviderKeyEnv)))
-	if scanErr != nil {
-		return abortInvalid("leak_scan_failed", scanErr)
-	}
-	record.LeakScan = report
-	if report.Outcome == sandboxeval.LeakDetected {
-		record.SecurityIncidents = 1
-		return abortInvalid(sandboxTriggerCredentialLeak, errors.New("persistence surfaces carried the sandbox provider key"))
+	if scanErr := finalizeSurfaces(); scanErr != nil {
+		return record, nil, scanErr
 	}
 	record.Success = completedVerified
 	if !completedVerified && record.FailureClass == "" {
-		record.FailureClass = "verification_failed"
+		record.FailureClass = verificationFailedClass
 	}
 	record.FinishedAt = executor.now()
 	return record, &sandboxeval.SuiteVerdict{
