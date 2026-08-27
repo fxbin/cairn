@@ -65,6 +65,9 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 	if err := options.Pack.Validate(); err != nil {
 		return report, fmt.Errorf("task pack invalid: %w", err)
 	}
+	if len(options.TaskIDs) != sandboxeval.FirstEvalTaskCount || options.AttemptsPerTask != sandboxeval.FirstEvalAttemptsPerTask {
+		return report, fmt.Errorf("first evaluation freeze requires exactly %d tasks and %d attempts per task", sandboxeval.FirstEvalTaskCount, sandboxeval.FirstEvalAttemptsPerTask)
+	}
 	tasks, err := options.Pack.SelectedTasks(options.TaskIDs)
 	if err != nil {
 		return report, fmt.Errorf("task selection: %w", err)
@@ -199,6 +202,7 @@ func selfCheckFrozenAssets(options FreezeEvalSetOptions, evalSet sandboxeval.Eva
 		WorkspacesRoot: filepath.Join(options.OutDir, ".selfcheck-workspaces"),
 		PrivateRoot:    options.PrivateRoot,
 		BaselineConfig: options.BaselineConfig, Variant: options.Variant,
+		DryRun: true,
 	}
 	precheck, prescreenIssues, err := (SandboxExecutor{}).runPrecheck(executorOptions)
 	failure := &prescreenFailure{}
@@ -258,11 +262,8 @@ func providerContractFromConfig(configuration config.Config) (contract.ProviderR
 	}
 	profile, err := contract.ResolveProviderRequestProfile(contract.ProviderKindOpenAICompatible, contract.ProviderRequestDeclaration{
 		BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model,
-		Capability: &contract.ProviderCapabilityDeclaration{
-			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
-			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
-			StopReasons: capability.StopReasons,
-		},
+		Capability: config.ProviderCapabilityDeclaration(configuration),
+		Generation: config.ProviderGenerationDeclaration(configuration),
 	})
 	if err != nil {
 		return contract.ProviderRequestProfile{}, contract.PricingSnapshot{}, fmt.Errorf("provider request profile: %w", err)

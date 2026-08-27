@@ -1,3 +1,6 @@
+// 本文件实现候选沙箱评测的变体展开与离线预筛。
+//
+// Author: fxbin
 package benchmark
 
 import (
@@ -5,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
@@ -16,10 +20,8 @@ import (
 // 会改变冻结身份。
 const variantConfigPrefix = "cairn-sandbox-variant-config-v1"
 
-// ExpandCompactionVariant 把压缩参数变体的可生效部分应用到基线配置副本上，
-// 返回可直接用于执行的变体臂配置。当前只有 max_prompt_tokens 与
-// max_summary_bytes 存在运行时消费路径；其余两个百分比参数只随规格摘要进
-// 入身份，接线属独立评审切片。
+// ExpandCompactionVariant 把四项压缩参数完整应用到基线配置副本上，返回
+// 可直接用于执行的变体臂配置；任何进入候选身份的字段都必须改变运行时语义。
 func ExpandCompactionVariant(base config.Config, variant memory.CompactionParamsVariant) (config.Config, error) {
 	if err := variant.Validate(); err != nil {
 		return config.Config{}, fmt.Errorf("expand compaction variant: %w", err)
@@ -27,6 +29,8 @@ func ExpandCompactionVariant(base config.Config, variant memory.CompactionParams
 	expanded := base
 	expanded.Context.MaxPromptTokens = variant.MaxPromptTokens
 	expanded.Context.MaxSummaryBytes = variant.MaxSummaryBytes
+	expanded.Context.InventoryBudgetPercent = variant.InventoryBudgetPercent
+	expanded.Context.ThresholdReservePercent = variant.ThresholdReservePercent
 	if err := config.Validate(expanded); err != nil {
 		return config.Config{}, fmt.Errorf("expanded variant config invalid: %w", err)
 	}
@@ -49,8 +53,10 @@ func VariantExpandedFingerprint(baselineConfigFingerprint string, variant memory
 	}{
 		BaselineConfigFingerprint: baselineConfigFingerprint,
 		AppliedContext: map[string]int{
-			"max_prompt_tokens": variant.MaxPromptTokens,
-			"max_summary_bytes": variant.MaxSummaryBytes,
+			"inventory_budget_percent":  variant.InventoryBudgetPercent,
+			"max_prompt_tokens":         variant.MaxPromptTokens,
+			"max_summary_bytes":         variant.MaxSummaryBytes,
+			"threshold_reserve_percent": variant.ThresholdReservePercent,
 		},
 		VariantSpec: variant,
 		SpecDigest:  specDigest,
@@ -68,9 +74,9 @@ type offlinePrescreenReport struct {
 func (report offlinePrescreenReport) Passed() bool { return len(report.Issues) == 0 }
 
 // RunOfflinePrescreen 执行在线评测前的离线预筛：核对展开后指纹与冻结一致、
-// 两臂配置仍满足全部合同校验，并对可选提供的压缩产物样本断言尺寸上限与清
-// 单锚标记保留。样本缺失不算失败——首轮可能尚无历史压缩事件。
-func RunOfflinePrescreen(evalSet sandboxeval.EvalSet, baselineConfig, variantConfig config.Config, variant memory.CompactionParamsVariant, compactedSummaries [][]byte) (offlinePrescreenReport, error) {
+// 两臂配置仍满足全部合同校验，并用固定工具历史复算两次压缩，验证尺寸、确
+// 定性、工具配对以及探索/事实/验证三类证据锚。
+func RunOfflinePrescreen(evalSet sandboxeval.EvalSet, baselineConfig, variantConfig config.Config, variant memory.CompactionParamsVariant) (offlinePrescreenReport, error) {
 	report := offlinePrescreenReport{}
 	addIssue := func(format string, args ...any) {
 		report.Issues = append(report.Issues, fmt.Sprintf(format, args...))
@@ -86,15 +92,40 @@ func RunOfflinePrescreen(evalSet sandboxeval.EvalSet, baselineConfig, variantCon
 	if baselineFingerprint != evalSet.BaselineConfigFingerprint {
 		addIssue("baseline config fingerprint %q diverges from frozen %q", baselineFingerprint, evalSet.BaselineConfigFingerprint)
 	}
-	for index, summary := range compactedSummaries {
-		if len(summary) > variant.MaxSummaryBytes {
-			addIssue("compacted summary #%d exceeds the variant budget %d", index, variant.MaxSummaryBytes)
-		}
-		if !stringsContains(string(summary), explorationInventoryAnchor) {
-			addIssue("compacted summary #%d lost the exploration inventory anchor", index)
+	probe := agent.ProbeContextCompaction(variant.MaxSummaryBytes, variant.InventoryBudgetPercent)
+	if !bytesEqual(probe.FirstSummary, probe.SecondSummary) {
+		addIssue("compaction probe is not deterministic for identical input")
+	}
+	if probe.ToolCalls != probe.ToolResults || probe.ToolCalls == 0 {
+		addIssue("compaction probe lost tool call/result pairing")
+	}
+	if len(probe.FirstSummary) == 0 || len(probe.FirstSummary) > variant.MaxSummaryBytes {
+		addIssue("compaction probe summary violates the variant byte budget")
+	}
+	for _, anchor := range []string{
+		explorationInventoryAnchor,
+		"read_file",
+		"已读取目标并保留事实证据",
+		"验证反馈",
+	} {
+		if !stringsContains(string(probe.FirstSummary), anchor) {
+			addIssue("compaction probe lost evidence anchor %q", anchor)
 		}
 	}
 	return report, nil
+}
+
+// bytesEqual 比较两个离线探针摘要是否逐字节一致。
+func bytesEqual(left, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // stringsContains 是纯函数域内的有限子串判断，避免为单一用途引入标准库之外的依赖分叉。
@@ -112,8 +143,6 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-// explorationInventoryAnchor 是压缩摘要必须保留的探索清单锚标记；它由 Agent
-// 侧压缩器写入，丢失即视为清单证据被破坏。
 // explorationInventoryAnchor 是压缩摘要必须保留的探索清单锚片段；它与 Agent
 // 侧检查点前缀的清单字句保持同源，丢失即视为清单证据被破坏。
 const explorationInventoryAnchor = "已检查对象"

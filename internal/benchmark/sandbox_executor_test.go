@@ -3,6 +3,7 @@ package benchmark
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,21 @@ func sandboxPolicy() sandboxeval.CredentialPolicy {
 	}
 }
 
+// sandboxThreeTaskPack 把通用单任务 runner fixture 扩成首轮固定三任务包；
+// 三个任务共享本地基线仓库，但身份与 verifier 表面彼此独立。
+func sandboxThreeTaskPack(pack TaskPack) TaskPack {
+	base := pack.Tasks[0]
+	pack.Tasks = make([]Task, 0, sandboxeval.FirstEvalTaskCount)
+	for index := 1; index <= sandboxeval.FirstEvalTaskCount; index++ {
+		cloned := base
+		cloned.ID = fmt.Sprintf("LOCAL-%03d", index)
+		pack.Tasks = append(pack.Tasks, cloned)
+	}
+	pack.TaskCount = len(pack.Tasks)
+	pack.Execution.AttemptsPerTask = sandboxeval.FirstEvalAttemptsPerTask
+	return pack
+}
+
 // sandboxSetup 聚合一次沙箱评测输入的全部自洽 fixture。
 type sandboxSetup struct {
 	source         string
@@ -62,22 +78,30 @@ func buildSandboxSetup(t *testing.T, mutate func(*sandboxeval.EvalSet)) sandboxS
 	t.Helper()
 	t.Setenv(sandboxeval.SandboxProviderKeyEnv, sandboxProviderKey)
 	source, baseline := localGitRepository(t)
-	pack := testPack(source, baseline)
+	pack := sandboxThreeTaskPack(testPack(source, baseline))
 	baselineConfig := config.Defaults()
 	baselineConfig.Provider.APIKeyEnv = sandboxeval.SandboxProviderKeyEnv
+	baselineConfig.Provider.BaseURL = "https://provider.test/v4"
+	baselineConfig.Provider.Model = "test-model"
+	baselineConfig.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
+	maximumOutputTokens := 4096
+	baselineConfig.Provider.Generation = &config.ProviderGenerationConfig{MaxOutputTokens: &maximumOutputTokens, ToolChoice: contract.GenerationToolChoiceAuto}
+	baselineConfig.Pricing.InputTokenUSD = 0.00000014
+	baselineConfig.Pricing.OutputTokenUSD = 0.00000028
 	variant := sandboxVariant()
 	policy := sandboxPolicy()
-	tasks, err := pack.SelectedTasks([]string{pack.Tasks[0].ID})
+	taskIDs := make([]string, 0, len(pack.Tasks))
+	for _, task := range pack.Tasks {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	tasks, err := pack.SelectedTasks(taskIDs)
 	if err != nil {
 		t.Fatalf("select task fixture: %v", err)
 	}
-	bootstrapDigest, err := BootstrapContractDigest(tasks[0].Verification.Bootstrap)
-	if err != nil {
-		t.Fatalf("bootstrap digest fixture: %v", err)
-	}
 	profile, err := contract.ResolveProviderRequestProfile(contract.ProviderKindOpenAICompatible, contract.ProviderRequestDeclaration{
-		BaseURL: "https://provider.test/v4", Model: "test-model",
-		Capability: &contract.ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true},
+		BaseURL: baselineConfig.Provider.BaseURL, Model: baselineConfig.Provider.Model,
+		Capability: config.ProviderCapabilityDeclaration(baselineConfig),
+		Generation: config.ProviderGenerationDeclaration(baselineConfig),
 	})
 	if err != nil {
 		t.Fatalf("provider profile fixture: %v", err)
@@ -95,19 +119,23 @@ func buildSandboxSetup(t *testing.T, mutate func(*sandboxeval.EvalSet)) sandboxS
 	if err != nil {
 		t.Fatalf("policy fingerprint fixture: %v", err)
 	}
-	taskIDs := []string{tasks[0].ID}
+	taskContracts := make([]sandboxeval.TaskContract, 0, len(tasks))
+	for _, task := range tasks {
+		bootstrapDigest, err := BootstrapContractDigest(task.Verification.Bootstrap)
+		if err != nil {
+			t.Fatalf("bootstrap digest fixture: %v", err)
+		}
+		taskContracts = append(taskContracts, sandboxeval.TaskContract{
+			TaskID: task.ID, BaselineCommit: baseline, VerifierDigest: sandboxFixtureDigest,
+			DockerImageDigest: sandboxFixtureDigest, BootstrapContractDigest: bootstrapDigest,
+		})
+	}
 	evalSet := sandboxeval.EvalSet{
-		SchemaVersion:       1,
-		TaskPackFingerprint: pack.Fingerprint(),
-		TaskIDs:             taskIDs,
-		TaskContracts: []sandboxeval.TaskContract{{
-			TaskID:                  tasks[0].ID,
-			BaselineCommit:          baseline,
-			VerifierDigest:          sandboxFixtureDigest,
-			DockerImageDigest:       sandboxFixtureDigest,
-			BootstrapContractDigest: bootstrapDigest,
-		}},
-		AttemptsPerTask:             1,
+		SchemaVersion:               1,
+		TaskPackFingerprint:         pack.Fingerprint(),
+		TaskIDs:                     taskIDs,
+		TaskContracts:               taskContracts,
+		AttemptsPerTask:             sandboxeval.FirstEvalAttemptsPerTask,
 		ExecutionSchedule:           sandboxeval.ExecutionSchedule{ScheduleVersion: "fixture", Concurrency: 1, PairOrder: sandboxeval.PairOrderAlternating},
 		BaselineConfigFingerprint:   baselineFingerprint,
 		VariantConfigFingerprint:    variantFingerprint,
@@ -159,6 +187,7 @@ func TestSandboxPrecheckRejectsStructuralDivergence(t *testing.T) {
 		"pack fingerprint divergence": func(e *sandboxeval.EvalSet) { e.TaskPackFingerprint = sandboxFixtureDigest },
 		"baseline commit divergence":  func(e *sandboxeval.EvalSet) { e.TaskContracts[0].BaselineCommit = strings.Repeat("0", 40) },
 		"bootstrap digest divergence": func(e *sandboxeval.EvalSet) { e.TaskContracts[0].BootstrapContractDigest = sandboxFixtureDigest },
+		"provider profile divergence": func(e *sandboxeval.EvalSet) { e.ProviderRequestProfile.GenerationOptions.MaxOutputTokens-- },
 	}
 	for name, mutate := range mutations {
 		setup := buildSandboxSetup(t, mutate)
@@ -173,20 +202,114 @@ func TestSandboxPrecheckRejectsStructuralDivergence(t *testing.T) {
 	}
 }
 
-// TestEnsureEmptyEvaluationDirectoryRejectsResidue 锁定重入残件守卫：空目录可
-// 创建（幂等重入合法），任何既有产物都会阻止新一轮写入，防止已闭合 Run 被
-// 静默覆盖。
-func TestEnsureEmptyEvaluationDirectoryRejectsResidue(t *testing.T) {
+// TestFileSurfacePathsUnderRejectsSymlinks 验证泄漏扫描枚举不会跟随工作区内
+// 链接读取宿主路径，即使链接目标是普通可读文件也必须失败关闭。
+func TestFileSurfacePathsUnderRejectsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "host-secret.txt")
+	if err := os.WriteFile(target, []byte("host secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "linked-secret")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileSurfacePathsUnder(root); err == nil {
+		t.Fatal("symbolic link surface must fail closed")
+	}
+}
+
+// TestRecoveredSandboxRunRecordsPreserveClosedRunIdentity 验证恢复只接受稳定文件
+// 名与确定性 SandboxRunID 对齐的闭合记录，额外残件会阻断恢复。
+func TestRecoveredSandboxRunRecordsPreserveClosedRunIdentity(t *testing.T) {
+	setup := buildSandboxSetup(t, nil)
+	evaluationID := sandboxFixtureDigest
+	steps, err := SandboxSchedule(setup.evalSet.TaskIDs, setup.evalSet.AttemptsPerTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "evaluation")
+	runsDirectory := filepath.Join(directory, "runs")
+	if err := os.MkdirAll(runsDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	step := steps[0]
+	runID, err := sandboxeval.SandboxRunID(evaluationID, step.Arm, step.TaskID, step.Try)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	record := SandboxRunRecord{
+		SchemaVersion: sandboxRecordSchemaV2, RunID: runID, EvaluationID: evaluationID,
+		Arm: string(step.Arm), TaskID: step.TaskID, AttemptIndex: step.Try,
+		StartedAt: now, FinishedAt: now.Add(time.Second), Counted: true,
+		ReplayConsistent: true, DoctorOK: true, InputTokens: 1, OutputTokens: 1,
+		WallTimeMS: 1, LeakScan: sandboxeval.LeakScanReport{Outcome: sandboxeval.LeakClean},
+	}
+	if err := writeJSON(filepath.Join(runsDirectory, sandboxRecordFileName(step)), record); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := loadRecoveredSandboxRunRecords(directory, evaluationID, setup.evalSet, steps)
+	if err != nil || len(recovered) != 1 || recovered[sandboxRecordFileName(step)].RunID != runID {
+		t.Fatalf("recovered records mismatch: %#v err=%v", recovered, err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDirectory, "orphan.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRecoveredSandboxRunRecords(directory, evaluationID, setup.evalSet, steps); err == nil {
+		t.Fatal("unexpected recovery residue must fail closed")
+	}
+}
+
+// TestLoadPersistedSuiteResultRecomputesConclusion 验证恢复发生在套件结果落盘后
+// 时会复算比较器结论；正文伪造 pass 不能借恢复事务进入 Memory 终态。
+func TestLoadPersistedSuiteResultRecomputesConclusion(t *testing.T) {
+	setup := buildSandboxSetup(t, nil)
+	options := setup.executorOptions(t, "candidate-recovery", false)
+	evaluationID := sandboxFixtureDigest
+	directory := evaluationDirectory(options.StateRoot, evaluationID)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	result := SandboxSuiteResult{
+		SchemaVersion: sandboxRecordSchemaV2, EvaluationID: evaluationID,
+		CandidateID: options.CandidateID, StartedAt: now, FinishedAt: now.Add(time.Second),
+		Status: sandboxeval.ConclusionInconclusive, Trigger: "incomplete_suite", Records: []SandboxRunRecord{},
+	}
+	path := filepath.Join(directory, "suite-result.json")
+	if err := writeJSON(path, result); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, digest, found, err := loadPersistedSuiteResult(options, evaluationID)
+	if err != nil || !found || loaded.Status != sandboxeval.ConclusionInconclusive || !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("load persisted suite result: %#v found=%t digest=%q err=%v", loaded, found, digest, err)
+	}
+	result.Status = sandboxeval.ConclusionPassed
+	result.Trigger = "mode_a_effectiveness"
+	if err := writeJSON(path, result); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := loadPersistedSuiteResult(options, evaluationID); err == nil {
+		t.Fatal("forged persisted conclusion must fail recomputation")
+	}
+}
+
+// TestPrepareEvaluationDirectorySeparatesNewAndResume 锁定目录门：新评测拒绝
+// 残件，running 评测允许进入受控恢复读取路径。
+func TestPrepareEvaluationDirectorySeparatesNewAndResume(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "evaluations", "abc")
-	if err := ensureEmptyEvaluationDirectory(directory); err != nil {
+	if err := prepareEvaluationDirectory(directory, false); err != nil {
 		t.Fatalf("fresh directory must be accepted: %v", err)
 	}
 	stalePath := filepath.Join(directory, "stale-run.json")
 	if err := os.WriteFile(stalePath, []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write residue fixture: %v", err)
 	}
-	if err := ensureEmptyEvaluationDirectory(directory); err == nil {
+	if err := prepareEvaluationDirectory(directory, false); err == nil {
 		t.Fatal("residue in the evaluation directory must fail closed")
+	}
+	if err := prepareEvaluationDirectory(directory, true); err != nil {
+		t.Fatalf("running evaluation must enter controlled recovery: %v", err)
 	}
 }
 

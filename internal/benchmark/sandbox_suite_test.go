@@ -59,15 +59,18 @@ func TestSandboxScheduleAlternatesArmsWithinAdjacentPairs(t *testing.T) {
 	}
 }
 
-// TestExpandCompactionVariantAppliesAndFailsClosed 验证变体展开只覆盖可生效
-// 的上下文两值、越界变体被拒且展开结果仍满足配置校验。
+// TestExpandCompactionVariantAppliesAndFailsClosed 验证变体四参数全部覆盖真实
+// 上下文配置、越界变体被拒且展开结果仍满足配置校验。
 func TestExpandCompactionVariantAppliesAndFailsClosed(t *testing.T) {
 	base := baseConfigFixture()
 	expanded, err := ExpandCompactionVariant(base, variantFixture())
 	if err != nil {
 		t.Fatalf("expand: %v", err)
 	}
-	if expanded.Context.MaxPromptTokens != 24_000 || expanded.Context.MaxSummaryBytes != 8_192 {
+	variant := variantFixture()
+	if expanded.Context.MaxPromptTokens != 24_000 || expanded.Context.MaxSummaryBytes != 8_192 ||
+		expanded.Context.InventoryBudgetPercent != variant.InventoryBudgetPercent ||
+		expanded.Context.ThresholdReservePercent != variant.ThresholdReservePercent {
 		t.Fatalf("expanded context mismatch: %#v", expanded.Context)
 	}
 	if expanded.Fingerprint() == base.Fingerprint() {
@@ -104,10 +107,9 @@ func TestVariantExpandedFingerprintSensitivity(t *testing.T) {
 	}
 }
 
-// TestRunOfflinePrescreenCatchesFingerprintDriftAndSummaryOverflow 锁定预筛
-// 两类失败面：展开指纹与冻结不一致即报错；超限或丢失清单锚的样本逐条列名；
-// 无历史样本时预筛保持通过。
-func TestRunOfflinePrescreenCatchesFingerprintDriftAndSummaryOverflow(t *testing.T) {
+// TestRunOfflinePrescreenCatchesFingerprintDrift 锁定预筛会执行内置确定性压缩
+// 探针，并拒绝展开指纹与冻结事实的任何漂移。
+func TestRunOfflinePrescreenCatchesFingerprintDrift(t *testing.T) {
 	variant := variantFixture()
 	base := baseConfigFixture()
 	evalSet := sandboxeval.EvalSet{}
@@ -119,7 +121,7 @@ func TestRunOfflinePrescreenCatchesFingerprintDriftAndSummaryOverflow(t *testing
 	evalSet.BaselineConfigFingerprint = baselineFP
 	evalSet.VariantConfigFingerprint = expandedFP
 
-	report, err := RunOfflinePrescreen(evalSet, base, base, variant, [][]byte{[]byte("此前的对话原文已被压缩…" + explorationInventoryAnchor)})
+	report, err := RunOfflinePrescreen(evalSet, base, base, variant)
 	if err != nil {
 		t.Fatalf("prescreen with consistent fingerprints: %v", err)
 	}
@@ -128,7 +130,7 @@ func TestRunOfflinePrescreenCatchesFingerprintDriftAndSummaryOverflow(t *testing
 	}
 
 	evalSet.VariantConfigFingerprint = "sha256:" + string(make([]byte, 64))
-	report, err = RunOfflinePrescreen(evalSet, base, base, variant, nil)
+	report, err = RunOfflinePrescreen(evalSet, base, base, variant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,19 +138,6 @@ func TestRunOfflinePrescreenCatchesFingerprintDriftAndSummaryOverflow(t *testing
 		t.Fatal("fingerprint divergence must be reported")
 	}
 
-	evalSet.VariantConfigFingerprint = expandedFP
-	report, err = RunOfflinePrescreen(evalSet, base, base, variant, [][]byte{[]byte(tooLong(9_000))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Passed() {
-		t.Fatal("summary overflow must be reported")
-	}
-	for _, issue := range report.Issues {
-		if !contains(issue, "exceeds the variant budget") && !contains(issue, "lost the exploration inventory anchor") {
-			t.Fatalf("unexpected issue %q", issue)
-		}
-	}
 }
 
 func tooLong(size int) string {

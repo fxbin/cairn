@@ -22,12 +22,12 @@ const frozenFakeImageDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccc
 func TestFreezeEvaluationAssetsProducesSelfCheckedArtifacts(t *testing.T) {
 	t.Setenv(sandboxeval.SandboxProviderKeyEnv, sandboxProviderKey)
 	source, baseline := localGitRepository(t)
-	pack := testPack(source, baseline)
+	pack := sandboxThreeTaskPack(testPack(source, baseline))
 	output := t.TempDir()
 	// 冻结口径要求真实文件装载：解析计划记录由装载过程生成，手工构造的默认
 	// 配置没有该事实，不能充当冻结输入。
 	agentConfigPath := filepath.Join(output, "agent-config.yaml")
-	agentConfigYAML := "version: 1\nprovider:\n  base_url: https://provider.test/v4\n  model: test-model\n  api_key_env: " + sandboxeval.SandboxProviderKeyEnv + "\n  capability:\n    tool_calls: true\n    streaming_usage: true\npricing:\n  input_token_usd: 0.00000014\n  output_token_usd: 0.00000028\n"
+	agentConfigYAML := "version: 1\nprovider:\n  base_url: https://provider.test/v4\n  model: test-model\n  api_key_env: " + sandboxeval.SandboxProviderKeyEnv + "\n  capability:\n    tool_calls: true\n    streaming_usage: true\n  generation:\n    max_output_tokens: 4096\n    tool_choice: auto\npricing:\n  input_token_usd: 0.00000014\n  output_token_usd: 0.00000028\n"
 	if err := os.WriteFile(agentConfigPath, []byte(agentConfigYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestFreezeEvaluationAssetsProducesSelfCheckedArtifacts(t *testing.T) {
 	defer func() { frozenBuildIdentityLookup = originalIdentity }()
 
 	options := FreezeEvalSetOptions{
-		Pack: pack, TaskIDs: []string{pack.Tasks[0].ID}, AttemptsPerTask: 3,
+		Pack: pack, TaskIDs: []string{pack.Tasks[0].ID, pack.Tasks[1].ID, pack.Tasks[2].ID}, AttemptsPerTask: sandboxeval.FirstEvalAttemptsPerTask,
 		BaselineConfig:           baselineConfig,
 		Variant:                  sandboxVariant(),
 		ComparatorVersion:        "cairn-freeze-fixture-comparator",

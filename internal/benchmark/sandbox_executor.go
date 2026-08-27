@@ -7,15 +7,18 @@
 package benchmark
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -100,8 +103,8 @@ type scheduleStop struct {
 	detail string
 }
 
-// sandboxRecordSchemaV1 是沙箱执行器本地记录与套件结果的当前 schema 版本。
-const sandboxRecordSchemaV1 = 1
+// sandboxRecordSchemaV2 是支持断点恢复计账的本地记录与套件结果 schema 版本。
+const sandboxRecordSchemaV2 = 2
 
 // sandboxArmTag 返回臂的稳定短标识，用于按臂分离的目录段、记录与 diff 文件
 // 命名；基线与变体永不共享可写归档路径。
@@ -117,6 +120,8 @@ func sandboxArmTag(arm sandboxeval.SuiteArm) string {
 // 它驱动。
 type SandboxExecutor struct {
 	Runner
+	// AuditEnvironment 仅供测试注入已成型环境快照；生产默认读取当前子进程环境。
+	AuditEnvironment func() []string
 }
 
 // SandboxExecutorOptions 描述一次候选评测的全部输入合同：Memory 三元组显式
@@ -154,6 +159,7 @@ type SandboxRunRecord struct {
 	AttemptIndex         int                        `json:"attempt_index"`
 	StartedAt            time.Time                  `json:"started_at"`
 	FinishedAt           time.Time                  `json:"finished_at"`
+	Counted              bool                       `json:"counted"`
 	Success              bool                       `json:"success"`
 	FailureClass         string                     `json:"failure_class,omitempty"`
 	Error                string                     `json:"error,omitempty"`
@@ -199,12 +205,14 @@ type SandboxExecutionOutcome struct {
 // precheck 结构化承载启动前检查的派生产物：展开后两臂配置、变体展开指纹与
 // 确定性评测身份。任何一项失败都保持候选 ready 且零持久化。
 type precheckResult struct {
-	baselineConfig      config.Config
-	variantConfig       config.Config
-	variantFingerprint  string
-	evaluationID        string
-	evalSetFingerprint  string
-	baselineFingerprint string
+	baselineConfig              config.Config
+	variantConfig               config.Config
+	variantFingerprint          string
+	variantSpecDigest           string
+	candidateVariantFingerprint string
+	evaluationID                string
+	evalSetFingerprint          string
+	baselineFingerprint         string
 }
 
 // prescreenFailure 把离线预筛失败从普通错误中区分出来：它代表冻结合同破坏，
@@ -276,8 +284,30 @@ func (executor SandboxExecutor) runPrecheck(options SandboxExecutorOptions) (pre
 	if strings.TrimSpace(os.Getenv(sandboxeval.SandboxProviderKeyEnv)) == "" {
 		return precheck, nil, fmt.Errorf("host environment must inject %s for this evaluation", sandboxeval.SandboxProviderKeyEnv)
 	}
+	if !options.DryRun {
+		if os.Getenv(sandboxeval.EvaluationChildMarkerEnv) != "1" {
+			return precheck, nil, errors.New("formal sandbox evaluation must run inside the trusted empty-environment child")
+		}
+		environment := os.Environ()
+		if executor.AuditEnvironment != nil {
+			environment = executor.AuditEnvironment()
+		}
+		if violations := sandboxeval.AuditEvaluationEnvironment(environment); len(violations) > 0 {
+			return precheck, nil, fmt.Errorf("trusted evaluation environment contains forbidden variables: %s", strings.Join(violations, ","))
+		}
+	}
 	if err := config.Validate(options.BaselineConfig); err != nil {
 		return precheck, nil, fmt.Errorf("baseline config invalid: %w", err)
+	}
+	providerProfile, pricingSnapshot, err := providerContractFromConfig(options.BaselineConfig)
+	if err != nil {
+		return precheck, nil, err
+	}
+	if !reflect.DeepEqual(providerProfile, options.EvalSet.ProviderRequestProfile) {
+		return precheck, nil, errors.New("provider request profile diverges from the frozen baseline configuration")
+	}
+	if pricingSnapshot != options.EvalSet.PricingSnapshot {
+		return precheck, nil, errors.New("pricing snapshot diverges from the frozen baseline configuration")
 	}
 	variantConfig, err := ExpandCompactionVariant(options.BaselineConfig, options.Variant)
 	if err != nil {
@@ -315,6 +345,14 @@ func (executor SandboxExecutor) runPrecheck(options SandboxExecutorOptions) (pre
 	if err != nil {
 		return precheck, nil, err
 	}
+	variantSpecDigest, err := memory.VariantSpecDigest(options.Variant)
+	if err != nil {
+		return precheck, nil, err
+	}
+	candidateVariantFingerprint, err := memory.VariantFingerprint(memory.TargetKindContextCompactionParams, options.Variant)
+	if err != nil {
+		return precheck, nil, err
+	}
 	evaluationID, err := memory.EvaluationID(options.CandidateID, evalSetFingerprint,
 		baselineFingerprint, variantFingerprint, options.EvalSet.ComparatorContract.ComparatorVersion)
 	if err != nil {
@@ -322,10 +360,11 @@ func (executor SandboxExecutor) runPrecheck(options SandboxExecutorOptions) (pre
 	}
 	precheck = precheckResult{
 		baselineConfig: options.BaselineConfig, variantConfig: variantConfig,
-		variantFingerprint: variantFingerprint, evaluationID: evaluationID,
+		variantFingerprint: variantFingerprint, variantSpecDigest: variantSpecDigest,
+		candidateVariantFingerprint: candidateVariantFingerprint, evaluationID: evaluationID,
 		evalSetFingerprint: evalSetFingerprint, baselineFingerprint: baselineFingerprint,
 	}
-	report, err := RunOfflinePrescreen(options.EvalSet, options.BaselineConfig, variantConfig, options.Variant, nil)
+	report, err := RunOfflinePrescreen(options.EvalSet, options.BaselineConfig, variantConfig, options.Variant)
 	if err != nil {
 		return precheck, nil, err
 	}
@@ -386,12 +425,14 @@ func sandboxEnvironmentNames(configuration config.Config) []string {
 	return names
 }
 
-// ensureEmptyEvaluationDirectory 创建评测状态目录并拒绝任何既有残件：部分完
-// 成的评测无法合规续算（已闭合 Run 不得重跑），检测到残留即失败关闭，把显
-// 式恢复留给独立的人工决策切片。
-func ensureEmptyEvaluationDirectory(directory string) error {
+// prepareEvaluationDirectory 为新评测创建空目录，或为 running 评测接受受控
+// 的恢复表面；ready 候选遇到既有残件仍失败关闭，防止孤立文件被冒充历史。
+func prepareEvaluationDirectory(directory string, resuming bool) error {
 	entries, readErr := os.ReadDir(directory)
-	if readErr == nil && len(entries) > 0 {
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		return fmt.Errorf("read evaluation directory: %w", readErr)
+	}
+	if !resuming && readErr == nil && len(entries) > 0 {
 		return fmt.Errorf("evaluation directory %q already holds artifacts; interrupted evaluations must be resolved explicitly instead of rerun", filepath.Base(directory))
 	}
 	if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -417,7 +458,18 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		}
 		return outcome, nil
 	}
-	if err := ensureEmptyEvaluationDirectory(evaluationDir); err != nil {
+	inspected, err := executor.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{
+		CandidateID: options.CandidateID, Workspace: options.MemoryWorkspace,
+		StateDir: options.MemoryStateDir, Config: options.MemoryConfig,
+	})
+	if err != nil {
+		return outcome, fmt.Errorf("inspect evaluation candidate: %w", err)
+	}
+	resuming := inspected.Candidate.Status == memory.CandidateStateEvaluating
+	if inspected.Candidate.Status != memory.CandidateStateReady && !resuming {
+		return outcome, fmt.Errorf("candidate %s cannot start or resume evaluation from state %s", options.CandidateID, inspected.Candidate.Status)
+	}
+	if err := prepareEvaluationDirectory(evaluationDir, resuming); err != nil {
 		return outcome, err
 	}
 	created, err := executor.startEvaluationTransaction(ctx, options, precheck)
@@ -425,6 +477,29 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		return outcome, fmt.Errorf("start evaluation transaction: %w", err)
 	}
 	outcome.Evaluation = created
+	if resuming {
+		persisted, resultPath, resultDigest, found, loadErr := loadPersistedSuiteResult(options, precheck.evaluationID)
+		if loadErr != nil {
+			return outcome, fmt.Errorf("load persisted suite result: %w", loadErr)
+		}
+		if found {
+			if !persisted.StartedAt.Equal(created.StartedAt) {
+				return outcome, errors.New("persisted suite result start time diverges from the running evaluation")
+			}
+			concluded, finishErr := executor.finishEvaluationTransaction(ctx, options, precheck.evaluationID, persisted.Status, resultDigest)
+			if finishErr != nil {
+				return outcome, fmt.Errorf("finish recovered evaluation transaction: %w", finishErr)
+			}
+			outcome.Evaluation = concluded
+			outcome.Conclusion = sandboxeval.Conclusion{Status: persisted.Status, Trigger: persisted.Trigger}
+			outcome.ResultPath = resultPath
+			outcome.ResultDigest = resultDigest
+			outcome.RunsCompleted = len(persisted.Records)
+			outcome.StopReason = persisted.StopReason
+			outcome.StopDetail = persisted.StopDetail
+			return outcome, nil
+		}
+	}
 	// 幂等重入意味着评测时钟由首次提交锚定：恢复路径用更早的起始时刻复核租
 	// 约到期窗口，绝不以新时钟放松约束。
 	if created.StartedAt.Before(executor.now()) {
@@ -483,6 +558,11 @@ func (executor SandboxExecutor) startEvaluationTransaction(ctx context.Context, 
 			ComparatorVersion:         options.EvalSet.ComparatorContract.ComparatorVersion,
 			Status:                    memory.EvaluationStatusRunning,
 		},
+		Binding: memory.EvaluationBinding{
+			BaselineFingerprint:         precheck.baselineFingerprint,
+			VariantSpecSHA256:           precheck.variantSpecDigest,
+			CandidateVariantFingerprint: precheck.candidateVariantFingerprint,
+		},
 		Workspace: options.MemoryWorkspace,
 		StateDir:  options.MemoryStateDir,
 		Config:    options.MemoryConfig,
@@ -538,11 +618,41 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 	if err := os.MkdirAll(filepath.Join(evaluationDir, "runs"), 0o700); err != nil {
 		return conclusion, stopReason, stopDetail, records, verdicts, fmt.Errorf("create runs directory: %w", err)
 	}
+	recovered, err := loadRecoveredSandboxRunRecords(evaluationDir, precheck.evaluationID, options.EvalSet, steps)
+	if err != nil {
+		return conclusion, stopReason, stopDetail, records, verdicts, err
+	}
 	ledger := &leaseLedger{}
 	stop := &scheduleStop{}
 	for _, step := range steps {
 		if ctx.Err() != nil {
 			stopReason = sandboxStopContextCancelled
+			break
+		}
+		if recoveredRecord, found := recovered[sandboxRecordFileName(step)]; found {
+			records = append(records, recoveredRecord)
+			if recoveredRecord.Counted {
+				verdict := verdictFromSandboxRunRecord(recoveredRecord)
+				verdicts = append(verdicts, verdict)
+				units, costErr := sandboxeval.ComputeRunCostUnits(verdict.InputTokens, verdict.OutputTokens,
+					int64(options.EvalSet.PricingSnapshot.InputPriceMicrousdPerMillionTokens),
+					int64(options.EvalSet.PricingSnapshot.OutputPriceMicrousdPerMillionTokens))
+				if costErr != nil {
+					return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerCostUnitsOverflow}, stopReason, stopDetail, records, verdicts, costErr
+				}
+				ledger.chargeUnits(units)
+				ledger.chargeUsage(verdict.InputTokens, verdict.OutputTokens, 1)
+				if ledger.exceedsLease(options.Lease) {
+					stopReason = sandboxStopLeaseExhausted
+					break
+				}
+				continue
+			}
+			if trigger := recoveredInvalidTrigger(recoveredRecord); trigger != "" {
+				return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: trigger}, stopReason, stopDetail, records, verdicts, nil
+			}
+			stopReason = sandboxStopProviderFailure
+			stopDetail = recoveredRecord.FailureClass
 			break
 		}
 		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir, stop)
@@ -697,7 +807,7 @@ func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
 // 原文一律不落盘。
 func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	record := &SandboxRunRecord{
-		SchemaVersion: sandboxRecordSchemaV1,
+		SchemaVersion: sandboxRecordSchemaV2,
 		RunID:         runID,
 		EvaluationID:  evaluationID,
 		Arm:           string(step.Arm),
@@ -817,10 +927,13 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 	if !completedVerified && record.FailureClass == "" {
 		record.FailureClass = verificationFailedClass
 	}
+	record.Counted = true
 	record.FinishedAt = executor.now()
 	return record, &sandboxeval.SuiteVerdict{
+		RunID:                record.RunID,
 		Arm:                  step.Arm,
 		TaskID:               step.TaskID,
+		AttemptIndex:         step.Try,
 		Success:              completedVerified,
 		SecurityIncidents:    record.SecurityIncidents,
 		DoctorReplayBroken:   !doctorOK || !replayConsistent,
@@ -830,6 +943,37 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		OutputTokens:         record.OutputTokens,
 		WallTimeMS:           record.WallTimeMS,
 	}, nil
+}
+
+// verdictFromSandboxRunRecord 把已校验的闭合记录恢复为比较器最小投影；恢复
+// 过程只消费冻结字段，不重新执行 Agent 或 verifier。
+func verdictFromSandboxRunRecord(record SandboxRunRecord) sandboxeval.SuiteVerdict {
+	return sandboxeval.SuiteVerdict{
+		RunID: record.RunID, Arm: sandboxeval.SuiteArm(record.Arm), TaskID: record.TaskID,
+		AttemptIndex: record.AttemptIndex, Success: record.Success,
+		SecurityIncidents:  record.SecurityIncidents,
+		DoctorReplayBroken: !record.DoctorOK || !record.ReplayConsistent,
+		ToolPairingBreaks:  record.ToolPairingBreaks, RepeatedExplorations: record.RepeatedExplorations,
+		InputTokens: record.InputTokens, OutputTokens: record.OutputTokens, WallTimeMS: record.WallTimeMS,
+	}
+}
+
+// recoveredInvalidTrigger 返回未计分记录中可重放的安全/证据破坏触发名。
+func recoveredInvalidTrigger(record SandboxRunRecord) string {
+	if record.SecurityIncidents > 0 || record.LeakScan.Outcome == sandboxeval.LeakDetected {
+		return sandboxTriggerCredentialLeak
+	}
+	switch record.FailureClass {
+	case sandboxTriggerOfflinePrescreenFailed, sandboxTriggerFrozenAssetDivergence,
+		sandboxTriggerCostUnitsOverflow, sandboxTriggerEvidenceUnverifiable,
+		sandboxTriggerEvidenceIntegrityBroken, sandboxTriggerReplayDivergence,
+		sandboxTriggerContractProjectionFailed, sandboxTriggerToolPairingExtraction,
+		sandboxTriggerExplorationSignatureMissing, sandboxTriggerLeakScanFailed,
+		sandboxTriggerComparisonNotComputable, sandboxTriggerRunIdentityDerivation:
+		return record.FailureClass
+	default:
+		return ""
+	}
 }
 
 // replayConsistentWithProjection 对持久化投影做二次确定性核验：事件流必须先
@@ -885,8 +1029,8 @@ func (ledger *leaseLedger) exceedsLease(lease sandboxeval.CredentialLease) bool 
 		ledger.carriedMicroUSD >= lease.MaxCostMicrousd
 }
 
-// fileSurfacePathsUnder 递归枚举泄漏扫描表面下的全部文件路径：目录跳过，
-// 符号链接保留（打开即目标内容），枚举错误整体冒泡使扫描失败关闭。
+// fileSurfacePathsUnder 递归枚举泄漏扫描表面下的全部普通文件路径：目录跳过，
+// 符号链接一律失败关闭，防止扫描跟随链接读取工作区外宿主内容。
 func fileSurfacePathsUnder(roots ...string) ([]string, error) {
 	surfaces := make([]string, 0)
 	for _, root := range roots {
@@ -899,6 +1043,12 @@ func fileSurfacePathsUnder(roots ...string) ([]string, error) {
 			}
 			if entry.IsDir() {
 				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("leak scan surface contains a symbolic link")
+			}
+			if !entry.Type().IsRegular() {
+				return fmt.Errorf("leak scan surface contains a non-regular file")
 			}
 			surfaces = append(surfaces, path)
 			return nil
@@ -916,11 +1066,163 @@ func sandboxRecordFileName(step SandboxPairStep) string {
 	return safePathComponent(step.TaskID) + fmt.Sprintf("-a%02d-%s.json", step.Try, sandboxArmTag(step.Arm))
 }
 
+// decodeStrictSandboxJSON 解码单一 JSON 文档并拒绝未知字段与尾随内容，恢复
+// 路径不得接受比首次写入合同更宽松的输入。
+func decodeStrictSandboxJSON(content []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("sandbox JSON contains trailing content")
+		}
+		return err
+	}
+	return nil
+}
+
+// validateSandboxRunRecord 核对恢复记录的 schema、确定性身份、时间与闭合
+// 指标；任何错位都保留 running 状态并要求人工处理，绝不猜测归属。
+func validateSandboxRunRecord(record SandboxRunRecord, evaluationID string, evalSet sandboxeval.EvalSet) error {
+	if record.SchemaVersion != sandboxRecordSchemaV2 || record.EvaluationID != evaluationID {
+		return errors.New("sandbox run record schema or evaluation identity mismatch")
+	}
+	arm := sandboxeval.SuiteArm(record.Arm)
+	if arm != sandboxeval.ArmBaseline && arm != sandboxeval.ArmVariant {
+		return fmt.Errorf("sandbox run record %q has an invalid arm", record.RunID)
+	}
+	if record.AttemptIndex < 1 || record.AttemptIndex > evalSet.AttemptsPerTask {
+		return fmt.Errorf("sandbox run record %q has an invalid attempt index", record.RunID)
+	}
+	knownTask := false
+	for _, taskID := range evalSet.TaskIDs {
+		if taskID == record.TaskID {
+			knownTask = true
+			break
+		}
+	}
+	if !knownTask {
+		return fmt.Errorf("sandbox run record %q references an unfrozen task", record.RunID)
+	}
+	expectedRunID, err := sandboxeval.SandboxRunID(evaluationID, arm, record.TaskID, record.AttemptIndex)
+	if err != nil || expectedRunID != record.RunID {
+		return fmt.Errorf("sandbox run record identity mismatch")
+	}
+	if record.StartedAt.IsZero() || record.FinishedAt.IsZero() || record.FinishedAt.Before(record.StartedAt) {
+		return fmt.Errorf("sandbox run record %q has invalid timestamps", record.RunID)
+	}
+	if record.LeakScan.Outcome != sandboxeval.LeakClean && record.LeakScan.Outcome != sandboxeval.LeakDetected {
+		return fmt.Errorf("sandbox run record %q has an invalid leak scan outcome", record.RunID)
+	}
+	if record.InputTokens < 0 || record.OutputTokens < 0 || record.WallTimeMS < 0 || record.ToolPairingBreaks < 0 || record.RepeatedExplorations < 0 || record.SecurityIncidents < 0 {
+		return fmt.Errorf("sandbox run record %q has negative metrics", record.RunID)
+	}
+	return nil
+}
+
+// loadRecoveredSandboxRunRecords 只装载调度中存在的稳定文件名并逐条验证；额外
+// 文件、目录、符号链接或重复身份都视为恢复表面损坏。
+func loadRecoveredSandboxRunRecords(evaluationDir, evaluationID string, evalSet sandboxeval.EvalSet, steps []SandboxPairStep) (map[string]SandboxRunRecord, error) {
+	runsDirectory := filepath.Join(evaluationDir, "runs")
+	entries, err := os.ReadDir(runsDirectory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]SandboxRunRecord{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read recovered runs directory: %w", err)
+	}
+	expected := make(map[string]SandboxPairStep, len(steps))
+	for _, step := range steps {
+		expected[sandboxRecordFileName(step)] = step
+	}
+	recovered := make(map[string]SandboxRunRecord, len(entries))
+	for _, entry := range entries {
+		step, allowed := expected[entry.Name()]
+		if !allowed || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("recovered runs directory contains an unexpected entry")
+		}
+		content, err := os.ReadFile(filepath.Join(runsDirectory, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read recovered sandbox run record: %w", err)
+		}
+		var record SandboxRunRecord
+		if err := decodeStrictSandboxJSON(content, &record); err != nil {
+			return nil, fmt.Errorf("decode recovered sandbox run record: %w", err)
+		}
+		if err := validateSandboxRunRecord(record, evaluationID, evalSet); err != nil {
+			return nil, err
+		}
+		if record.TaskID != step.TaskID || record.AttemptIndex != step.Try || record.Arm != string(step.Arm) {
+			return nil, fmt.Errorf("sandbox run record does not match its stable filename")
+		}
+		recovered[entry.Name()] = record
+	}
+	return recovered, nil
+}
+
+// loadPersistedSuiteResult 在崩溃发生于“套件结果落盘、Memory 终态提交”之间
+// 时恢复不可变结论；正文身份不符时失败关闭，绝不覆盖既有结果。
+func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID string) (SandboxSuiteResult, string, string, bool, error) {
+	resultPath := filepath.Join(evaluationDirectory(options.StateRoot, evaluationID), "suite-result.json")
+	content, err := os.ReadFile(resultPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return SandboxSuiteResult{}, "", "", false, nil
+	}
+	if err != nil {
+		return SandboxSuiteResult{}, "", "", false, err
+	}
+	var result SandboxSuiteResult
+	if err := decodeStrictSandboxJSON(content, &result); err != nil {
+		return SandboxSuiteResult{}, "", "", false, err
+	}
+	if result.SchemaVersion != sandboxRecordSchemaV2 || result.EvaluationID != evaluationID || result.CandidateID != options.CandidateID {
+		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result identity mismatch")
+	}
+	if !memory.ValidEvaluationStatus(result.Status) || result.Status == memory.EvaluationStatusRunning {
+		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result has an invalid conclusion")
+	}
+	if result.StartedAt.IsZero() || result.FinishedAt.IsZero() || result.FinishedAt.Before(result.StartedAt) {
+		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result has invalid timestamps")
+	}
+	seen := make(map[string]struct{}, len(result.Records))
+	verdicts := make([]sandboxeval.SuiteVerdict, 0, len(result.Records))
+	for _, record := range result.Records {
+		if err := validateSandboxRunRecord(record, evaluationID, options.EvalSet); err != nil {
+			return SandboxSuiteResult{}, "", "", false, err
+		}
+		key := fmt.Sprintf("%s\x00%s\x00%d", record.Arm, record.TaskID, record.AttemptIndex)
+		if _, duplicated := seen[key]; duplicated {
+			return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result contains duplicate run identities")
+		}
+		seen[key] = struct{}{}
+		if record.Counted {
+			verdicts = append(verdicts, verdictFromSandboxRunRecord(record))
+		}
+	}
+	if result.Status == sandboxeval.ConclusionInvalid {
+		if result.Trigger == "" {
+			return SandboxSuiteResult{}, "", "", false, errors.New("invalid persisted suite result requires a trigger")
+		}
+	} else {
+		recomputed, err := sandboxeval.JudgeSuite(options.EvalSet, verdicts)
+		if err != nil {
+			return SandboxSuiteResult{}, "", "", false, fmt.Errorf("recompute persisted suite result: %w", err)
+		}
+		if recomputed.Status != result.Status || recomputed.Trigger != result.Trigger {
+			return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result diverges from its run evidence")
+		}
+	}
+	digest := sha256.Sum256(content)
+	return result, resultPath, "sha256:" + hex.EncodeToString(digest[:]), true, nil
+}
+
 // persistSuiteResult 把套件结论原子落盘并读回计算字节摘要：Memory 侧只保存
 // 该 sha256 引用，读回环节保证留存正文与其引用不可静默漂移。
 func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOptions, evaluationID string, startedAt time.Time, conclusion sandboxeval.Conclusion, stopReason, stopDetail string, records []SandboxRunRecord) (string, string, error) {
 	result := SandboxSuiteResult{
-		SchemaVersion: sandboxRecordSchemaV1,
+		SchemaVersion: sandboxRecordSchemaV2,
 		EvaluationID:  evaluationID,
 		CandidateID:   options.CandidateID,
 		StartedAt:     startedAt,

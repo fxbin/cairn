@@ -503,8 +503,8 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		fmt.Fprintf(command.Stderr, "memory candidate evaluate failed: %v; create the candidate first with memory candidate create\n", err)
 		return exitFor(err)
 	}
-	if inspected.Candidate.Status != memory.CandidateStateReady {
-		fmt.Fprintf(command.Stderr, "memory candidate evaluate requires a ready candidate, got %s; create it first or resolve its current state\n", inspected.Candidate.Status)
+	if inspected.Candidate.Status != memory.CandidateStateReady && inspected.Candidate.Status != memory.CandidateStateEvaluating {
+		fmt.Fprintf(command.Stderr, "memory candidate evaluate requires a ready or evaluating candidate, got %s; create it first or resolve its current state\n", inspected.Candidate.Status)
 		return ExitFailed
 	}
 	if inspected.Candidate.VariantSpecSHA256 != specDigest {
