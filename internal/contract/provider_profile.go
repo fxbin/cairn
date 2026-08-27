@@ -203,6 +203,74 @@ func BaseURLIdentityDigest(rawURL string) (string, error) {
 	return canonicaljson.Fingerprint(baseURLIdentityPrefix, normalized.String())
 }
 
+// Validate 复核 profile 的结构性自洽：schema 版本、提供方品类、模型名、
+// 摘要形态与修订占位。区间级生成参数校验由 ResolveProviderRequestProfile
+// 在构造期完成，此处防御 EvalSet 引用了被手工篡改的实例。
+func (profile ProviderRequestProfile) Validate() error {
+	if profile.SchemaVersion != providerProfileSchemaV1 {
+		return fmt.Errorf("request profile schema_version %d is not supported", profile.SchemaVersion)
+	}
+	if profile.ProviderKind != ProviderKindOpenAICompatible {
+		return fmt.Errorf("request profile provider kind %q is unsupported", profile.ProviderKind)
+	}
+	if profile.Model == "" {
+		return errors.New("request profile model must not be empty")
+	}
+	if !digestShape(profile.BaseURLIdentityDigest) || !digestShape(profile.CapabilityFingerprint) {
+		return fmt.Errorf("request profile digests must be sha256 digests")
+	}
+	if profile.ProviderModelRevision == "" {
+		return errors.New("request profile revision must be explicit, including the absent marker")
+	}
+	if err := validateGenerationValues(profile.GenerationOptions); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateGenerationValues 对投影中的显式生成参数做区间与枚举复查：nil 与
+// 空串表达 unsupported 直接通过，显式值必须落在合同边界内。
+func validateGenerationValues(generation ProviderGenerationProfile) error {
+	if generation.MaxOutputTokens < 0 {
+		return fmt.Errorf("generation max_output_tokens %d cannot be negative", generation.MaxOutputTokens)
+	}
+	if generation.TemperatureMilli != nil && (*generation.TemperatureMilli < 0 || *generation.TemperatureMilli > GenerationTempMaxMilli) {
+		return fmt.Errorf("generation temperature_milli %d outside [0,%d]", *generation.TemperatureMilli, GenerationTempMaxMilli)
+	}
+	if generation.TopPMilli != nil && (*generation.TopPMilli < GenerationTopPMinMilli || *generation.TopPMilli > GenerationTopPMaxMilli) {
+		return fmt.Errorf("generation top_p_milli %d outside [%d,%d]", *generation.TopPMilli, GenerationTopPMinMilli, GenerationTopPMaxMilli)
+	}
+	switch generation.ReasoningEffort {
+	case "", ReasoningEffortOff, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+	default:
+		return fmt.Errorf("unknown reasoning_effort %q", generation.ReasoningEffort)
+	}
+	switch generation.ToolChoice {
+	case "", GenerationToolChoiceAuto:
+	default:
+		return fmt.Errorf("unknown tool_choice %q", generation.ToolChoice)
+	}
+	return nil
+}
+
+// digestShape 报告字符串是否符合 "sha256:<64 位十六进制>" 的摘要形态。
+func digestShape(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	hexPart := strings.TrimPrefix(value, "sha256:")
+	if len(hexPart) != 64 {
+		return false
+	}
+	for index := range len(hexPart) {
+		c := hexPart[index]
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // capabilityFingerprintView 是能力卡参与指纹的闭合投影：排除 Source 等非
 // 能力事实字段，只保留协议、工具、usage、上限与停止原因。
 type capabilityFingerprintView struct {
@@ -298,6 +366,17 @@ func allDecimalDigits(text string) bool {
 		}
 	}
 	return true
+}
+
+// Validate 复核定价快照的结构合同：schema 版本与非负整数单价。
+func (snapshot PricingSnapshot) Validate() error {
+	if snapshot.SchemaVersion != pricingSnapshotSchemaV1 {
+		return fmt.Errorf("pricing snapshot schema_version %d is not supported", snapshot.SchemaVersion)
+	}
+	if snapshot.InputPriceMicrousdPerMillionTokens < 0 || snapshot.OutputPriceMicrousdPerMillionTokens < 0 {
+		return errors.New("pricing snapshot rates cannot be negative")
+	}
+	return nil
 }
 
 // Fingerprint 返回定价快照的规范摘要，供 EvalSet 冻结引用。
