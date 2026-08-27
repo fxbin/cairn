@@ -20,6 +20,13 @@ const (
 	migrationHashFive    = "cairn-schema-v5-trusted-memory-evolution-registry"
 )
 
+// v6 迁移三件套：评测注册（evaluations 表）与审计词表扩展、拒绝理由收口。
+const (
+	migrationVersionSix = 6
+	migrationNameSix    = "006_evaluation_registry_v6"
+	migrationHashSix    = "cairn-schema-v6-trusted-memory-evaluation-registry"
+)
+
 // EvolutionInspectResult 是演化候选及其只读审计历史的投影。
 type EvolutionInspectResult struct {
 	Candidate memory.EvolutionCandidate

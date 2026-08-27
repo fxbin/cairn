@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	migrationVersion = 5
+	migrationVersion = 6
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -724,6 +724,51 @@ func (store *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < migrationVersionSix {
+		// v6 评测注册迁移。SQLite 不能修改表内嵌 CHECK，审计词表的扩展
+		// （新增评测类动作）与拒绝理由收口（按 ADR-0012 §5.5 移除
+		// inconclusive_limit）必须整表重建：新建影子表 → 显式列复制 →
+		// 换名启用。若旧库已存在 reason='inconclusive_limit' 的审计行，
+		// 复制阶段会触发新 CHECK 使整个迁移失败关闭——审计行不可变，
+		// 不允许静默改写历史理由；处理方式是由维护者人工仲裁该行后
+		// 手工归档再重开。
+		if _, err := transaction.ExecContext(ctx, `
+			CREATE TABLE evolution_evaluations (
+				evaluation_id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL,
+				candidate_id TEXT NOT NULL UNIQUE REFERENCES evolution_candidates(id),
+				eval_set_fingerprint TEXT NOT NULL,
+				baseline_config_fingerprint TEXT NOT NULL,
+				variant_config_fingerprint TEXT NOT NULL,
+				comparator_version TEXT NOT NULL,
+				status TEXT NOT NULL CHECK(status IN ('running', 'passed', 'failed', 'inconclusive', 'invalid')),
+				suite_result_digest TEXT,
+				started_at TEXT NOT NULL,
+				finished_at TEXT
+			);
+			CREATE INDEX IF NOT EXISTS evolution_evaluations_by_candidate ON evolution_evaluations(candidate_id, evaluation_id);
+			DROP INDEX IF EXISTS evolution_audit_by_candidate;
+			CREATE TABLE evolution_audit_log_v6_rebuild (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				candidate_id TEXT NOT NULL REFERENCES evolution_candidates(id),
+				action TEXT NOT NULL CHECK(action IN ('created', 'rejected', 'invalidated', 'expired', 'evaluation_started', 'evaluation_passed', 'evaluation_failed', 'evaluation_inconclusive')),
+				reason TEXT CHECK(reason IS NULL OR reason IN ('insufficient_evidence', 'evaluation_failed', 'safety_violation', 'human_request')),
+				occurred_at TEXT NOT NULL
+			);
+			INSERT INTO evolution_audit_log_v6_rebuild (id, candidate_id, action, reason, occurred_at)
+				SELECT id, candidate_id, action, reason, occurred_at FROM evolution_audit_log;
+			DROP TABLE evolution_audit_log;
+			ALTER TABLE evolution_audit_log_v6_rebuild RENAME TO evolution_audit_log;
+			CREATE INDEX IF NOT EXISTS evolution_audit_by_candidate ON evolution_audit_log(candidate_id, id);`); err != nil {
+			return fmt.Errorf("migrate memory schema to evaluation registry: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionSix, migrationNameSix, migrationHashSix); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionSix); err != nil {
+			return err
+		}
+	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		return err
 	}
@@ -895,8 +940,9 @@ func verifyLegacyV2Migration(ctx context.Context, source queryer, version int, e
 }
 
 // checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
-// 版本链当前为 1（情节记忆）、2（巩固事务）、3（冻结支持度）和 4（派生
-// 生命周期），单向兼容：旧二进制读新库失败关闭。
+// 版本链当前为 1（情节记忆）、2（巩固事务）、3（冻结支持度）、4（派生
+// 生命周期）、5（演化候选登记）和 6（评测注册与审计词表收口），单向兼容：
+// 旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -908,7 +954,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {
