@@ -1,3 +1,6 @@
+// 本文件实现候选沙箱评测比较器。
+//
+// Author: fxbin
 package sandboxeval
 
 import (
@@ -26,8 +29,10 @@ const (
 // SuiteVerdict 是单个 Run 的最小判定投影：由编排器从事件流与外部检查中提
 // 取，比较器只读取本结构与冻结 EvalSet，绝不接触原始正文、路径或参考答案。
 type SuiteVerdict struct {
+	RunID                string
 	Arm                  SuiteArm
 	TaskID               string
+	AttemptIndex         int
 	Success              bool
 	SecurityIncidents    int
 	DoctorReplayBroken   bool // doctor 或确定性回放任一失败即为真
@@ -160,6 +165,7 @@ func aggregateRuns(evalSet EvalSet, runs []SuiteVerdict) (armAggregate, armAggre
 		taskSet[taskID] = true
 	}
 	pricing := evalSet.pricingView()
+	identities := make(map[string]struct{}, len(runs))
 	for _, verdict := range runs {
 		switch verdict.Arm {
 		case ArmBaseline:
@@ -169,6 +175,20 @@ func aggregateRuns(evalSet EvalSet, runs []SuiteVerdict) (armAggregate, armAggre
 		}
 		if !taskSet[verdict.TaskID] {
 			return baseline, variant, fmt.Errorf("run task %q is not part of the frozen eval set", verdict.TaskID)
+		}
+		if verdict.RunID == "" {
+			return baseline, variant, fmt.Errorf("run for task %q lacks a run identity", verdict.TaskID)
+		}
+		if verdict.AttemptIndex < 1 || verdict.AttemptIndex > evalSet.AttemptsPerTask {
+			return baseline, variant, fmt.Errorf("run for task %q has attempt index %d outside the frozen range", verdict.TaskID, verdict.AttemptIndex)
+		}
+		identity := fmt.Sprintf("%s\x00%s\x00%d", verdict.Arm, verdict.TaskID, verdict.AttemptIndex)
+		if _, duplicated := identities[identity]; duplicated {
+			return baseline, variant, fmt.Errorf("duplicate run identity for arm=%s task=%s attempt=%d", verdict.Arm, verdict.TaskID, verdict.AttemptIndex)
+		}
+		identities[identity] = struct{}{}
+		if verdict.SecurityIncidents < 0 || verdict.ToolPairingBreaks < 0 || verdict.RepeatedExplorations < 0 || verdict.InputTokens < 0 || verdict.OutputTokens < 0 || verdict.WallTimeMS < 0 {
+			return baseline, variant, fmt.Errorf("run %q carries negative metrics", verdict.RunID)
 		}
 		target := &baseline
 		if verdict.Arm == ArmVariant {

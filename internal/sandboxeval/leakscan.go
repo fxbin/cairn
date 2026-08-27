@@ -1,7 +1,11 @@
+// 本文件实现持久化表面的凭据泄漏扫描。
+//
+// Author: fxbin
 package sandboxeval
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,10 +22,12 @@ const (
 	LeakDetected LeakOutcome = "leak_detected"
 )
 
-// leakScanMaxFileBytes 限制单文件读取上限：文件按整体读入（评测状态目录的
-// journal/制品均远小于该阈值）；超出即失败关闭，防止把未知大文件的半截
-// 内容当作 clean 证据。
+// leakScanMaxFileBytes 限制单文件流式扫描上限；超出即失败关闭，防止把未知
+// 大文件的半截内容当作 clean 证据。
 const leakScanMaxFileBytes = 1 << 30
+
+// leakScanChunkBytes 是流式扫描的固定内存窗口，不随文件大小增长。
+const leakScanChunkBytes = 64 * 1024
 
 // LeakScanReport 汇总一次泄漏扫描：只有闭合结论与逐表面命中计数——绝不
 // 记录 Key 本身或其摘要，报告可安全持久化到本地评测状态与审计行。
@@ -44,26 +50,69 @@ func ScanPersistenceSurfaces(paths []string, secret []byte) (LeakScanReport, err
 		if err != nil {
 			return LeakScanReport{}, fmt.Errorf("open surface %q for scan: %w", redactPath(path), err)
 		}
-		// 多读一字节以区分"恰达上限"与"被截断"：超限说明表面超出扫描合同，
-		// 必须显式失败而不是静默扫过尾部。
-		content, err := io.ReadAll(io.LimitReader(file, leakScanMaxFileBytes+1))
+		hits, err := countSecretStream(io.LimitReader(file, leakScanMaxFileBytes+1), secret)
 		closeErr := file.Close()
-		if err != nil {
-			return LeakScanReport{}, fmt.Errorf("read surface %q: %w", redactPath(path), err)
-		}
 		if closeErr != nil {
 			return LeakScanReport{}, fmt.Errorf("close surface %q: %w", redactPath(path), closeErr)
 		}
-		if len(content) > leakScanMaxFileBytes {
+		if errors.Is(err, errLeakScanSurfaceTooLarge) {
 			return LeakScanReport{}, fmt.Errorf("surface %q exceeds the leak scan size contract", redactPath(path))
 		}
-		hits := bytes.Count(content, secret)
+		if err != nil {
+			return LeakScanReport{}, fmt.Errorf("read surface %q: %w", redactPath(path), err)
+		}
 		if hits > 0 {
 			report.Outcome = LeakDetected
 			report.Hits[redactPath(path)] = hits
 		}
 	}
 	return report, nil
+}
+
+var errLeakScanSurfaceTooLarge = errors.New("leak scan surface exceeds maximum bytes")
+
+// countSecretStream 在固定块窗口内统计秘密字节串，保留至多 len(secret)-1
+// 字节跨块重叠；已经在上一块完整计数的命中不会重复累计。
+func countSecretStream(reader io.Reader, secret []byte) (int, error) {
+	buffer := make([]byte, leakScanChunkBytes)
+	carry := make([]byte, 0, len(secret)-1)
+	totalBytes := int64(0)
+	hits := 0
+	for {
+		count, readErr := reader.Read(buffer)
+		if count > 0 {
+			totalBytes += int64(count)
+			if totalBytes > leakScanMaxFileBytes {
+				return 0, errLeakScanSurfaceTooLarge
+			}
+			carryLength := len(carry)
+			window := make([]byte, 0, carryLength+count)
+			window = append(window, carry...)
+			window = append(window, buffer[:count]...)
+			for offset := 0; offset <= len(window)-len(secret); {
+				match := bytes.Index(window[offset:], secret)
+				if match < 0 {
+					break
+				}
+				start := offset + match
+				if start+len(secret) > carryLength {
+					hits++
+				}
+				offset = start + len(secret)
+			}
+			keep := len(secret) - 1
+			if keep > len(window) {
+				keep = len(window)
+			}
+			carry = append(carry[:0], window[len(window)-keep:]...)
+		}
+		if readErr == io.EOF {
+			return hits, nil
+		}
+		if readErr != nil {
+			return 0, readErr
+		}
+	}
 }
 
 // redactPath 把扫描表面的路径收敛为最后一段名称：命中计数需要可定位的表

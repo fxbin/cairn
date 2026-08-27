@@ -1,6 +1,7 @@
 package sandboxeval
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -16,12 +17,24 @@ func suiteFixture(t *testing.T) (EvalSet, []SuiteVerdict) {
 		for attempt := 0; attempt < evalSet.AttemptsPerTask; attempt++ {
 			baselineSuccess := attempt != 0 // 基线每任务首试失败，与变体形成有效性差距
 			runs = append(runs,
-				SuiteVerdict{Arm: ArmBaseline, TaskID: taskID, Success: baselineSuccess, RepeatedExplorations: 2, InputTokens: 1000, OutputTokens: 500, WallTimeMS: 1000},
-				SuiteVerdict{Arm: ArmVariant, TaskID: taskID, Success: true, RepeatedExplorations: 1, InputTokens: 800, OutputTokens: 400, WallTimeMS: 950},
+				SuiteVerdict{RunID: fmt.Sprintf("baseline-%s-%d", taskID, attempt+1), Arm: ArmBaseline, TaskID: taskID, AttemptIndex: attempt + 1, Success: baselineSuccess, RepeatedExplorations: 2, InputTokens: 1000, OutputTokens: 500, WallTimeMS: 1000},
+				SuiteVerdict{RunID: fmt.Sprintf("variant-%s-%d", taskID, attempt+1), Arm: ArmVariant, TaskID: taskID, AttemptIndex: attempt + 1, Success: true, RepeatedExplorations: 1, InputTokens: 800, OutputTokens: 400, WallTimeMS: 950},
 			)
 		}
 	}
 	return evalSet, runs
+}
+
+// TestJudgeSuiteRejectsDuplicateAttemptIdentity 验证总数正确也不能用重复样本
+// 替代缺失 attempt；比较器必须在聚合前拒绝该证据集。
+func TestJudgeSuiteRejectsDuplicateAttemptIdentity(t *testing.T) {
+	evalSet, runs := suiteFixture(t)
+	runs[len(runs)-1].TaskID = runs[len(runs)-3].TaskID
+	runs[len(runs)-1].AttemptIndex = runs[len(runs)-3].AttemptIndex
+	runs[len(runs)-1].Arm = runs[len(runs)-3].Arm
+	if _, err := JudgeSuite(evalSet, runs); err == nil || !strings.Contains(err.Error(), "duplicate run identity") {
+		t.Fatalf("duplicate attempt identity must fail closed, got %v", err)
+	}
 }
 
 // TestJudgeSuitePassesOnModeAAndModeBFixtures 锁定两个改善模式的正路径：

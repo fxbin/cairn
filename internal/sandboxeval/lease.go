@@ -1,3 +1,6 @@
+// 本文件定义沙箱凭据租约合同。
+//
+// Author: fxbin
 package sandboxeval
 
 import (

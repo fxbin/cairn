@@ -21,9 +21,11 @@ const (
 // validEvalSet 返回通过全部结构校验的 EvalSet fixture。
 func validEvalSet(t *testing.T) EvalSet {
 	t.Helper()
+	maximumOutputTokens := 4096
 	profile, err := contract.ResolveProviderRequestProfile(contract.ProviderKindOpenAICompatible, contract.ProviderRequestDeclaration{
 		BaseURL: "https://provider.test/v4", Model: "glm-5.2",
 		Capability: &contract.ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true},
+		Generation: &contract.ProviderGenerationDeclaration{MaxOutputTokens: maximumOutputTokens, ToolChoice: contract.GenerationToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("provider request profile fixture: %v", err)
@@ -65,12 +67,16 @@ func TestEvalSetValidationRejectsIncompleteContracts(t *testing.T) {
 		"contract id mismatch":    func(e *EvalSet) { e.TaskContracts[0].TaskID = "OtherTask" },
 		"missing baseline commit": func(e *EvalSet) { e.TaskContracts[0].BaselineCommit = "" },
 		"digest-shaped task ref":  func(e *EvalSet) { e.TaskContracts[0].DockerImageDigest = "image:latest-tag-only" },
-		"zero attempts":           func(e *EvalSet) { e.AttemptsPerTask = 0 },
-		"concurrency above one":   func(e *EvalSet) { e.ExecutionSchedule.Concurrency = 4 },
-		"unknown pair order":      func(e *EvalSet) { e.ExecutionSchedule.PairOrder = "baseline-first-all" },
-		"dirty build":             func(e *EvalSet) { e.BuildIdentity.Dirty = "true" },
-		"missing comparator ver":  func(e *EvalSet) { e.ComparatorContract.ComparatorVersion = "" },
-		"negative price":          func(e *EvalSet) { e.PricingSnapshot.InputPriceMicrousdPerMillionTokens = -1 },
+		"wrong attempts":          func(e *EvalSet) { e.AttemptsPerTask = 2 },
+		"wrong task count": func(e *EvalSet) {
+			e.TaskIDs = e.TaskIDs[:2]
+			e.TaskContracts = e.TaskContracts[:2]
+		},
+		"concurrency above one":  func(e *EvalSet) { e.ExecutionSchedule.Concurrency = 4 },
+		"unknown pair order":     func(e *EvalSet) { e.ExecutionSchedule.PairOrder = "baseline-first-all" },
+		"dirty build":            func(e *EvalSet) { e.BuildIdentity.Dirty = "true" },
+		"missing comparator ver": func(e *EvalSet) { e.ComparatorContract.ComparatorVersion = "" },
+		"negative price":         func(e *EvalSet) { e.PricingSnapshot.InputPriceMicrousdPerMillionTokens = -1 },
 	}
 	for name, mutate := range mutations {
 		evalSet := validEvalSet(t)
@@ -101,12 +107,8 @@ func TestEvalSetFingerprintDeterminismAndSensitivity(t *testing.T) {
 	}
 	drifted := evalSet
 	drifted.AttemptsPerTask++
-	changed, err := drifted.Fingerprint()
-	if err != nil {
-		t.Fatalf("drifted fingerprint: %v", err)
-	}
-	if changed == first {
-		t.Fatal("attempts_per_task drift must change the fingerprint")
+	if _, err := drifted.Fingerprint(); err == nil {
+		t.Fatal("attempts_per_task drift must invalidate the fixed first-generation scope")
 	}
 	broken := evalSet
 	broken.BuildIdentity.Dirty = "true"

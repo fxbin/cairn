@@ -1,3 +1,6 @@
+// 本文件定义冻结评测集合同。
+//
+// Author: fxbin
 package sandboxeval
 
 import (
@@ -23,6 +26,10 @@ const (
 	EvalSetSchemaVersionV1          = evalSetSchemaV1
 	CredentialPolicySchemaVersionV1 = policySchemaV1
 	LeaseSchemaVersionV1            = leaseSchemaV1
+	// FirstEvalTaskCount 固定首轮候选评测的任务数量。
+	FirstEvalTaskCount = 3
+	// FirstEvalAttemptsPerTask 固定首轮每个任务的重复次数。
+	FirstEvalAttemptsPerTask = 3
 )
 
 // evalSetFingerprintPrefix 是 EvalSet 指纹的版本化域前缀。
@@ -167,8 +174,8 @@ func (evalSet EvalSet) Validate() error {
 	if !fingerprintShape(evalSet.BaselineConfigFingerprint) || !fingerprintShape(evalSet.VariantConfigFingerprint) {
 		return errors.New("config fingerprints must be sha256 digests")
 	}
-	if len(evalSet.TaskIDs) == 0 {
-		return errors.New("eval set must freeze at least one task id")
+	if len(evalSet.TaskIDs) != FirstEvalTaskCount {
+		return fmt.Errorf("first eval set must freeze exactly %d task ids", FirstEvalTaskCount)
 	}
 	if !sort.StringsAreSorted(evalSet.TaskIDs) {
 		return errors.New("task ids must be frozen in ascending order")
@@ -197,8 +204,8 @@ func (evalSet EvalSet) Validate() error {
 			return fmt.Errorf("task %q contracts require sha256 digests", taskContract.TaskID)
 		}
 	}
-	if evalSet.AttemptsPerTask <= 0 {
-		return errors.New("attempts_per_task must be positive")
+	if evalSet.AttemptsPerTask != FirstEvalAttemptsPerTask {
+		return fmt.Errorf("first eval set requires attempts_per_task=%d", FirstEvalAttemptsPerTask)
 	}
 	if err := evalSet.ExecutionSchedule.Validate(); err != nil {
 		return err
@@ -211,6 +218,12 @@ func (evalSet EvalSet) Validate() error {
 	}
 	if err := evalSet.ProviderRequestProfile.Validate(); err != nil {
 		return fmt.Errorf("provider request profile: %w", err)
+	}
+	if evalSet.ProviderRequestProfile.GenerationOptions.MaxOutputTokens <= 0 {
+		return errors.New("first eval set requires an explicit positive provider max_output_tokens")
+	}
+	if evalSet.ProviderRequestProfile.GenerationOptions.ToolChoice != contract.GenerationToolChoiceAuto {
+		return errors.New("first eval set requires provider tool_choice=auto")
 	}
 	if err := evalSet.PricingSnapshot.Validate(); err != nil {
 		return fmt.Errorf("pricing snapshot: %w", err)

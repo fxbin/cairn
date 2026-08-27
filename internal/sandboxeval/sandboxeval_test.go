@@ -1,6 +1,7 @@
 package sandboxeval
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,6 +180,9 @@ func TestBuildEvaluationEnvironmentClosesLeakPaths(t *testing.T) {
 	if _, err := BuildEvaluationEnvironment(source, []string{"HOME"}, "k"); err == nil {
 		t.Fatal("user directory allowlist entry must be rejected")
 	}
+	if _, err := BuildEvaluationEnvironment(source, []string{"HTTPS_PROXY"}, "k"); err == nil {
+		t.Fatal("host proxy allowlist entry must be rejected")
+	}
 	if _, err := BuildEvaluationEnvironment(source, []string{SandboxProviderKeyEnv}, "k"); err == nil {
 		t.Fatal("sandbox key in allowlist must be rejected")
 	}
@@ -252,5 +256,18 @@ func TestScanPersistenceSurfacesClosure(t *testing.T) {
 	}
 	if _, err := ScanPersistenceSurfaces(nil, nil); err == nil {
 		t.Fatal("scan without an in-memory secret must be rejected")
+	}
+}
+
+// TestCountSecretStreamFindsCrossChunkMatch 验证秘密跨越固定扫描块边界时仍会
+// 被准确命中，且扫描内存不会随文件长度线性增长。
+func TestCountSecretStreamFindsCrossChunkMatch(t *testing.T) {
+	secret := []byte("cross-boundary-secret")
+	prefix := bytes.Repeat([]byte{'x'}, leakScanChunkBytes-len(secret)/2)
+	content := append(prefix, secret...)
+	content = append(content, bytes.Repeat([]byte{'y'}, leakScanChunkBytes)...)
+	hits, err := countSecretStream(bytes.NewReader(content), secret)
+	if err != nil || hits != 1 {
+		t.Fatalf("cross-chunk scan hits=%d err=%v", hits, err)
 	}
 }

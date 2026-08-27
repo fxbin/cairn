@@ -1,3 +1,6 @@
+// 本文件定义可信评测子进程环境合同。
+//
+// Author: fxbin
 package sandboxeval
 
 import (
@@ -17,6 +20,16 @@ var forbiddenUserDirectoryNames = map[string]struct{}{
 // proxySuffix 是代理类变量的识别后缀：宿主代理可能携带内嵌凭据或改变评测
 // 流量的路径，属于继承禁运品。
 const proxySuffix = "_PROXY"
+
+// EvaluationChildMarkerEnv 标识当前进程由可信父进程以空环境重启；执行器仅
+// 在正式评测时接受该标记，dry-run 冻结自检不需要它。
+const EvaluationChildMarkerEnv = "CAIRN_SANDBOX_EVALUATION_CHILD"
+
+// EvaluationProcessAllowlist 返回可信父进程可从宿主复制的最小非敏感环境
+// 名单；返回副本防止调用方改写全局策略。
+func EvaluationProcessAllowlist() []string {
+	return []string{"LANG", "LC_ALL", "PATH", "TMPDIR"}
+}
 
 // BuildEvaluationEnvironment 以空环境起步构造评测子进程环境：只有白名单中的
 // 变量会从可信宿主环境取值并注入，随后通过专用通道携带沙箱 Key。白名单
@@ -39,6 +52,9 @@ func BuildEvaluationEnvironment(sourceEnv func(string) (string, bool), allowlist
 		}
 		if _, forbidden := forbiddenUserDirectoryNames[name]; forbidden {
 			return nil, fmt.Errorf("allowlist entry %q may not expose host user directories", name)
+		}
+		if strings.HasSuffix(strings.ToUpper(name), proxySuffix) {
+			return nil, fmt.Errorf("allowlist entry %q may not expose host proxy settings", name)
 		}
 		value, present := sourceEnv(name)
 		if !present {
