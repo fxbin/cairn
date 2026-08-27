@@ -51,6 +51,12 @@ func TestResolvedExecutionPlanDigestSensitivity(t *testing.T) {
 func TestBuildIdentityComputeFingerprintMatchesLegacyShape(t *testing.T) {
 	identity := domain.BuildIdentity{Revision: "abc123", Dirty: "false", Flavor: "plain"}
 	first := identity.ComputeFingerprint()
+	// legacyBuildIdentityFixtureGolden 是按既有 Run 冻结事实的公式独立预计算
+	// 的锚定值：公式或字段序静默漂移都会在此立即失败。
+	const legacyBuildIdentityFixtureGolden = "sha256:26d81a221b5790c0ce969fac0bf2d42386993c7519d498e98a7ed2e39589dee4"
+	if first != legacyBuildIdentityFixtureGolden {
+		t.Fatalf("fingerprint must stay pinned to the legacy formula: %q vs %q", first, legacyBuildIdentityFixtureGolden)
+	}
 	if !strings.HasPrefix(first, "sha256:") || len(first) != len("sha256:")+64 {
 		t.Fatalf("fingerprint shape invalid: %q", first)
 	}

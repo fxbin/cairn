@@ -556,6 +556,7 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 			verdicts = append(verdicts, *verdict)
 		}
 		if stepAbort != nil {
+			stopReason, stopDetail = stop.reason, stop.detail
 			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, stopReason, stopDetail, records, verdicts, nil
 		}
 		if stop.reason != "" {

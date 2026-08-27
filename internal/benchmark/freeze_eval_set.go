@@ -158,12 +158,18 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 	if err := os.MkdirAll(options.OutDir, 0o700); err != nil {
 		return report, fmt.Errorf("create freeze output directory: %w", err)
 	}
+	// 自检失败零写入；写盘为顺序原子替换，第二份失败时回收第一份以维持双产
+	// 物成对出现，不留半套指纹产物。
 	report.EvalSetPath = filepath.Join(options.OutDir, "eval-set.json")
 	report.CredentialPolicyPath = filepath.Join(options.OutDir, "credential-policy.json")
 	if err := writeJSON(report.EvalSetPath, evalSet); err != nil {
 		return report, err
 	}
 	if err := writeJSON(report.CredentialPolicyPath, policy); err != nil {
+		removeErr := os.Remove(report.EvalSetPath)
+		if removeErr != nil {
+			return report, fmt.Errorf("write credential policy (%v) and pair-reclaim failed (%v)", err, removeErr)
+		}
 		return report, err
 	}
 	report.EvalSetFingerprint = evalSetFingerprint
