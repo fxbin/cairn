@@ -369,6 +369,7 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 	sourceDerived := flags.String("source-derived", "", "source derived candidate ID (required)")
 	sourceConsolidation := flags.String("source-consolidation", "", "source consolidation ID (required)")
 	baselineFingerprint := flags.String("baseline-fingerprint", "", "baseline configuration fingerprint sha256 (required)")
+	evalSetFingerprint := flags.String("eval-set-fingerprint", "", "frozen eval set fingerprint; providing it creates the candidate directly in ready state")
 	noteDigest := flags.String("note-digest", "", "optional sha256 digest of an operator note artifact")
 	maxPromptTokens := flags.Int("max-prompt-tokens", 0, "variant max prompt tokens (required)")
 	maxSummaryBytes := flags.Int("max-summary-bytes", 0, "variant max summary bytes (required)")
@@ -404,6 +405,7 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 		SourceDerivedID:       *sourceDerived,
 		SourceConsolidationID: *sourceConsolidation,
 		BaselineFingerprint:   *baselineFingerprint,
+		EvalSetFingerprint:    *evalSetFingerprint,
 		NoteDigest:            *noteDigest,
 		Variant: memory.CompactionParamsVariant{
 			SchemaVersion:           memory.EvolutionSchemaVersion,
@@ -1638,7 +1640,9 @@ Usage:
   cairn memory revoke --reason evidence_invalid|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory consolidate [--min-support <n>] [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory reject --reason insufficient_evidence|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] <derived-id>
-  cairn memory candidate create --source-derived <id> --source-consolidation <id> --baseline-fingerprint <sha256> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate create --source-derived <id> --source-consolidation <id> --baseline-fingerprint <sha256> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--eval-set-fingerprint <sha256>] [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn benchmark run --local-config <yaml> [--task <id> ...] [directory overrides] [--prepare-only] [--json]
+  cairn benchmark freeze-eval-set --local-config <yaml> --policy-profile-id <id> --suite-max-wall <duration> --comparator-version <label> --out-dir <dir> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--task <id> ...] [--attempts-per-task <n>] [--cairn-root <path>] [--json]
   cairn memory candidate reject --reason insufficient_evidence|evaluation_failed|safety_violation|human_request [--cooldown <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate invalidate [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>

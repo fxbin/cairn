@@ -17,7 +17,8 @@ import (
 )
 
 // MemoryEvolutionCreateOptions 描述创建演化候选的输入边界：闭合变体参数、
-// 精确来源版本复合键与基线指纹；不接受任务正文或自由文本。
+// 精确来源版本复合键与基线指纹；不接受任务正文或自由文本。提供评测集指纹
+// 时候选以 ready 形态建档（评测集随创建显式冻结），缺省仍为 draft。
 type MemoryEvolutionCreateOptions struct {
 	Workspace             string
 	StateDir              string
@@ -25,6 +26,7 @@ type MemoryEvolutionCreateOptions struct {
 	SourceDerivedID       string
 	SourceConsolidationID string
 	BaselineFingerprint   string
+	EvalSetFingerprint    string
 	NoteDigest            string
 	Variant               memory.CompactionParamsVariant
 	TTL                   time.Duration
@@ -49,10 +51,11 @@ type MemoryEvolutionInspectOptions struct {
 	Config      config.Config
 }
 
-// CreateEvolutionCandidate 在工作区锁内创建一条 draft 演化候选：先做全库
-// 跨库验证，再复核来源派生版本存在、active、未过期且属于当前工作区，最后
-// 由变体参数确定性派生指纹并写入登记事务。提交后再运行与 Doctor 一致的
-// 只读验证；缺少记忆库或来源失效即失败关闭。
+// CreateEvolutionCandidate 在工作区锁内创建一条演化候选：先做全库跨库验证，
+// 再复核来源派生版本存在、active、未过期且属于当前工作区，最后由变体参数确
+// 定性派生指纹并写入登记事务。携带评测集指纹时以 ready 形态建档（评测集随
+// 创建显式冻结），否则为 draft。提交后再运行与 Doctor 一致的只读验证；缺少
+// 记忆库或来源失效即失败关闭。
 func (service Service) CreateEvolutionCandidate(ctx context.Context, options MemoryEvolutionCreateOptions) (memory.EvolutionCandidate, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -94,6 +97,13 @@ func (service Service) CreateEvolutionCandidate(ctx context.Context, options Mem
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
+	status := memory.CandidateStateDraft
+	if options.EvalSetFingerprint != "" {
+		if !memory.DigestHexShape(options.EvalSetFingerprint) {
+			return memory.EvolutionCandidate{}, errors.New("eval set fingerprint must be a sha256 digest")
+		}
+		status = memory.CandidateStateReady
+	}
 	ttl, err := memory.NormalizeCandidateTTL(options.TTL)
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
@@ -107,9 +117,10 @@ func (service Service) CreateEvolutionCandidate(ctx context.Context, options Mem
 		VariantSpecSHA256:   variantDigest,
 		VariantFingerprint:  variantFingerprint,
 		BaselineFingerprint: options.BaselineFingerprint,
+		EvalSetFingerprint:  options.EvalSetFingerprint,
 		CreatedAt:           now,
 		ExpiresAt:           now.Add(ttl),
-		Status:              memory.CandidateStateDraft,
+		Status:              status,
 		NoteDigest:          options.NoteDigest,
 	}
 	created, err := store.CreateEvolutionCandidate(ctx, candidate, now)
