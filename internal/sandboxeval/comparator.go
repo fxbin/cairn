@@ -108,14 +108,19 @@ func violatesBasisPointGate(baselineValue, variantValue int64, gate int64) (bool
 	return scaledVariant > scaledGate, nil
 }
 
-// runCostUnits 按 ADR 公式累计单个 Run 的整数成本单位；tokens 与单价均来
-// 自冻结快照，永不除一百万，也不做浮点估算。
-func runCostUnits(verdict SuiteVerdict, pricing contractPricingView) (int64, error) {
-	inputPart, err := scaleOverflowFree(verdict.InputTokens, pricing.inputPrice)
+// CostUnitsPerMicroUSD 是 CostUnits 原始量纲到租约微美元记账的整数换算基数：
+// 成本公式刻意不除以该基数以保持精确，配额记账用它做纯整数进位。
+const CostUnitsPerMicroUSD = int64(1_000_000)
+
+// ComputeRunCostUnits 是单次运行整数成本单位的唯一实现：tokens × 冻结千价
+// 直接相乘相加，永不除一百万、不做浮点换算；受检运算溢出即失败关闭。比较
+// 器聚合与执行器租约记账共用本函数，防止两处公式各自漂移。
+func ComputeRunCostUnits(inputTokens, outputTokens, inputPrice, outputPrice int64) (int64, error) {
+	inputPart, err := scaleOverflowFree(inputTokens, inputPrice)
 	if err != nil {
 		return 0, err
 	}
-	outputPart, err := scaleOverflowFree(verdict.OutputTokens, pricing.outputPrice)
+	outputPart, err := scaleOverflowFree(outputTokens, outputPrice)
 	if err != nil {
 		return 0, err
 	}
@@ -124,6 +129,12 @@ func runCostUnits(verdict SuiteVerdict, pricing contractPricingView) (int64, err
 		return 0, errors.New("cost units addition overflows")
 	}
 	return total, nil
+}
+
+// runCostUnits 按 ADR 公式累计单个 Run 的整数成本单位；tokens 与单价均来
+// 自冻结快照，计算委托给唯一实现避免双写漂移。
+func runCostUnits(verdict SuiteVerdict, pricing contractPricingView) (int64, error) {
+	return ComputeRunCostUnits(verdict.InputTokens, verdict.OutputTokens, pricing.inputPrice, pricing.outputPrice)
 }
 
 // contractPricingView 是 EvalSet 冻结定价的最小读取视图，仅供比较器内部使用。

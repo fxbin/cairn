@@ -17,6 +17,10 @@ import (
 // evaluationSchemaV1 是 Evaluation 行的当前合同版本。
 const evaluationSchemaV1 = 1
 
+// EvaluationSchemaVersionV1 是面向编排方的当前评测行 schema 版本导出常量；
+// 构造新评测行必须经此表达版本事实，不得散落字面量。
+const EvaluationSchemaVersionV1 = evaluationSchemaV1
+
 // evaluationIDPrefix 是 Evaluation 标识的版本化域前缀。
 const evaluationIDPrefix = "cairn-evaluation-v1"
 
