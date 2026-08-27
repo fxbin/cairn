@@ -24,6 +24,10 @@ const EvaluationSchemaVersionV1 = evaluationSchemaV1
 // evaluationIDPrefix 是 Evaluation 标识的版本化域前缀。
 const evaluationIDPrefix = "cairn-evaluation-v1"
 
+// sourceInvalidationDigestPrefix 是运行中评测因来源失效被受控闭合时的证据
+// 摘要域；摘要只绑定既有候选与评测身份，不携带自由文本或本机路径。
+const sourceInvalidationDigestPrefix = "cairn-evaluation-source-invalidation-v1"
+
 // Evaluation 生命周期的闭合状态词表：running 表示启动事务已提交、评测尚未
 // 达成结论；四个结论态一经写入不可改写，invalid 对应隔离或证据合同的破坏。
 const (
@@ -54,8 +58,8 @@ const (
 )
 
 // Evaluation 是一次候选评测的持久化事实：五元组身份冻结输入，状态只允许
-// 从 running 单向进入一个结论态。SuiteResultDigest 是本地评测目录正文的最
-// 小留存引用；FinishedAt 零值表示评测尚未闭合。
+// 从 running 单向进入一个结论态。SuiteResultDigest 通常引用本地套件结果，
+// 来源失效时则记录确定性失效证据摘要；FinishedAt 零值表示评测尚未闭合。
 type Evaluation struct {
 	ID                        string    `json:"evaluation_id"`
 	SchemaVersion             int       `json:"schema_version"`
@@ -68,6 +72,22 @@ type Evaluation struct {
 	SuiteResultDigest         string    `json:"suite_result_digest,omitempty"`
 	StartedAt                 time.Time `json:"started_at"`
 	FinishedAt                time.Time `json:"finished_at,omitempty"`
+}
+
+// EvaluationBinding 是启动事务必须与候选不可变事实核对的三元组；它不另行
+// 持久化，避免产生第二事实源，只作为同一事务内的比较输入。
+type EvaluationBinding struct {
+	BaselineFingerprint         string
+	VariantSpecSHA256           string
+	CandidateVariantFingerprint string
+}
+
+// Validate 校验事务绑定三元组均为闭合的 sha256 摘要。
+func (binding EvaluationBinding) Validate() error {
+	if !DigestHexShape(binding.BaselineFingerprint) || !DigestHexShape(binding.VariantSpecSHA256) || !DigestHexShape(binding.CandidateVariantFingerprint) {
+		return errors.New("evaluation candidate binding requires three sha256 digests")
+	}
+	return nil
 }
 
 // Validate 校验评测行的结构合同：schema 版本、身份词表、状态合法性与
@@ -171,4 +191,17 @@ func EvaluationID(candidateID, evalSetFingerprint, baselineConfigFingerprint, va
 		ComparatorVersion         string `json:"comparator_version"`
 	}{candidateID, evalSetFingerprint, baselineConfigFingerprint, variantConfigFingerprint, comparatorVersion}
 	return canonicaljson.Fingerprint(evaluationIDPrefix, view)
+}
+
+// SourceInvalidationDigest 为来源失效导致的运行中评测闭合生成确定性证据摘要；
+// 它可由数据库既有身份重算，供恢复路径与全库检查共同核验。
+func SourceInvalidationDigest(candidateID, evaluationID string) (string, error) {
+	if candidateID == "" || evaluationID == "" {
+		return "", errors.New("source invalidation digest requires candidate and evaluation identities")
+	}
+	view := struct {
+		CandidateID  string `json:"candidate_id"`
+		EvaluationID string `json:"evaluation_id"`
+	}{CandidateID: candidateID, EvaluationID: evaluationID}
+	return canonicaljson.Fingerprint(sourceInvalidationDigestPrefix, view)
 }

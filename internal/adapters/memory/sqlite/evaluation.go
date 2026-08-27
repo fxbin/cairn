@@ -1,3 +1,6 @@
+// 本文件实现可信记忆评测事务。
+//
+// Author: fxbin
 package sqlite
 
 import (
@@ -14,12 +17,15 @@ import (
 // active；同 evaluation_id 的既有 running 行按冻结五元组等价幂等返回。事务
 // 内完成评测行插入、候选迁移 evaluating、started 审计与三重读回比对，任一
 // 失败整体回滚，不留下任何"评测已开始"的痕迹。
-func (store *Store) StartEvaluation(ctx context.Context, candidateID string, evaluation memory.Evaluation, now time.Time) (memory.Evaluation, error) {
+func (store *Store) StartEvaluation(ctx context.Context, candidateID string, evaluation memory.Evaluation, binding memory.EvaluationBinding, now time.Time) (memory.Evaluation, error) {
 	if evaluation.Status != memory.EvaluationStatusRunning {
 		return memory.Evaluation{}, errors.New("evaluation must start in the running state")
 	}
 	if evaluation.CandidateID != candidateID {
 		return memory.Evaluation{}, errors.New("evaluation identity does not match the requested candidate")
+	}
+	if err := binding.Validate(); err != nil {
+		return memory.Evaluation{}, err
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -43,6 +49,28 @@ func (store *Store) StartEvaluation(ctx context.Context, candidateID string, eva
 	if !found {
 		return memory.Evaluation{}, memory.ErrNotFound
 	}
+	// 无论新启动还是 running 幂等重入，都先在事务内复核候选不可变事实；
+	// 恢复路径不得因已有评测行而绕过 Candidate/EvalSet/实际基线绑定。
+	if candidate.EvalSetFingerprint == "" || evaluation.EvalSetFingerprint != candidate.EvalSetFingerprint {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation eval set fingerprint does not match the registered candidate", memory.ErrConflict)
+	}
+	if candidate.BaselineFingerprint != binding.BaselineFingerprint || candidate.BaselineFingerprint != evaluation.BaselineConfigFingerprint {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation baseline fingerprint does not match the registered candidate", memory.ErrConflict)
+	}
+	if candidate.VariantSpecSHA256 != binding.VariantSpecSHA256 || candidate.VariantFingerprint != binding.CandidateVariantFingerprint {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation variant specification does not match the registered candidate", memory.ErrConflict)
+	}
+	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
+		return memory.Evaluation{}, err
+	}
+	derivedID, deriveErr := memory.EvaluationID(candidate.ID, evaluation.EvalSetFingerprint,
+		evaluation.BaselineConfigFingerprint, evaluation.VariantConfigFingerprint, evaluation.ComparatorVersion)
+	if deriveErr != nil {
+		return memory.Evaluation{}, fmt.Errorf("re-derive evaluation identity: %w", deriveErr)
+	}
+	if derivedID != evaluation.ID {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation identity is not derivable from its frozen tuple", memory.ErrConflict)
+	}
 	existing, exists, err := lookupEvolutionEvaluation(ctx, transaction, evaluation.ID)
 	if err != nil {
 		return memory.Evaluation{}, err
@@ -62,23 +90,6 @@ func (store *Store) StartEvaluation(ctx context.Context, candidateID string, eva
 	}
 	if candidate.Status != memory.CandidateStateReady {
 		return memory.Evaluation{}, fmt.Errorf("%w: evolution candidate %s must be ready before starting an evaluation", memory.ErrConflict, candidate.ID)
-	}
-	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
-		return memory.Evaluation{}, err
-	}
-	// 冻结输入一致性属同一事务的强制复核：评测集指纹必须与候选登记值一致，
-	// 且请求身份必须可由五元组重新派生——任一不符都意味着调用方携带了与
-	// 候选登记事实无关的冻结材料，必须在产生任何写之前失败关闭。
-	if candidate.EvalSetFingerprint == "" || evaluation.EvalSetFingerprint != candidate.EvalSetFingerprint {
-		return memory.Evaluation{}, fmt.Errorf("%w: evaluation eval set fingerprint does not match the registered candidate", memory.ErrConflict)
-	}
-	derivedID, deriveErr := memory.EvaluationID(candidate.ID, evaluation.EvalSetFingerprint,
-		evaluation.BaselineConfigFingerprint, evaluation.VariantConfigFingerprint, evaluation.ComparatorVersion)
-	if deriveErr != nil {
-		return memory.Evaluation{}, fmt.Errorf("re-derive evaluation identity: %w", deriveErr)
-	}
-	if derivedID != evaluation.ID {
-		return memory.Evaluation{}, fmt.Errorf("%w: evaluation identity is not derivable from its frozen tuple", memory.ErrConflict)
 	}
 	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_evaluations(
 		evaluation_id, schema_version, candidate_id, eval_set_fingerprint,

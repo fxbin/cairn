@@ -1,3 +1,6 @@
+// 本文件实现可信记忆应用用例。
+//
+// Author: fxbin
 package app
 
 import (

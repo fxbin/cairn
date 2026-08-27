@@ -51,8 +51,11 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	configuration.Context.AutoCompact = false
 	configuration.Context.MaxPromptTokens = 12_345
 	configuration.Context.MaxSummaryBytes = 6_789
+	configuration.Context.InventoryBudgetPercent = 35
+	configuration.Context.ThresholdReservePercent = 15
 	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
-	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 {
+	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 ||
+		loop.ContextInventoryBudgetPercent != 35 || loop.ContextThresholdReservePercent != 15 {
 		t.Fatalf("loop context = %#v", loop)
 	}
 }

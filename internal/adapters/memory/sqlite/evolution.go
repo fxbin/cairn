@@ -116,7 +116,7 @@ func (store *Store) CreateEvolutionCandidate(ctx context.Context, candidate memo
 	return candidate, nil
 }
 
-// RejectEvolutionCandidate 只将 draft 候选置为 rejected，写入封闭理由审计并
+// RejectEvolutionCandidate 将尚未启动评测的 draft/ready 候选置为 rejected，写入封闭理由审计并
 // 落一条冷却记录；同候选重复拒绝幂等返回且不重复落冷却。它在事务中复核
 // 来源仍 active、未过期且同工作区，防止 Store 直连写入失真终态。
 func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, reason string, now time.Time, cooldown time.Duration) (memory.EvolutionCandidate, error) {
@@ -148,8 +148,8 @@ func (store *Store) RejectEvolutionCandidate(ctx context.Context, candidateID, r
 		}
 		return candidate, nil
 	}
-	if candidate.Status != memory.CandidateStateDraft {
-		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before rejection", candidateID)
+	if candidate.Status != memory.CandidateStateDraft && candidate.Status != memory.CandidateStateReady {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft or ready before rejection", candidateID)
 	}
 	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
@@ -229,11 +229,34 @@ func (store *Store) InvalidateEvolutionCandidateForInactiveSource(ctx context.Co
 		}
 		return candidate, nil
 	}
-	if candidate.Status != memory.CandidateStateDraft {
-		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before invalidation", candidateID)
+	if candidate.Status != memory.CandidateStateDraft && candidate.Status != memory.CandidateStateReady && candidate.Status != memory.CandidateStateEvaluating {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft, ready or evaluating before invalidation", candidateID)
 	}
 	if err := requireEvolutionSourceInactive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
+	}
+	var invalidatedEvaluation *memory.Evaluation
+	if candidate.Status == memory.CandidateStateEvaluating {
+		evaluation, exists, err := lookupEvolutionEvaluationForCandidate(ctx, transaction, candidate.ID)
+		if err != nil {
+			return memory.EvolutionCandidate{}, err
+		}
+		if !exists || evaluation.Status != memory.EvaluationStatusRunning {
+			return memory.EvolutionCandidate{}, fmt.Errorf("evaluating evolution candidate %s lacks a running evaluation", candidateID)
+		}
+		digest, err := memory.SourceInvalidationDigest(candidate.ID, evaluation.ID)
+		if err != nil {
+			return memory.EvolutionCandidate{}, err
+		}
+		if _, err := transaction.ExecContext(ctx, `UPDATE evolution_evaluations
+			SET status = ?, suite_result_digest = ?, finished_at = ? WHERE evaluation_id = ?`,
+			memory.EvaluationStatusInvalid, digest, now.UTC().Format(time.RFC3339Nano), evaluation.ID); err != nil {
+			return memory.EvolutionCandidate{}, fmt.Errorf("invalidate running evolution evaluation: %w", err)
+		}
+		evaluation.Status = memory.EvaluationStatusInvalid
+		evaluation.SuiteResultDigest = digest
+		evaluation.FinishedAt = stripMonotonic(now)
+		invalidatedEvaluation = &evaluation
 	}
 	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_candidates SET status = ? WHERE id = ?", memory.CandidateStateInvalidated, candidateID); err != nil {
 		return memory.EvolutionCandidate{}, fmt.Errorf("invalidate evolution candidate: %w", err)
@@ -251,10 +274,16 @@ func (store *Store) InvalidateEvolutionCandidateForInactiveSource(ctx context.Co
 	if err != nil {
 		return memory.EvolutionCandidate{}, err
 	}
-	if !evolutionAuditMatches(audit, []memory.EvolutionAuditEntry{
-		{CandidateID: candidateID, Action: memory.EvolutionAuditCreated, OccurredAt: candidate.CreatedAt},
-		{CandidateID: candidateID, Action: memory.EvolutionAuditInvalidated, OccurredAt: now},
-	}) {
+	expectedAudit := []memory.EvolutionAuditEntry{{CandidateID: candidateID, Action: memory.EvolutionAuditCreated, OccurredAt: candidate.CreatedAt}}
+	if invalidatedEvaluation != nil {
+		expectedAudit = append(expectedAudit, memory.EvolutionAuditEntry{CandidateID: candidateID, Action: memory.EvolutionAuditEvaluationStarted, OccurredAt: invalidatedEvaluation.StartedAt})
+		storedEvaluation, found, err := lookupEvolutionEvaluation(ctx, transaction, invalidatedEvaluation.ID)
+		if err != nil || !found || !evolutionEvaluationRowsMatch(storedEvaluation, *invalidatedEvaluation) {
+			return memory.EvolutionCandidate{}, errors.New("evolution evaluation invalidation read-back verification failed")
+		}
+	}
+	expectedAudit = append(expectedAudit, memory.EvolutionAuditEntry{CandidateID: candidateID, Action: memory.EvolutionAuditInvalidated, OccurredAt: now})
+	if !evolutionAuditMatches(audit, expectedAudit) {
 		return memory.EvolutionCandidate{}, errors.New("evolution invalidation audit read-back verification failed")
 	}
 	if err := transaction.Commit(); err != nil {
@@ -287,8 +316,8 @@ func (store *Store) ExpireEvolutionCandidate(ctx context.Context, candidateID st
 		}
 		return candidate, nil
 	}
-	if candidate.Status != memory.CandidateStateDraft {
-		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft before expiry", candidateID)
+	if candidate.Status != memory.CandidateStateDraft && candidate.Status != memory.CandidateStateReady {
+		return memory.EvolutionCandidate{}, fmt.Errorf("evolution candidate %s must be draft or ready before expiry", candidateID)
 	}
 	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.EvolutionCandidate{}, err
@@ -612,7 +641,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("ready evolution candidate %s has an expired source version", candidate.ID)
 			}
 		case memory.CandidateStateEvaluating:
-			if evaluationStarted != 1 || terminalEvaluationAudits != 0 || rejected != 0 || expired != 0 {
+			if evaluationStarted != 1 || terminalEvaluationAudits != 0 || rejected != 0 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("evaluating evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if !hasEvaluation || evaluationRow.Status != memory.EvaluationStatusRunning {
@@ -634,7 +663,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			} else {
 				expectedConclusion, rowStatus = evaluationInconclusive, memory.EvaluationStatusInconclusive
 			}
-			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 {
+			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("%s evolution candidate %s has invalid evaluation audit state", candidate.Status, candidate.ID)
 			}
 			if !hasEvaluation || evaluationRow.Status != rowStatus {
@@ -667,7 +696,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			if hasEvaluation && evaluationRow.Status != memory.EvaluationStatusInvalid {
 				return fmt.Errorf("invalidated evolution candidate %s carries a non-invalid evaluation row", candidate.ID)
 			}
-			if hasEvaluation && evaluationRow.Status == memory.EvaluationStatusInvalid && evaluationStarted == 1 && evaluationPassed+evaluationFailed+evaluationInconclusive == 0 {
+			if hasEvaluation && evaluationRow.Status == memory.EvaluationStatusInvalid && evaluationStarted == 1 && invalidated == 1 && evaluationPassed+evaluationFailed+evaluationInconclusive == 0 {
 				// 评测安全作废路径：隔离或证据合同破坏令结论为 invalid，
 				// 候选随之 invalidated；来源活性不再是必要条件。
 			} else {

@@ -1,5 +1,8 @@
 // Package sqlite 将受限的可信记忆控制面持久化为独立 SQLite 数据库；它不读取
 // Event Journal 内容，也不承担运行事实源职责。
+// 本文件实现可信记忆 SQLite 基础存储。
+//
+// Author: fxbin
 package sqlite
 
 import (

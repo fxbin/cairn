@@ -593,7 +593,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	if err != nil {
 		return nil, err
 	}
-	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, capabilityDeclarationFromConfig(configuration))
+	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration))
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider card for stream requirements: %w", err)
 	}
@@ -615,19 +615,6 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 		}
 	}
 	return client, nil
-}
-
-// capabilityDeclarationFromConfig 把配置层能力声明投影为合同层声明输入。
-func capabilityDeclarationFromConfig(configuration config.Config) *contract.ProviderCapabilityDeclaration {
-	capability := configuration.Provider.Capability
-	if capability == nil {
-		return nil
-	}
-	return &contract.ProviderCapabilityDeclaration{
-		ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
-		ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
-		StopReasons: capability.StopReasons,
-	}
 }
 
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。
@@ -917,9 +904,11 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		MaxCostUSD: configuration.Budget.MaxCostUSD, InputTokenUSD: configuration.Pricing.InputTokenUSD,
 		OutputTokenUSD:     configuration.Pricing.OutputTokenUSD,
 		ContextAutoCompact: configuration.Context.AutoCompact, ContextMaxPromptTokens: configuration.Context.MaxPromptTokens,
-		ContextMaxSummaryBytes:     configuration.Context.MaxSummaryBytes,
-		VerificationAutoAfterPatch: configuration.Verification.AutoAfterPatch,
-		Verification:               verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
+		ContextMaxSummaryBytes:         configuration.Context.MaxSummaryBytes,
+		ContextInventoryBudgetPercent:  configuration.Context.InventoryBudgetPercent,
+		ContextThresholdReservePercent: configuration.Context.ThresholdReservePercent,
+		VerificationAutoAfterPatch:     configuration.Verification.AutoAfterPatch,
+		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
 	}
 }

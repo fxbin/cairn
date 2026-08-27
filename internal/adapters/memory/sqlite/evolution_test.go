@@ -853,18 +853,17 @@ func TestEvolutionInvalidationRequiresInactiveQualifiedSource(t *testing.T) {
 	}
 }
 
-// TestEvolutionDirectTerminalWritesRejectFutureStates 锁定持久层切片边界：
-// ready/evaluating 即使经 Store 直连，也不能被终态入口洗白为 M4-1 状态。
-func TestEvolutionDirectTerminalWritesRejectFutureStates(t *testing.T) {
+// TestEvolutionReadyCandidateAcceptsManualTerminalActions 锁定 M4-2 启用后的恢复
+// 边界：尚未启动评测的 ready 候选可以被拒绝、到期或因来源失效作废。
+func TestEvolutionReadyCandidateAcceptsManualTerminalActions(t *testing.T) {
 	tests := []struct {
-		name   string
-		state  string
-		run    func(*Store, memory.EvolutionCandidate, time.Time) error
-		expiry bool
+		name     string
+		run      func(*Store, memory.EvolutionCandidate, time.Time) error
+		expiry   bool
+		inactive bool
 	}{
 		{
-			name:  "ready_reject",
-			state: memory.CandidateStateReady,
+			name: "ready_reject",
 			run: func(store *Store, candidate memory.EvolutionCandidate, now time.Time) error {
 				_, err := store.RejectEvolutionCandidate(context.Background(), candidate.ID, memory.RejectReasonHumanRequest, now, 0)
 				return err
@@ -872,7 +871,6 @@ func TestEvolutionDirectTerminalWritesRejectFutureStates(t *testing.T) {
 		},
 		{
 			name:   "ready_expire",
-			state:  memory.CandidateStateReady,
 			expiry: true,
 			run: func(store *Store, candidate memory.EvolutionCandidate, _ time.Time) error {
 				_, err := store.ExpireEvolutionCandidate(context.Background(), candidate.ID, candidate.ExpiresAt)
@@ -880,8 +878,8 @@ func TestEvolutionDirectTerminalWritesRejectFutureStates(t *testing.T) {
 			},
 		},
 		{
-			name:  "evaluating_invalidate",
-			state: memory.CandidateStateEvaluating,
+			name:     "ready_invalidate",
+			inactive: true,
 			run: func(store *Store, candidate memory.EvolutionCandidate, now time.Time) error {
 				_, err := store.InvalidateEvolutionCandidateForInactiveSource(context.Background(), candidate.ID, now)
 				return err
@@ -894,22 +892,20 @@ func TestEvolutionDirectTerminalWritesRejectFutureStates(t *testing.T) {
 			if testCase.expiry {
 				candidate = evolutionCandidateBeforeSourceExpiry(candidate, now)
 			}
+			candidate.Status = memory.CandidateStateReady
+			candidate.EvalSetFingerprint = evalSetFrozen
 			if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, now); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_candidates SET status = ? WHERE id = ?", testCase.state, candidate.ID); err != nil {
-				t.Fatal(err)
+			if testCase.inactive {
+				mutateEvolutionSource(t, store, candidate, now, evolutionSourceInactive)
 			}
-			if err := testCase.run(store, candidate, now); err == nil {
-				t.Fatalf("future state %s must not enter a M4-1 terminal action", testCase.state)
+			if err := testCase.run(store, candidate, now); err != nil {
+				t.Fatalf("ready terminal action failed: %v", err)
 			}
 			rawCandidate, found, err := lookupEvolutionCandidate(context.Background(), store.db, candidate.ID)
-			if err != nil || !found || rawCandidate.Status != testCase.state {
-				t.Fatalf("refused future-state action must leave raw state unchanged: candidate=%#v found=%t err=%v", rawCandidate, found, err)
-			}
-			audit, err := evolutionAuditFor(context.Background(), store.db, candidate.ID)
-			if err != nil || len(audit) != 1 || audit[0].Action != memory.EvolutionAuditCreated {
-				t.Fatalf("refused future-state action must not append an audit: %#v err=%v", audit, err)
+			if err != nil || !found || !memory.IsTerminalCandidateState(rawCandidate.Status) {
+				t.Fatalf("ready action must close the candidate: candidate=%#v found=%t err=%v", rawCandidate, found, err)
 			}
 		})
 	}

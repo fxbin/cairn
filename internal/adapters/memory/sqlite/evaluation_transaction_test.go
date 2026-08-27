@@ -30,16 +30,25 @@ func readyEvolutionFixture(t *testing.T) (*Store, memory.EvolutionCandidate, tim
 
 // newEvaluationFor 为候选派生合法 running 评测行。
 func newEvaluationFor(candidate memory.EvolutionCandidate) (memory.Evaluation, error) {
-	id, err := memory.EvaluationID(candidate.ID, evalSetFrozen, evalCandidateFingerprint, evalCandidateFingerprint, "cairn-comparator-v1")
+	id, err := memory.EvaluationID(candidate.ID, evalSetFrozen, candidate.BaselineFingerprint, evalCandidateFingerprint, "cairn-comparator-v1")
 	if err != nil {
 		return memory.Evaluation{}, err
 	}
 	return memory.Evaluation{
 		ID: id, SchemaVersion: 1, CandidateID: candidate.ID,
 		EvalSetFingerprint:        evalSetFrozen,
-		BaselineConfigFingerprint: evalCandidateFingerprint, VariantConfigFingerprint: evalCandidateFingerprint,
+		BaselineConfigFingerprint: candidate.BaselineFingerprint, VariantConfigFingerprint: evalCandidateFingerprint,
 		ComparatorVersion: "cairn-comparator-v1", Status: memory.EvaluationStatusRunning,
 	}, nil
+}
+
+// evaluationBindingFor 从候选不可变事实生成启动事务所需的绑定三元组。
+func evaluationBindingFor(candidate memory.EvolutionCandidate) memory.EvaluationBinding {
+	return memory.EvaluationBinding{
+		BaselineFingerprint:         candidate.BaselineFingerprint,
+		VariantSpecSHA256:           candidate.VariantSpecSHA256,
+		CandidateVariantFingerprint: candidate.VariantFingerprint,
+	}
 }
 
 // TestEvaluationLifecycleHappyPath 锁定完整生命周期：ready 候选启动 →
@@ -52,7 +61,7 @@ func TestEvaluationLifecycleHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, now.Add(time.Minute))
+	started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("start evaluation: %v", err)
 	}
@@ -82,7 +91,7 @@ func TestEvaluationLifecycleHappyPath(t *testing.T) {
 	if !replayed.FinishedAt.Equal(concluded.FinishedAt) {
 		t.Fatal("idempotent replay must not move the finish timestamp")
 	}
-	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, now); !errors.Is(err, memory.ErrConflict) {
+	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now); !errors.Is(err, memory.ErrConflict) {
 		t.Fatalf("starting a concluded candidate must conflict, got %v", err)
 	}
 }
@@ -98,7 +107,7 @@ func TestStartEvaluationRejectsDraftCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	evaluation.CandidateID = candidate.ID
-	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, now); err == nil {
+	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now); err == nil {
 		t.Fatal("draft candidate must not start an evaluation")
 	}
 	var rows int
@@ -120,7 +129,7 @@ func TestFinishEvaluationRollsBackOnAuditTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, now.Add(time.Minute)); err != nil {
+	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO evolution_audit_log (candidate_id, action, reason, occurred_at) VALUES (?, 'expired', NULL, ?)`,
@@ -140,6 +149,43 @@ func TestFinishEvaluationRollsBackOnAuditTampering(t *testing.T) {
 	}
 }
 
+// TestEvaluationCheckRejectsHiddenInvalidationAudit 锁定评测态审计互斥：
+// evaluating 与正常 evaluated 结论都不得混入未对应状态迁移的作废审计。
+func TestEvaluationCheckRejectsHiddenInvalidationAudit(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		finish bool
+	}{
+		{name: "evaluating"},
+		{name: "evaluated", finish: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store, candidate, now := readyEvolutionFixture(t)
+			ctx := context.Background()
+			evaluation, err := newEvaluationFor(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if testCase.finish {
+				if _, err := store.FinishEvaluation(ctx, started.ID, memory.EvaluationStatusPassed, suiteResultFrozen, now.Add(2*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO evolution_audit_log (candidate_id, action, reason, occurred_at) VALUES (?, 'invalidated', NULL, ?)`,
+				candidate.ID, now.Add(3*time.Hour).UTC().Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Check(ctx); err == nil {
+				t.Fatal("hidden invalidation audit must fail Store.Check")
+			}
+		})
+	}
+}
+
 // TestInvalidConclusionMapsToInvalidationAndCheckPasses 验证 invalid 结论经
 // 作废词表闭合候选，且带作废评测行的候选仍能通过全库不变量检查。
 func TestInvalidConclusionMapsToInvalidationAndCheckPasses(t *testing.T) {
@@ -149,7 +195,7 @@ func TestInvalidConclusionMapsToInvalidationAndCheckPasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, now.Add(time.Minute))
+	started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +221,45 @@ func TestInvalidConclusionMapsToInvalidationAndCheckPasses(t *testing.T) {
 	}
 }
 
+// TestInactiveSourceInvalidatesRunningEvaluation 验证评测启动后来源失效时，受限
+// 作废入口会在同一事务内把 running 评测与 evaluating 候选共同闭合。
+func TestInactiveSourceInvalidatesRunningEvaluation(t *testing.T) {
+	store, candidate, now := readyEvolutionFixture(t)
+	ctx := context.Background()
+	evaluation, err := newEvaluationFor(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartEvaluation(ctx, candidate.ID, evaluation, evaluationBindingFor(candidate), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RejectDerived(ctx, candidate.Source.DerivedID, memory.RejectHumanRequest, now.Add(90*time.Minute)); err != nil {
+		t.Fatalf("reject source through its legal audit path: %v", err)
+	}
+	invalidated, err := store.InvalidateEvolutionCandidateForInactiveSource(ctx, candidate.ID, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("invalidate running evaluation: %v", err)
+	}
+	if invalidated.Status != memory.CandidateStateInvalidated {
+		t.Fatalf("candidate status = %q", invalidated.Status)
+	}
+	stored, err := store.LookupEvolutionEvaluationByCandidate(ctx, candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDigest, err := memory.SourceInvalidationDigest(candidate.ID, started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != memory.EvaluationStatusInvalid || stored.SuiteResultDigest != expectedDigest || stored.FinishedAt.IsZero() {
+		t.Fatalf("invalidated evaluation mismatch: %#v", stored)
+	}
+	if err := store.Check(ctx); err != nil {
+		t.Fatalf("check after source invalidation: %v", err)
+	}
+}
+
 // TestStartEvaluationRejectsFrozenTupleMismatch 锁定启动事务内的冻结一致性
 // 双复核：评测集指纹与登记不一致、或请求身份无法由五元组重新派生时，必须
 // 在任何写操作之前冲突关闭。
@@ -187,13 +272,23 @@ func TestStartEvaluationRejectsFrozenTupleMismatch(t *testing.T) {
 	}
 	mismatched := evaluation
 	mismatched.EvalSetFingerprint = suiteResultFrozen // 形态合法但与登记不一致
-	if _, err := store.StartEvaluation(ctx, candidate.ID, mismatched, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+	if _, err := store.StartEvaluation(ctx, candidate.ID, mismatched, evaluationBindingFor(candidate), now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
 		t.Fatalf("fingerprint mismatch must conflict with the registration, got %v", err)
 	}
 	undeliverable := evaluation
 	undeliverable.ID = suiteResultFrozen // 合法摘要，但不是五元组的派生结果
-	if _, err := store.StartEvaluation(ctx, candidate.ID, undeliverable, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+	if _, err := store.StartEvaluation(ctx, candidate.ID, undeliverable, evaluationBindingFor(candidate), now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
 		t.Fatalf("underivable identity must conflict, got %v", err)
+	}
+	wrongBinding := evaluationBindingFor(candidate)
+	wrongBinding.BaselineFingerprint = suiteResultFrozen
+	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, wrongBinding, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+		t.Fatalf("candidate baseline binding mismatch must conflict, got %v", err)
+	}
+	wrongBinding = evaluationBindingFor(candidate)
+	wrongBinding.VariantSpecSHA256 = suiteResultFrozen
+	if _, err := store.StartEvaluation(ctx, candidate.ID, evaluation, wrongBinding, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+		t.Fatalf("candidate variant specification mismatch must conflict, got %v", err)
 	}
 	var rows int
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM evolution_evaluations").Scan(&rows); err != nil || rows != 0 {

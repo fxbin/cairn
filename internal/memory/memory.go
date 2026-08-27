@@ -1,5 +1,8 @@
 // Package memory 定义可信记忆控制面的受限值合同；它只保存已验证运行的
 // 结构化结果与不可逆证据定位，不承载 prompt、模型文本、路径或制品正文。
+// 本文件定义可信记忆基础领域合同。
+//
+// Author: fxbin
 package memory
 
 import (

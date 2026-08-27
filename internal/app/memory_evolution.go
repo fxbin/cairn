@@ -281,6 +281,7 @@ func (service Service) InspectEvolutionCandidate(ctx context.Context, options Me
 // memory.EvaluationID 从冻结五元组派生，携带的冻结字段必须与候选登记一致。
 type MemoryEvaluationStartOptions struct {
 	Evaluation memory.Evaluation
+	Binding    memory.EvaluationBinding
 	Workspace  string
 	StateDir   string
 	Config     config.Config
@@ -315,7 +316,7 @@ func (service Service) StartEvolutionEvaluation(ctx context.Context, options Mem
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
 		return memory.Evaluation{}, memory.ErrNotFound
 	}
-	started, err := store.StartEvaluation(ctx, options.Evaluation.CandidateID, options.Evaluation, time.Now().UTC())
+	started, err := store.StartEvaluation(ctx, options.Evaluation.CandidateID, options.Evaluation, options.Binding, time.Now().UTC())
 	if err != nil {
 		return memory.Evaluation{}, err
 	}
