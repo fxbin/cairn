@@ -1,12 +1,8 @@
 package sandboxeval
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"sort"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
@@ -240,26 +236,13 @@ func (evalSet EvalSet) Fingerprint() (string, error) {
 	return canonicaljson.Fingerprint(evalSetFingerprintPrefix, evalSet)
 }
 
-// LoadEvalSet 从本地忽略目录中的冻结评测集文件装载 EvalSet：JSON 严格解码
-// 拒绝未知字段与尾随内容，随后立即复核全部合同约束。执行链只接受经该入口
-// 或等价结构化通道进入的冻结输入，半解析状态不得驱动评测决策。
+// LoadEvalSet 从本地忽略目录中的冻结评测集文件装载 EvalSet：解码走包内唯一
+// 的严格实现（单文档、禁未知字段、拒绝尾随内容），解析后立即复核全部合同
+// 约束。执行链只接受经该入口进入的冻结输入，半解析状态不得驱动评测决策。
 func LoadEvalSet(path string) (EvalSet, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return EvalSet{}, fmt.Errorf("read eval set file: %w", err)
-	}
 	var evalSet EvalSet
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&evalSet); err != nil {
-		return EvalSet{}, fmt.Errorf("decode eval set %q: %w", path, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return EvalSet{}, fmt.Errorf("decode eval set %q: file must contain exactly one JSON document", path)
-		}
-		return EvalSet{}, fmt.Errorf("decode eval set %q: %w", path, err)
+	if err := decodeFrozenJSONFile(path, &evalSet); err != nil {
+		return EvalSet{}, fmt.Errorf("eval set: %w", err)
 	}
 	if err := evalSet.Validate(); err != nil {
 		return EvalSet{}, fmt.Errorf("eval set %q rejected: %w", path, err)

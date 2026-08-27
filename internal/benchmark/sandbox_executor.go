@@ -680,6 +680,8 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 	}
 	diffDirectory := filepath.Join(evaluationDir, "diffs", sandboxArmTag(step.Arm))
 	if err := os.MkdirAll(diffDirectory, 0o700); err != nil {
+		// 此时尚无任何运行发生，工作区与状态目录都是全新空面，clean 初值与
+		// 事实一致；不满足"未扫描不得称干净"的例外必须在注释中显式成立。
 		return record, nil, &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: fmt.Errorf("create diff archive directory: %w", err)}
 	}
 	// finalizeSurfaces 是所有出口共用的封口段：归档工作区 diff、枚举全部持久
@@ -880,11 +882,7 @@ func fileSurfacePathsUnder(roots ...string) ([]string, error) {
 // sandboxRecordFileName 将调度步映射为评测目录内稳定且可读的记录文件名；
 // 权威身份仍以文件内 run_id 字段为准。
 func sandboxRecordFileName(step SandboxPairStep) string {
-	tag := "bl"
-	if step.Arm == sandboxeval.ArmVariant {
-		tag = "va"
-	}
-	return safePathComponent(step.TaskID) + fmt.Sprintf("-a%02d-%s.json", step.Try, tag)
+	return safePathComponent(step.TaskID) + fmt.Sprintf("-a%02d-%s.json", step.Try, sandboxArmTag(step.Arm))
 }
 
 // persistSuiteResult 把套件结论原子落盘并读回计算字节摘要：Memory 侧只保存
