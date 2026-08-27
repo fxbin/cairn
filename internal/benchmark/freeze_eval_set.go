@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
@@ -76,6 +77,9 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
 	}
+	// 冻结身份要求任务清单按字节序升序：任务包声明序不保证这一点，排序同
+	// 时决定任务合同的装配位置。
+	sort.Strings(taskIDs)
 	packFingerprint := options.Pack.Fingerprint()
 	baselineConfig := options.BaselineConfig
 	baselineFingerprint := baselineConfig.Fingerprint()
@@ -99,22 +103,27 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 	if err != nil {
 		return report, err
 	}
-	taskContracts := make([]sandboxeval.TaskContract, 0, len(tasks))
+	taskByFrozenID := make(map[string]Task, len(tasks))
 	for _, task := range tasks {
+		taskByFrozenID[task.ID] = task
+	}
+	taskContracts := make([]sandboxeval.TaskContract, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		task := taskByFrozenID[taskID]
 		digest, err := BootstrapContractDigest(task.Verification.Bootstrap)
 		if err != nil {
 			return report, err
 		}
 		imageDigest, err := dockerImageSelfDigest(ctx, task.Runtime.DockerImage)
 		if err != nil {
-			return report, fmt.Errorf("task %q image digest: %w", task.ID, err)
+			return report, fmt.Errorf("task %q image digest: %w", taskID, err)
 		}
-		verifierDigest, err := privateVerifierDigest(options.PrivateRoot, task.ID)
+		verifierDigest, err := privateVerifierDigest(options.PrivateRoot, taskID)
 		if err != nil {
-			return report, fmt.Errorf("task %q verifier digest: %w", task.ID, err)
+			return report, fmt.Errorf("task %q verifier digest: %w", taskID, err)
 		}
 		taskContracts = append(taskContracts, sandboxeval.TaskContract{
-			TaskID: task.ID, BaselineCommit: task.Repository.BaselineCommit,
+			TaskID: taskID, BaselineCommit: task.Repository.BaselineCommit,
 			VerifierDigest: verifierDigest, DockerImageDigest: imageDigest,
 			BootstrapContractDigest: digest,
 		})
