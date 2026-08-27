@@ -3,8 +3,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -202,7 +200,7 @@ func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdenti
 			}
 		}
 	}
-	identity.Fingerprint = buildIdentityFingerprint(identity)
+	identity.Fingerprint = identity.ComputeFingerprint()
 	return identity
 }
 
@@ -213,20 +211,10 @@ func buildIdentityPtr() *domain.BuildIdentity {
 	return &identity
 }
 
-// buildIdentityFingerprint 为实际构建事实生成稳定的版本化摘要；只覆盖可公开的
-// identity 字段，绝不读取环境变量、配置或任何凭据。
+// buildIdentityFingerprint 是构建身份摘要的既有调用面：公式已收敛到领域方法，
+// 本函数仅作兼容委托保持单一事实源。
 func buildIdentityFingerprint(identity domain.BuildIdentity) string {
-	view := struct {
-		Revision string `json:"revision"`
-		Dirty    string `json:"dirty"`
-		Flavor   string `json:"flavor"`
-	}{Revision: identity.Revision, Dirty: identity.Dirty, Flavor: identity.Flavor}
-	encoded, err := json.Marshal(view)
-	if err != nil {
-		panic(err)
-	}
-	digest := sha256.Sum256(append([]byte("cairn-build-identity-v1\x00"), encoded...))
-	return "sha256:" + hex.EncodeToString(digest[:])
+	return identity.ComputeFingerprint()
 }
 
 // probeDockerImage 以无 shell 的只读 argv 查询本地镜像存在性；docker 不可用

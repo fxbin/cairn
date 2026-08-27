@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -77,6 +78,18 @@ func (registry *Registry) Specs() []ports.ToolSpec {
 		specs = append(specs, registry.tools[name].Spec())
 	}
 	return specs
+}
+
+// toolRegistryFingerprintPrefix 是固定工具注册表身份的版本化域前缀。
+const toolRegistryFingerprintPrefix = "cairn-tool-registry-v1"
+
+// Fingerprint 以版本化前缀对注册顺序与全部工具规格计算规范化指纹：名称、
+// 描述与参数 schema 任一漂移都会改变身份。评测冻结合同用它钉住模型可见的
+// 工具面，保证不同 Run 面对的工具集合逐位一致。
+func (registry *Registry) Fingerprint() (string, error) {
+	return canonicaljson.Fingerprint(toolRegistryFingerprintPrefix, struct {
+		Tools []ports.ToolSpec `json:"tools"`
+	}{Tools: registry.Specs()})
 }
 
 // Execute 查找具名工具并执行；未知工具会返回结构化失败结果。

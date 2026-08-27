@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,6 +160,26 @@ type BuildIdentity struct {
 	Dirty       string `json:"dirty"`
 	Flavor      string `json:"flavor"`
 	Fingerprint string `json:"fingerprint"`
+}
+
+// buildIdentityFingerprintPrefix 是构建身份摘要的版本化域前缀。
+const buildIdentityFingerprintPrefix = "cairn-build-identity-v1"
+
+// ComputeFingerprint 为身份事实计算稳定的版本化摘要：只覆盖可公开的三个字
+// 段，不读取环境变量、配置或任何凭据；派生方在装配时把结果写回 Fingerprint
+// 字段。方法名刻意区别于同名字段。
+func (identity BuildIdentity) ComputeFingerprint() string {
+	view := struct {
+		Revision string `json:"revision"`
+		Dirty    string `json:"dirty"`
+		Flavor   string `json:"flavor"`
+	}{Revision: identity.Revision, Dirty: identity.Dirty, Flavor: identity.Flavor}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(append([]byte(buildIdentityFingerprintPrefix+"\x00"), encoded...))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // validateBuildIdentity 拒绝无法解释为当前 plain 二进制的新增 Run 身份；nil 是
