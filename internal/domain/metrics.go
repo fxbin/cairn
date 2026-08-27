@@ -1,3 +1,6 @@
+// 本文件实现事件流证据指标提取。
+//
+// Author: fxbin
 package domain
 
 import (
