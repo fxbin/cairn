@@ -1,6 +1,10 @@
 package sandboxeval
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -151,5 +155,54 @@ func TestComparatorContractRejectsThresholdDeviation(t *testing.T) {
 	drifted.CostPassBasisPoints--
 	if err := drifted.Validate(); err == nil || !strings.Contains(err.Error(), "preregistered") {
 		t.Fatalf("threshold drift must fail closed against registration, got %v", err)
+	}
+}
+
+// TestLoadEvalSetStrictDecoding 锁定冻结评测集的加载面：合法往返必须保真，
+// 未知字段、尾随文档、损坏 JSON 与结构违约一律失败关闭。
+func TestLoadEvalSetStrictDecoding(t *testing.T) {
+	evalSet := validEvalSet(t)
+	content, err := json.Marshal(evalSet)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "eval-set.json")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	loaded, err := LoadEvalSet(path)
+	if err != nil {
+		t.Fatalf("load valid eval set: %v", err)
+	}
+	if !reflect.DeepEqual(loaded, evalSet) {
+		t.Fatal("loaded eval set must round-trip the frozen input byte-faithfully")
+	}
+	negative := map[string][]byte{
+		"unknown field":    append(append([]byte{}, content[:len(content)-1]...), []byte(`,"unexpected_field":1}`)...),
+		"trailing element": append(append([]byte{}, content...), []byte(` {"schema_version":9}`)...),
+		"broken json":      []byte(`{"schema_version":`),
+		"empty file":       {},
+	}
+	for name, payload := range negative {
+		brokenPath := filepath.Join(t.TempDir(), "broken-eval-set.json")
+		if err := os.WriteFile(brokenPath, payload, 0o600); err != nil {
+			t.Fatalf("write %s fixture: %v", name, err)
+		}
+		if _, err := LoadEvalSet(brokenPath); err == nil {
+			t.Fatalf("%s must fail closed", name)
+		}
+	}
+	structurallyBroken := evalSet
+	structurallyBroken.AttemptsPerTask = 0
+	payload, err := json.Marshal(structurallyBroken)
+	if err != nil {
+		t.Fatalf("marshal broken structure: %v", err)
+	}
+	brokenPath := filepath.Join(t.TempDir(), "invalid-contract.json")
+	if err := os.WriteFile(brokenPath, payload, 0o600); err != nil {
+		t.Fatalf("write invalid contract fixture: %v", err)
+	}
+	if _, err := LoadEvalSet(brokenPath); err == nil {
+		t.Fatal("structurally invalid eval set must fail closed")
 	}
 }
