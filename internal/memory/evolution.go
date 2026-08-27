@@ -71,8 +71,6 @@ const (
 	RejectReasonEvaluationFailed = "evaluation_failed"
 	// RejectReasonSafetyViolation 表示隔离或安全检查失败。
 	RejectReasonSafetyViolation = "safety_violation"
-	// RejectReasonInconclusiveLimit 表示不确定评测次数达到上限。
-	RejectReasonInconclusiveLimit = "inconclusive_limit"
 	// RejectReasonHumanRequest 表示维护者明确请求拒绝。
 	RejectReasonHumanRequest = "human_request"
 	// DefaultCandidateTTL 是候选未显式指定保留期时的默认值。
@@ -201,7 +199,7 @@ func NormalizeCooldown(cooldown time.Duration) (time.Duration, error) {
 // ValidEvolutionRejectionReason 判断拒绝理由是否属于封闭词表。
 func ValidEvolutionRejectionReason(reason string) bool {
 	switch reason {
-	case RejectReasonInsufficientEvidence, RejectReasonEvaluationFailed, RejectReasonSafetyViolation, RejectReasonInconclusiveLimit, RejectReasonHumanRequest:
+	case RejectReasonInsufficientEvidence, RejectReasonEvaluationFailed, RejectReasonSafetyViolation, RejectReasonHumanRequest:
 		return true
 	default:
 		return false

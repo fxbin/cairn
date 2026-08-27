@@ -1357,7 +1357,7 @@ Usage:
   cairn memory consolidate [--min-support <n>] [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory reject --reason insufficient_evidence|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] <derived-id>
   cairn memory candidate create --source-derived <id> --source-consolidation <id> --baseline-fingerprint <sha256> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--ttl <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
-  cairn memory candidate reject --reason insufficient_evidence|evaluation_failed|safety_violation|inconclusive_limit|human_request [--cooldown <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
+  cairn memory candidate reject --reason insufficient_evidence|evaluation_failed|safety_violation|human_request [--cooldown <duration>] [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate invalidate [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>

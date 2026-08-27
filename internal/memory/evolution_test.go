@@ -207,6 +207,11 @@ func TestCooldownAndRejectionLexiconAreClosed(t *testing.T) {
 	if ValidEvolutionRejectionReason("not_in_the_lexicon") {
 		t.Fatal("free-text rejection reason must fail closed")
 	}
+	// ADR-0012 §5.5 取消"不确定累计"语义后，inconclusive_limit 必须从拒绝
+	// 词表永久移除；人工拒绝 inconclusive 时改用 insufficient_evidence。
+	if ValidEvolutionRejectionReason("inconclusive_limit") {
+		t.Fatal("inconclusive_limit must stay removed from the rejection lexicon")
+	}
 	key := CooldownKey{Source: evolutionSourceFixture(), TargetKind: TargetKindContextCompactionParams, VariantFingerprint: "sha256:" + repeatHex(4)}
 	if err := key.Validate(); err != nil {
 		t.Fatal(err)
