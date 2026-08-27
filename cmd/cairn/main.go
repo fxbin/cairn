@@ -1,16 +1,65 @@
+// Package main 提供 Cairn CLI 进程入口，并为正式候选评测建立空环境可信子进程。
+//
+// Author: fxbin
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
 	"github.com/fxbin/cairn/internal/cli"
+	"github.com/fxbin/cairn/internal/sandboxeval"
 )
+
+// trustedEvaluationCommand 判断参数是否进入唯一需要可信重启的正式评测入口。
+func trustedEvaluationCommand(arguments []string) bool {
+	return len(arguments) >= 3 && arguments[0] == "memory" && arguments[1] == "candidate" && arguments[2] == "evaluate"
+}
+
+// launchTrustedEvaluationChild 从空环境重启当前二进制，只复制最小非敏感
+// 白名单并注入专用沙箱 Key；父进程不解析或持久化 Key 值。
+func launchTrustedEvaluationChild(arguments []string) (bool, int) {
+	if !trustedEvaluationCommand(arguments) || os.Getenv(sandboxeval.EvaluationChildMarkerEnv) == "1" {
+		return false, 0
+	}
+	providerKey := os.Getenv(sandboxeval.SandboxProviderKeyEnv)
+	environment, err := sandboxeval.BuildEvaluationEnvironment(os.LookupEnv, sandboxeval.EvaluationProcessAllowlist(), providerKey)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "trusted evaluation launch failed:", err)
+		return true, 1
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "trusted evaluation launch failed:", err)
+		return true, 1
+	}
+	environment = append(environment, sandboxeval.EvaluationChildMarkerEnv+"=1")
+	command := exec.Command(executable, arguments...)
+	command.Env = environment
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return true, exitError.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, "trusted evaluation child failed:", err)
+		return true, 1
+	}
+	return true, 0
+}
 
 // main 建立可取消根上下文，并将两次中断分别映射为优雅取消和强制退出。
 func main() {
+	if handled, code := launchTrustedEvaluationChild(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signals := make(chan os.Signal, 2)

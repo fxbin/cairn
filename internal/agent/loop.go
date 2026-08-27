@@ -16,26 +16,28 @@ import (
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
-	Journal                    ports.Journal
-	Provider                   ports.Provider
-	Tools                      *tools.Registry
-	Gate                       *policy.Gate
-	Model                      string
-	ConfigFingerprint          string
-	MaxTurns                   int
-	MaxToolCalls               int
-	MaxInputTokens             int
-	MaxOutputTokens            int
-	MaxCostUSD                 float64
-	InputTokenUSD              float64
-	OutputTokenUSD             float64
-	RequireProviderUsage       bool
-	AllowedProviderStopReasons []string
-	ContextAutoCompact         bool
-	ContextMaxPromptTokens     int
-	ContextMaxSummaryBytes     int
-	VerificationAutoAfterPatch bool
-	Verification               []VerificationCommand
+	Journal                        ports.Journal
+	Provider                       ports.Provider
+	Tools                          *tools.Registry
+	Gate                           *policy.Gate
+	Model                          string
+	ConfigFingerprint              string
+	MaxTurns                       int
+	MaxToolCalls                   int
+	MaxInputTokens                 int
+	MaxOutputTokens                int
+	MaxCostUSD                     float64
+	InputTokenUSD                  float64
+	OutputTokenUSD                 float64
+	RequireProviderUsage           bool
+	AllowedProviderStopReasons     []string
+	ContextAutoCompact             bool
+	ContextMaxPromptTokens         int
+	ContextMaxSummaryBytes         int
+	ContextInventoryBudgetPercent  int
+	ContextThresholdReservePercent int
+	VerificationAutoAfterPatch     bool
+	Verification                   []VerificationCommand
 	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
 	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace

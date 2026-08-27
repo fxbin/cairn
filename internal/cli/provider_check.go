@@ -1,3 +1,6 @@
+// 本文件实现 Provider 合同探测命令。
+//
+// Author: fxbin
 package cli
 
 import (
@@ -103,14 +106,14 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	}
 	profile, err := contract.ResolveProviderRequestProfile(contract.ProviderKindOpenAICompatible, contract.ProviderRequestDeclaration{
 		BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model,
-		Capability: providerCapabilityDeclaration(configuration),
-		Generation: providerGenerationDeclaration(configuration),
+		Capability: config.ProviderCapabilityDeclaration(configuration),
+		Generation: config.ProviderGenerationDeclaration(configuration),
 	})
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
-	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, providerCapabilityDeclaration(configuration))
+	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration))
 	if err != nil {
 		result.Error = err.Error()
 		return result
@@ -172,35 +175,6 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	result.ToolRoundtrip = map[bool]string{true: toolRoundtripOK, false: toolRoundtripSkipped}[probeTools]
 	result.Result = judgeProbe(probeTools, toolSeen, textSeen, result)
 	return result
-}
-
-// providerGenerationDeclaration 把配置层生成参数投影为合同层解析输入。
-func providerGenerationDeclaration(configuration config.Config) *contract.ProviderGenerationDeclaration {
-	generation := configuration.Provider.Generation
-	if generation == nil {
-		return nil
-	}
-	declaration := &contract.ProviderGenerationDeclaration{
-		TemperatureMilli: generation.TemperatureMilli,
-		TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
-	}
-	if generation.MaxOutputTokens != nil {
-		declaration.MaxOutputTokens = *generation.MaxOutputTokens
-	}
-	return declaration
-}
-
-// providerCapabilityDeclaration 把配置层能力声明投影为合同层解析输入。
-func providerCapabilityDeclaration(configuration config.Config) *contract.ProviderCapabilityDeclaration {
-	capability := configuration.Provider.Capability
-	if capability == nil {
-		return nil
-	}
-	return &contract.ProviderCapabilityDeclaration{
-		ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
-		ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
-		StopReasons: capability.StopReasons,
-	}
 }
 
 // judgeProbe 汇总探测事实给出闭合结论：usage 与 stop reason 的缺失已由适配

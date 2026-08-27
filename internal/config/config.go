@@ -208,6 +208,37 @@ type ProviderGenerationConfig struct {
 	ToolChoice       string `yaml:"tool_choice"`
 }
 
+// ProviderCapabilityDeclaration 把配置层能力声明投影为合同层声明输入；所有
+// 运行、探测与冻结入口必须复用此函数，避免能力画像出现多份映射规则。
+func ProviderCapabilityDeclaration(configuration Config) *contract.ProviderCapabilityDeclaration {
+	capability := configuration.Provider.Capability
+	if capability == nil {
+		return nil
+	}
+	return &contract.ProviderCapabilityDeclaration{
+		ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
+		ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
+		StopReasons: append([]string(nil), capability.StopReasons...),
+	}
+}
+
+// ProviderGenerationDeclaration 把显式生成参数投影为合同层声明输入；缺席块
+// 返回 nil，显式零值与 unsupported 仍由指针形态精确区分。
+func ProviderGenerationDeclaration(configuration Config) *contract.ProviderGenerationDeclaration {
+	generation := configuration.Provider.Generation
+	if generation == nil {
+		return nil
+	}
+	declaration := &contract.ProviderGenerationDeclaration{
+		TemperatureMilli: generation.TemperatureMilli,
+		TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+	}
+	if generation.MaxOutputTokens != nil {
+		declaration.MaxOutputTokens = *generation.MaxOutputTokens
+	}
+	return declaration
+}
+
 // ProviderCapabilityConfig 是 provider.capability 显式能力声明块：
 // 为所用模型声明工具调用、流式 usage 与可选的上下文/输出上限；能力事实
 // 只来自配置，编译期不携带模型目录。
@@ -241,9 +272,11 @@ type BudgetConfig struct {
 
 // ContextConfig 限制单次模型请求的可见历史，并控制自动压缩生成的检查点体积。
 type ContextConfig struct {
-	AutoCompact     bool `yaml:"auto_compact"`
-	MaxPromptTokens int  `yaml:"max_prompt_tokens"`
-	MaxSummaryBytes int  `yaml:"max_summary_bytes"`
+	AutoCompact             bool `yaml:"auto_compact"`
+	MaxPromptTokens         int  `yaml:"max_prompt_tokens"`
+	MaxSummaryBytes         int  `yaml:"max_summary_bytes"`
+	InventoryBudgetPercent  int  `yaml:"inventory_budget_percent"`
+	ThresholdReservePercent int  `yaml:"threshold_reserve_percent"`
 }
 
 // PricingConfig 必须显式启用；只有输入与输出 token 价格都给出时，成本预算
@@ -322,7 +355,10 @@ func Defaults() Config {
 			MaxTurns: DefaultMaxTurns, MaxToolCalls: 100, MaxInputTokens: 500_000,
 			MaxOutputTokens: 100_000, MaxWallTime: "30m",
 		},
-		Context:      ContextConfig{AutoCompact: true, MaxPromptTokens: 50_000, MaxSummaryBytes: 16 * 1024},
+		Context: ContextConfig{
+			AutoCompact: true, MaxPromptTokens: 50_000, MaxSummaryBytes: 16 * 1024,
+			InventoryBudgetPercent: 25, ThresholdReservePercent: 20,
+		},
 		Verification: VerificationConfig{VolatilePaths: []string{".cache", "tmp/test-results"}},
 		Output:       OutputConfig{MaxPreviewBytes: 16 * 1024, MaxArtifactBytes: 10 * 1024 * 1024},
 		Cancellation: CancellationConfig{TerminateGrace: "5s"},
@@ -504,6 +540,12 @@ func Validate(config Config) error {
 	}
 	if config.Context.MaxPromptTokens < 1 || config.Context.MaxSummaryBytes < 1 {
 		return fmt.Errorf("context limits must be positive")
+	}
+	if config.Context.InventoryBudgetPercent < 1 || config.Context.InventoryBudgetPercent > 99 {
+		return fmt.Errorf("context.inventory_budget_percent must be within 1 and 99")
+	}
+	if config.Context.ThresholdReservePercent < 1 || config.Context.ThresholdReservePercent > 99 {
+		return fmt.Errorf("context.threshold_reserve_percent must be within 1 and 99")
 	}
 	if _, err := config.WallTime(); err != nil {
 		return fmt.Errorf("budget.max_wall_time: %w", err)

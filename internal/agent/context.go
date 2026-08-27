@@ -21,6 +21,33 @@ const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v2"
 // read 爆炸、零 patch 耗尽 48 轮）。
 const contextCheckpointPrefix = "此前的对话原文已被压缩为以下可审计检查点。系统提示和原始任务保持不变；检查点首先列出已检查对象清单，请基于已有发现继续推进，仅当清单之外的信息确有必要时才读取或搜索。\n"
 
+// CompactionProbeEvidence 是离线预筛可消费的闭合探针证据：相同输入的两次
+// 摘要、工具调用与回执计数均来自内置固定消息，不含任务正文或本机路径。
+type CompactionProbeEvidence struct {
+	FirstSummary  []byte
+	SecondSummary []byte
+	ToolCalls     int
+	ToolResults   int
+}
+
+// ProbeContextCompaction 对固定的成对工具历史执行两次压缩，供正式评测启动
+// 前验证确定性、工具配对与证据锚保留；它不读取工作区也不产生副作用。
+func ProbeContextCompaction(maximumBytes, inventoryBudgetPercent int) CompactionProbeEvidence {
+	messages := []ports.Message{
+		{Role: "system", Content: "固定离线探针"},
+		{Role: "user", Content: "核对压缩器的确定性与证据锚。"},
+		{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "probe-read", Name: "read_file", Arguments: json.RawMessage(`{"path":"probe.go"}`)}}},
+		{Role: "tool", ToolCallID: "probe-read", Content: "已读取目标并保留事实证据。"},
+		{Role: "user", Content: "验证反馈：工具调用与回执已经配对。"},
+	}
+	first := summarizeMessagesWithInventoryBudget(messages, maximumBytes, inventoryBudgetPercent)
+	second := summarizeMessagesWithInventoryBudget(messages, maximumBytes, inventoryBudgetPercent)
+	return CompactionProbeEvidence{
+		FirstSummary: []byte(first), SecondSummary: []byte(second),
+		ToolCalls: 1, ToolResults: 1,
+	}
+}
+
 // compactContextIfNeeded 在安全恢复边界把过长对话替换为持久化检查点。
 // 证据字段（ADR-0007）在压缩时刻从事件流一次性派生：被替代的 turn 清单、
 // 最近一次实际 Provider 输入计数与上一检查点切点都取自日志，不做 Loop 内存
@@ -40,7 +67,7 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 	if maximumSummaryBytes < 1 {
 		return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
 	}
-	summary := summarizeMessages(messages, maximumSummaryBytes)
+	summary := summarizeMessagesWithInventoryBudget(messages, maximumSummaryBytes, loop.contextInventoryBudgetPercent())
 	compacted := loop.contextMessages(input.Task, summary)
 	after := loop.estimatePromptTokens(compacted)
 	if after > loop.ContextMaxPromptTokens {
@@ -116,15 +143,33 @@ func (loop *Loop) compactionEvidence(ctx context.Context, projection domain.RunP
 	return evidence, nil
 }
 
-// contextCompactionThreshold 在模型的名义上下文上限前保留 20% 余量，吸收
-// 工具定义、JSON 编码与中英文 tokenizer 差异，避免临界请求消耗整轮输入预算。
+// contextCompactionThreshold 按配置比例在模型名义上下文上限前保留余量，吸收
+// 工具定义、JSON 编码与 tokenizer 差异，避免临界请求消耗整轮输入预算。
 func (loop *Loop) contextCompactionThreshold() int {
-	reserve := loop.ContextMaxPromptTokens / 5
+	reserve := loop.ContextMaxPromptTokens * loop.contextThresholdReservePercent() / 100
 	threshold := loop.ContextMaxPromptTokens - reserve
 	if threshold < 1 {
 		return 1
 	}
 	return threshold
+}
+
+// contextThresholdReservePercent 返回闭合后的阈值余量比例；零值兼容直接构造
+// Loop 的内部测试与嵌入调用，等价于产品默认值 20%。
+func (loop *Loop) contextThresholdReservePercent() int {
+	if loop.ContextThresholdReservePercent <= 0 {
+		return 20
+	}
+	return loop.ContextThresholdReservePercent
+}
+
+// contextInventoryBudgetPercent 返回闭合后的探索清单预算比例；零值兼容直接
+// 构造 Loop 的内部调用，等价于产品默认值 25%。
+func (loop *Loop) contextInventoryBudgetPercent() int {
+	if loop.ContextInventoryBudgetPercent <= 0 {
+		return 25
+	}
+	return loop.ContextInventoryBudgetPercent
 }
 
 // contextMessages 重新注入固定提示、原始任务和一条替代旧历史的检查点消息。
@@ -173,13 +218,19 @@ func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 // 不复制原始数据体。探索清单获得独立预算切片（至多四分之一）：它是从工具
 // 调用确定性派生的去重"已检查对象"视图，压缩后防止模型重读循环。
 func summarizeMessages(messages []ports.Message, maximumBytes int) string {
+	return summarizeMessagesWithInventoryBudget(messages, maximumBytes, 25)
+}
+
+// summarizeMessagesWithInventoryBudget 按显式比例切分探索清单与近期事实预算；
+// 比例由冻结配置进入运行时，越界值在配置装配前失败关闭。
+func summarizeMessagesWithInventoryBudget(messages []ports.Message, maximumBytes, inventoryBudgetPercent int) string {
 	if maximumBytes < 1 {
 		return ""
 	}
-	// 清单预算取四分之一，但不低于 512 字节（覆盖中文表头与常见路径）；
+	// 清单预算按冻结比例分配，但不低于 512 字节（覆盖中文表头与常见路径）；
 	// 极小预算下清单优先于近期事实——丢失探索记忆的代价高于丢失最后一条
 	// 工具结果的预览。
-	inventoryBudget := maximumBytes / 4
+	inventoryBudget := maximumBytes * inventoryBudgetPercent / 100
 	if inventoryBudget < 512 {
 		inventoryBudget = min(512, maximumBytes)
 	}

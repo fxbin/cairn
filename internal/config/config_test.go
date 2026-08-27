@@ -187,6 +187,35 @@ func TestFingerprintChangesWhenSandboxChanges(t *testing.T) {
 	}
 }
 
+// TestContextCompactionPercentagesValidateAndChangeFingerprint 锁定两个新增上下文
+// 百分比既是带界配置，也是恢复语义指纹的一部分。
+func TestContextCompactionPercentagesValidateAndChangeFingerprint(t *testing.T) {
+	base := Defaults()
+	if base.Context.InventoryBudgetPercent != 25 || base.Context.ThresholdReservePercent != 20 {
+		t.Fatalf("context percentage defaults drifted: %#v", base.Context)
+	}
+	changed := base
+	changed.Context.InventoryBudgetPercent++
+	if base.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("inventory budget percentage must change the config fingerprint")
+	}
+	changed = base
+	changed.Context.ThresholdReservePercent++
+	if base.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("threshold reserve percentage must change the config fingerprint")
+	}
+	invalid := base
+	invalid.Context.InventoryBudgetPercent = 0
+	if err := Validate(invalid); err == nil {
+		t.Fatal("zero inventory budget percentage must fail closed")
+	}
+	invalid = base
+	invalid.Context.ThresholdReservePercent = 100
+	if err := Validate(invalid); err == nil {
+		t.Fatal("threshold reserve percentage above the closed range must fail closed")
+	}
+}
+
 func TestFingerprintChangesWhenAutomaticVerificationAfterPatchChanges(t *testing.T) {
 	configuration := Defaults()
 	before := configuration.Fingerprint()

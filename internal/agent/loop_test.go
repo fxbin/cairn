@@ -874,6 +874,10 @@ func TestContextCompactionThresholdReservesPromptHeadroom(t *testing.T) {
 	if got := loop.contextCompactionThreshold(); got != 40_000 {
 		t.Fatalf("threshold = %d, want 40000", got)
 	}
+	loop.ContextThresholdReservePercent = 10
+	if got := loop.contextCompactionThreshold(); got != 45_000 {
+		t.Fatalf("configured threshold = %d, want 45000", got)
+	}
 	loop.ContextMaxPromptTokens = 1
 	if got := loop.contextCompactionThreshold(); got != 1 {
 		t.Fatalf("minimum threshold = %d, want 1", got)
