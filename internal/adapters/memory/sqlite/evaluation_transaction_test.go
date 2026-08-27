@@ -87,9 +87,10 @@ func TestEvaluationLifecycleHappyPath(t *testing.T) {
 	}
 }
 
-// TestStartEvaluationRejectsBrokenPrerequisites 覆盖启动前置：draft 候选拒绝、
-// 来源失效拒绝；两种情况下都不产生任何评测行与审计行。
-func TestStartEvaluationRejectsBrokenPrerequisites(t *testing.T) {
+// TestStartEvaluationRejectsDraftCandidates 覆盖启动前置中的候选状态门槛：
+// draft 候选不得启动评测（来源失效拒绝由来源失效轨的不变量与既有作废用例
+// 承担）。任何被拒启动都不得产生评测行或审计行。
+func TestStartEvaluationRejectsDraftCandidates(t *testing.T) {
 	store, candidate, now := evolutionFixture(t)
 	ctx := context.Background()
 	evaluation, err := newEvaluationFor(candidate)
@@ -171,5 +172,31 @@ func TestInvalidConclusionMapsToInvalidationAndCheckPasses(t *testing.T) {
 	}
 	if err := store.Check(ctx); err != nil {
 		t.Fatalf("check with invalidated-plus-invalid-evaluation pair: %v", err)
+	}
+}
+
+// TestStartEvaluationRejectsFrozenTupleMismatch 锁定启动事务内的冻结一致性
+// 双复核：评测集指纹与登记不一致、或请求身份无法由五元组重新派生时，必须
+// 在任何写操作之前冲突关闭。
+func TestStartEvaluationRejectsFrozenTupleMismatch(t *testing.T) {
+	store, candidate, now := readyEvolutionFixture(t)
+	ctx := context.Background()
+	evaluation, err := newEvaluationFor(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatched := evaluation
+	mismatched.EvalSetFingerprint = suiteResultFrozen // 形态合法但与登记不一致
+	if _, err := store.StartEvaluation(ctx, candidate.ID, mismatched, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+		t.Fatalf("fingerprint mismatch must conflict with the registration, got %v", err)
+	}
+	undeliverable := evaluation
+	undeliverable.ID = suiteResultFrozen // 合法摘要，但不是五元组的派生结果
+	if _, err := store.StartEvaluation(ctx, candidate.ID, undeliverable, now.Add(time.Minute)); !errors.Is(err, memory.ErrConflict) {
+		t.Fatalf("underivable identity must conflict, got %v", err)
+	}
+	var rows int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM evolution_evaluations").Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("rejected starts must leave no rows: %d %v", rows, err)
 	}
 }

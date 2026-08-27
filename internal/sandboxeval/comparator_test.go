@@ -176,6 +176,61 @@ func TestJudgeSuitePriorityOrdering(t *testing.T) {
 			expectedHint:   "non_degenerate_success",
 		},
 		{
+			name: "baseline zero cost is invalid not a crash",
+			mutate: func(runs []SuiteVerdict) []SuiteVerdict {
+				for index := range runs {
+					if runs[index].Arm == ArmBaseline {
+						runs[index].InputTokens = 0
+						runs[index].OutputTokens = 0
+					}
+				}
+				return runs
+			},
+			expectedStatus: ConclusionInvalid,
+			expectedHint:   "baseline_zero_cost",
+		},
+		{
+			name: "variant tool pairing fails the variant side",
+			mutate: func(runs []SuiteVerdict) []SuiteVerdict {
+				for index := range runs {
+					if runs[index].Arm == ArmVariant {
+						runs[index].ToolPairingBreaks++
+						break
+					}
+				}
+				return runs
+			},
+			expectedStatus: ConclusionFailed,
+			expectedHint:   "variant_tool_pairing",
+		},
+		{
+			name: "variant evidence integrity fails instead of invalidating",
+			mutate: func(runs []SuiteVerdict) []SuiteVerdict {
+				for index := range runs {
+					if runs[index].Arm == ArmVariant {
+						runs[index].DoctorReplayBroken = true
+						break
+					}
+				}
+				return runs
+			},
+			expectedStatus: ConclusionFailed,
+			expectedHint:   "variant_evidence_integrity",
+		},
+		{
+			name: "absolute wall gate violation",
+			mutate: func(runs []SuiteVerdict) []SuiteVerdict {
+				for index := range runs {
+					if runs[index].Arm == ArmVariant {
+						runs[index].WallTimeMS *= 20 // 整臂时延越过分之五十上限
+					}
+				}
+				return runs
+			},
+			expectedStatus: ConclusionFailed,
+			expectedHint:   "absolute_wall_gate",
+		},
+		{
 			name: "quality neutral without efficiency is inconclusive",
 			mutate: func(runs []SuiteVerdict) []SuiteVerdict {
 				for index := range runs {

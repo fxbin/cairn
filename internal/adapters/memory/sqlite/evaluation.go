@@ -66,6 +66,20 @@ func (store *Store) StartEvaluation(ctx context.Context, candidateID string, eva
 	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.Evaluation{}, err
 	}
+	// 冻结输入一致性属同一事务的强制复核：评测集指纹必须与候选登记值一致，
+	// 且请求身份必须可由五元组重新派生——任一不符都意味着调用方携带了与
+	// 候选登记事实无关的冻结材料，必须在产生任何写之前失败关闭。
+	if candidate.EvalSetFingerprint == "" || evaluation.EvalSetFingerprint != candidate.EvalSetFingerprint {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation eval set fingerprint does not match the registered candidate", memory.ErrConflict)
+	}
+	derivedID, deriveErr := memory.EvaluationID(candidate.ID, evaluation.EvalSetFingerprint,
+		evaluation.BaselineConfigFingerprint, evaluation.VariantConfigFingerprint, evaluation.ComparatorVersion)
+	if deriveErr != nil {
+		return memory.Evaluation{}, fmt.Errorf("re-derive evaluation identity: %w", deriveErr)
+	}
+	if derivedID != evaluation.ID {
+		return memory.Evaluation{}, fmt.Errorf("%w: evaluation identity is not derivable from its frozen tuple", memory.ErrConflict)
+	}
 	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_evaluations(
 		evaluation_id, schema_version, candidate_id, eval_set_fingerprint,
 		baseline_config_fingerprint, variant_config_fingerprint, comparator_version,

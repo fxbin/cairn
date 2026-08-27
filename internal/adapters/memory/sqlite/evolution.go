@@ -680,8 +680,11 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				}
 			}
 		case memory.CandidateStateExpired:
-			if rejected != 0 || invalidated != 0 || expired != 1 {
+			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 {
 				return fmt.Errorf("expired evolution candidate %s has invalid audit state", candidate.ID)
+			}
+			if hasEvaluation {
+				return fmt.Errorf("expired evolution candidate %s carries an evaluation row", candidate.ID)
 			}
 			for _, entry := range audit {
 				if entry.Action == memory.EvolutionAuditExpired && entry.OccurredAt.Before(candidate.ExpiresAt) {

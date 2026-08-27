@@ -84,6 +84,9 @@ func medianOdd(values []int64) (int64, error) {
 // scaleOverflowFree 以 checked 运算计算 value×scale；任何溢出都令成本与时
 // 延比较不可计算，必须失败关闭而不是折回负数继续评审。
 func scaleOverflowFree(value int64, scale int64) (int64, error) {
+	if value == 0 {
+		return 0, nil
+	}
 	product := value * scale
 	if product/value != scale {
 		return 0, fmt.Errorf("scaling %d by %d overflows the comparison range", value, scale)
@@ -228,6 +231,11 @@ func JudgeSuite(evalSet EvalSet, runs []SuiteVerdict) (Conclusion, error) {
 	if variant.toolPairingBreaks > 0 {
 		return Conclusion{Status: ConclusionFailed, Trigger: "variant_tool_pairing"}, nil
 	}
+	if baseline.costUnits == 0 {
+		// 基线成本为零使万分比门失去可对照量纲（免费对照不存在可比较的
+		// 成本事实），按比较不可计算映射为 invalid，而不是崩溃或改判退化。
+		return Conclusion{Status: ConclusionInvalid, Trigger: "baseline_zero_cost"}, nil
+	}
 	costViolated, err := violatesBasisPointGate(baseline.costUnits, variant.costUnits, int64(comparator.CostPassBasisPoints))
 	if err != nil {
 		return Conclusion{}, err
@@ -238,6 +246,9 @@ func JudgeSuite(evalSet EvalSet, runs []SuiteVerdict) (Conclusion, error) {
 	baselineWall, err := medianOdd(baseline.wallTimeMS)
 	if err != nil {
 		return Conclusion{}, err
+	}
+	if baselineWall == 0 {
+		return Conclusion{Status: ConclusionInvalid, Trigger: "baseline_zero_wall"}, nil
 	}
 	variantWall, err := medianOdd(variant.wallTimeMS)
 	if err != nil {

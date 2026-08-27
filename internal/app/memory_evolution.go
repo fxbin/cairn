@@ -275,9 +275,10 @@ type MemoryEvaluationStartOptions struct {
 	Config     config.Config
 }
 
-// StartEvolutionEvaluation 在工作区锁内执行评测启动事务：候选来源、冻结
-// 指纹与租约策略的一致性复核位于同一事务；事务前后各执行一次全库只读
-// 验证，保证无隐藏破坏被带过边界。
+// StartEvolutionEvaluation 在工作区锁内执行评测启动事务：来源活性、评测集
+// 指纹与候选登记一致性与身份派生复核都在该事务内完成；租约授权属于启动前
+// 的编排层职责（先于本调用）。事务前后各执行一次全库只读验证，保证无隐藏
+// 破坏被带过边界。
 func (service Service) StartEvolutionEvaluation(ctx context.Context, options MemoryEvaluationStartOptions) (memory.Evaluation, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
