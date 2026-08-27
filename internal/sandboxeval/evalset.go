@@ -50,19 +50,49 @@ const (
 )
 
 // ComparatorContract 是预注册的判定合同：比较器只依据本合同产出评测结论，
-// 不得在看到结果后修改阈值；本轮只冻结形态与阈值常量。
+// 不得在看到结果后修改阈值。全部门槛以万分比整数显式进入本结构与指纹，
+// 使阈值的任何漂移都会改变 eval_set_fingerprint 并被拒绝继续执行；合法
+// 取值唯一对应 PreregisteredComparatorContract 返回的注册组合。
 type ComparatorContract struct {
 	SchemaVersion     int    `json:"schema_version"`
 	ComparatorVersion string `json:"comparator_version"`
+	// CostPassBasisPoints 承载 §5.3 第 7 条的成本通过门上限倍率。
+	CostPassBasisPoints int `json:"cost_pass_basis_points"`
+	// WallPassBasisPoints 承载 §5.3 第 8 条的时延通过门上限倍率。
+	WallPassBasisPoints int `json:"wall_pass_basis_points"`
+	// CostEfficiencyBasisPoints 承载 §5.4 模式 B 的成本节省帽。
+	CostEfficiencyBasisPoints int `json:"cost_efficiency_basis_points"`
+	// WallEfficiencyBasisPoints 承载 §5.4 模式 B 的时延帽。
+	WallEfficiencyBasisPoints int `json:"wall_efficiency_basis_points"`
+	// SuccessImprovementDelta 承载 §5.4 模式 A 的有效性改善门槛。
+	SuccessImprovementDelta int `json:"success_improvement_delta"`
 }
 
-// Validate 校验比较器合同的闭合形态：schema 版本与非空版本标识。
+// PreregisteredComparatorContract 返回当前唯一合法的注册判定合同实例：
+// 版本标识与全部门槛绑定，EvalSet 冻结必须经由此入口而不是手工拼装。
+func PreregisteredComparatorContract(version string) ComparatorContract {
+	return ComparatorContract{
+		SchemaVersion:             comparatorContractSchemaV1,
+		ComparatorVersion:         version,
+		CostPassBasisPoints:       comparatorCostPassBasisPoints,
+		WallPassBasisPoints:       comparatorWallPassBasisPoints,
+		CostEfficiencyBasisPoints: comparatorCostEfficiencyBasisPoints,
+		WallEfficiencyBasisPoints: comparatorWallEfficiencyBasisPoints,
+		SuccessImprovementDelta:   comparatorSuccessImprovementDelta,
+	}
+}
+
+// Validate 校验比较器合同与注册组合逐位一致：阈值偏离注册值（哪怕一个基
+// 点）都使合同非法，让"评测后调阈值"在任何阶段都不可能通过校验。
 func (comparator ComparatorContract) Validate() error {
 	if comparator.SchemaVersion != comparatorContractSchemaV1 {
 		return fmt.Errorf("comparator contract schema_version %d is not supported", comparator.SchemaVersion)
 	}
 	if comparator.ComparatorVersion == "" {
 		return errors.New("comparator version must not be empty")
+	}
+	if comparator != PreregisteredComparatorContract(comparator.ComparatorVersion) {
+		return errors.New("comparator contract deviates from the preregistered thresholds")
 	}
 	return nil
 }

@@ -42,7 +42,7 @@ func validEvalSet(t *testing.T) EvalSet {
 		CredentialPolicyFingerprint: validProfileDigest,
 		ProviderRequestProfile:      profile,
 		PricingSnapshot:             mustPricingSnapshot(t),
-		ComparatorContract:          ComparatorContract{SchemaVersion: comparatorContractSchemaV1, ComparatorVersion: "cairn-comparator-v1-absolute-gates"},
+		ComparatorContract:          contractPreregisteredComparator(),
 	}
 }
 
@@ -132,4 +132,23 @@ func mustPricingSnapshot(t *testing.T) contract.PricingSnapshot {
 		t.Fatalf("pricing snapshot fixture: %v", err)
 	}
 	return snapshot
+}
+
+// contractPreregisteredComparator 返回经唯一入口构造的注册比较器合同。
+func contractPreregisteredComparator() ComparatorContract {
+	return PreregisteredComparatorContract("cairn-comparator-v1-absolute-gates")
+}
+
+// TestComparatorContractRejectsThresholdDeviation 验证阈值偏离（哪怕一个基
+// 点）都会使合同非法并被指纹前置校验拦截，令"评测后调阈值"不可达。
+func TestComparatorContractRejectsThresholdDeviation(t *testing.T) {
+	comparator := contractPreregisteredComparator()
+	if err := comparator.Validate(); err != nil {
+		t.Fatalf("registered comparator rejected: %v", err)
+	}
+	drifted := comparator
+	drifted.CostPassBasisPoints--
+	if err := drifted.Validate(); err == nil || !strings.Contains(err.Error(), "preregistered") {
+		t.Fatalf("threshold drift must fail closed against registration, got %v", err)
+	}
 }

@@ -29,8 +29,28 @@ func TestEvaluationIDDeterminismAndSensitivity(t *testing.T) {
 	if variantInput == first {
 		t.Fatal("config fingerprint drift must change the evaluation identity")
 	}
+	evalSetDrift, err := EvaluationID("evo_abc", "sha256:5555555555555555555555555555555555555555555555555555555555555555", "sha256:1111111111111111111111111111111111111111111111111111111111111111", "sha256:2222222222222222222222222222222222222222222222222222222222222222", "cairn-comparator-v1")
+	if err != nil {
+		t.Fatalf("derive eval-set drift: %v", err)
+	}
+	if evalSetDrift == first {
+		t.Fatal("eval set fingerprint drift must change the evaluation identity")
+	}
+	variantSpecDrift, err := EvaluationID("evo_abc", evalDigest, "sha256:1111111111111111111111111111111111111111111111111111111111111111", "sha256:6666666666666666666666666666666666666666666666666666666666666666", "cairn-comparator-v1")
+	if err != nil {
+		t.Fatalf("derive variant spec drift: %v", err)
+	}
+	if variantSpecDrift == first {
+		t.Fatal("variant config fingerprint drift must change the evaluation identity")
+	}
 	if _, err := EvaluationID("", evalDigest, evalDigest, evalDigest, "v"); err == nil {
 		t.Fatal("empty candidate id must be rejected")
+	}
+	if _, err := EvaluationID("evo_abc", "", evalDigest, evalDigest, "v"); err == nil {
+		t.Fatal("empty eval set fingerprint must be rejected")
+	}
+	if _, err := EvaluationID("evo_abc", evalDigest, evalDigest, "", "v"); err == nil {
+		t.Fatal("empty variant config fingerprint must be rejected")
 	}
 	if _, err := EvaluationID("evo_abc", evalDigest, evalDigest, evalDigest, ""); err == nil {
 		t.Fatal("empty comparator version must be rejected")
