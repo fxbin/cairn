@@ -77,6 +77,24 @@ var knownTerminalFailureClasses = map[string]struct{}{
 	FailureProviderCapabilityMismatch:        {},
 }
 
+// budgetFailureClasses 是 Agent 自身预算终止的闭合子集：这类终态携带完整的
+// 事件证据与 token 用量，属于评测的有效失败样本而非提供方故障。
+var budgetFailureClasses = map[string]struct{}{
+	FailureBudgetTurns:        {},
+	FailureBudgetToolCalls:    {},
+	FailureBudgetInputTokens:  {},
+	FailureBudgetOutputTokens: {},
+	FailureBudgetWallTime:     {},
+	FailureBudgetCostUSD:      {},
+}
+
+// IsBudgetFailure 判断终态分类是否属于 Agent 自身预算终止：评测编排据此把
+// 预算耗尽的 Run 按有效失败样本计入成功率与成本，而不是当作提供方故障停摆。
+func IsBudgetFailure(class string) bool {
+	_, budget := budgetFailureClasses[class]
+	return budget
+}
+
 // IsKnownTerminalFailureClass 判断值是否属于当前稳定的终态失败分类词表。该词表是
 // M2-A 精确查询可使用的受控子集；未知 Event payload 分类不会被放宽成查询 token。
 func IsKnownTerminalFailureClass(value string) bool {

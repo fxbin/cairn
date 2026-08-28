@@ -871,16 +871,25 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		Config:    armConfig,
 	})
 	record.WallTimeMS = executor.now().Sub(record.StartedAt).Milliseconds()
-	if err != nil || result.ID == "" {
-		// 无终态的 Provider 失效或装配异常：当步证据照常封口留档，调度以停
-		// 止原因中断，套件按计划缺口收敛为不确定。
-		class := sandboxStopProviderFailure
-		if err != nil {
-			class = contract.ClassifyError(err)
+	// 错误分轨：Agent 自身预算终止（轮次/工具/token/墙钟/成本）携带完整事
+	// 件证据与用量，属评测合同的有效失败样本——落入证据提取路径计入成功
+	// 率与成本，套件继续；提供方类失效或缺失运行身份才是计划缺口，调度以
+	// 停止原因中断并收敛为不确定。
+	budgetClass := ""
+	if err != nil {
+		class := contract.ClassifyError(err)
+		if result.ID == "" || !contract.IsBudgetFailure(class) {
+			stop.reason = sandboxStopProviderFailure
+			stop.detail = class
+			return failWithoutVerdict(class)
 		}
+		budgetClass = class
+	}
+	if result.ID == "" {
+		// 无错误的空运行身份属装配异常，与提供方失效同一停止轨。
 		stop.reason = sandboxStopProviderFailure
-		stop.detail = class
-		return failWithoutVerdict(class)
+		stop.detail = sandboxStopProviderFailure
+		return failWithoutVerdict(sandboxStopProviderFailure)
 	}
 	inspected, inspectErr := executor.Service.Inspect(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig, result.ID, true)
 	if inspectErr != nil {
@@ -925,7 +934,12 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 	}
 	record.Success = completedVerified
 	if !completedVerified && record.FailureClass == "" {
-		record.FailureClass = verificationFailedClass
+		// 预算终止的失败样本保留其精确预算分类，供逐类归因。
+		if budgetClass != "" {
+			record.FailureClass = budgetClass
+		} else {
+			record.FailureClass = verificationFailedClass
+		}
 	}
 	record.Counted = true
 	record.FinishedAt = executor.now()
