@@ -732,7 +732,8 @@ func (executor SandboxExecutor) executeScheduledStep(ctx context.Context, option
 		stop.detail = sandboxStopDetailTaskImageDigest
 		return nil, nil, nil
 	}
-	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, armConfig, prepared, runID, precheck.evaluationID, step, evaluationDir, stop)
+	// 运行必须使用任务特化配置（任务 verifier 命令与任务镜像沙箱），原始臂配置只用于指纹视图。
+	record, verdict, stepAbort := executor.runSandboxAttempt(ctx, prepared, runID, precheck.evaluationID, step, evaluationDir, stop)
 	if verdict == nil {
 		return record, verdict, stepAbort
 	}
@@ -805,7 +806,7 @@ func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
 // 归档与泄漏扫描。任何终局出口（含 Provider 无终态与证据合同破坏）都先补齐
 // 当步泄漏扫描再封口——未扫描的表面不得冒充干净证据。错误文本只保留分类词，
 // 原文一律不落盘。
-func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig config.Config, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
+func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	record := &SandboxRunRecord{
 		SchemaVersion: sandboxRecordSchemaV2,
 		RunID:         runID,
@@ -868,7 +869,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		Task:      prepared.Task.AgentPrompt(),
 		Workspace: prepared.Result.Workspace,
 		StateDir:  prepared.Result.StateDir,
-		Config:    armConfig,
+		Config:    prepared.Configuration,
 	})
 	record.WallTimeMS = executor.now().Sub(record.StartedAt).Milliseconds()
 	// 错误分轨：Agent 自身预算终止（轮次/工具/token/墙钟/成本）携带完整事
@@ -891,7 +892,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		stop.detail = sandboxStopProviderFailure
 		return failWithoutVerdict(sandboxStopProviderFailure)
 	}
-	inspected, inspectErr := executor.Service.Inspect(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig, result.ID, true)
+	inspected, inspectErr := executor.Service.Inspect(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, prepared.Configuration, result.ID, true)
 	if inspectErr != nil {
 		return abortInvalid(sandboxTriggerEvidenceUnverifiable, inspectErr)
 	}
@@ -904,7 +905,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		return abortInvalid(sandboxTriggerReplayDivergence, errors.New("deterministic replay diverges from the persisted projection"))
 	}
 	record.ReplayConsistent = true
-	frozen, marshalErr := json.Marshal(armConfig)
+	frozen, marshalErr := json.Marshal(prepared.Configuration)
 	if marshalErr != nil {
 		return abortInvalid(sandboxTriggerContractProjectionFailed, marshalErr)
 	}
@@ -921,7 +922,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, armConfig
 		return abortInvalid(sandboxTriggerExplorationSignatureMissing, evidenceErr)
 	}
 	doctorOK := true
-	if _, doctorErr := executor.Service.Doctor(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, armConfig); doctorErr != nil {
+	if _, doctorErr := executor.Service.Doctor(context.Background(), prepared.Result.Workspace, prepared.Result.StateDir, prepared.Configuration); doctorErr != nil {
 		doctorOK = false
 	}
 	record.InputTokens = runResult.Metrics.InputTokens
