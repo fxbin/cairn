@@ -1662,7 +1662,7 @@ Usage:
   cairn memory candidate invalidate [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
-  cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--cairn-root <path>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory candidate promote --candidate <id> --approver <label> --approval-fingerprint <sha256> --suite-state-dir <dir> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion rollback [--reason insufficient_evidence|human_request] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]

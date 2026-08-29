@@ -709,7 +709,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("rejected evolution candidate %s has an incoherent cooldown deadline", candidate.ID)
 			}
 		case memory.CandidateStateInvalidated:
-			if rejected != 0 || expired != 0 || promotedAudits != 0 {
+			if rejected != 0 || expired != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation && evaluationRow.Status != memory.EvaluationStatusInvalid {
@@ -728,7 +728,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				}
 			}
 		case memory.CandidateStateExpired:
-			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 {
+			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("expired evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation {
