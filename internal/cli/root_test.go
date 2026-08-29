@@ -483,3 +483,60 @@ func TestTrialActivationFlagFailsClosedWithoutPromotion(t *testing.T) {
 		t.Fatalf("explicit trial activation without a promotion must fail closed: exit=%d stderr=%q", exit, stderr.String())
 	}
 }
+
+// TestInitGeneratesLoadableMinimalConfig 锁定向导核心合同：目录预填能力卡、
+// 生成的最小 YAML 可严格装载且能力字段保真。
+func TestInitGeneratesLoadableMinimalConfig(t *testing.T) {
+	original, _ := os.Getwd()
+	tempWorkspace := t.TempDir()
+	if err := os.Chdir(tempWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(original)
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	exit := command.Run(context.Background(), []string{"init",
+		"--base-url", "https://provider.test/v4", "--model", "test-model-x", "--api-key-env", "TEST_KEY", "--catalog-url", "http://127.0.0.1:1/unreachable"})
+	if exit != ExitOK {
+		t.Fatalf("init exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+	loaded, err := config.Load(config.DefaultPath("."), config.Overrides{})
+	if err != nil {
+		t.Fatalf("generated config must load strictly: %v", err)
+	}
+	if loaded.Provider.BaseURL != "https://provider.test/v4" || loaded.Provider.Model != "test-model-x" || loaded.Provider.APIKeyEnv != "TEST_KEY" {
+		t.Fatalf("provider fields drifted: %+v", loaded.Provider)
+	}
+	if loaded.Provider.Capability == nil || !loaded.Provider.Capability.ToolCalls || !loaded.Provider.Capability.StreamingUsage {
+		t.Fatalf("capability missing or wrong: %+v", loaded.Provider.Capability)
+	}
+	if loaded.Provider.Capability.ContextWindowTokens != 0 {
+		t.Fatal("catalog-miss model must leave context limit at zero")
+	}
+	if len(loaded.Provider.Capability.StopReasons) != 3 || loaded.Provider.Capability.StopReasons[0] != "stop" {
+		t.Fatalf("stop reasons must be the protocol set: %v", loaded.Provider.Capability.StopReasons)
+	}
+}
+
+// TestInitRefusesToOverwriteExistingConfig 锁定防覆盖：既有 config.yaml 存
+// 在时向导拒绝执行。
+func TestInitRefusesToOverwriteExistingConfig(t *testing.T) {
+	original, _ := os.Getwd()
+	tempWorkspace := t.TempDir()
+	if err := os.Chdir(tempWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(original)
+	if err := os.MkdirAll(".agent", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.DefaultPath("."), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	exit := command.Run(context.Background(), []string{"init", "--base-url", "https://x.test", "--model", "m", "--api-key-env", "K", "--catalog-url", "http://127.0.0.1:1/unreachable"})
+	if exit == ExitOK || !strings.Contains(stderr.String(), "不覆盖") {
+		t.Fatalf("must refuse overwrite: exit=%d stderr=%q", exit, stderr.String())
+	}
+}

@@ -78,6 +78,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.benchmark(ctx, args[1:])
 	case "check-provider":
 		return command.checkProvider(ctx, args[1:])
+	case "init":
+		return command.initCommand(ctx, args[1:])
 	case "help", "--help", "-h":
 		command.usage()
 		return ExitOK
@@ -86,6 +88,42 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		command.usage()
 		return ExitUsage
 	}
+}
+
+// initCommand 解析首跑向导的旗标并执行：三要素可全部以旗标提供（脚本
+// 化），缺省项进入交互问答。
+func (command Command) initCommand(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("init", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	baseURL := flags.String("base-url", "", "provider base URL")
+	model := flags.String("model", "", "model name")
+	apiKeyEnv := flags.String("api-key-env", "", "environment variable name holding the API key")
+	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "init does not accept positional arguments")
+		return ExitUsage
+	}
+	if *workspace != "" {
+		if err := os.Chdir(*workspace); err != nil {
+			fmt.Fprintln(command.Stderr, "workspace error:", err)
+			return ExitFailed
+		}
+	}
+	outcome, err := command.runInit(ctx, initFlags{BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv, CatalogURL: *catalogURL})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "init failed:", err)
+		return ExitFailed
+	}
+	fmt.Fprintf(command.Stdout, "\n配置已生成: %s\n", outcome.ConfigPath)
+	for _, note := range outcome.ProbeNotes {
+		fmt.Fprintf(command.Stdout, "  %s\n", note)
+	}
+	fmt.Fprintf(command.Stdout, "\n下一步:\n  1. export %s=<你的密钥>\n  2. cairn check-provider 验证端点能力\n  3. cairn run \"你的任务\"\n", outcome.APIKeyEnv)
+	return ExitOK
 }
 
 // benchmark 分派本地评测域的固定子命令：run 执行基准套件；freeze-eval-set
@@ -1710,6 +1748,7 @@ Usage:
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
+  cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed
