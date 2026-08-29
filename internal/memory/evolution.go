@@ -65,6 +65,10 @@ const (
 	EvolutionAuditInvalidated = "invalidated"
 	// EvolutionAuditExpired 记录保留期耗尽审计动作。
 	EvolutionAuditExpired = "expired"
+	// EvolutionAuditPromoted 记录人工晋升审计动作（版本账本落账）。
+	EvolutionAuditPromoted = "promoted"
+	// EvolutionAuditPromotionRolledBack 记录激活版本回退审计动作。
+	EvolutionAuditPromotionRolledBack = "promotion_rolled_back"
 	// RejectReasonInsufficientEvidence 表示来源证据不再充分。
 	RejectReasonInsufficientEvidence = "insufficient_evidence"
 	// RejectReasonEvaluationFailed 保留给 M4-2 评测未达门槛的拒绝。
@@ -207,9 +211,8 @@ func ValidEvolutionRejectionReason(reason string) bool {
 }
 
 // ValidCandidateTransition 判断状态迁移是否合法。开放面覆盖创建后的三个
-// 手工终态入口，以及评测生命周期：ready→evaluating 启动、evaluating→
-// evaluated_passed/evaluated_failed/inconclusive 三个结论态；promoted 仍
-// 属于后续人工晋升切片，当前失败关闭。
+// 手工终态入口、评测生命周期（ready→evaluating 启动、evaluating→三个结
+// 论态）与人工晋升入口（evaluated_passed→promoted，由版本账本事务承载）。
 func ValidCandidateTransition(from, to string) error {
 	switch {
 	case from == CandidateStateDraft && to == CandidateStateRejected:
@@ -233,6 +236,10 @@ func ValidCandidateTransition(from, to string) error {
 	case from == CandidateStateEvaluating && to == CandidateStateEvaluatedFailed:
 		return nil
 	case from == CandidateStateEvaluating && to == CandidateStateInconclusive:
+		return nil
+	// M4-3 人工晋升入口：唯一从评测通过态出发的迁移，由版本账本事务
+	// 携带读回校验写入。
+	case from == CandidateStateEvaluatedPassed && to == CandidateStatePromoted:
 		return nil
 	default:
 		return fmt.Errorf("evolution candidate transition %s -> %s is not permitted in this slice", from, to)

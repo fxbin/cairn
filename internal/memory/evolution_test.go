@@ -146,8 +146,9 @@ func TestEvolutionCandidateValidateLocksContract(t *testing.T) {
 }
 
 // TestCandidateTransitionMatrixClosesM4LateralMoves 锁定状态机：手工终态
-// 入口、评测生命周期（ready→evaluating 与三个结论态）与 evaluating 中断作废
-// 全部开放；promoted 迁移与其他旁路在合同层失败关闭。
+// 入口、评测生命周期（ready→evaluating 与三个结论态）、evaluating 中断作废
+// 与人工晋升入口（evaluated_passed→promoted）全部开放；其余旁路在合同层
+// 失败关闭。
 func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 	permitted := [][2]string{
 		{CandidateStateDraft, CandidateStateRejected},
@@ -161,6 +162,7 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 		{CandidateStateEvaluating, CandidateStateEvaluatedPassed},
 		{CandidateStateEvaluating, CandidateStateEvaluatedFailed},
 		{CandidateStateEvaluating, CandidateStateInconclusive},
+		{CandidateStateEvaluatedPassed, CandidateStatePromoted},
 	}
 	for _, pair := range permitted {
 		if err := ValidCandidateTransition(pair[0], pair[1]); err != nil {
@@ -175,7 +177,6 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 		{CandidateStateEvaluating, CandidateStateReady},
 		{CandidateStateEvaluating, CandidateStateRejected},
 		{CandidateStateEvaluating, CandidateStateExpired},
-		{CandidateStateEvaluatedPassed, CandidateStatePromoted},
 		{CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed},
 		{CandidateStateInconclusive, CandidateStateEvaluating},
 		{CandidateStateRejected, CandidateStateDraft},

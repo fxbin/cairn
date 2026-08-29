@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	migrationVersion = 6
+	migrationVersion = 7
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -518,7 +518,10 @@ func (store *Store) Check(ctx context.Context) error {
 	if err := checkDerivedInvariants(ctx, store.db); err != nil {
 		return err
 	}
-	return checkEvolutionInvariants(ctx, store.db)
+	if err := checkEvolutionInvariants(ctx, store.db); err != nil {
+		return err
+	}
+	return checkPromotionInvariants(ctx, store.db)
 }
 
 // migrate 配置耐久性选项并以迁移校验和初始化唯一支持的 schema 版本。
@@ -772,6 +775,64 @@ func (store *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < migrationVersionSeven {
+		// v7 晋升版本账本迁移。审计词表新增晋升与回退两动作，须再次整表
+		// 重建 evolution_audit_log（SQLite 不能修改表内嵌 CHECK）；本次为
+		// 纯扩词表，存量行不触发新约束，复制阶段无失败关闭面。两账本表：
+		// promotions 承载版本记录正文（同候选唯一、同目标类型版本唯一），
+		// activations 承载每目标类型至多一行的激活指针（行缺=产品基线）。
+		if _, err := transaction.ExecContext(ctx, `
+			DROP INDEX IF EXISTS evolution_audit_by_candidate;
+			CREATE TABLE evolution_audit_log_v7_rebuild (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				candidate_id TEXT NOT NULL REFERENCES evolution_candidates(id),
+				action TEXT NOT NULL CHECK(action IN ('created', 'rejected', 'invalidated', 'expired', 'evaluation_started', 'evaluation_passed', 'evaluation_failed', 'evaluation_inconclusive', 'promoted', 'promotion_rolled_back')),
+				reason TEXT CHECK(reason IS NULL OR reason IN ('insufficient_evidence', 'evaluation_failed', 'safety_violation', 'human_request')),
+				occurred_at TEXT NOT NULL
+			);
+			INSERT INTO evolution_audit_log_v7_rebuild (id, candidate_id, action, reason, occurred_at)
+				SELECT id, candidate_id, action, reason, occurred_at FROM evolution_audit_log;
+			DROP TABLE evolution_audit_log;
+			ALTER TABLE evolution_audit_log_v7_rebuild RENAME TO evolution_audit_log;
+			CREATE INDEX IF NOT EXISTS evolution_audit_by_candidate ON evolution_audit_log(candidate_id, id);
+			CREATE TABLE evolution_promotions (
+				promotion_id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL,
+				candidate_id TEXT NOT NULL UNIQUE REFERENCES evolution_candidates(id),
+				target_kind TEXT NOT NULL,
+				version INTEGER NOT NULL,
+				variant_json TEXT NOT NULL,
+				variant_fingerprint TEXT NOT NULL,
+				variant_spec_sha256 TEXT NOT NULL,
+				baseline_fingerprint TEXT NOT NULL,
+				eval_set_fingerprint TEXT NOT NULL,
+				suite_result_digest TEXT NOT NULL,
+				comparator_version TEXT NOT NULL,
+				conclusion TEXT NOT NULL,
+				conclusion_trigger TEXT NOT NULL,
+				metrics_json TEXT NOT NULL,
+				approver TEXT NOT NULL,
+				rollback_target_promotion_id TEXT,
+				status TEXT NOT NULL CHECK(status IN ('active', 'rolled_back')),
+				created_at TEXT NOT NULL,
+				rolled_back_at TEXT,
+				UNIQUE(target_kind, version)
+			);
+			CREATE INDEX IF NOT EXISTS evolution_promotions_by_target ON evolution_promotions(target_kind, version);
+			CREATE TABLE evolution_activations (
+				target_kind TEXT PRIMARY KEY,
+				promotion_id TEXT NOT NULL REFERENCES evolution_promotions(promotion_id),
+				activated_at TEXT NOT NULL
+			);`); err != nil {
+			return fmt.Errorf("create promotion ledger schema: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionSeven, migrationNameSeven, migrationHashSeven); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionSeven); err != nil {
+			return err
+		}
+	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		return err
 	}
@@ -944,8 +1005,8 @@ func verifyLegacyV2Migration(ctx context.Context, source queryer, version int, e
 
 // checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
 // 版本链当前为 1（情节记忆）、2（巩固事务）、3（冻结支持度）、4（派生
-// 生命周期）、5（演化候选登记）和 6（评测注册与审计词表收口），单向兼容：
-// 旧二进制读新库失败关闭。
+// 生命周期）、5（演化候选登记）、6（评测注册与审计词表收口）和 7（晋升
+// 版本账本与审计词表扩展），单向兼容：旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -957,7 +1018,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix, migrationVersionSeven: migrationHashSeven}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {
