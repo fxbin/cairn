@@ -1647,7 +1647,6 @@ func writeRunManifest(writer io.Writer, manifest contract.RunManifest) {
 	}
 }
 
-// loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。
 // resolveTrialActivation 按显式旗标解析沙箱激活的压缩变体并返回覆盖后
 // 的配置；未选择加入时原样返回。四命令共用，保证指纹与漂移守卫一致。
 func (command Command) resolveTrialActivation(ctx context.Context, requested bool, workspace, stateDir string, configuration config.Config) (config.Config, error) {
@@ -1665,6 +1664,7 @@ func (command Command) resolveTrialActivation(ctx context.Context, requested boo
 	return resolved, nil
 }
 
+// loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。
 func (command Command) loadConfig(workspace, configuredPath string, overrides config.Overrides) (config.Config, error) {
 	if workspace == "" {
 		current, err := os.Getwd()
