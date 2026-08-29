@@ -3,12 +3,16 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -312,7 +316,7 @@ func (command Command) benchmarkFreezeEvalSet(ctx context.Context, arguments []s
 // consolidate、reject、candidate 八个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
 func (command Command) memory(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, or candidate")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, or promotion")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -332,8 +336,10 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 		return command.memoryRejectDerived(ctx, arguments[1:])
 	case "candidate":
 		return command.memoryCandidate(ctx, arguments[1:])
+	case "promotion":
+		return command.memoryPromotion(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, or candidate")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, or promotion")
 		return ExitUsage
 	}
 }
@@ -343,7 +349,7 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 // 为显式终态迁移；解释只读。不存在任何自动生成候选或晋升入口。
 func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, promote, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -351,6 +357,8 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 		return command.memoryCandidateCreate(ctx, arguments[1:])
 	case "evaluate":
 		return command.memoryCandidateEvaluate(ctx, arguments[1:])
+	case "promote":
+		return command.memoryCandidatePromote(ctx, arguments[1:])
 	case "reject":
 		return command.memoryCandidateReject(ctx, arguments[1:])
 	case "invalidate":
@@ -360,7 +368,7 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 	case "inspect":
 		return command.memoryCandidateInspect(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, promote, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 }
@@ -1685,4 +1693,313 @@ func writeJSON(writer io.Writer, value any) {
 		return
 	}
 	_, _ = fmt.Fprintln(writer, string(encoded))
+}
+
+// memoryPromotion 分派激活版本域的固定动作：rollback 回退当前激活版本，
+// list 只读列出版本史与激活指针。不存在任何自动晋升或激活入口。
+func (command Command) memoryPromotion(ctx context.Context, arguments []string) int {
+	if len(arguments) == 0 {
+		fmt.Fprintln(command.Stderr, "memory promotion requires rollback or list")
+		return ExitUsage
+	}
+	switch arguments[0] {
+	case "rollback":
+		return command.memoryPromotionRollback(ctx, arguments[1:])
+	case "list":
+		return command.memoryPromotionList(ctx, arguments[1:])
+	default:
+		fmt.Fprintln(command.Stderr, "memory promotion requires rollback or list")
+		return ExitUsage
+	}
+}
+
+// extractSuiteMetricSummary 从字节摘要校验过的套件结果正文提取闭合指标比
+// 较摘要：两臂成功数、总输入输出 token 与中位墙钟（每臂取排序中位）。
+func extractSuiteMetricSummary(records []benchmark.SandboxRunRecord, attemptsPerTask int) (memory.PromotionMetricSummary, error) {
+	if len(records) == 0 {
+		return memory.PromotionMetricSummary{}, errors.New("suite result carries no run records")
+	}
+	baselineWalls, variantWalls := make([]int64, 0, attemptsPerTask), make([]int64, 0, attemptsPerTask)
+	summary := memory.PromotionMetricSummary{}
+	for _, record := range records {
+		if record.WallTimeMS < 0 || record.InputTokens < 0 || record.OutputTokens < 0 {
+			return memory.PromotionMetricSummary{}, errors.New("run record carries negative metrics")
+		}
+		if record.Arm == string(sandboxeval.ArmBaseline) {
+			summary.BaselineSuccesses += boolToInt(record.Success)
+			summary.BaselineInputTokens += record.InputTokens
+			summary.BaselineOutputTokens += record.OutputTokens
+			baselineWalls = append(baselineWalls, record.WallTimeMS)
+		} else if record.Arm == string(sandboxeval.ArmVariant) {
+			summary.VariantSuccesses += boolToInt(record.Success)
+			summary.VariantInputTokens += record.InputTokens
+			summary.VariantOutputTokens += record.OutputTokens
+			variantWalls = append(variantWalls, record.WallTimeMS)
+		} else {
+			return memory.PromotionMetricSummary{}, fmt.Errorf("run record carries unknown arm %q", record.Arm)
+		}
+	}
+	if len(baselineWalls) != attemptsPerTask*len(uniqueTaskIDs(records)) || len(variantWalls) != attemptsPerTask*len(uniqueTaskIDs(records)) {
+		return memory.PromotionMetricSummary{}, errors.New("suite result does not cover both arms completely")
+	}
+	summary.BaselineMedianWallMS = medianInt64(baselineWalls)
+	summary.VariantMedianWallMS = medianInt64(variantWalls)
+	return summary, nil
+}
+
+// uniqueTaskIDs 返回记录中出现的去重任务清单。
+func uniqueTaskIDs(records []benchmark.SandboxRunRecord) []string {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0)
+	for _, record := range records {
+		if _, ok := seen[record.TaskID]; !ok {
+			seen[record.TaskID] = struct{}{}
+			ids = append(ids, record.TaskID)
+		}
+	}
+	return ids
+}
+
+// medianInt64 返回排序中位；奇偶样本统一取下中位，账本只做留档不做判定。
+func medianInt64(values []int64) int64 {
+	sorted := append([]int64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	if len(sorted) == 0 {
+		return 0
+	}
+	return sorted[len(sorted)/2]
+}
+
+// boolToInt 把布尔折叠为整数计数。
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+// loadSuiteResultForPromotion 定位候选的评测目录、按存储摘要校验套件结果
+// 字节并解码正文；摘要不一致即失败关闭，杜绝在漂移证据上晋升。
+func loadSuiteResultForPromotion(evaluation memory.Evaluation, stateRoot string) (benchmark.SandboxSuiteResult, error) {
+	if evaluation.Status != memory.EvaluationStatusPassed || evaluation.SuiteResultDigest == "" {
+		return benchmark.SandboxSuiteResult{}, errors.New("candidate lacks a concluded passed evaluation digest")
+	}
+	resultPath := filepath.Join(stateRoot, "evaluations", strings.ReplaceAll(evaluation.ID, ":", "_"), "suite-result.json")
+	content, err := os.ReadFile(resultPath)
+	if err != nil {
+		return benchmark.SandboxSuiteResult{}, fmt.Errorf("read suite result: %w", err)
+	}
+	digest := sha256.Sum256(content)
+	if "sha256:"+hex.EncodeToString(digest[:]) != evaluation.SuiteResultDigest {
+		return benchmark.SandboxSuiteResult{}, errors.New("suite result bytes diverge from the stored digest")
+	}
+	var result benchmark.SandboxSuiteResult
+	if err := json.Unmarshal(content, &result); err != nil {
+		return benchmark.SandboxSuiteResult{}, fmt.Errorf("decode suite result: %w", err)
+	}
+	return result, nil
+}
+
+// memoryCandidatePromote 对评测通过的候选执行人工晋升：定位评测行并按存
+// 储摘要校验本地套件结果正文，提取闭合指标摘要后经审批指纹触发版本账本
+// 事务。指纹不匹配时回显期望值供操作者重试。
+func (command Command) memoryCandidatePromote(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate promote", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	candidateID := flags.String("candidate", "", "evolution candidate ID (required)")
+	approver := flags.String("approver", "", "operator attribution label, 1..64 runes (required)")
+	approvalFingerprint := flags.String("approval-fingerprint", "", "promotion approval fingerprint sha256 (required)")
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "candidate state directory")
+	suiteStateRoot := flags.String("suite-state-dir", "", "state root hosting the evaluations directory (required)")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if *candidateID == "" || *approver == "" || *approvalFingerprint == "" || *suiteStateRoot == "" || flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-fingerprint and --suite-state-dir")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	promotion, err := command.preparePromotion(ctx, *candidateID, *approver, *suiteStateRoot, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate promote failed:", err)
+		return exitFor(err)
+	}
+	promoted, err := command.Service.PromoteEvolutionCandidate(ctx, app.MemoryPromotionOptions{
+		Promotion: promotion, ApprovalFingerprint: *approvalFingerprint,
+		Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+	})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate promote failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, promoted)
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "promoted: %s version=%d target=%s activation=active approver=%s\n", promoted.ID, promoted.Version, promoted.TargetKind, promoted.Approver)
+	return ExitOK
+}
+
+// preparePromotion 组装晋升行正文：读取候选与评测行、按摘要校验并提取套
+// 件指标、重述变体并与登记规格摘要核对、派生身份与下一版本号。
+func (command Command) preparePromotion(ctx context.Context, candidateID, approver, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
+	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: candidateID, Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	candidate := inspected.Candidate
+	if candidate.Status != memory.CandidateStateEvaluatedPassed {
+		return memory.Promotion{}, fmt.Errorf("promotion requires an evaluated_passed candidate, got %s", candidate.Status)
+	}
+	if inspected.Evaluation == nil {
+		return memory.Promotion{}, errors.New("promotion requires the concluded evaluation row")
+	}
+	result, err := loadSuiteResultForPromotion(*inspected.Evaluation, suiteStateRoot)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	metrics, err := extractSuiteMetricSummary(result.Records, resultAttemptsHint(result))
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	promotions, _, _, err := command.Service.InspectEvolutionPromotions(ctx, candidate.TargetKind, workspace, stateDir, configuration)
+	if err != nil && !errors.Is(err, memory.ErrNotFound) {
+		return memory.Promotion{}, err
+	}
+	nextVersion := 1
+	rollbackTarget := ""
+	if len(promotions) > 0 {
+		latest := promotions[len(promotions)-1]
+		nextVersion = latest.Version + 1
+		rollbackTarget = latest.ID
+	}
+	promotion := memory.Promotion{
+		SchemaVersion: memory.EvaluationSchemaVersionV1, CandidateID: candidate.ID, TargetKind: candidate.TargetKind,
+		Version: nextVersion, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
+		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
+		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,
+		Conclusion: memory.EvaluationStatusPassed, ConclusionTrigger: result.Trigger,
+		Metrics: metrics, Approver: approver, RollbackTargetID: rollbackTarget,
+		Status: memory.PromotionStatusActive, CreatedAt: time.Now().UTC(),
+	}
+	promotion.ID, err = memory.PromotionID(candidate.ID, candidate.VariantFingerprint, promotion.Version)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	return promotion, nil
+}
+
+// resultAttemptsHint 从套件结果反推每任务尝试数；记录不足时返回零使摘要
+// 提取器的完备性检查失败关闭。
+func resultAttemptsHint(result benchmark.SandboxSuiteResult) int {
+	armCounts := map[string]int{}
+	for _, record := range result.Records {
+		armCounts[record.Arm]++
+	}
+	if len(armCounts) != 2 {
+		return 0
+	}
+	tasks := len(uniqueTaskIDs(result.Records))
+	if tasks == 0 {
+		return 0
+	}
+	for _, count := range armCounts {
+		return count / tasks
+	}
+	return 0
+}
+
+// memoryPromotionRollback 回退当前激活版本：指针移回回退目标或清空回产品
+// 基线，版本置为已回退并落审计。
+func (command Command) memoryPromotionRollback(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory promotion rollback", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	reason := flags.String("reason", "", "rollback reason from the closed lexicon")
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory promotion rollback does not accept positional arguments")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	promotion, activation, err := command.Service.RollbackEvolutionPromotion(ctx, app.MemoryPromotionRollbackOptions{
+		TargetKind: memory.TargetKindContextCompactionParams, Reason: *reason,
+		Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+	})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory promotion rollback failed:", err)
+		return exitFor(err)
+	}
+	target := "baseline"
+	if activation.PromotionID != "" {
+		target = activation.PromotionID
+	}
+	fmt.Fprintf(command.Stdout, "rolled back: %s version=%d now active=%s\n", promotion.ID, promotion.Version, target)
+	return ExitOK
+}
+
+// memoryPromotionList 只读列出版本史与当前激活指针。
+func (command Command) memoryPromotionList(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory promotion list", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory promotion list does not accept positional arguments")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	promotions, activation, found, err := command.Service.InspectEvolutionPromotions(ctx, memory.TargetKindContextCompactionParams, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory promotion list failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Promotions []memory.Promotion `json:"promotions"`
+			Activation *memory.Activation `json:"activation,omitempty"`
+		}{Promotions: promotions, Activation: activationPointer(activation, found)})
+		return ExitOK
+	}
+	for _, promotion := range promotions {
+		fmt.Fprintf(command.Stdout, "version %d: %s status=%s candidate=%s trigger=%s\n", promotion.Version, promotion.ID, promotion.Status, promotion.CandidateID, promotion.ConclusionTrigger)
+	}
+	if found {
+		fmt.Fprintf(command.Stdout, "active: %s (since %s)\n", activation.PromotionID, activation.ActivatedAt.Format(time.RFC3339))
+	} else {
+		fmt.Fprintln(command.Stdout, "active: baseline")
+	}
+	return ExitOK
+}
+
+// activationPointer 把查询出的激活指针折叠为可空投影；行缺失表示基线。
+func activationPointer(activation memory.Activation, found bool) *memory.Activation {
+	if !found {
+		return nil
+	}
+	return &activation
 }

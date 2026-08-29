@@ -358,3 +358,120 @@ func (service Service) FinishEvolutionEvaluation(ctx context.Context, evaluation
 	}
 	return concluded, nil
 }
+
+// MemoryPromotionOptions 描述一次人工晋升的输入：晋升行正文（含指标比较
+// 摘要与批准者算名）与必须精确匹配的审批指纹。指标摘要由调用方从字节摘
+// 要校验过的套件结果正文提取，本层只做结构透传。
+type MemoryPromotionOptions struct {
+	Promotion           memory.Promotion
+	ApprovalFingerprint string
+	Workspace           string
+	StateDir            string
+	Config              config.Config
+}
+
+// PromoteEvolutionCandidate 在工作区锁内执行晋升事务：前后双全库校验，存
+// 储层完成候选迁移、版本落账、激活指针推进与审计四件套的读回比对。审批
+// 指纹由存储层与全部冻结输入重算比对，任何漂移整体回滚。
+func (service Service) PromoteEvolutionCandidate(ctx context.Context, options MemoryPromotionOptions) (memory.Promotion, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	inspected, err := store.InspectEvolutionCandidate(ctx, options.Promotion.CandidateID)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	if inspected.Candidate.WorkspaceHash != workspaceHash {
+		return memory.Promotion{}, memory.ErrNotFound
+	}
+	promoted, err := store.PromoteCandidate(ctx, options.Promotion, options.ApprovalFingerprint, time.Now().UTC())
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return promoted, nil
+}
+
+// MemoryPromotionRollbackOptions 描述一次激活回退的输入：目标类型与封闭
+// 理由（可空）。
+type MemoryPromotionRollbackOptions struct {
+	TargetKind string
+	Reason     string
+	Workspace  string
+	StateDir   string
+	Config     config.Config
+}
+
+// RollbackEvolutionPromotion 在工作区锁内执行回退事务：把激活指针移回回退
+// 目标（首版清空指针回产品基线）并把版本置为已回退；前后双全库校验。
+func (service Service) RollbackEvolutionPromotion(ctx context.Context, options MemoryPromotionRollbackOptions) (memory.Promotion, memory.Activation, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	promotion, activation, err := store.RollbackPromotion(ctx, options.TargetKind, options.Reason, time.Now().UTC())
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return promotion, activation, nil
+}
+
+// InspectEvolutionPromotions 只读返回目标类型的版本史与当前激活指针。
+func (service Service) InspectEvolutionPromotions(ctx context.Context, targetKind, workspace, stateDir string, configuration config.Config) ([]memory.Promotion, memory.Activation, bool, error) {
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		return nil, memory.Activation{}, false, err
+	}
+	store, err := openReadOnlyMemory(stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, memory.Activation{}, false, memory.ErrNotFound
+		}
+		return nil, memory.Activation{}, false, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, stateDir, workspaceHash); err != nil {
+		return nil, memory.Activation{}, false, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	promotions, err := store.ListPromotions(targetKind)
+	if err != nil {
+		return nil, memory.Activation{}, false, err
+	}
+	activation, found, err := store.ActivationFor(targetKind)
+	if err != nil {
+		return nil, memory.Activation{}, false, err
+	}
+	return promotions, activation, found, nil
+}

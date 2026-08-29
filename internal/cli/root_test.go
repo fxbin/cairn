@@ -437,3 +437,16 @@ func TestCandidateEvaluateFailsClosedForUnknownCandidate(t *testing.T) {
 		t.Fatalf("unknown candidate must fail closed with a creation hint: exit=%d stderr=%q stdout=%q", exit, stderr.String(), stdout.String())
 	}
 }
+
+// TestCandidatePromoteUsageRequiresClosedInputs 锁定晋升动词的用法合同：
+// 缺少候选、算名、审批指纹或套件状态根即拒绝。
+func TestCandidatePromoteUsageRequiresClosedInputs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	if exit := command.Run(context.Background(), []string{"memory", "candidate", "promote", "--candidate", "c-1"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --candidate, --approver, --approval-fingerprint") {
+		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
+	}
+	if exit := command.Run(context.Background(), []string{"memory", "promotion"}); exit != ExitUsage || !strings.Contains(stderr.String(), "rollback or list") {
+		t.Fatalf("promotion dispatch exit=%d stderr=%q", exit, stderr.String())
+	}
+}
