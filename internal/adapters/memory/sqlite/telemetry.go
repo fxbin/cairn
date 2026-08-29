@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/fxbin/cairn/internal/memory"
 )
 
 // RecallTelemetryRecord 是一次召回调用的聚合事实；调用方只提供计数与策
@@ -141,7 +143,7 @@ func (store *Store) telemetryConsolidation(ctx context.Context, snapshot *Teleme
 	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM derived_candidates").Scan(&snapshot.Consolidation.DerivedTotal); err != nil {
 		return fmt.Errorf("count derived candidates: %w", err)
 	}
-	return store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM derived_audit_log WHERE action = 'rejected'").Scan(&snapshot.Consolidation.DerivedRejected)
+	return store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM derived_audit_log WHERE action = ?", memory.DerivedAuditRejected).Scan(&snapshot.Consolidation.DerivedRejected)
 }
 
 // telemetryEvolution 聚合演化侧全部分布与回退耗时。

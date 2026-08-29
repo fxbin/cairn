@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -120,9 +122,9 @@ func TestExplainMemoryRecallProjectsPrecisionAndPreservesReadOnlyState(t *testin
 		t.Fatal(err)
 	}
 	// 只读合同的现代口径：explain 的召回投影不写任何业务表；唯一允许的
-	// 变化是 recall_telemetry 聚合事实行（路线图 §8 采集点，零正文）。验
-	// 证方式：除遥测表外其余表逐表对比。
-	assertTablesUnchangedExceptRecallTelemetry(t, after, before)
+	// 变化是 recall_telemetry 聚合事实行（路线图 §8 采集点，零正文）。
+	// 逐业务表做行集前后对比，任何业务表的写入都判定为合同破坏。
+	assertTablesUnchangedExceptRecallTelemetry(t, memoryPath, before, after)
 }
 
 // TestMemoryCaptureRequiresTerminalRunAndWorkspaceLock 锁定 capture 不会绕过
@@ -381,16 +383,79 @@ func TestRecallAndDoctorRejectTamperedMemoryAudit(t *testing.T) {
 	}
 }
 
-// assertTablesUnchangedExceptRecallTelemetry 对比两个库文件的业务表内容：
-// recall_telemetry 是唯一允许新增行的表（遥测采集点），其余任何表的字节
-// 差异都判定为只读合同破坏。
-func assertTablesUnchangedExceptRecallTelemetry(t *testing.T, after, before []byte) {
+// assertTablesUnchangedExceptRecallTelemetry 对两个库快照做逐业务表行集
+// 对比：recall_telemetry 是唯一允许新增行的表（遥测采集点），其余任何业
+// 务表的行集差异都判定为只读合同破坏。空表两侧都必须为空。
+func assertTablesUnchangedExceptRecallTelemetry(t *testing.T, memoryPath string, before, after []byte) {
 	t.Helper()
+	beforePath := filepath.Join(t.TempDir(), "before.db")
+	afterPath := filepath.Join(t.TempDir(), "after.db")
+	if err := os.WriteFile(beforePath, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterPath, after, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeDB, err := sql.Open("sqlite", beforePath)
+	if err != nil {
+		t.Fatalf("open before snapshot: %v", err)
+	}
+	defer beforeDB.Close()
+	afterDB, err := sql.Open("sqlite", afterPath)
+	if err != nil {
+		t.Fatalf("open after snapshot: %v", err)
+	}
+	defer afterDB.Close()
 	for _, table := range []string{"candidates", "audit_log", "consolidations", "derived_candidates", "derived_audit_log",
 		"evolution_candidates", "evolution_audit_log", "evolution_cooldowns", "evolution_evaluations",
 		"evolution_promotion_decisions", "evolution_promotions", "evolution_activations"} {
-		if bytes.Contains(after, []byte(table)) && !bytes.Contains(before, []byte(table)) {
-			t.Fatalf("table %q appeared after explain", table)
+		beforeRows := dumpTableRows(t, beforeDB, table)
+		afterRows := dumpTableRows(t, afterDB, table)
+		if len(beforeRows) != len(afterRows) {
+			t.Fatalf("table %q row count changed: before=%d after=%d", table, len(beforeRows), len(afterRows))
+		}
+		for index := range beforeRows {
+			if beforeRows[index] != afterRows[index] {
+				t.Fatalf("table %q row %d changed: %s -> %s", table, index, beforeRows[index], afterRows[index])
+			}
 		}
 	}
+	var recallRows int
+	if err := afterDB.QueryRow("SELECT COUNT(*) FROM recall_telemetry").Scan(&recallRows); err != nil {
+		t.Fatalf("read recall telemetry: %v", err)
+	}
+	if recallRows < 1 {
+		t.Fatal("explain must record exactly its recall telemetry row")
+	}
+}
+
+// dumpTableRows 把一张表的全部行序列化为定序字符串切片。
+func dumpTableRows(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.Query("SELECT * FROM " + table)
+	if err != nil {
+		t.Fatalf("query %s: %v", table, err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	collected := make([]string, 0)
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for index := range values {
+			pointers[index] = &values[index]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			t.Fatal(err)
+		}
+		collected = append(collected, fmt.Sprint(values))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(collected)
+	return collected
 }

@@ -101,7 +101,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 		MemoryState:       "absent",
-		Telemetry:         TelemetryHealth{Status: "snapshot_available"},
+		Telemetry:         TelemetryHealth{Status: "disabled"},
 	}
 	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
@@ -167,6 +167,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.MemoryState, report.MemoryOK = memoryState, memoryOK
+	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState)}
 	report.evaluateReadiness()
 	return report, nil
 }
@@ -366,4 +367,13 @@ func nextActionFor(projection domain.RunProjection) string {
 		return "resume <run-id> --abort-run --reason <text>"
 	}
 	return ""
+}
+
+// telemetryStatusForMemory 由记忆控制面状态推导遥测投影：库存在时只读聚
+// 合快照与召回采集可用；库缺失或损坏时如实报告不可用。
+func telemetryStatusForMemory(memoryState string) string {
+	if memoryState == "ok" {
+		return "snapshot_available"
+	}
+	return "disabled"
 }

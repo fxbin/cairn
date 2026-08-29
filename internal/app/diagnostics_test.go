@@ -111,11 +111,12 @@ func TestDoctorReportOnFreshWorkspaceSupportsPreflight(t *testing.T) {
 	if report.ConfigFingerprint == "" {
 		t.Fatal("doctor report missing config fingerprint")
 	}
-	// 遥测就绪态合同：记忆侧只读聚合快照与召回采集已接线（snapshot_
-	// available）；运行级 TelemetrySink（OTLP 导出）仍未接线——新增观测
-	// 能力时必须同步更新本断言与投影。
-	if report.Telemetry.Status != "snapshot_available" {
-		t.Fatalf("telemetry status = %q, want snapshot_available", report.Telemetry.Status)
+	// 遥测就绪态合同：库存在时记忆侧只读聚合快照与召回采集可用（snapshot_
+	// available），库缺失的 preflight 分支如实报告 disabled；运行级
+	// TelemetrySink（OTLP 导出）仍未接线。新增观测能力时必须同步更新本断
+	// 言与投影。
+	if report.Telemetry.Status != "disabled" {
+		t.Fatalf("telemetry status = %q, want disabled on absent memory store", report.Telemetry.Status)
 	}
 	if report.Policy.Write != "ask" || report.Policy.Exec != "ask" {
 		t.Fatalf("policy health = %+v", report.Policy)

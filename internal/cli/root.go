@@ -2214,6 +2214,9 @@ func (command Command) memoryTelemetry(ctx context.Context, arguments []string) 
 		statuses = append(statuses, fmt.Sprintf("%s=%d", status, count))
 	}
 	sort.Strings(statuses)
+	if len(statuses) == 0 {
+		statuses = append(statuses, "none")
+	}
 	fmt.Fprintf(command.Stdout, "evolution candidates: %s\n", strings.Join(statuses, " "))
 	evaluationStatuses := make([]string, 0)
 	for status, count := range snapshot.Evolution.EvaluationsByStatus {

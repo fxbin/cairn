@@ -230,15 +230,11 @@ func openTelemetryWriter(ctx context.Context, stateDir, workspaceHash string, le
 		return err
 	}
 	defer writer.Close()
-	insufficient := 0
-	if ledger.Status == memory.LedgerStatusInsufficient {
-		insufficient = 1
-	}
 	return writer.RecordRecallTelemetry(ctx, memorysqlite.RecallTelemetryRecord{
 		OccurredAt:           time.Now().UTC(),
 		CandidatesReturned:   len(ledger.Entries),
 		Conflicts:            len(ledger.Conflicts),
-		EvidenceInsufficient: insufficient == 1,
+		EvidenceInsufficient: ledger.Status == memory.LedgerStatusInsufficient,
 		PlanStrategy:         ledger.Plan.Strategy,
 	})
 }
