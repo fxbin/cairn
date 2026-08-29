@@ -385,3 +385,47 @@ func passedCandidateFixtureAt(t *testing.T, path, evalSetFingerprint, suiteDiges
 	}
 	return store, candidate, concluded, now
 }
+
+// TestTelemetrySnapshotAggregatesLedgers 锁定聚合快照与手工账目对账：候选
+// 状态分布、评测分布、晋升计数、回退耗时序列与召回遥测聚合全部一致。
+func TestTelemetrySnapshotAggregatesLedgers(t *testing.T) {
+	store, candidate, evaluation, now := passedCandidateFixture(t, evalSetFrozen, suiteResultFrozen)
+	ctx := context.Background()
+	request := promotionRequestFor(t, candidate, evaluation, 1)
+	promoted := promoteForTest(t, store, request)
+	if _, _, err := store.ActivatePromotion(ctx, promoted.TargetKind, promoted.ID, request.CreatedAt.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RollbackPromotion(ctx, promoted.TargetKind, "human_request", request.CreatedAt.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRecallTelemetry(ctx, RecallTelemetryRecord{OccurredAt: now, CandidatesReturned: 2, Conflicts: 1, PlanStrategy: "exact"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRecallTelemetry(ctx, RecallTelemetryRecord{OccurredAt: now, CandidatesReturned: 0, EvidenceInsufficient: true, PlanStrategy: "exact"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.TelemetrySnapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snapshot.Evolution.CandidatesByStatus["promoted"] != 1 || snapshot.Evolution.CandidatesByStatus["ready"] != 0 {
+		t.Fatalf("candidate distribution drifted: %+v", snapshot.Evolution.CandidatesByStatus)
+	}
+	if snapshot.Evolution.EvaluationsByStatus["passed"] != 1 {
+		t.Fatalf("evaluation distribution drifted: %+v", snapshot.Evolution.EvaluationsByStatus)
+	}
+	if snapshot.Evolution.PromotionsRevoked != 1 || snapshot.Evolution.PromotionsActive != 0 {
+		t.Fatalf("promotion counts drifted: %+v", snapshot.Evolution)
+	}
+	if len(snapshot.Evolution.RollbackDurationsMS) != 1 || snapshot.Evolution.RollbackDurationsMS[0] != 2*60_000 {
+		t.Fatalf("rollback duration drifted: %+v", snapshot.Evolution.RollbackDurationsMS)
+	}
+	if snapshot.Recall.TotalCalls != 2 || snapshot.Recall.AverageCandidates != 1.0 ||
+		snapshot.Recall.ConflictRate != 0.5 || snapshot.Recall.EvidenceInsufficientRate != 0.5 {
+		t.Fatalf("recall aggregate drifted: %+v", snapshot.Recall)
+	}
+	if snapshot.Consolidation.ConsolidationsCommitted == 0 {
+		t.Fatal("consolidation count must reflect fixture history")
+	}
+}

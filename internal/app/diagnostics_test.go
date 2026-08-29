@@ -111,10 +111,11 @@ func TestDoctorReportOnFreshWorkspaceSupportsPreflight(t *testing.T) {
 	if report.ConfigFingerprint == "" {
 		t.Fatal("doctor report missing config fingerprint")
 	}
-	// 遥测就绪态合同：当前没有任何 TelemetrySink 或探针接线，doctor 必须
-	// 如实报告 disabled；接线方必须同步更新本断言与投影。
-	if report.Telemetry.Status != "disabled" {
-		t.Fatalf("telemetry status = %q, want disabled (nothing is wired)", report.Telemetry.Status)
+	// 遥测就绪态合同：记忆侧只读聚合快照与召回采集已接线（snapshot_
+	// available）；运行级 TelemetrySink（OTLP 导出）仍未接线——新增观测
+	// 能力时必须同步更新本断言与投影。
+	if report.Telemetry.Status != "snapshot_available" {
+		t.Fatalf("telemetry status = %q, want snapshot_available", report.Telemetry.Status)
 	}
 	if report.Policy.Write != "ask" || report.Policy.Exec != "ask" {
 		t.Fatalf("policy health = %+v", report.Policy)

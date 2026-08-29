@@ -42,6 +42,14 @@ const (
 	migrationHashEight    = "cairn-schema-v8-trusted-memory-staged-promotion"
 )
 
+// v9 迁移三件套：召回遥测采集表。只存聚合事实（命中数/冲突数/证据不足/
+// 策略与时间戳），零正文零路径零密钥。
+const (
+	migrationVersionNine = 9
+	migrationNameNine    = "009_recall_telemetry_v9"
+	migrationHashNine    = "cairn-schema-v9-trusted-memory-recall-telemetry"
+)
+
 // EvolutionInspectResult 是演化候选及其只读审计历史与评测行的投影；
 // 尚未启动评测时 Evaluation 为 nil。
 type EvolutionInspectResult struct {

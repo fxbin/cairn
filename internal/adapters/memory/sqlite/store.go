@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	migrationVersion = 8
+	migrationVersion = 9
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -907,6 +907,27 @@ func (store *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < migrationVersionNine {
+		// v9 召回遥测采集表：每次 explain 召回落一行聚合事实。零正文——
+		// 路线图可观测性合同（§8）禁止导出记忆正文、用户私有内容或凭据。
+		if _, err := transaction.ExecContext(ctx, `
+			CREATE TABLE recall_telemetry (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				occurred_at TEXT NOT NULL,
+				candidates_returned INTEGER NOT NULL,
+				conflicts INTEGER NOT NULL,
+				evidence_insufficient INTEGER NOT NULL,
+				plan_strategy TEXT NOT NULL
+			);`); err != nil {
+			return fmt.Errorf("create recall telemetry schema: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionNine, migrationNameNine, migrationHashNine); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionNine); err != nil {
+			return err
+		}
+	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		return err
 	}
@@ -1079,8 +1100,8 @@ func verifyLegacyV2Migration(ctx context.Context, source queryer, version int, e
 
 // checkMigration 读取版本链与各版本校验和；未来版本、缺失记录与篡改均失败关闭。
 // 版本链当前为 1（情节记忆）、2（巩固事务）、3（冻结支持度）、4（派生
-// 生命周期）、5（演化候选登记）、6（评测注册与审计词表收口）和 7（晋升
-// 版本账本与审计词表扩展），单向兼容：旧二进制读新库失败关闭。
+// 生命周期）、5（演化候选登记）、6（评测注册与审计词表收口）、7（晋升
+// 版本账本与审计词表扩展）、8（分阶段晋升激活）与 9（召回遥测采集），单向兼容：旧二进制读新库失败关闭。
 func checkMigration(ctx context.Context, source queryer) error {
 	var version int
 	if err := source.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -1092,7 +1113,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix, migrationVersionSeven: migrationHashSeven, migrationVersionEight: migrationHashEight}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix, migrationVersionSeven: migrationHashSeven, migrationVersionEight: migrationHashEight, migrationVersionNine: migrationHashNine}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {

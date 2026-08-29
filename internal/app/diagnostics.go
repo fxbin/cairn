@@ -73,9 +73,11 @@ type PolicyHealth struct {
 	Exec  string `json:"exec"`
 }
 
-// TelemetryHealth 如实报告遥测的真实接线状态：当前版本没有接入任何
-// TelemetrySink 或基础设施探针，状态恒为 disabled。测试锁定该诚实合同——
-// otelc 构建形态落地时必须同步更新本投影，不得提前宣称任何观测能力。
+// TelemetryHealth 如实报告遥测的真实接线状态。当前版本的遥测面 = 记忆
+// 体系只读聚合快照（cairn memory telemetry）+ 召回聚合采集点；运行级
+// TelemetrySink（OTLP 导出）仍未接线。状态取值：snapshot_available 表示
+// 只读聚合与召回采集可用；disabled 表示运行级导出未接线。测试锁定该诚
+// 实合同——新增观测能力时必须同步更新本投影，不得提前宣称。
 type TelemetryHealth struct {
 	Status string `json:"status"`
 }
@@ -99,7 +101,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 		MemoryState:       "absent",
-		Telemetry:         TelemetryHealth{Status: "disabled"},
+		Telemetry:         TelemetryHealth{Status: "snapshot_available"},
 	}
 	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)

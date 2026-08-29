@@ -213,7 +213,34 @@ func (service Service) ExplainMemoryRecall(ctx context.Context, options MemoryEx
 		}
 		entries = append(entries, entry)
 	}
-	return memory.NewEvidenceLedger(plan, entries), nil
+	ledger := memory.NewEvidenceLedger(plan, entries)
+	// 召回遥测采集（路线图 §8）：只落聚合事实（命中数/冲突数/证据不足/
+	// 策略），零正文。写失败只降级——遥测绝不影响召回结果本身。
+	if telemetryErr := openTelemetryWriter(ctx, options.StateDir, workspaceHash, ledger); telemetryErr != nil {
+		_ = telemetryErr
+	}
+	return ledger, nil
+}
+
+// openTelemetryWriter 以可写连接记录一行召回聚合遥测；召回本体走只读打
+// 开，遥测按需另开可写连接，任何失败都静默降级（遥测可丢失合同）。
+func openTelemetryWriter(ctx context.Context, stateDir, workspaceHash string, ledger memory.EvidenceLedger) error {
+	writer, err := openWritableExistingMemory(stateDir, workspaceHash)
+	if err != nil {
+		return err
+	}
+	defer writer.Close()
+	insufficient := 0
+	if ledger.Status == memory.LedgerStatusInsufficient {
+		insufficient = 1
+	}
+	return writer.RecordRecallTelemetry(ctx, memorysqlite.RecallTelemetryRecord{
+		OccurredAt:           time.Now().UTC(),
+		CandidatesReturned:   len(ledger.Entries),
+		Conflicts:            len(ledger.Conflicts),
+		EvidenceInsufficient: insufficient == 1,
+		PlanStrategy:         ledger.Plan.Strategy,
+	})
 }
 
 // memoryLedgerEntry 将已完成全库验证的 Candidate 和精确事件序列投影为临时账本条目。

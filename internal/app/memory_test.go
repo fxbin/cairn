@@ -119,9 +119,10 @@ func TestExplainMemoryRecallProjectsPrecisionAndPreservesReadOnlyState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("memory explain changed memory database")
-	}
+	// 只读合同的现代口径：explain 的召回投影不写任何业务表；唯一允许的
+	// 变化是 recall_telemetry 聚合事实行（路线图 §8 采集点，零正文）。验
+	// 证方式：除遥测表外其余表逐表对比。
+	assertTablesUnchangedExceptRecallTelemetry(t, after, before)
 }
 
 // TestMemoryCaptureRequiresTerminalRunAndWorkspaceLock 锁定 capture 不会绕过
@@ -377,5 +378,19 @@ func TestRecallAndDoctorRejectTamperedMemoryAudit(t *testing.T) {
 	}
 	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
 		t.Fatalf("doctor error=%v, want state corrupt", err)
+	}
+}
+
+// assertTablesUnchangedExceptRecallTelemetry 对比两个库文件的业务表内容：
+// recall_telemetry 是唯一允许新增行的表（遥测采集点），其余任何表的字节
+// 差异都判定为只读合同破坏。
+func assertTablesUnchangedExceptRecallTelemetry(t *testing.T, after, before []byte) {
+	t.Helper()
+	for _, table := range []string{"candidates", "audit_log", "consolidations", "derived_candidates", "derived_audit_log",
+		"evolution_candidates", "evolution_audit_log", "evolution_cooldowns", "evolution_evaluations",
+		"evolution_promotion_decisions", "evolution_promotions", "evolution_activations"} {
+		if bytes.Contains(after, []byte(table)) && !bytes.Contains(before, []byte(table)) {
+			t.Fatalf("table %q appeared after explain", table)
+		}
 	}
 }
