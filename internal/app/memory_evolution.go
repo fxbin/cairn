@@ -515,3 +515,24 @@ func (service Service) InspectEvolutionPromotions(ctx context.Context, targetKin
 	}
 	return promotions, activation, found, nil
 }
+
+// InspectMemoryTelemetry 只读返回记忆体系聚合遥测快照：跨表只读聚合，零
+// 正文零路径零密钥。库缺失映射 ErrNotFound，一致性破坏映射 ErrStateCorrupt。
+func (service Service) InspectMemoryTelemetry(ctx context.Context, workspace, stateDir string, configuration config.Config) (*memorysqlite.TelemetrySnapshot, error) {
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		return nil, err
+	}
+	store, err := openReadOnlyMemory(stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, memory.ErrNotFound
+		}
+		return nil, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, stateDir, workspaceHash); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return store.TelemetrySnapshot(ctx)
+}

@@ -540,3 +540,19 @@ func TestInitRefusesToOverwriteExistingConfig(t *testing.T) {
 		t.Fatalf("must refuse overwrite: exit=%d stderr=%q", exit, stderr.String())
 	}
 }
+
+// TestMemoryTelemetryUsageAndMissingStore 锁定遥测命令两面：用法缺省拒绝
+// 与库缺失时失败关闭（ErrNotFound→非零退出，不产出伪造快照）。
+func TestMemoryTelemetryUsageAndMissingStore(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	if exit := command.Run(context.Background(), []string{"memory", "telemetry", "extra"}); exit != ExitUsage {
+		t.Fatalf("positional args must fail usage: exit=%d", exit)
+	}
+	workspace := t.TempDir()
+	writeCapabilityConfig(t, workspace)
+	exit := command.Run(context.Background(), []string{"memory", "telemetry", "--workspace", workspace, "--state-dir", t.TempDir(), "--json"})
+	if exit == ExitOK || !strings.Contains(stderr.String(), "memory telemetry failed") {
+		t.Fatalf("missing store must fail closed: exit=%d stderr=%q", exit, stderr.String())
+	}
+}

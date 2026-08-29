@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
@@ -355,7 +356,7 @@ func (command Command) benchmarkFreezeEvalSet(ctx context.Context, arguments []s
 // consolidate、reject、candidate 八个固定动作，绝不接收或输出任务正文、模型文本、文件内容或自由文本摘要。
 func (command Command) memory(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, or promotion")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, promotion, or telemetry")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -377,8 +378,10 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 		return command.memoryCandidate(ctx, arguments[1:])
 	case "promotion":
 		return command.memoryPromotion(ctx, arguments[1:])
+	case "telemetry":
+		return command.memoryTelemetry(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, or promotion")
+		fmt.Fprintln(command.Stderr, "memory requires capture, recall, explain, inspect, revoke, consolidate, reject, candidate, promotion, or telemetry")
 		return ExitUsage
 	}
 }
@@ -1747,6 +1750,7 @@ Usage:
   cairn memory promotion activate --version <id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion rollback --reason insufficient_evidence|evaluation_failed|safety_violation|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory telemetry [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
@@ -2166,4 +2170,63 @@ func activationPointer(activation memory.Activation, found bool) *memory.Activat
 		return nil
 	}
 	return &activation
+}
+
+// memoryTelemetry 只读输出记忆体系聚合遥测快照：NDJSON 结构化投影或人可
+// 读分组行，覆盖记忆、巩固、演化与召回四段。零正文零路径零密钥。
+func (command Command) memoryTelemetry(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory telemetry", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory telemetry does not accept positional arguments")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	snapshot, err := command.Service.InspectMemoryTelemetry(ctx, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory telemetry failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Type     string                          `json:"type"`
+			Snapshot *memorysqlite.TelemetrySnapshot `json:"snapshot"`
+		}{Type: "memory_telemetry", Snapshot: snapshot})
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "memory: candidates=%d active=%d revoked=%d superseded=%d\n",
+		snapshot.Memory.CandidatesTotal, snapshot.Memory.CandidatesActive, snapshot.Memory.CandidatesRevoked, snapshot.Memory.CandidatesSuperseded)
+	fmt.Fprintf(command.Stdout, "consolidation: committed=%d derived=%d rejected=%d\n",
+		snapshot.Consolidation.ConsolidationsCommitted, snapshot.Consolidation.DerivedTotal, snapshot.Consolidation.DerivedRejected)
+	statuses := make([]string, 0)
+	for status, count := range snapshot.Evolution.CandidatesByStatus {
+		statuses = append(statuses, fmt.Sprintf("%s=%d", status, count))
+	}
+	sort.Strings(statuses)
+	fmt.Fprintf(command.Stdout, "evolution candidates: %s\n", strings.Join(statuses, " "))
+	evaluationStatuses := make([]string, 0)
+	for status, count := range snapshot.Evolution.EvaluationsByStatus {
+		evaluationStatuses = append(evaluationStatuses, fmt.Sprintf("%s=%d", status, count))
+	}
+	sort.Strings(evaluationStatuses)
+	fmt.Fprintf(command.Stdout, "evaluations: %s\n", strings.Join(evaluationStatuses, " "))
+	fmt.Fprintf(command.Stdout, "promotions: active=%d revoked=%d cooldowns_active=%d\n",
+		snapshot.Evolution.PromotionsActive, snapshot.Evolution.PromotionsRevoked, snapshot.Evolution.CooldownsActive)
+	if len(snapshot.Evolution.RollbackDurationsMS) > 0 {
+		fmt.Fprintf(command.Stdout, "rollback durations (ms): %v\n", snapshot.Evolution.RollbackDurationsMS)
+	}
+	fmt.Fprintf(command.Stdout, "recall: calls=%d avg_candidates=%.2f conflict_rate=%.2f evidence_insufficient_rate=%.2f\n",
+		snapshot.Recall.TotalCalls, snapshot.Recall.AverageCandidates, snapshot.Recall.ConflictRate, snapshot.Recall.EvidenceInsufficientRate)
+	return ExitOK
 }
