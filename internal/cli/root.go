@@ -1663,7 +1663,7 @@ Usage:
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--cairn-root <path>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
-  cairn memory candidate promote --candidate <id> --approver <label> --approval-fingerprint <sha256> --suite-state-dir <dir> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate promote --candidate <id> --approver <label> --approval-fingerprint <sha256> --suite-state-dir <dir> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion rollback [--reason insufficient_evidence|human_request] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
@@ -1813,6 +1813,10 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 	candidateID := flags.String("candidate", "", "evolution candidate ID (required)")
 	approver := flags.String("approver", "", "operator attribution label, 1..64 runes (required)")
 	approvalFingerprint := flags.String("approval-fingerprint", "", "promotion approval fingerprint sha256 (required)")
+	maxPromptTokens := flags.Int("max-prompt-tokens", 0, "variant max prompt tokens, must match the registration (required)")
+	maxSummaryBytes := flags.Int("max-summary-bytes", 0, "variant max summary bytes (required)")
+	inventoryPercent := flags.Int("inventory-percent", 0, "variant inventory budget percent (required)")
+	reservePercent := flags.Int("reserve-percent", 0, "variant threshold reserve percent (required)")
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "candidate state directory")
 	suiteStateRoot := flags.String("suite-state-dir", "", "state root hosting the evaluations directory (required)")
@@ -1821,8 +1825,21 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
 	}
-	if *candidateID == "" || *approver == "" || *approvalFingerprint == "" || *suiteStateRoot == "" || flags.NArg() != 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-fingerprint and --suite-state-dir")
+	if *candidateID == "" || *approver == "" || *approvalFingerprint == "" || *suiteStateRoot == "" || flags.NArg() != 0 ||
+		*maxPromptTokens == 0 || *maxSummaryBytes == 0 || *inventoryPercent == 0 || *reservePercent == 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-fingerprint, --suite-state-dir and all variant parameters")
+		return ExitUsage
+	}
+	variant := memory.CompactionParamsVariant{
+		SchemaVersion:           memory.EvolutionSchemaVersion,
+		MaxPromptTokens:         *maxPromptTokens,
+		MaxSummaryBytes:         *maxSummaryBytes,
+		InventoryBudgetPercent:  *inventoryPercent,
+		ThresholdReservePercent: *reservePercent,
+	}
+	variantDigest, err := memory.VariantSpecDigest(variant)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "variant parameters rejected:", err)
 		return ExitUsage
 	}
 	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
@@ -1830,7 +1847,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	promotion, err := command.preparePromotion(ctx, *candidateID, *approver, *suiteStateRoot, *workspace, *stateDir, configuration)
+	promotion, err := command.preparePromotion(ctx, *candidateID, *approver, variant, variantDigest, *suiteStateRoot, *workspace, *stateDir, configuration)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory candidate promote failed:", err)
 		return exitFor(err)
@@ -1853,7 +1870,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 
 // preparePromotion 组装晋升行正文：读取候选与评测行、按摘要校验并提取套
 // 件指标、重述变体并与登记规格摘要核对、派生身份与下一版本号。
-func (command Command) preparePromotion(ctx context.Context, candidateID, approver, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
+func (command Command) preparePromotion(ctx context.Context, candidateID, approver string, variant memory.CompactionParamsVariant, variantDigest, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
 	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: candidateID, Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if err != nil {
 		return memory.Promotion{}, err
@@ -1861,6 +1878,10 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 	candidate := inspected.Candidate
 	if candidate.Status != memory.CandidateStateEvaluatedPassed {
 		return memory.Promotion{}, fmt.Errorf("promotion requires an evaluated_passed candidate, got %s", candidate.Status)
+	}
+	// 变体重述核对：登记行只存规格摘要，晋升正文必须与登记事实逐字一致。
+	if candidate.VariantSpecSHA256 != variantDigest {
+		return memory.Promotion{}, errors.New("restated variant parameters diverge from the registered candidate specification")
 	}
 	if inspected.Evaluation == nil {
 		return memory.Promotion{}, errors.New("promotion requires the concluded evaluation row")
@@ -1889,7 +1910,7 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 	}
 	promotion := memory.Promotion{
 		SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, TargetKind: candidate.TargetKind,
-		Version: nextVersion, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
+		Version: nextVersion, Variant: variant, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
 		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,
 		Conclusion: memory.EvaluationStatusPassed, ConclusionTrigger: result.Trigger,
