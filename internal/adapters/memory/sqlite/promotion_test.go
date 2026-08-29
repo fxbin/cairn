@@ -299,7 +299,8 @@ func promoteAndActivateForTest(t *testing.T, store *Store, request memory.Promot
 }
 
 // TestMigrationEightFailsClosedOnLegacyLedger 守卫 v8 迁移的失败关闭面：v7
-// 账本非空时 Open 拒绝升级且版本停留在 7；清空账本后同一文件可完成升级。
+// 账本非空时 Open 拒绝升级且版本停留在 7；空库升级路径由全部既有测试的
+// 完整迁移链覆盖。
 func TestMigrationEightFailsClosedOnLegacyLedger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-v7-ledger.db")
 	store, seedCandidate, seedEvaluation, _ := passedCandidateFixtureAt(t, path, evalSetFrozen, suiteResultFrozen)

@@ -227,6 +227,17 @@ func (store *Store) RollbackPromotion(ctx context.Context, targetKind, reason st
 			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: restored version is not sandbox-activated", memory.ErrConflict)
 		}
 		restoredTarget = restored.RollbackTargetID
+		// 与晋升侧对称的前置断言：即将写入的 previous 也必须处于激活态，
+		// 使篡改构造在事务内失败而不是等全库检查事后拦截。
+		if restoredTarget != "" {
+			prior, priorFound, priorErr := lookupEvolutionPromotion(ctx, transaction, restoredTarget)
+			if priorErr != nil {
+				return memory.Promotion{}, memory.Activation{}, priorErr
+			}
+			if !priorFound || prior.TargetKind != targetKind || prior.Status != memory.PromotionStatusSandboxActivated {
+				return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: restored rollback target is not an active version of the same kind", memory.ErrConflict)
+			}
+		}
 		if _, err := transaction.ExecContext(ctx, "UPDATE evolution_activations SET promotion_id = ?, previous_promotion_id = ?, activated_at = ? WHERE environment = ? AND target_kind = ?",
 			restored.ID, nullString(restoredTarget), now.UTC().Format(time.RFC3339Nano), memory.SandboxEnvironment, targetKind); err != nil {
 			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("restore sandbox activation: %w", err)
