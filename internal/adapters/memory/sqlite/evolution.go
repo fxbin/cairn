@@ -35,6 +35,13 @@ const (
 	migrationHashSeven    = "cairn-schema-v7-trusted-memory-promotion-ledger"
 )
 
+// v8 将开发期 v7 直接激活账本替换为决策、版本与 sandbox 激活三阶段模型。
+const (
+	migrationVersionEight = 8
+	migrationNameEight    = "008_staged_promotion_activation_v8"
+	migrationHashEight    = "cairn-schema-v8-trusted-memory-staged-promotion"
+)
+
 // EvolutionInspectResult 是演化候选及其只读审计历史与评测行的投影；
 // 尚未启动评测时 Evaluation 为 nil。
 type EvolutionInspectResult struct {
@@ -563,7 +570,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 		}
 		created, rejected, invalidated, expired := 0, 0, 0, 0
 		evaluationStarted, evaluationPassed, evaluationFailed, evaluationInconclusive := 0, 0, 0, 0
-		promotedAudits, promotionRolledBack := 0, 0
+		promotedAudits, sandboxActivated, promotionRolledBack := 0, 0, 0
 		for _, entry := range audit {
 			if entry.CandidateID != candidate.ID || entry.OccurredAt.Before(candidate.CreatedAt) {
 				return fmt.Errorf("evolution candidate %s has an invalid audit timeline", candidate.ID)
@@ -614,6 +621,11 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 					return fmt.Errorf("evolution candidate %s has an invalid promotion audit", candidate.ID)
 				}
 				promotedAudits++
+			case memory.EvolutionAuditSandboxActivated:
+				if entry.Reason != "" {
+					return fmt.Errorf("evolution candidate %s has an invalid sandbox activation audit", candidate.ID)
+				}
+				sandboxActivated++
 			case memory.EvolutionAuditPromotionRolledBack:
 				if !memory.ValidEvolutionRejectionReason(entry.Reason) {
 					return fmt.Errorf("evolution candidate %s has an invalid rollback audit", candidate.ID)
@@ -682,14 +694,14 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			} else {
 				expectedConclusion, rowStatus = evaluationInconclusive, memory.EvaluationStatusInconclusive
 			}
-			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
+			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || promotedAudits != 0 || sandboxActivated != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("%s evolution candidate %s has invalid evaluation audit state", candidate.Status, candidate.ID)
 			}
 			if !hasEvaluation || evaluationRow.Status != rowStatus {
 				return fmt.Errorf("%s evolution candidate %s lacks a matching evaluation row", candidate.Status, candidate.ID)
 			}
 		case memory.CandidateStateRejected:
-			if evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
+			if evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || sandboxActivated != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("rejected evolution candidate %s carries evaluation or promotion audits", candidate.ID)
 			}
 			if rejected != 1 || invalidated != 0 || expired != 0 {
@@ -709,7 +721,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("rejected evolution candidate %s has an incoherent cooldown deadline", candidate.ID)
 			}
 		case memory.CandidateStateInvalidated:
-			if rejected != 0 || expired != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
+			if rejected != 0 || expired != 0 || promotedAudits != 0 || sandboxActivated != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation && evaluationRow.Status != memory.EvaluationStatusInvalid {
@@ -728,7 +740,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				}
 			}
 		case memory.CandidateStateExpired:
-			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
+			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || sandboxActivated != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("expired evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation {
@@ -740,7 +752,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				}
 			}
 		case memory.CandidateStatePromoted:
-			if evaluationStarted != 1 || evaluationPassed != 1 || terminalEvaluationAudits != 1 || promotedAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || promotionRolledBack > 1 {
+			if evaluationStarted != 1 || evaluationPassed != 1 || terminalEvaluationAudits != 1 || promotedAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || sandboxActivated > 1 || promotionRolledBack > 1 || promotionRolledBack > sandboxActivated {
 				return fmt.Errorf("promoted evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if !hasEvaluation || evaluationRow.Status != memory.EvaluationStatusPassed {
@@ -753,9 +765,12 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			if !hasPromotion {
 				return fmt.Errorf("promoted evolution candidate %s lacks a promotion ledger row", candidate.ID)
 			}
-			expectedStatus := memory.PromotionStatusActive
+			expectedStatus := memory.PromotionStatusPromotedInactive
+			if sandboxActivated == 1 {
+				expectedStatus = memory.PromotionStatusSandboxActivated
+			}
 			if promotionRolledBack == 1 {
-				expectedStatus = memory.PromotionStatusRolledBack
+				expectedStatus = memory.PromotionStatusRevoked
 			}
 			if promotionRow.Status != expectedStatus {
 				return fmt.Errorf("promoted evolution candidate %s has a promotion status that diverges from its audit history", candidate.ID)

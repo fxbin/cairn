@@ -359,9 +359,9 @@ func (service Service) FinishEvolutionEvaluation(ctx context.Context, evaluation
 	return concluded, nil
 }
 
-// MemoryPromotionOptions 描述一次人工晋升的输入：晋升行正文（含指标比较
-// 摘要与批准者算名）与必须精确匹配的审批指纹。指标摘要由调用方从字节摘
-// 要校验过的套件结果正文提取，本层只做结构透传。
+// MemoryPromotionOptions 描述一次人工晋升决策：版本先以 inactive 形式落账，
+// approval fingerprint 必须与完整冻结元组精确匹配。指标摘要由调用方从字节
+// 摘要校验过的套件结果正文提取，本层只做结构透传。
 type MemoryPromotionOptions struct {
 	Promotion           memory.Promotion
 	ApprovalFingerprint string
@@ -370,9 +370,9 @@ type MemoryPromotionOptions struct {
 	Config              config.Config
 }
 
-// PromoteEvolutionCandidate 在工作区锁内执行晋升事务：前后双全库校验，存
-// 储层完成候选迁移、版本落账、激活指针推进与审计四件套的读回比对。审批
-// 指纹由存储层与全部冻结输入重算比对，任何漂移整体回滚。
+// PromoteEvolutionCandidate 在工作区锁内写入人工决策与 inactive 版本：前后
+// 双全库校验，绝不推进 sandbox 激活指针。审批指纹由存储层与全部冻结输入
+// 重算比对，任何漂移整体回滚。
 func (service Service) PromoteEvolutionCandidate(ctx context.Context, options MemoryPromotionOptions) (memory.Promotion, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
@@ -408,8 +408,48 @@ func (service Service) PromoteEvolutionCandidate(ctx context.Context, options Me
 	return promoted, nil
 }
 
-// MemoryPromotionRollbackOptions 描述一次激活回退的输入：目标类型与封闭
-// 理由（可空）。
+// MemoryPromotionActivationOptions 描述显式 sandbox 激活的输入。环境在 M4
+// 固定为 sandbox，调用方不能传入生产或其他环境。
+type MemoryPromotionActivationOptions struct {
+	TargetKind  string
+	PromotionID string
+	Workspace   string
+	StateDir    string
+	Config      config.Config
+}
+
+// ActivateEvolutionPromotion 在工作区锁内把已批准的 inactive 版本显式激活
+// 到 sandbox；前后全库校验确保该动作不越过预定回退上下文。
+func (service Service) ActivateEvolutionPromotion(ctx context.Context, options MemoryPromotionActivationOptions) (memory.Promotion, memory.Activation, error) {
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	defer workspaceLock.Release()
+	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	defer store.Close()
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	promotion, activation, err := store.ActivatePromotion(ctx, options.TargetKind, options.PromotionID, time.Now().UTC())
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	return promotion, activation, nil
+}
+
+// MemoryPromotionRollbackOptions 描述一次 sandbox 激活回退的输入：目标类型
+// 与必须非空的封闭理由。
 type MemoryPromotionRollbackOptions struct {
 	TargetKind string
 	Reason     string
@@ -418,8 +458,8 @@ type MemoryPromotionRollbackOptions struct {
 	Config     config.Config
 }
 
-// RollbackEvolutionPromotion 在工作区锁内执行回退事务：把激活指针移回回退
-// 目标（首版清空指针回产品基线）并把版本置为已回退；前后双全库校验。
+// RollbackEvolutionPromotion 在工作区锁内执行 sandbox 回退事务：把激活指针
+// 移回决策固定的 previous version（首版回产品基线）并把版本置 revoked。
 func (service Service) RollbackEvolutionPromotion(ctx context.Context, options MemoryPromotionRollbackOptions) (memory.Promotion, memory.Activation, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {

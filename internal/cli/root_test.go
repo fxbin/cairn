@@ -439,14 +439,34 @@ func TestCandidateEvaluateFailsClosedForUnknownCandidate(t *testing.T) {
 }
 
 // TestCandidatePromoteUsageRequiresClosedInputs 锁定晋升动词的用法合同：
-// 缺少候选、算名、审批指纹或套件状态根即拒绝。
+// 缺少候选、算名、一次性审批 nonce、审批指纹或套件状态根即拒绝。
 func TestCandidatePromoteUsageRequiresClosedInputs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
-	if exit := command.Run(context.Background(), []string{"memory", "candidate", "promote", "--candidate", "c-1"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --candidate, --approver, --approval-fingerprint") {
+	if exit := command.Run(context.Background(), []string{"memory", "candidate", "promote", "--candidate", "c-1"}); exit != ExitUsage || !strings.Contains(stderr.String(), "requires --candidate, --approver, --approval-nonce, --approval-fingerprint") {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
 	}
-	if exit := command.Run(context.Background(), []string{"memory", "promotion"}); exit != ExitUsage || !strings.Contains(stderr.String(), "rollback or list") {
+	if exit := command.Run(context.Background(), []string{"memory", "promotion"}); exit != ExitUsage || !strings.Contains(stderr.String(), "activate, rollback or list") {
 		t.Fatalf("promotion dispatch exit=%d stderr=%q", exit, stderr.String())
+	}
+}
+
+// TestMedianInt64UsesLowerMiddle 锁定晋升账本对偶数样本使用下中位的合同。
+func TestMedianInt64UsesLowerMiddle(t *testing.T) {
+	if got := medianInt64([]int64{40, 10, 30, 20}); got != 20 {
+		t.Fatalf("even sample median = %d, want lower middle 20", got)
+	}
+}
+
+// TestPromotionActivateUsageRequiresVersion 锁定沙箱激活动词的用法合同：
+// 必须显式携带版本号与状态根，缺省即拒绝。
+func TestPromotionActivateUsageRequiresVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	if exit := command.Run(context.Background(), []string{"memory", "promotion", "activate"}); exit != ExitUsage {
+		t.Fatalf("activate without arguments must fail usage, exit=%d stderr=%q", exit, stderr.String())
+	}
+	if exit := command.Run(context.Background(), []string{"memory", "candidate", "promote", "--candidate", "c-1", "--approver", "fxbin", "--approval-fingerprint", "sha256:aa", "--suite-state-dir", "/tmp/x", "--max-prompt-tokens", "32000", "--max-summary-bytes", "16384", "--inventory-percent", "25", "--reserve-percent", "20", "--approval-nonce", "sha256:bb"}); exit == ExitOK {
+		t.Fatalf("promote against an unknown store must not succeed, exit=%d", exit)
 	}
 }

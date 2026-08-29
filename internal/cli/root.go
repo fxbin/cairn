@@ -1663,8 +1663,9 @@ Usage:
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--cairn-root <path>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
-  cairn memory candidate promote --candidate <id> --approver <label> --approval-fingerprint <sha256> --suite-state-dir <dir> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
-  cairn memory promotion rollback [--reason insufficient_evidence|human_request] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate promote --candidate <id> --approver <label> --approval-nonce <sha256> --approval-fingerprint <sha256> --suite-state-dir <dir> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory promotion activate --version <id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory promotion rollback --reason insufficient_evidence|evaluation_failed|safety_violation|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
@@ -1699,20 +1700,22 @@ func writeJSON(writer io.Writer, value any) {
 	_, _ = fmt.Fprintln(writer, string(encoded))
 }
 
-// memoryPromotion 分派激活版本域的固定动作：rollback 回退当前激活版本，
-// list 只读列出版本史与激活指针。不存在任何自动晋升或激活入口。
+// memoryPromotion 分派版本域的固定动作：activate 显式进入 sandbox，rollback
+// 回退当前 sandbox 版本，list 只读列出版本史与激活指针。
 func (command Command) memoryPromotion(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory promotion requires rollback or list")
+		fmt.Fprintln(command.Stderr, "memory promotion requires activate, rollback or list")
 		return ExitUsage
 	}
 	switch arguments[0] {
+	case "activate":
+		return command.memoryPromotionActivate(ctx, arguments[1:])
 	case "rollback":
 		return command.memoryPromotionRollback(ctx, arguments[1:])
 	case "list":
 		return command.memoryPromotionList(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory promotion requires rollback or list")
+		fmt.Fprintln(command.Stderr, "memory promotion requires activate, rollback or list")
 		return ExitUsage
 	}
 }
@@ -1771,7 +1774,7 @@ func medianInt64(values []int64) int64 {
 	if len(sorted) == 0 {
 		return 0
 	}
-	return sorted[len(sorted)/2]
+	return sorted[(len(sorted)-1)/2]
 }
 
 // boolToInt 把布尔折叠为整数计数。
@@ -1813,6 +1816,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 	candidateID := flags.String("candidate", "", "evolution candidate ID (required)")
 	approver := flags.String("approver", "", "operator attribution label, 1..64 runes (required)")
 	approvalFingerprint := flags.String("approval-fingerprint", "", "promotion approval fingerprint sha256 (required)")
+	approvalNonce := flags.String("approval-nonce", "", "one-time promotion approval nonce sha256 (required)")
 	maxPromptTokens := flags.Int("max-prompt-tokens", 0, "variant max prompt tokens, must match the registration (required)")
 	maxSummaryBytes := flags.Int("max-summary-bytes", 0, "variant max summary bytes (required)")
 	inventoryPercent := flags.Int("inventory-percent", 0, "variant inventory budget percent (required)")
@@ -1825,9 +1829,9 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
 	}
-	if *candidateID == "" || *approver == "" || *approvalFingerprint == "" || *suiteStateRoot == "" || flags.NArg() != 0 ||
+	if *candidateID == "" || *approver == "" || *approvalFingerprint == "" || *approvalNonce == "" || *suiteStateRoot == "" || flags.NArg() != 0 ||
 		*maxPromptTokens == 0 || *maxSummaryBytes == 0 || *inventoryPercent == 0 || *reservePercent == 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-fingerprint, --suite-state-dir and all variant parameters")
+		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-nonce, --approval-fingerprint, --suite-state-dir and all variant parameters")
 		return ExitUsage
 	}
 	variant := memory.CompactionParamsVariant{
@@ -1847,7 +1851,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	promotion, err := command.preparePromotion(ctx, *candidateID, *approver, variant, variantDigest, *suiteStateRoot, *workspace, *stateDir, configuration)
+	promotion, err := command.preparePromotion(ctx, *candidateID, *approver, *approvalNonce, variant, variantDigest, *suiteStateRoot, *workspace, *stateDir, configuration)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory candidate promote failed:", err)
 		return exitFor(err)
@@ -1864,13 +1868,13 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 		writeJSON(command.Stdout, promoted)
 		return ExitOK
 	}
-	fmt.Fprintf(command.Stdout, "promoted: %s version=%d target=%s activation=active approver=%s\n", promoted.ID, promoted.Version, promoted.TargetKind, promoted.Approver)
+	fmt.Fprintf(command.Stdout, "promotion decision recorded: %s version=%d target=%s activation=inactive approver=%s\n", promoted.ID, promoted.Version, promoted.TargetKind, promoted.Approver)
 	return ExitOK
 }
 
 // preparePromotion 组装晋升行正文：读取候选与评测行、按摘要校验并提取套
 // 件指标、重述变体并与登记规格摘要核对、派生身份与下一版本号。
-func (command Command) preparePromotion(ctx context.Context, candidateID, approver string, variant memory.CompactionParamsVariant, variantDigest, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
+func (command Command) preparePromotion(ctx context.Context, candidateID, approver, approvalNonce string, variant memory.CompactionParamsVariant, variantDigest, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
 	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: candidateID, Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if err != nil {
 		return memory.Promotion{}, err
@@ -1909,15 +1913,15 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 		rollbackTarget = activation.PromotionID
 	}
 	promotion := memory.Promotion{
-		SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, TargetKind: candidate.TargetKind,
+		SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, EvaluationID: inspected.Evaluation.ID, TargetKind: candidate.TargetKind,
 		Version: nextVersion, Variant: variant, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
 		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,
 		Conclusion: memory.EvaluationStatusPassed, ConclusionTrigger: result.Trigger,
-		Metrics: metrics, Approver: approver, RollbackTargetID: rollbackTarget,
-		Status: memory.PromotionStatusActive, CreatedAt: time.Now().UTC(),
+		Metrics: metrics, ApprovalNonce: approvalNonce, Approver: approver, RollbackTargetID: rollbackTarget,
+		Status: memory.PromotionStatusPromotedInactive, CreatedAt: time.Now().UTC(),
 	}
-	promotion.ID, err = memory.PromotionID(candidate.ID, candidate.VariantFingerprint, promotion.Version)
+	promotion.ID, err = memory.PromotionID(candidate.TargetKind, promotion.Version)
 	if err != nil {
 		return memory.Promotion{}, err
 	}
@@ -1949,8 +1953,46 @@ func resultAttemptsHint(result benchmark.SandboxSuiteResult) int {
 	return attempts
 }
 
-// memoryPromotionRollback 回退当前激活版本：指针移回回退目标或清空回产品
-// 基线，版本置为已回退并落审计。
+// memoryPromotionActivate 把已批准的 inactive 版本显式激活到 sandbox；M4
+// 不存在生产环境或自动激活入口。
+func (command Command) memoryPromotionActivate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory promotion activate", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	versionID := flags.String("version", "", "approved inactive version ID (required)")
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	stateDir := flags.String("state-dir", "", "state directory")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if *versionID == "" || flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory promotion activate requires --version and no positional arguments")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	promotion, activation, err := command.Service.ActivateEvolutionPromotion(ctx, app.MemoryPromotionActivationOptions{TargetKind: memory.TargetKindContextCompactionParams, PromotionID: *versionID, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory promotion activate failed:", err)
+		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Promotion  memory.Promotion  `json:"promotion"`
+			Activation memory.Activation `json:"activation"`
+		}{Promotion: promotion, Activation: activation})
+		return ExitOK
+	}
+	fmt.Fprintf(command.Stdout, "sandbox activated: %s version=%d previous=%s\n", promotion.ID, promotion.Version, activation.PreviousPromotionID)
+	return ExitOK
+}
+
+// memoryPromotionRollback 回退当前 sandbox 激活版本：指针移回决策固定目标或
+// 清空回产品基线，版本置 revoked 并写入带理由的审计。
 func (command Command) memoryPromotionRollback(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("memory promotion rollback", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -1962,8 +2004,8 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
 	}
-	if flags.NArg() != 0 {
-		fmt.Fprintln(command.Stderr, "memory promotion rollback does not accept positional arguments")
+	if *reason == "" || flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory promotion rollback requires --reason and no positional arguments")
 		return ExitUsage
 	}
 	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})

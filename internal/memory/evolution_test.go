@@ -188,12 +188,12 @@ func TestCandidateTransitionMatrixClosesM4LateralMoves(t *testing.T) {
 		}
 	}
 	for _, state := range []string{CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted,
-		CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed, CandidateStateInconclusive} {
+		CandidateStateEvaluatedFailed, CandidateStateInconclusive} {
 		if !IsTerminalCandidateState(state) {
 			t.Fatalf("%s must be terminal", state)
 		}
 	}
-	if IsTerminalCandidateState(CandidateStateEvaluating) || IsTerminalCandidateState(CandidateStateReady) || IsTerminalCandidateState(CandidateStateDraft) {
+	if IsTerminalCandidateState(CandidateStateEvaluatedPassed) || IsTerminalCandidateState(CandidateStateEvaluating) || IsTerminalCandidateState(CandidateStateReady) || IsTerminalCandidateState(CandidateStateDraft) {
 		t.Fatal("non-conclusion states must not be terminal")
 	}
 }

@@ -67,6 +67,8 @@ const (
 	EvolutionAuditExpired = "expired"
 	// EvolutionAuditPromoted 记录人工晋升审计动作（版本账本落账）。
 	EvolutionAuditPromoted = "promoted"
+	// EvolutionAuditSandboxActivated 记录已批准版本被显式激活到 sandbox。
+	EvolutionAuditSandboxActivated = "sandbox_activated"
 	// EvolutionAuditPromotionRolledBack 记录激活版本回退审计动作。
 	EvolutionAuditPromotionRolledBack = "promotion_rolled_back"
 	// RejectReasonInsufficientEvidence 表示来源证据不再充分。
@@ -246,13 +248,12 @@ func ValidCandidateTransition(from, to string) error {
 	}
 }
 
-// IsTerminalCandidateState 判断候选状态是否为不可再迁移的终态。三个评测
-// 结论态一经写入即固定（同一候选只允许一次评测），与手工终态和晋升态同等
-// 不可逆。
+// IsTerminalCandidateState 判断候选是否处于不可再迁移的生命周期终态。评测
+// 通过只是结论固定且仍可进入一次人工晋升，不属于生命周期终态。
 func IsTerminalCandidateState(state string) bool {
 	switch state {
 	case CandidateStateRejected, CandidateStateInvalidated, CandidateStateExpired, CandidateStatePromoted,
-		CandidateStateEvaluatedPassed, CandidateStateEvaluatedFailed, CandidateStateInconclusive:
+		CandidateStateEvaluatedFailed, CandidateStateInconclusive:
 		return true
 	default:
 		return false

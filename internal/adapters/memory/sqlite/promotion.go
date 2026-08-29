@@ -1,7 +1,5 @@
-// 本文件承载晋升版本账本的存储事务：人工晋升（evaluated_passed → promoted，
-// 版本记录落账与激活指针推进）与激活回退（指针回移与版本置 rolled_back）。
-// 两个事务都遵循写集封存 → 写入 → 多重读回比对 → 提交或整体回滚的仓库
-// 惯例；晋升额外要求审批指纹精确匹配与评测摘要逐字一致。
+// 本文件持久化人工晋升决策、不可变版本与 sandbox 激活。三者必须分阶段
+// 提交：创建决策不会改变任何激活指针；激活与回退各自拥有独立事务和审计。
 //
 // Author: fxbin
 package sqlite
@@ -17,25 +15,37 @@ import (
 	"github.com/fxbin/cairn/internal/memory"
 )
 
-// PromoteCandidate 在单一事务内执行人工晋升：候选必须处于 evaluated_passed
-// 且其评测行 status=passed、摘要与请求逐字一致；变体规格摘要必须与登记值
-// 相同（正文与指纹双核对）；版本号取该目标类型当前最大值加一并在事务内锁
-// 定写入；审批指纹必须与全部冻结输入的重算值精确匹配。写集为候选迁移、
-// 版本记录插入、激活指针 upsert 与审计四件，任一读回偏差整体回滚。
+// PromoteCandidate 在单一事务内写入人工决策和 promoted_inactive 版本。它在
+// 提交前重验来源、候选、评测、审批元组和预定回退目标，绝不写入激活指针。
 func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promotion, approvalFingerprint string, now time.Time) (memory.Promotion, error) {
-	if err := promotion.Validate(); err != nil {
-		return memory.Promotion{}, fmt.Errorf("validate promotion: %w", err)
-	}
-	if approvalFingerprint == "" {
-		return memory.Promotion{}, errors.New("promotion requires an explicit approval fingerprint")
-	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	promotion.Status = memory.PromotionStatusActive
-	promotion.RolledBackAt = time.Time{}
 	promotion.CreatedAt = stripMonotonic(now)
-
+	promotion.Status = memory.PromotionStatusPromotedInactive
+	promotion.RevokedAt = time.Time{}
+	promotion.ApprovalFingerprint = approvalFingerprint
+	if promotion.DecisionID == "" {
+		decisionID, err := memory.PromotionDecisionID(promotion)
+		if err != nil {
+			return memory.Promotion{}, err
+		}
+		promotion.DecisionID = decisionID
+	}
+	if err := promotion.Validate(); err != nil {
+		return memory.Promotion{}, fmt.Errorf("validate promotion: %w", err)
+	}
+	expectedApproval, err := memory.PromotionApprovalFingerprint(promotion)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	if approvalFingerprint != expectedApproval {
+		return memory.Promotion{}, fmt.Errorf("%w: promotion approval fingerprint mismatch; expected %s", memory.ErrConflict, expectedApproval)
+	}
+	expectedDecisionID, err := memory.PromotionDecisionID(promotion)
+	if err != nil || expectedDecisionID != promotion.DecisionID {
+		return memory.Promotion{}, fmt.Errorf("%w: promotion decision identity is not derivable", memory.ErrConflict)
+	}
 	transaction, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return memory.Promotion{}, fmt.Errorf("start promotion transaction: %w", err)
@@ -43,41 +53,22 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 	defer transaction.Rollback()
 
 	candidate, found, err := lookupEvolutionCandidate(ctx, transaction, promotion.CandidateID)
-	if err != nil {
+	if err != nil || !found {
+		return memory.Promotion{}, fmt.Errorf("load promotion candidate: %w", err)
+	}
+	if candidate.Status != memory.CandidateStateEvaluatedPassed || candidate.TargetKind != promotion.TargetKind || candidate.VariantFingerprint != promotion.VariantFingerprint || candidate.VariantSpecSHA256 != promotion.VariantSpecSHA256 || candidate.BaselineFingerprint != promotion.BaselineFingerprint {
+		return memory.Promotion{}, fmt.Errorf("%w: candidate facts do not permit promotion", memory.ErrConflict)
+	}
+	if err := requireEvolutionSourceActive(ctx, transaction, candidate, now); err != nil {
 		return memory.Promotion{}, err
 	}
-	if !found {
-		return memory.Promotion{}, memory.ErrNotFound
+	evaluation, found, err := lookupEvolutionEvaluation(ctx, transaction, promotion.EvaluationID)
+	if err != nil || !found {
+		return memory.Promotion{}, fmt.Errorf("load promotion evaluation: %w", err)
 	}
-	if candidate.Status != memory.CandidateStateEvaluatedPassed {
-		return memory.Promotion{}, fmt.Errorf("%w: evolution candidate %s must be evaluated_passed before promotion, got %s", memory.ErrConflict, candidate.ID, candidate.Status)
+	if evaluation.CandidateID != candidate.ID || evaluation.Status != memory.EvaluationStatusPassed || evaluation.EvalSetFingerprint != promotion.EvalSetFingerprint || evaluation.BaselineConfigFingerprint != promotion.BaselineFingerprint || evaluation.SuiteResultDigest != promotion.SuiteResultDigest || evaluation.ComparatorVersion != promotion.ComparatorVersion {
+		return memory.Promotion{}, fmt.Errorf("%w: evaluation facts do not permit promotion", memory.ErrConflict)
 	}
-	if candidate.TargetKind != promotion.TargetKind {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion target kind does not match the candidate", memory.ErrConflict)
-	}
-	if candidate.VariantFingerprint != promotion.VariantFingerprint || candidate.VariantSpecSHA256 != promotion.VariantSpecSHA256 {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion variant does not match the registered candidate", memory.ErrConflict)
-	}
-	if candidate.BaselineFingerprint != promotion.BaselineFingerprint {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion baseline fingerprint does not match the registered candidate", memory.ErrConflict)
-	}
-	evaluation, found, err := lookupEvolutionEvaluationForCandidate(ctx, transaction, promotion.CandidateID)
-	if err != nil {
-		return memory.Promotion{}, err
-	}
-	if !found || evaluation.Status != memory.EvaluationStatusPassed {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion requires a passed evaluation row", memory.ErrConflict)
-	}
-	if evaluation.EvalSetFingerprint != promotion.EvalSetFingerprint || evaluation.SuiteResultDigest != promotion.SuiteResultDigest {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion frozen inputs diverge from the concluded evaluation", memory.ErrConflict)
-	}
-	if evaluation.ComparatorVersion != promotion.ComparatorVersion {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion comparator version diverges from the concluded evaluation", memory.ErrConflict)
-	}
-	promotion.Conclusion = memory.EvaluationStatusPassed
-
-	// 版本号在事务内取该目标类型最大值加一：并发晋升同目标类型时，唯一
-	// 约束与读回共同保证只有一个事务成功，另一个以冲突失败关闭。
 	currentMax := 0
 	if err := transaction.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM evolution_promotions WHERE target_kind = ?", promotion.TargetKind).Scan(&currentMax); err != nil {
 		return memory.Promotion{}, fmt.Errorf("read promotion version ceiling: %w", err)
@@ -85,43 +76,25 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 	if promotion.Version != currentMax+1 {
 		return memory.Promotion{}, fmt.Errorf("%w: promotion version %d is not the next version %d", memory.ErrConflict, promotion.Version, currentMax+1)
 	}
-	derivedID, deriveErr := memory.PromotionID(promotion.CandidateID, promotion.VariantFingerprint, promotion.Version)
-	if deriveErr != nil {
-		return memory.Promotion{}, fmt.Errorf("re-derive promotion identity: %w", deriveErr)
+	expectedID, err := memory.PromotionID(promotion.TargetKind, promotion.Version)
+	if err != nil || promotion.ID != expectedID {
+		return memory.Promotion{}, fmt.Errorf("%w: promotion identity is not derivable", memory.ErrConflict)
 	}
-	if derivedID != promotion.ID {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion identity is not derivable from its frozen tuple", memory.ErrConflict)
-	}
-	expectedApproval, fpErr := memory.PromotionApprovalFingerprint(promotion.CandidateID, promotion.VariantFingerprint, promotion.EvalSetFingerprint, promotion.SuiteResultDigest, promotion.TargetKind, promotion.Version)
-	if fpErr != nil {
-		return memory.Promotion{}, fpErr
-	}
-	if approvalFingerprint != expectedApproval {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion approval fingerprint mismatch; expected %s", memory.ErrConflict, expectedApproval)
-	}
-	// 回退目标语义由激活指针唯一锚定：目标必须精确等于晋升时刻的激活版本
-	// 且其自身处于活跃态；激活为基线时目标必须为空。这保证任意版本在回退
-	// 后都能继续回退，不存在不可回退的死路版本。
-	currentActivation, activationFound, err := lookupEvolutionActivation(ctx, transaction, promotion.TargetKind)
+	activation, activationFound, err := lookupEvolutionActivation(ctx, transaction, promotion.TargetKind)
 	if err != nil {
 		return memory.Promotion{}, err
 	}
-	if activationFound {
-		if promotion.RollbackTargetID != currentActivation.PromotionID {
-			return memory.Promotion{}, fmt.Errorf("%w: promotion rollback target must be the currently active version %s", memory.ErrConflict, currentActivation.PromotionID)
-		}
-		target, found, targetErr := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
-		if targetErr != nil {
-			return memory.Promotion{}, targetErr
-		}
-		if !found || target.TargetKind != promotion.TargetKind || target.Status != memory.PromotionStatusActive {
-			return memory.Promotion{}, fmt.Errorf("%w: promotion rollback target must be an active version of the same target kind", memory.ErrConflict)
-		}
-	} else if promotion.RollbackTargetID != "" {
-		return memory.Promotion{}, fmt.Errorf("%w: promotion must carry an empty rollback target while the baseline is active", memory.ErrConflict)
+	if activationFound && promotion.RollbackTargetID != activation.PromotionID {
+		return memory.Promotion{}, fmt.Errorf("%w: decision rollback target must equal the current sandbox version", memory.ErrConflict)
 	}
-	if err := transitionEvolutionCandidate(ctx, transaction, candidate.ID, memory.CandidateStatePromoted); err != nil {
-		return memory.Promotion{}, err
+	if !activationFound && promotion.RollbackTargetID != "" {
+		return memory.Promotion{}, fmt.Errorf("%w: decision rollback target must be empty while sandbox uses the baseline", memory.ErrConflict)
+	}
+	if promotion.RollbackTargetID != "" {
+		target, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
+		if err != nil || !found || target.TargetKind != promotion.TargetKind || target.Status != memory.PromotionStatusSandboxActivated {
+			return memory.Promotion{}, fmt.Errorf("%w: decision rollback target is not an activated version", memory.ErrConflict)
+		}
 	}
 	variantJSON, err := json.Marshal(promotion.Variant)
 	if err != nil {
@@ -131,300 +104,259 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 	if err != nil {
 		return memory.Promotion{}, fmt.Errorf("encode promotion metrics: %w", err)
 	}
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_promotion_decisions(
+		decision_id, schema_version, candidate_id, evaluation_id, target_kind,
+		variant_fingerprint, variant_spec_sha256, baseline_fingerprint, eval_set_fingerprint,
+		suite_result_digest, comparator_version, conclusion_trigger, metrics_json,
+		rollback_target_promotion_id, approval_fingerprint, approval_nonce, approver, decided_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		promotion.DecisionID, promotion.SchemaVersion, promotion.CandidateID, promotion.EvaluationID, promotion.TargetKind,
+		promotion.VariantFingerprint, promotion.VariantSpecSHA256, promotion.BaselineFingerprint, promotion.EvalSetFingerprint,
+		promotion.SuiteResultDigest, promotion.ComparatorVersion, promotion.ConclusionTrigger, string(metricsJSON),
+		nullString(promotion.RollbackTargetID), promotion.ApprovalFingerprint, promotion.ApprovalNonce, promotion.Approver, promotion.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		return memory.Promotion{}, fmt.Errorf("insert promotion decision: %w", err)
+	}
 	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_promotions(
-		promotion_id, schema_version, candidate_id, target_kind, version,
-		variant_json, variant_fingerprint, variant_spec_sha256, baseline_fingerprint,
-		eval_set_fingerprint, suite_result_digest, comparator_version,
-		conclusion, conclusion_trigger, metrics_json, approver,
-		rollback_target_promotion_id, status, created_at, rolled_back_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-		promotion.ID, promotion.SchemaVersion, promotion.CandidateID, promotion.TargetKind, promotion.Version,
-		string(variantJSON), promotion.VariantFingerprint, promotion.VariantSpecSHA256, promotion.BaselineFingerprint,
-		promotion.EvalSetFingerprint, promotion.SuiteResultDigest, promotion.ComparatorVersion,
-		promotion.Conclusion, promotion.ConclusionTrigger, string(metricsJSON), promotion.Approver,
-		nullString(promotion.RollbackTargetID), promotion.Status, promotion.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-		return memory.Promotion{}, fmt.Errorf("insert promotion row: %w", err)
+		promotion_id, schema_version, decision_id, target_kind, version, variant_json, status, created_at, revoked_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`, promotion.ID, promotion.SchemaVersion, promotion.DecisionID,
+		promotion.TargetKind, promotion.Version, string(variantJSON), promotion.Status, promotion.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		return memory.Promotion{}, fmt.Errorf("insert evolution version: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_activations(target_kind, promotion_id, activated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(target_kind) DO UPDATE SET promotion_id = excluded.promotion_id, activated_at = excluded.activated_at`,
-		promotion.TargetKind, promotion.ID, promotion.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-		return memory.Promotion{}, fmt.Errorf("advance activation pointer: %w", err)
-	}
-	if err := insertEvolutionAudit(ctx, transaction, promotion.CandidateID, memory.EvolutionAuditPromoted, "", promotion.CreatedAt.UTC()); err != nil {
+	if err := transitionEvolutionCandidate(ctx, transaction, candidate.ID, memory.CandidateStatePromoted); err != nil {
 		return memory.Promotion{}, err
 	}
-	readBack, err := finishPromotionReadBack(ctx, transaction, promotion, candidate, evaluation)
-	if err != nil {
+	if err := insertEvolutionAudit(ctx, transaction, candidate.ID, memory.EvolutionAuditPromoted, "", promotion.CreatedAt); err != nil {
 		return memory.Promotion{}, err
+	}
+	result, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.ID)
+	if err != nil || !found || !evolutionPromotionRowsMatch(result, promotion) {
+		return memory.Promotion{}, errors.New("promotion decision/version read-back verification failed")
 	}
 	if err := transaction.Commit(); err != nil {
-		return memory.Promotion{}, fmt.Errorf("commit promotion: %w", err)
+		return memory.Promotion{}, fmt.Errorf("commit promotion decision: %w", err)
 	}
-	return readBack, nil
+	return result, nil
 }
 
-// finishPromotionReadBack 对晋升写集做三重读回：候选终态、版本行全字段、
-// 激活指针与审计全史精确序列。
-func finishPromotionReadBack(ctx context.Context, transaction *sql.Tx, expected memory.Promotion, before memory.EvolutionCandidate, evaluation memory.Evaluation) (memory.Promotion, error) {
-	candidate, found, err := lookupEvolutionCandidate(ctx, transaction, expected.CandidateID)
-	if err != nil || !found {
-		return memory.Promotion{}, fmt.Errorf("read back promoted candidate: %w", err)
-	}
-	expectedCandidate := before
-	expectedCandidate.Status = memory.CandidateStatePromoted
-	if !evolutionCandidateReadBackMatches(candidate, expectedCandidate) {
-		return memory.Promotion{}, fmt.Errorf("promotion candidate read-back verification failed for %s", expected.CandidateID)
-	}
-	row, found, err := lookupEvolutionPromotion(ctx, transaction, expected.ID)
-	if err != nil || !found {
-		return memory.Promotion{}, fmt.Errorf("read back promotion row: %w", err)
-	}
-	if !evolutionPromotionRowsMatch(row, expected) {
-		return memory.Promotion{}, fmt.Errorf("promotion row read-back verification failed for %s", expected.ID)
-	}
-	activation, found, err := lookupEvolutionActivation(ctx, transaction, expected.TargetKind)
-	if err != nil || !found || activation.PromotionID != expected.ID {
-		return memory.Promotion{}, fmt.Errorf("activation pointer read-back verification failed for %s", expected.TargetKind)
-	}
-	audit, err := evolutionAuditFor(ctx, transaction, expected.CandidateID)
-	if err != nil {
-		return memory.Promotion{}, err
-	}
-	if err := verifyPromotionAuditSequence(audit, before.CreatedAt, evaluation, expected); err != nil {
-		return memory.Promotion{}, err
-	}
-	return row, nil
-}
-
-// verifyPromotionAuditSequence 校验晋升后的审计全史：created、唯一一次
-// evaluation_started、结论 passed 与本次 promoted 恰好按各自真实时刻出现。
-func verifyPromotionAuditSequence(audit []memory.EvolutionAuditEntry, createdAt time.Time, evaluation memory.Evaluation, expected memory.Promotion) error {
-	desired := []memory.EvolutionAuditEntry{
-		{CandidateID: expected.CandidateID, Action: memory.EvolutionAuditCreated, OccurredAt: createdAt},
-		{CandidateID: expected.CandidateID, Action: memory.EvolutionAuditEvaluationStarted, OccurredAt: evaluation.StartedAt},
-		{CandidateID: expected.CandidateID, Action: memory.EvolutionAuditEvaluatedPassed, OccurredAt: evaluation.FinishedAt},
-		{CandidateID: expected.CandidateID, Action: memory.EvolutionAuditPromoted, OccurredAt: expected.CreatedAt},
-	}
-	if len(audit) != len(desired) || !evolutionAuditMatches(audit, desired) {
-		return fmt.Errorf("promotion audit read-back verification failed for %s", expected.CandidateID)
-	}
-	return nil
-}
-
-// RollbackPromotion 在单一事务内回退当前激活版本：只接受激活指针所指的
-// active 版本；指针移回其回退目标（无目标则删除指针行=回产品基线），版本
-// 置 rolled_back 并落审计。回退不改变版本记录正文，也不可对历史版本重复
-// 执行。
-func (store *Store) RollbackPromotion(ctx context.Context, targetKind, reason string, now time.Time) (memory.Promotion, memory.Activation, error) {
-	if targetKind != memory.TargetKindContextCompactionParams {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("unsupported rollback target kind %q", targetKind)
-	}
-	if reason != "" && !memory.ValidEvolutionRejectionReason(reason) {
-		return memory.Promotion{}, memory.Activation{}, errors.New("rollback reason must come from the closed lexicon")
+// ActivatePromotion 把已批准的 inactive 版本显式激活到唯一 sandbox 环境。预定
+// rollback target 必须仍等于当前指针，避免延期激活时绕过审批上下文。
+func (store *Store) ActivatePromotion(ctx context.Context, targetKind, promotionID string, now time.Time) (memory.Promotion, memory.Activation, error) {
+	if targetKind != memory.TargetKindContextCompactionParams || promotionID == "" {
+		return memory.Promotion{}, memory.Activation{}, errors.New("sandbox activation requires target kind and version id")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	now = stripMonotonic(now)
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("start sandbox activation transaction: %w", err)
+	}
+	defer transaction.Rollback()
+	promotion, found, err := lookupEvolutionPromotion(ctx, transaction, promotionID)
+	if err != nil || !found || promotion.TargetKind != targetKind || promotion.Status != memory.PromotionStatusPromotedInactive {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: version is not eligible for sandbox activation", memory.ErrConflict)
+	}
+	current, currentFound, err := lookupEvolutionActivation(ctx, transaction, targetKind)
+	if err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	if currentFound && promotion.RollbackTargetID != current.PromotionID {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation context diverges from the approved rollback target", memory.ErrConflict)
+	}
+	if !currentFound && promotion.RollbackTargetID != "" {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation requires baseline but decision carries a rollback target", memory.ErrConflict)
+	}
+	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_promotions SET status = ? WHERE promotion_id = ?", memory.PromotionStatusSandboxActivated, promotion.ID); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("mark sandbox activation: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO evolution_activations(environment, target_kind, promotion_id, previous_promotion_id, activated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(environment, target_kind) DO UPDATE SET promotion_id = excluded.promotion_id, previous_promotion_id = excluded.previous_promotion_id, activated_at = excluded.activated_at`,
+		memory.SandboxEnvironment, targetKind, promotion.ID, nullString(promotion.RollbackTargetID), now.UTC().Format(time.RFC3339Nano)); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("advance sandbox activation: %w", err)
+	}
+	if err := insertEvolutionAudit(ctx, transaction, promotion.CandidateID, memory.EvolutionAuditSandboxActivated, "", now); err != nil {
+		return memory.Promotion{}, memory.Activation{}, err
+	}
+	promotion.Status = memory.PromotionStatusSandboxActivated
+	activation, found, err := lookupEvolutionActivation(ctx, transaction, targetKind)
+	if err != nil || !found || activation.PromotionID != promotion.ID || activation.PreviousPromotionID != promotion.RollbackTargetID {
+		return memory.Promotion{}, memory.Activation{}, errors.New("sandbox activation read-back verification failed")
+	}
+	if err := transaction.Commit(); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("commit sandbox activation: %w", err)
+	}
+	return promotion, activation, nil
+}
+
+// RollbackPromotion 只回退当前 sandbox 激活版本，理由必须非空且属于封闭词表。
+// 它恢复决策固定的 previous version 或产品基线，并将被回退版本永久置 revoked。
+func (store *Store) RollbackPromotion(ctx context.Context, targetKind, reason string, now time.Time) (memory.Promotion, memory.Activation, error) {
+	if targetKind != memory.TargetKindContextCompactionParams || reason == "" || !memory.ValidEvolutionRejectionReason(reason) {
+		return memory.Promotion{}, memory.Activation{}, errors.New("rollback requires a non-empty reason from the closed lexicon")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
 	transaction, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("start rollback transaction: %w", err)
 	}
 	defer transaction.Rollback()
-
 	activation, found, err := lookupEvolutionActivation(ctx, transaction, targetKind)
-	if err != nil {
-		return memory.Promotion{}, memory.Activation{}, err
-	}
-	if !found {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: no active promotion to roll back for %s", memory.ErrConflict, targetKind)
+	if err != nil || !found {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: no sandbox activation to roll back", memory.ErrConflict)
 	}
 	promotion, found, err := lookupEvolutionPromotion(ctx, transaction, activation.PromotionID)
-	if err != nil || !found {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("load active promotion %s: %w", activation.PromotionID, err)
+	if err != nil || !found || promotion.Status != memory.PromotionStatusSandboxActivated {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation points at a non-activated version", memory.ErrConflict)
 	}
-	if promotion.Status != memory.PromotionStatusActive {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: promotion %s is not active", memory.ErrConflict, promotion.ID)
+	if activation.PreviousPromotionID != promotion.RollbackTargetID {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation previous version diverges from the approved decision", memory.ErrConflict)
 	}
-	if promotion.RollbackTargetID == "" {
-		if _, err := transaction.ExecContext(ctx, "DELETE FROM evolution_activations WHERE target_kind = ?", targetKind); err != nil {
-			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("reset activation to baseline: %w", err)
+	// 被恢复版本必须仍处于 sandbox 激活态，且恢复后的指针延续该版本决策
+	// 固定的回退目标作为 previous——否则链式回退会丢失审批上下文，使全库
+	// 检查失配并形成不可回退的死路版本。
+	restoredTarget := ""
+	if activation.PreviousPromotionID != "" {
+		restored, found, err := lookupEvolutionPromotion(ctx, transaction, activation.PreviousPromotionID)
+		if err != nil {
+			return memory.Promotion{}, memory.Activation{}, err
 		}
-	} else {
-		target, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
-		if err != nil || !found || target.Status != memory.PromotionStatusActive {
-			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: rollback target %s must be an active promotion", memory.ErrConflict, promotion.RollbackTargetID)
+		if !found || restored.Status != memory.PromotionStatusSandboxActivated {
+			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: restored version is not sandbox-activated", memory.ErrConflict)
 		}
-		if _, err := transaction.ExecContext(ctx, "UPDATE evolution_activations SET promotion_id = ?, activated_at = ? WHERE target_kind = ?",
-			target.ID, now.UTC().Format(time.RFC3339Nano), targetKind); err != nil {
-			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("move activation pointer to rollback target: %w", err)
+		restoredTarget = restored.RollbackTargetID
+		if _, err := transaction.ExecContext(ctx, "UPDATE evolution_activations SET promotion_id = ?, previous_promotion_id = ?, activated_at = ? WHERE environment = ? AND target_kind = ?",
+			restored.ID, nullString(restoredTarget), now.UTC().Format(time.RFC3339Nano), memory.SandboxEnvironment, targetKind); err != nil {
+			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("restore sandbox activation: %w", err)
 		}
+	} else if _, err := transaction.ExecContext(ctx, "DELETE FROM evolution_activations WHERE environment = ? AND target_kind = ?", memory.SandboxEnvironment, targetKind); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("reset sandbox activation to baseline: %w", err)
 	}
-	promotion.Status = memory.PromotionStatusRolledBack
-	promotion.RolledBackAt = now
-	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_promotions SET status = ?, rolled_back_at = ? WHERE promotion_id = ?",
-		promotion.Status, now.UTC().Format(time.RFC3339Nano), promotion.ID); err != nil {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("mark promotion rolled back: %w", err)
+	promotion.Status = memory.PromotionStatusRevoked
+	promotion.RevokedAt = stripMonotonic(now)
+	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_promotions SET status = ?, revoked_at = ? WHERE promotion_id = ?", promotion.Status, promotion.RevokedAt.UTC().Format(time.RFC3339Nano), promotion.ID); err != nil {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("revoke rolled-back version: %w", err)
 	}
-	if err := insertEvolutionAudit(ctx, transaction, promotion.CandidateID, memory.EvolutionAuditPromotionRolledBack, reason, now.UTC()); err != nil {
+	if err := insertEvolutionAudit(ctx, transaction, promotion.CandidateID, memory.EvolutionAuditPromotionRolledBack, reason, promotion.RevokedAt); err != nil {
 		return memory.Promotion{}, memory.Activation{}, err
 	}
-	// 读回：版本行状态、指针落点与审计追加各就各位。
-	row, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.ID)
-	if err != nil || !found || !evolutionPromotionRowsMatch(row, promotion) {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("rollback promotion read-back verification failed for %s", promotion.ID)
+	rolled, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.ID)
+	if err != nil || !found || !evolutionPromotionRowsMatch(rolled, promotion) {
+		return memory.Promotion{}, memory.Activation{}, errors.New("rollback version read-back verification failed")
 	}
-	var rolledActivation memory.Activation
-	var rolledFound bool
-	if promotion.RollbackTargetID == "" {
-		rolledActivation = memory.Activation{TargetKind: targetKind}
-	} else {
-		rolledActivation, rolledFound, err = lookupEvolutionActivation(ctx, transaction, targetKind)
-		if err != nil || !rolledFound || rolledActivation.PromotionID != promotion.RollbackTargetID {
-			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("rollback activation read-back verification failed for %s", targetKind)
+	resultActivation := memory.Activation{Environment: memory.SandboxEnvironment, TargetKind: targetKind}
+	if activation.PreviousPromotionID != "" {
+		resultActivation, found, err = lookupEvolutionActivation(ctx, transaction, targetKind)
+		if err != nil || !found || resultActivation.PromotionID != activation.PreviousPromotionID || resultActivation.PreviousPromotionID != restoredTarget {
+			return memory.Promotion{}, memory.Activation{}, errors.New("rollback activation read-back verification failed")
 		}
-	}
-	audit, err := evolutionAuditFor(ctx, transaction, promotion.CandidateID)
-	if err != nil {
-		return memory.Promotion{}, memory.Activation{}, err
-	}
-	rollbackEntry := memory.EvolutionAuditEntry{CandidateID: promotion.CandidateID, Action: memory.EvolutionAuditPromotionRolledBack, Reason: reason, OccurredAt: now}
-	if len(audit) == 0 || !evolutionAuditEntryMatches(audit[len(audit)-1], rollbackEntry) {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("rollback audit read-back verification failed for %s", promotion.CandidateID)
 	}
 	if err := transaction.Commit(); err != nil {
-		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("commit rollback: %w", err)
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("commit sandbox rollback: %w", err)
 	}
-	return row, rolledActivation, nil
+	return rolled, resultActivation, nil
 }
 
-// ListPromotions 只读返回指定目标类型的全部版本记录，按版本号升序。
+// ListPromotions 只读列出某一目标类型的完整版本投影。
 func (store *Store) ListPromotions(targetKind string) ([]memory.Promotion, error) {
 	rows, err := store.db.QueryContext(context.Background(), "SELECT promotion_id FROM evolution_promotions WHERE target_kind = ? ORDER BY version ASC", targetKind)
 	if err != nil {
 		return nil, fmt.Errorf("query promotions: %w", err)
 	}
-	defer rows.Close()
 	ids := make([]string, 0)
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	promotions := make([]memory.Promotion, 0, len(ids))
 	for _, id := range ids {
 		promotion, found, err := lookupEvolutionPromotion(context.Background(), store.db, id)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, fmt.Errorf("promotion %s vanished during listing", id)
+		if err != nil || !found {
+			return nil, fmt.Errorf("read listed promotion: %w", err)
 		}
 		promotions = append(promotions, promotion)
 	}
 	return promotions, nil
 }
 
-// ActivationFor 只读返回目标类型的当前激活指针；无行时第二返回值为假，
-// 表示激活产品基线。
+// ActivationFor 只读返回当前 sandbox 激活指针；无行表示产品基线。
 func (store *Store) ActivationFor(targetKind string) (memory.Activation, bool, error) {
 	return lookupEvolutionActivation(context.Background(), store.db, targetKind)
 }
 
-// lookupEvolutionPromotion 按身份读取版本行并复核其结构合同。
+// lookupEvolutionPromotion 联结版本与不可变决策，构造唯一的只读展示投影。
 func lookupEvolutionPromotion(ctx context.Context, source queryer, promotionID string) (memory.Promotion, bool, error) {
-	const query = `SELECT promotion_id, schema_version, candidate_id, target_kind, version,
-		variant_json, variant_fingerprint, variant_spec_sha256, baseline_fingerprint,
-		eval_set_fingerprint, suite_result_digest, comparator_version,
-		conclusion, conclusion_trigger, metrics_json, approver,
-		rollback_target_promotion_id, status, created_at, rolled_back_at
-		FROM evolution_promotions WHERE promotion_id = ?`
-	row := memory.Promotion{}
-	var variantJSON, metricsJSON string
-	var rollbackTarget, rolledBackAt, createdAt sql.NullString
-	err := source.QueryRowContext(ctx, query, promotionID).Scan(
-		&row.ID, &row.SchemaVersion, &row.CandidateID, &row.TargetKind, &row.Version,
-		&variantJSON, &row.VariantFingerprint, &row.VariantSpecSHA256, &row.BaselineFingerprint,
-		&row.EvalSetFingerprint, &row.SuiteResultDigest, &row.ComparatorVersion,
-		&row.Conclusion, &row.ConclusionTrigger, &metricsJSON, &row.Approver,
-		&rollbackTarget, &row.Status, &createdAt, &rolledBackAt)
+	const query = `SELECT p.promotion_id, p.schema_version, p.decision_id, p.target_kind, p.version, p.variant_json, p.status, p.created_at, p.revoked_at,
+		d.candidate_id, d.evaluation_id, d.variant_fingerprint, d.variant_spec_sha256, d.baseline_fingerprint, d.eval_set_fingerprint, d.suite_result_digest, d.comparator_version, d.conclusion_trigger, d.metrics_json, d.rollback_target_promotion_id, d.approval_fingerprint, d.approval_nonce, d.approver
+		FROM evolution_promotions p JOIN evolution_promotion_decisions d ON d.decision_id = p.decision_id WHERE p.promotion_id = ?`
+	var promotion memory.Promotion
+	var variantJSON, metricsJSON, createdAt string
+	var rollbackTarget, revokedAt sql.NullString
+	err := source.QueryRowContext(ctx, query, promotionID).Scan(&promotion.ID, &promotion.SchemaVersion, &promotion.DecisionID, &promotion.TargetKind, &promotion.Version, &variantJSON, &promotion.Status, &createdAt, &revokedAt,
+		&promotion.CandidateID, &promotion.EvaluationID, &promotion.VariantFingerprint, &promotion.VariantSpecSHA256, &promotion.BaselineFingerprint, &promotion.EvalSetFingerprint, &promotion.SuiteResultDigest, &promotion.ComparatorVersion, &promotion.ConclusionTrigger, &metricsJSON, &rollbackTarget, &promotion.ApprovalFingerprint, &promotion.ApprovalNonce, &promotion.Approver)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Promotion{}, false, nil
 	}
 	if err != nil {
 		return memory.Promotion{}, false, fmt.Errorf("query promotion: %w", err)
 	}
-	if err := json.Unmarshal([]byte(variantJSON), &row.Variant); err != nil {
-		return memory.Promotion{}, false, fmt.Errorf("decode promotion variant: %w", err)
+	if err := json.Unmarshal([]byte(variantJSON), &promotion.Variant); err != nil || json.Unmarshal([]byte(metricsJSON), &promotion.Metrics) != nil {
+		return memory.Promotion{}, false, errors.New("decode stored promotion projection")
 	}
-	if err := json.Unmarshal([]byte(metricsJSON), &row.Metrics); err != nil {
-		return memory.Promotion{}, false, fmt.Errorf("decode promotion metrics: %w", err)
-	}
-	created, err := time.Parse(time.RFC3339Nano, createdAt.String)
+	parsed, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return memory.Promotion{}, false, fmt.Errorf("parse promotion created_at: %w", err)
 	}
-	row.CreatedAt = created
-	row.RollbackTargetID = rollbackTarget.String
-	if rolledBackAt.Valid {
-		rolled, err := time.Parse(time.RFC3339Nano, rolledBackAt.String)
+	promotion.CreatedAt, promotion.Conclusion, promotion.RollbackTargetID = parsed, memory.EvaluationStatusPassed, rollbackTarget.String
+	if revokedAt.Valid {
+		promotion.RevokedAt, err = time.Parse(time.RFC3339Nano, revokedAt.String)
 		if err != nil {
-			return memory.Promotion{}, false, fmt.Errorf("parse promotion rolled_back_at: %w", err)
+			return memory.Promotion{}, false, fmt.Errorf("parse promotion revoked_at: %w", err)
 		}
-		row.RolledBackAt = rolled
 	}
-	if err := row.Validate(); err != nil {
+	if err := promotion.Validate(); err != nil {
 		return memory.Promotion{}, false, fmt.Errorf("stored promotion violates its contract: %w", err)
 	}
-	return row, true, nil
+	return promotion, true, nil
 }
 
-// lookupEvolutionActivation 读取目标类型的激活指针；无行表示产品基线。
+// lookupEvolutionActivation 读取唯一 sandbox 指针；行缺失表示产品基线。
 func lookupEvolutionActivation(ctx context.Context, source queryer, targetKind string) (memory.Activation, bool, error) {
-	const query = `SELECT target_kind, promotion_id, activated_at FROM evolution_activations WHERE target_kind = ?`
+	const query = `SELECT environment, target_kind, promotion_id, previous_promotion_id, activated_at FROM evolution_activations WHERE environment = ? AND target_kind = ?`
 	var activation memory.Activation
+	var previous sql.NullString
 	var activatedAt string
-	err := source.QueryRowContext(ctx, query, targetKind).Scan(&activation.TargetKind, &activation.PromotionID, &activatedAt)
+	err := source.QueryRowContext(ctx, query, memory.SandboxEnvironment, targetKind).Scan(&activation.Environment, &activation.TargetKind, &activation.PromotionID, &previous, &activatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Activation{}, false, nil
 	}
 	if err != nil {
-		return memory.Activation{}, false, fmt.Errorf("query activation: %w", err)
+		return memory.Activation{}, false, fmt.Errorf("query sandbox activation: %w", err)
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, activatedAt)
 	if err != nil {
 		return memory.Activation{}, false, fmt.Errorf("parse activation time: %w", err)
 	}
-	activation.ActivatedAt = parsed
+	activation.PreviousPromotionID, activation.ActivatedAt = previous.String, parsed
 	return activation, true, nil
 }
 
-// evolutionPromotionRowsMatch 比较版本行的全部闭合字段；时间用语义相等。
+// evolutionPromotionRowsMatch 比较版本投影的全部闭合字段。
 func evolutionPromotionRowsMatch(actual, expected memory.Promotion) bool {
-	return actual.ID == expected.ID && actual.SchemaVersion == expected.SchemaVersion &&
-		actual.CandidateID == expected.CandidateID && actual.TargetKind == expected.TargetKind &&
-		actual.Version == expected.Version && actual.Variant == expected.Variant &&
-		actual.VariantFingerprint == expected.VariantFingerprint && actual.VariantSpecSHA256 == expected.VariantSpecSHA256 &&
-		actual.BaselineFingerprint == expected.BaselineFingerprint &&
-		actual.EvalSetFingerprint == expected.EvalSetFingerprint &&
-		actual.SuiteResultDigest == expected.SuiteResultDigest &&
-		actual.ComparatorVersion == expected.ComparatorVersion &&
-		actual.Conclusion == expected.Conclusion && actual.ConclusionTrigger == expected.ConclusionTrigger &&
-		actual.Metrics == expected.Metrics && actual.Approver == expected.Approver &&
-		actual.RollbackTargetID == expected.RollbackTargetID && actual.Status == expected.Status &&
-		actual.CreatedAt.Equal(expected.CreatedAt) && actual.RolledBackAt.Equal(expected.RolledBackAt)
-}
-
-// evolutionAuditEntryMatches 比较单条审计的闭合字段（含可空理由）。
-func evolutionAuditEntryMatches(actual, expected memory.EvolutionAuditEntry) bool {
-	return actual.CandidateID == expected.CandidateID && actual.Action == expected.Action &&
-		actual.Reason == expected.Reason && actual.OccurredAt.Equal(expected.OccurredAt)
+	return actual.ID == expected.ID && actual.SchemaVersion == expected.SchemaVersion && actual.DecisionID == expected.DecisionID && actual.CandidateID == expected.CandidateID && actual.EvaluationID == expected.EvaluationID && actual.TargetKind == expected.TargetKind && actual.Version == expected.Version && actual.Variant == expected.Variant && actual.VariantFingerprint == expected.VariantFingerprint && actual.VariantSpecSHA256 == expected.VariantSpecSHA256 && actual.BaselineFingerprint == expected.BaselineFingerprint && actual.EvalSetFingerprint == expected.EvalSetFingerprint && actual.SuiteResultDigest == expected.SuiteResultDigest && actual.ComparatorVersion == expected.ComparatorVersion && actual.Conclusion == expected.Conclusion && actual.ConclusionTrigger == expected.ConclusionTrigger && actual.Metrics == expected.Metrics && actual.RollbackTargetID == expected.RollbackTargetID && actual.ApprovalFingerprint == expected.ApprovalFingerprint && actual.ApprovalNonce == expected.ApprovalNonce && actual.Approver == expected.Approver && actual.Status == expected.Status && actual.CreatedAt.Equal(expected.CreatedAt) && actual.RevokedAt.Equal(expected.RevokedAt)
 }
 
 // nullString 把空串折叠为 SQL NULL，供可空外键列使用。
@@ -432,30 +364,28 @@ func nullString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: value != ""}
 }
 
-// lookupEvolutionPromotionForCandidate 按候选唯一键读取其版本记录。
+// lookupEvolutionPromotionForCandidate 按决策唯一候选键读取版本投影。
 func lookupEvolutionPromotionForCandidate(ctx context.Context, source queryer, candidateID string) (memory.Promotion, bool, error) {
-	const query = `SELECT promotion_id FROM evolution_promotions WHERE candidate_id = ?`
-	var promotionID string
-	err := source.QueryRowContext(ctx, query, candidateID).Scan(&promotionID)
+	var id string
+	err := source.QueryRowContext(ctx, "SELECT p.promotion_id FROM evolution_promotions p JOIN evolution_promotion_decisions d ON d.decision_id = p.decision_id WHERE d.candidate_id = ?", candidateID).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Promotion{}, false, nil
 	}
 	if err != nil {
 		return memory.Promotion{}, false, fmt.Errorf("query promotion by candidate: %w", err)
 	}
-	return lookupEvolutionPromotion(ctx, source, promotionID)
+	return lookupEvolutionPromotion(ctx, source, id)
 }
 
-// checkPromotionInvariants 验证版本账本与激活指针的全库一致性：身份可重
-// 派生、版本连续无洞、回退目标合法、指针只指向同类型活跃版本、被回退的
-// 版本不再被指向。它在 Check 的演化不变量之后执行。
+// checkPromotionInvariants 验证决策、版本、候选、评测和 sandbox 指针的全库
+// 交叉一致性，防止格式合法的证据字段被旁路篡改。
 func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
-	rows, err := source.QueryContext(ctx, "SELECT promotion_id FROM evolution_promotions ORDER BY target_kind ASC, version ASC")
+	rows, err := source.QueryContext(ctx, "SELECT promotion_id FROM evolution_promotions ORDER BY target_kind, version")
 	if err != nil {
 		return fmt.Errorf("query promotion ledger: %w", err)
 	}
 	defer rows.Close()
-	ids := make([]string, 0)
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -466,73 +396,88 @@ func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	byKindVersions := map[string][]int{}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	versions := map[string][]int{}
 	for _, id := range ids {
 		promotion, found, err := lookupEvolutionPromotion(ctx, source, id)
-		if err != nil {
-			return err
+		if err != nil || !found {
+			return fmt.Errorf("read promotion invariant: %w", err)
 		}
-		if !found {
-			return fmt.Errorf("promotion %s vanished during check", id)
-		}
-		derivedID, deriveErr := memory.PromotionID(promotion.CandidateID, promotion.VariantFingerprint, promotion.Version)
-		if deriveErr != nil || derivedID != promotion.ID {
+		expectedID, err := memory.PromotionID(promotion.TargetKind, promotion.Version)
+		if err != nil || expectedID != promotion.ID {
 			return fmt.Errorf("promotion %s identity is not derivable", promotion.ID)
 		}
-		promotedCandidate, foundCandidate, candidateErr := lookupEvolutionCandidate(ctx, source, promotion.CandidateID)
-		if candidateErr != nil {
-			return candidateErr
+		expectedApproval, err := memory.PromotionApprovalFingerprint(promotion)
+		if err != nil || expectedApproval != promotion.ApprovalFingerprint {
+			return fmt.Errorf("promotion %s approval tuple is not derivable", promotion.ID)
 		}
-		if !foundCandidate || promotedCandidate.Status != memory.CandidateStatePromoted {
-			return fmt.Errorf("promotion %s references a candidate outside the promoted state", promotion.ID)
+		expectedDecision, err := memory.PromotionDecisionID(promotion)
+		if err != nil || expectedDecision != promotion.DecisionID {
+			return fmt.Errorf("promotion %s decision identity is not derivable", promotion.ID)
 		}
-		if promotion.Version == 1 && promotion.RollbackTargetID != "" {
-			return fmt.Errorf("promotion %s is the first version but carries a rollback target", promotion.ID)
+		candidate, found, err := lookupEvolutionCandidate(ctx, source, promotion.CandidateID)
+		if err != nil || !found || candidate.Status != memory.CandidateStatePromoted || candidate.TargetKind != promotion.TargetKind || candidate.VariantFingerprint != promotion.VariantFingerprint || candidate.VariantSpecSHA256 != promotion.VariantSpecSHA256 || candidate.BaselineFingerprint != promotion.BaselineFingerprint {
+			return fmt.Errorf("promotion %s diverges from its candidate", promotion.ID)
 		}
-		// 目标存在时才校验其合法性：空目标表示晋升时激活为基线，任何版本
-		// 都合法；非空目标必须存在、同类型且版本更小。
+		evaluation, found, err := lookupEvolutionEvaluation(ctx, source, promotion.EvaluationID)
+		if err != nil || !found || evaluation.CandidateID != candidate.ID || evaluation.Status != memory.EvaluationStatusPassed || evaluation.EvalSetFingerprint != promotion.EvalSetFingerprint || evaluation.BaselineConfigFingerprint != promotion.BaselineFingerprint || evaluation.SuiteResultDigest != promotion.SuiteResultDigest || evaluation.ComparatorVersion != promotion.ComparatorVersion {
+			return fmt.Errorf("promotion %s diverges from its evaluation", promotion.ID)
+		}
 		if promotion.RollbackTargetID != "" {
 			target, found, err := lookupEvolutionPromotion(ctx, source, promotion.RollbackTargetID)
-			if err != nil {
-				return err
-			}
-			if !found || target.TargetKind != promotion.TargetKind || target.Version >= promotion.Version {
+			if err != nil || !found || target.TargetKind != promotion.TargetKind || target.Version >= promotion.Version {
 				return fmt.Errorf("promotion %s has an invalid rollback target", promotion.ID)
 			}
 		}
-		byKindVersions[promotion.TargetKind] = append(byKindVersions[promotion.TargetKind], promotion.Version)
+		versions[promotion.TargetKind] = append(versions[promotion.TargetKind], promotion.Version)
 	}
-	for kind, versions := range byKindVersions {
-		for index, version := range versions {
-			if version != index+1 {
+	for kind, values := range versions {
+		for index, value := range values {
+			if value != index+1 {
 				return fmt.Errorf("promotion versions for %s are not contiguous", kind)
 			}
 		}
 	}
-	activationRows, err := source.QueryContext(ctx, "SELECT target_kind, promotion_id FROM evolution_activations")
+	activationRows, err := source.QueryContext(ctx, "SELECT environment, target_kind, promotion_id, previous_promotion_id, activated_at FROM evolution_activations")
 	if err != nil {
-		return fmt.Errorf("query activations: %w", err)
+		return fmt.Errorf("query sandbox activations: %w", err)
 	}
-	defer activationRows.Close()
-	type activationRef struct{ kind, promotionID string }
-	var activations []activationRef
+	type activationRef struct {
+		environment string
+		targetKind  string
+		promotionID string
+		previousID  sql.NullString
+		activatedAt string
+	}
+	var activationRefs []activationRef
 	for activationRows.Next() {
 		var ref activationRef
-		if err := activationRows.Scan(&ref.kind, &ref.promotionID); err != nil {
+		if err := activationRows.Scan(&ref.environment, &ref.targetKind, &ref.promotionID, &ref.previousID, &ref.activatedAt); err != nil {
 			return err
 		}
-		activations = append(activations, ref)
+		activationRefs = append(activationRefs, ref)
 	}
 	if err := activationRows.Err(); err != nil {
 		return err
 	}
-	for _, ref := range activations {
-		promotion, found, err := lookupEvolutionPromotion(ctx, source, ref.promotionID)
-		if err != nil {
-			return err
+	if err := activationRows.Close(); err != nil {
+		return err
+	}
+	for _, ref := range activationRefs {
+		if ref.environment != memory.SandboxEnvironment || ref.targetKind != memory.TargetKindContextCompactionParams {
+			return errors.New("activation carries an unsupported environment or target")
 		}
-		if !found || promotion.TargetKind != ref.kind || promotion.Status != memory.PromotionStatusActive {
-			return fmt.Errorf("activation for %s points at a non-active or foreign promotion", ref.kind)
+		promotion, found, err := lookupEvolutionPromotion(ctx, source, ref.promotionID)
+		if err != nil || !found || promotion.Status != memory.PromotionStatusSandboxActivated || promotion.TargetKind != ref.targetKind || promotion.RollbackTargetID != ref.previousID.String {
+			return errors.New("sandbox activation diverges from its approved version")
+		}
+		if ref.previousID.Valid {
+			prior, found, err := lookupEvolutionPromotion(ctx, source, ref.previousID.String)
+			if err != nil || !found || prior.Status != memory.PromotionStatusSandboxActivated || prior.TargetKind != ref.targetKind {
+				return errors.New("sandbox activation previous version is invalid")
+			}
 		}
 	}
 	return nil

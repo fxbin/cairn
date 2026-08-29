@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	migrationVersion = 7
+	migrationVersion = 8
 	migrationName    = "001_trusted_memory_v1"
 	migrationHash    = "cairn-schema-v1-trusted-memory"
 )
@@ -833,6 +833,80 @@ func (store *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if version < migrationVersionEight {
+		var promotionCount int
+		if err := transaction.QueryRowContext(ctx, "SELECT COUNT(*) FROM evolution_promotions").Scan(&promotionCount); err != nil {
+			return fmt.Errorf("count legacy promotion ledger: %w", err)
+		}
+		if promotionCount != 0 {
+			return errors.New("v7 promotion ledger is incompatible with the staged activation contract; rebuild the development memory store")
+		}
+		if _, err := transaction.ExecContext(ctx, `
+			DROP TABLE evolution_activations;
+			DROP TABLE evolution_promotions;
+			DROP INDEX IF EXISTS evolution_audit_by_candidate;
+			CREATE TABLE evolution_audit_log_v8_rebuild (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				candidate_id TEXT NOT NULL REFERENCES evolution_candidates(id),
+				action TEXT NOT NULL CHECK(action IN ('created', 'rejected', 'invalidated', 'expired', 'evaluation_started', 'evaluation_passed', 'evaluation_failed', 'evaluation_inconclusive', 'promoted', 'sandbox_activated', 'promotion_rolled_back')),
+				reason TEXT CHECK((action IN ('rejected', 'promotion_rolled_back') AND reason IS NOT NULL AND reason IN ('insufficient_evidence', 'evaluation_failed', 'safety_violation', 'human_request')) OR (action NOT IN ('rejected', 'promotion_rolled_back') AND reason IS NULL)),
+				occurred_at TEXT NOT NULL
+			);
+			INSERT INTO evolution_audit_log_v8_rebuild (id, candidate_id, action, reason, occurred_at)
+				SELECT id, candidate_id, action, reason, occurred_at FROM evolution_audit_log;
+			DROP TABLE evolution_audit_log;
+			ALTER TABLE evolution_audit_log_v8_rebuild RENAME TO evolution_audit_log;
+			CREATE INDEX evolution_audit_by_candidate ON evolution_audit_log(candidate_id, id);
+			CREATE TABLE evolution_promotion_decisions (
+				decision_id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL,
+				candidate_id TEXT NOT NULL UNIQUE REFERENCES evolution_candidates(id),
+				evaluation_id TEXT NOT NULL UNIQUE REFERENCES evolution_evaluations(evaluation_id),
+				target_kind TEXT NOT NULL CHECK(target_kind IN ('context_compaction_params')),
+				variant_fingerprint TEXT NOT NULL,
+				variant_spec_sha256 TEXT NOT NULL,
+				baseline_fingerprint TEXT NOT NULL,
+				eval_set_fingerprint TEXT NOT NULL,
+				suite_result_digest TEXT NOT NULL,
+				comparator_version TEXT NOT NULL,
+				conclusion_trigger TEXT NOT NULL,
+				metrics_json TEXT NOT NULL,
+				rollback_target_promotion_id TEXT,
+				approval_fingerprint TEXT NOT NULL,
+				approval_nonce TEXT NOT NULL UNIQUE,
+				approver TEXT NOT NULL,
+				decided_at TEXT NOT NULL
+			);
+			CREATE TABLE evolution_promotions (
+				promotion_id TEXT PRIMARY KEY,
+				schema_version INTEGER NOT NULL,
+				decision_id TEXT NOT NULL UNIQUE REFERENCES evolution_promotion_decisions(decision_id),
+				target_kind TEXT NOT NULL CHECK(target_kind IN ('context_compaction_params')),
+				version INTEGER NOT NULL,
+				variant_json TEXT NOT NULL,
+				status TEXT NOT NULL CHECK(status IN ('promoted_inactive', 'sandbox_activated', 'revoked')),
+				created_at TEXT NOT NULL,
+				revoked_at TEXT,
+				UNIQUE(target_kind, version)
+			);
+			CREATE INDEX evolution_promotions_by_target ON evolution_promotions(target_kind, version);
+			CREATE TABLE evolution_activations (
+				environment TEXT NOT NULL CHECK(environment = 'sandbox'),
+				target_kind TEXT NOT NULL CHECK(target_kind IN ('context_compaction_params')),
+				promotion_id TEXT NOT NULL REFERENCES evolution_promotions(promotion_id),
+				previous_promotion_id TEXT,
+				activated_at TEXT NOT NULL,
+				PRIMARY KEY(environment, target_kind)
+			);`); err != nil {
+			return fmt.Errorf("replace promotion ledger with staged activation schema: %w", err)
+		}
+		if err := recordMigration(ctx, transaction, migrationVersionEight, migrationNameEight, migrationHashEight); err != nil {
+			return err
+		}
+		if err := setMigrationVersion(ctx, transaction, migrationVersionEight); err != nil {
+			return err
+		}
+	}
 	if err := checkMigration(ctx, transaction); err != nil {
 		return err
 	}
@@ -1018,7 +1092,7 @@ func checkMigration(ctx context.Context, source queryer) error {
 	if version != migrationVersion {
 		return fmt.Errorf("memory schema version %d is unsupported", version)
 	}
-	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix, migrationVersionSeven: migrationHashSeven}
+	expected := map[int]string{1: migrationHash, migrationVersionTwo: migrationHashTwo, migrationVersionThree: migrationHashThree, migrationVersionFour: migrationHashFour, migrationVersionFive: migrationHashFive, migrationVersionSix: migrationHashSix, migrationVersionSeven: migrationHashSeven, migrationVersionEight: migrationHashEight}
 	for migrationID, hash := range expected {
 		var recorded string
 		if err := source.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = ?", migrationID).Scan(&recorded); err != nil {

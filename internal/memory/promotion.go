@@ -1,7 +1,6 @@
-// 本文件承载演化候选晋升的版本账本合同：版本记录、激活指针、确定性身份
-// 与审批指纹。M4 范围内只记录决策与版本事实，不提供任何运行时激活通道；
-// 生产激活属于后续独立决策。批准者字段是操作者算名（≤64 字符的非敏感标
-// 签），不是身份证明。
+// 本文件承载演化候选晋升决策、版本与沙箱激活的闭合合同。决策、版本与激活
+// 是三个不可混同的阶段：决策只批准冻结证据，版本先以 inactive 形式落账，
+// 只有显式 sandbox 激活才会改变激活指针。
 //
 // Author: fxbin
 package memory
@@ -15,32 +14,31 @@ import (
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
 
-// promotionSchemaV1 是晋升版本记录的当前合同版本。
-const promotionSchemaV1 = 1
-
-// PromotionSchemaVersionV1 是面向编排方的当前晋升版本合同导出常量；构造
-// 晋升行必须经此表达版本事实，不得借用其他合同的版本常量。
-const PromotionSchemaVersionV1 = promotionSchemaV1
-
-// promotionIDPrefix 是晋升身份的版本化域前缀。
-const promotionIDPrefix = "cairn-evolution-promotion-v1"
-
-// promotionApprovalPrefix 是晋升审批指纹的版本化域前缀。
-const promotionApprovalPrefix = "cairn-evolution-promotion-approval-v1"
-
-// approverLabelMaxRunes 限制批准者算名的长度上限，防止把自由文本借道算名
-// 字段写入版本记录。
-const approverLabelMaxRunes = 64
-
-// 晋升版本状态的闭合词表：active 表示当前激活版本集；rolled_back 表示已
-// 被显式回退、仅作为历史版本留存，不可再次激活。
 const (
-	PromotionStatusActive     = "active"
-	PromotionStatusRolledBack = "rolled_back"
+	promotionSchemaV1         = 1
+	promotionDecisionSchemaV1 = 1
+	promotionIDPrefix         = "cairn-evolution-version-v1"
+	promotionDecisionIDPrefix = "cairn-evolution-promotion-decision-v1"
+	promotionApprovalPrefix   = "cairn-evolution-promotion-approval-v2"
+	approverLabelMaxRunes     = 64
 )
 
-// PromotionMetricSummary 是从闭合评测结果提取的指标比较摘要：只承载可由
-// suite-result 复核的整数事实，不包含成本单价换算或任何文本。
+// PromotionSchemaVersionV1 是面向编排方的当前演化版本合同版本。
+const PromotionSchemaVersionV1 = promotionSchemaV1
+
+// SandboxEnvironment 是 M4 唯一允许的激活环境；生产环境没有激活 API。
+const SandboxEnvironment = "sandbox"
+
+// 晋升版本状态的闭合词表。promoted_inactive 仅表示人工决策已落账，绝不
+// 表示运行时生效；sandbox_activated 只表示曾在 sandbox 指针中激活；revoked
+// 表示已由显式回退关闭，不能再次激活。
+const (
+	PromotionStatusPromotedInactive = "promoted_inactive"
+	PromotionStatusSandboxActivated = "sandbox_activated"
+	PromotionStatusRevoked          = "revoked"
+)
+
+// PromotionMetricSummary 是从摘要已校验的套件结果提取的整数比较事实。
 type PromotionMetricSummary struct {
 	BaselineSuccesses    int   `json:"baseline_successes"`
 	VariantSuccesses     int   `json:"variant_successes"`
@@ -52,14 +50,39 @@ type PromotionMetricSummary struct {
 	VariantMedianWallMS  int64 `json:"variant_median_wall_ms"`
 }
 
-// Promotion 是一次人工晋升的版本记录：候选、变体正文与指纹、冻结输入引用、
-// 评测结论与指标比较、批准者与回退目标全部落账。同一候选至多一条、同一
-// 目标类型的版本号单调递增；回退只移动激活指针与状态，版本记录正文不可
-// 改写。
+// PromotionDecision 是一次人工批准的不可变事实。它绑定候选、通过的评测、
+// 基线、变体、预定回退目标与一次性 nonce；approval fingerprint 只对此完整
+// 元组计算，不能复用到另一项决策。
+type PromotionDecision struct {
+	ID                  string                 `json:"decision_id"`
+	SchemaVersion       int                    `json:"schema_version"`
+	CandidateID         string                 `json:"candidate_id"`
+	EvaluationID        string                 `json:"evaluation_id"`
+	TargetKind          string                 `json:"target_kind"`
+	VariantFingerprint  string                 `json:"variant_fingerprint"`
+	VariantSpecSHA256   string                 `json:"variant_spec_sha256"`
+	BaselineFingerprint string                 `json:"baseline_fingerprint"`
+	EvalSetFingerprint  string                 `json:"eval_set_fingerprint"`
+	SuiteResultDigest   string                 `json:"suite_result_digest"`
+	ComparatorVersion   string                 `json:"comparator_version"`
+	ConclusionTrigger   string                 `json:"conclusion_trigger"`
+	Metrics             PromotionMetricSummary `json:"metrics"`
+	RollbackTargetID    string                 `json:"rollback_target_promotion_id,omitempty"`
+	ApprovalFingerprint string                 `json:"approval_fingerprint"`
+	ApprovalNonce       string                 `json:"approval_nonce"`
+	Approver            string                 `json:"approver"`
+	DecidedAt           time.Time              `json:"decided_at"`
+}
+
+// Promotion 是由 PromotionDecision 创建的不可变 EvolutionVersion 投影。证据
+// 字段保留在投影中供 CLI 只读展示，但 Store.Check 会反向与决策、候选和评测
+// 行逐字段核对，不能把它们视为第二事实源。
 type Promotion struct {
 	ID                  string                  `json:"promotion_id"`
 	SchemaVersion       int                     `json:"schema_version"`
+	DecisionID          string                  `json:"decision_id"`
 	CandidateID         string                  `json:"candidate_id"`
+	EvaluationID        string                  `json:"evaluation_id"`
 	TargetKind          string                  `json:"target_kind"`
 	Version             int                     `json:"version"`
 	Variant             CompactionParamsVariant `json:"variant"`
@@ -72,36 +95,35 @@ type Promotion struct {
 	Conclusion          string                  `json:"conclusion"`
 	ConclusionTrigger   string                  `json:"conclusion_trigger"`
 	Metrics             PromotionMetricSummary  `json:"metrics"`
-	Approver            string                  `json:"approver"`
 	RollbackTargetID    string                  `json:"rollback_target_promotion_id,omitempty"`
+	ApprovalFingerprint string                  `json:"approval_fingerprint"`
+	ApprovalNonce       string                  `json:"approval_nonce"`
+	Approver            string                  `json:"approver"`
 	Status              string                  `json:"status"`
 	CreatedAt           time.Time               `json:"created_at"`
-	RolledBackAt        time.Time               `json:"rolled_back_at,omitempty"`
+	RevokedAt           time.Time               `json:"revoked_at,omitempty"`
 }
 
-// Activation 是当前激活版本集的指针：每个目标类型至多一行，行不存在表示
-// 激活产品基线。M4 内没有任何运行时消费者，指针只服务账本查询与回退。
+// Activation 是 sandbox 环境当前的版本指针，并保留本次激活固定的 previous
+// version。不存在记录表示 sandbox 使用产品基线。
 type Activation struct {
-	TargetKind  string    `json:"target_kind"`
-	PromotionID string    `json:"promotion_id"`
-	ActivatedAt time.Time `json:"activated_at"`
+	Environment         string    `json:"environment"`
+	TargetKind          string    `json:"target_kind"`
+	PromotionID         string    `json:"promotion_id"`
+	PreviousPromotionID string    `json:"previous_promotion_id,omitempty"`
+	ActivatedAt         time.Time `json:"activated_at"`
 }
 
-// Validate 校验版本记录的结构合同：身份与版本完整、闭合词表、指标非负、
-// 算名上限与回退目标形态（目标承载晋升时刻的激活版本；激活为基线时目标
-// 为空，回退即回产品基线）。
+// Validate 校验版本投影的结构合同；跨表事实一致性由 SQLite Store.Check 负责。
 func (promotion Promotion) Validate() error {
 	if promotion.SchemaVersion != promotionSchemaV1 {
 		return fmt.Errorf("promotion schema_version %d is not supported", promotion.SchemaVersion)
 	}
-	if promotion.ID == "" || promotion.CandidateID == "" || promotion.TargetKind == "" {
+	if promotion.ID == "" || promotion.DecisionID == "" || promotion.CandidateID == "" || promotion.EvaluationID == "" || promotion.TargetKind == "" {
 		return errors.New("promotion identity fields must not be empty")
 	}
-	if promotion.TargetKind != TargetKindContextCompactionParams {
-		return fmt.Errorf("unsupported promotion target kind %q", promotion.TargetKind)
-	}
-	if promotion.Version < 1 {
-		return errors.New("promotion version must be one-based")
+	if promotion.TargetKind != TargetKindContextCompactionParams || promotion.Version < 1 {
+		return errors.New("promotion target kind or version is invalid")
 	}
 	if err := promotion.Variant.Validate(); err != nil {
 		return fmt.Errorf("promotion variant: %w", err)
@@ -112,74 +134,119 @@ func (promotion Promotion) Validate() error {
 		"baseline_fingerprint": promotion.BaselineFingerprint,
 		"eval_set_fingerprint": promotion.EvalSetFingerprint,
 		"suite_result_digest":  promotion.SuiteResultDigest,
+		"approval_nonce":       promotion.ApprovalNonce,
 	} {
 		if !DigestHexShape(value) {
 			return fmt.Errorf("promotion %s must be a sha256 digest", name)
 		}
 	}
-	if promotion.ComparatorVersion == "" || promotion.Conclusion == "" || promotion.ConclusionTrigger == "" {
-		return errors.New("promotion requires comparator version and a concluded trigger")
+	if !DigestHexShape(promotion.ApprovalFingerprint) || promotion.ComparatorVersion == "" || promotion.Conclusion != EvaluationStatusPassed || promotion.ConclusionTrigger == "" {
+		return errors.New("promotion approval or conclusion fields are invalid")
 	}
-	if promotion.Conclusion != EvaluationStatusPassed {
-		return fmt.Errorf("only passed evaluations may be promoted, got %q", promotion.Conclusion)
-	}
-	if promotion.Metrics.BaselineSuccesses < 0 || promotion.Metrics.VariantSuccesses < 0 ||
-		promotion.Metrics.BaselineInputTokens < 0 || promotion.Metrics.VariantInputTokens < 0 ||
-		promotion.Metrics.BaselineOutputTokens < 0 || promotion.Metrics.VariantOutputTokens < 0 ||
-		promotion.Metrics.BaselineMedianWallMS < 0 || promotion.Metrics.VariantMedianWallMS < 0 {
+	if promotion.Metrics.BaselineSuccesses < 0 || promotion.Metrics.VariantSuccesses < 0 || promotion.Metrics.BaselineInputTokens < 0 || promotion.Metrics.VariantInputTokens < 0 || promotion.Metrics.BaselineOutputTokens < 0 || promotion.Metrics.VariantOutputTokens < 0 || promotion.Metrics.BaselineMedianWallMS < 0 || promotion.Metrics.VariantMedianWallMS < 0 {
 		return errors.New("promotion metrics cannot be negative")
 	}
-	if strings.TrimSpace(promotion.Approver) == "" || len([]rune(promotion.Approver)) > approverLabelMaxRunes {
-		return fmt.Errorf("promotion approver label must be 1..%d runes", approverLabelMaxRunes)
+	if strings.TrimSpace(promotion.Approver) == "" || len([]rune(promotion.Approver)) > approverLabelMaxRunes || promotion.CreatedAt.IsZero() {
+		return errors.New("promotion approver or creation time is invalid")
+	}
+	if promotion.RollbackTargetID != "" && !DigestHexShape(promotion.RollbackTargetID) {
+		return errors.New("promotion rollback target must be a sha256-shaped version id when present")
 	}
 	switch promotion.Status {
-	case PromotionStatusActive, PromotionStatusRolledBack:
+	case PromotionStatusPromotedInactive, PromotionStatusSandboxActivated, PromotionStatusRevoked:
 	default:
 		return fmt.Errorf("promotion status %q is not in the closed lexicon", promotion.Status)
 	}
-	if promotion.CreatedAt.IsZero() {
-		return errors.New("promotion created_at is required")
-	}
-	if promotion.Status == PromotionStatusRolledBack && promotion.RolledBackAt.IsZero() {
-		return errors.New("rolled-back promotion requires rolled_back_at")
-	}
-	// 回退目标语义：目标记录的是晋升时刻的激活版本——激活为基线时目标为
-	// 空（回退即回基线），与版本号无必然绑定；非空目标必须是形态合法的
-	// 既有版本身份，其"同类型、更小版本且晋升时活跃"由存储事务强制。
-	if promotion.RollbackTargetID != "" && !DigestHexShape(promotion.RollbackTargetID) {
-		return errors.New("promotion rollback target must be a sha256-shaped promotion id when present")
+	if promotion.Status == PromotionStatusRevoked && promotion.RevokedAt.IsZero() {
+		return errors.New("revoked promotion requires revoked_at")
 	}
 	return nil
 }
 
-// PromotionID 由候选、变体指纹与版本号派生确定性晋升身份：同输入恒同 ID，
-// 事务内重派生比对防身份漂移。版本号从一开始计数。
-func PromotionID(candidateID, variantFingerprint string, version int) (string, error) {
-	if candidateID == "" || variantFingerprint == "" || version < 1 {
-		return "", errors.New("promotion identity requires candidate, variant fingerprint and a one-based version")
+// Decision 返回与版本投影一一对应的不可变人工决策。
+func (promotion Promotion) Decision() PromotionDecision {
+	return PromotionDecision{
+		ID: promotion.DecisionID, SchemaVersion: promotionDecisionSchemaV1,
+		CandidateID: promotion.CandidateID, EvaluationID: promotion.EvaluationID,
+		TargetKind: promotion.TargetKind, VariantFingerprint: promotion.VariantFingerprint,
+		VariantSpecSHA256: promotion.VariantSpecSHA256, BaselineFingerprint: promotion.BaselineFingerprint,
+		EvalSetFingerprint: promotion.EvalSetFingerprint, SuiteResultDigest: promotion.SuiteResultDigest,
+		ComparatorVersion: promotion.ComparatorVersion, ConclusionTrigger: promotion.ConclusionTrigger,
+		Metrics: promotion.Metrics, RollbackTargetID: promotion.RollbackTargetID,
+		ApprovalFingerprint: promotion.ApprovalFingerprint, ApprovalNonce: promotion.ApprovalNonce,
+		Approver: promotion.Approver, DecidedAt: promotion.CreatedAt,
 	}
-	view := struct {
-		CandidateID        string `json:"candidate_id"`
-		VariantFingerprint string `json:"variant_fingerprint"`
-		Version            int    `json:"version"`
-	}{candidateID, variantFingerprint, version}
-	return canonicaljson.Fingerprint(promotionIDPrefix, view)
 }
 
-// PromotionApprovalFingerprint 计算晋升审批指纹：操作者必须显式携带与本次
-// 晋升全部冻结输入一致的摘要才能触发事务，防止误晋升或内容漂移下的盲批。
-// 算名不参与指纹——审批绑定的是被批对象而非批准人。
-func PromotionApprovalFingerprint(candidateID, variantFingerprint, evalSetFingerprint, suiteResultDigest, targetKind string, version int) (string, error) {
-	if candidateID == "" || variantFingerprint == "" || evalSetFingerprint == "" || suiteResultDigest == "" || targetKind == "" || version < 1 {
-		return "", errors.New("promotion approval fingerprint requires the complete frozen tuple")
+// Validate 校验人工决策的字段形态与一次性审批绑定；存储层还会把它与候选、
+// 评测及版本行交叉验证。
+func (decision PromotionDecision) Validate() error {
+	if decision.SchemaVersion != promotionDecisionSchemaV1 || decision.ID == "" || decision.CandidateID == "" || decision.EvaluationID == "" || decision.TargetKind != TargetKindContextCompactionParams {
+		return errors.New("promotion decision identity is invalid")
 	}
-	view := struct {
-		CandidateID        string `json:"candidate_id"`
-		VariantFingerprint string `json:"variant_fingerprint"`
-		EvalSetFingerprint string `json:"eval_set_fingerprint"`
-		SuiteResultDigest  string `json:"suite_result_digest"`
-		TargetKind         string `json:"target_kind"`
-		Version            int    `json:"version"`
-	}{candidateID, variantFingerprint, evalSetFingerprint, suiteResultDigest, targetKind, version}
-	return canonicaljson.Fingerprint(promotionApprovalPrefix, view)
+	for name, value := range map[string]string{"variant_fingerprint": decision.VariantFingerprint, "variant_spec_sha256": decision.VariantSpecSHA256, "baseline_fingerprint": decision.BaselineFingerprint, "eval_set_fingerprint": decision.EvalSetFingerprint, "suite_result_digest": decision.SuiteResultDigest, "approval_fingerprint": decision.ApprovalFingerprint, "approval_nonce": decision.ApprovalNonce} {
+		if !DigestHexShape(value) {
+			return fmt.Errorf("promotion decision %s must be a sha256 digest", name)
+		}
+	}
+	if decision.ComparatorVersion == "" || decision.ConclusionTrigger == "" || strings.TrimSpace(decision.Approver) == "" || len([]rune(decision.Approver)) > approverLabelMaxRunes || decision.DecidedAt.IsZero() {
+		return errors.New("promotion decision metadata is invalid")
+	}
+	if decision.RollbackTargetID != "" && !DigestHexShape(decision.RollbackTargetID) {
+		return errors.New("promotion decision rollback target is invalid")
+	}
+	return nil
+}
+
+// PromotionID 按目标类型和单调版本号派生 EvolutionVersion 身份。
+func PromotionID(targetKind string, version int) (string, error) {
+	if targetKind != TargetKindContextCompactionParams || version < 1 {
+		return "", errors.New("promotion identity requires a supported target kind and one-based version")
+	}
+	return canonicaljson.Fingerprint(promotionIDPrefix, struct {
+		TargetKind string `json:"target_kind"`
+		Version    int    `json:"version"`
+	}{targetKind, version})
+}
+
+// PromotionApprovalFingerprint 对完整人工决策元组计算可人工复核的指纹。
+func PromotionApprovalFingerprint(promotion Promotion) (string, error) {
+	if promotion.CandidateID == "" || promotion.EvaluationID == "" || promotion.TargetKind != TargetKindContextCompactionParams || promotion.Version < 1 || promotion.ComparatorVersion == "" || promotion.ConclusionTrigger == "" {
+		return "", errors.New("promotion approval tuple is incomplete")
+	}
+	for name, value := range map[string]string{"baseline_fingerprint": promotion.BaselineFingerprint, "variant_fingerprint": promotion.VariantFingerprint, "variant_spec_sha256": promotion.VariantSpecSHA256, "eval_set_fingerprint": promotion.EvalSetFingerprint, "suite_result_digest": promotion.SuiteResultDigest, "approval_nonce": promotion.ApprovalNonce} {
+		if !DigestHexShape(value) {
+			return "", fmt.Errorf("promotion approval %s must be a sha256 digest", name)
+		}
+	}
+	return canonicaljson.Fingerprint(promotionApprovalPrefix, struct {
+		CandidateID         string                 `json:"candidate_id"`
+		EvaluationID        string                 `json:"evaluation_id"`
+		BaselineFingerprint string                 `json:"baseline_fingerprint"`
+		VariantFingerprint  string                 `json:"variant_fingerprint"`
+		VariantSpecSHA256   string                 `json:"variant_spec_sha256"`
+		EvalSetFingerprint  string                 `json:"eval_set_fingerprint"`
+		SuiteResultDigest   string                 `json:"suite_result_digest"`
+		ComparatorVersion   string                 `json:"comparator_version"`
+		ConclusionTrigger   string                 `json:"conclusion_trigger"`
+		Metrics             PromotionMetricSummary `json:"metrics"`
+		RollbackTargetID    string                 `json:"rollback_target_promotion_id"`
+		ApprovalNonce       string                 `json:"approval_nonce"`
+		TargetKind          string                 `json:"target_kind"`
+		Version             int                    `json:"version"`
+	}{promotion.CandidateID, promotion.EvaluationID, promotion.BaselineFingerprint, promotion.VariantFingerprint, promotion.VariantSpecSHA256, promotion.EvalSetFingerprint, promotion.SuiteResultDigest, promotion.ComparatorVersion, promotion.ConclusionTrigger, promotion.Metrics, promotion.RollbackTargetID, promotion.ApprovalNonce, promotion.TargetKind, promotion.Version})
+}
+
+// PromotionDecisionID 从完整决策事实派生稳定身份，连同批准者和决定时刻一并
+// 绑定，防止旁路篡改责任归属或审计时间。
+func PromotionDecisionID(promotion Promotion) (string, error) {
+	fingerprint, err := PromotionApprovalFingerprint(promotion)
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Fingerprint(promotionDecisionIDPrefix, struct {
+		ApprovalFingerprint string    `json:"approval_fingerprint"`
+		Approver            string    `json:"approver"`
+		DecidedAt           time.Time `json:"decided_at"`
+	}{fingerprint, promotion.Approver, promotion.CreatedAt.UTC()})
 }
