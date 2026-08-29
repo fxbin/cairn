@@ -18,6 +18,10 @@ import (
 // promotionSchemaV1 是晋升版本记录的当前合同版本。
 const promotionSchemaV1 = 1
 
+// PromotionSchemaVersionV1 是面向编排方的当前晋升版本合同导出常量；构造
+// 晋升行必须经此表达版本事实，不得借用其他合同的版本常量。
+const PromotionSchemaVersionV1 = promotionSchemaV1
+
 // promotionIDPrefix 是晋升身份的版本化域前缀。
 const promotionIDPrefix = "cairn-evolution-promotion-v1"
 
@@ -84,8 +88,8 @@ type Activation struct {
 }
 
 // Validate 校验版本记录的结构合同：身份与版本完整、闭合词表、指标非负、
-// 算名上限与回退目标的版本约束（首版回退产品基线不带目标，其余版本必须
-// 携带可追溯的回退目标身份）。
+// 算名上限与回退目标形态（目标承载晋升时刻的激活版本；激活为基线时目标
+// 为空，回退即回产品基线）。
 func (promotion Promotion) Validate() error {
 	if promotion.SchemaVersion != promotionSchemaV1 {
 		return fmt.Errorf("promotion schema_version %d is not supported", promotion.SchemaVersion)
@@ -139,11 +143,11 @@ func (promotion Promotion) Validate() error {
 	if promotion.Status == PromotionStatusRolledBack && promotion.RolledBackAt.IsZero() {
 		return errors.New("rolled-back promotion requires rolled_back_at")
 	}
-	if promotion.Version == 1 && promotion.RollbackTargetID != "" {
-		return errors.New("the first promotion rolls back to the product baseline and carries no target id")
-	}
-	if promotion.Version > 1 && !DigestHexShape(promotion.RollbackTargetID) {
-		return errors.New("non-first promotion requires a sha256-shaped rollback target id")
+	// 回退目标语义：目标记录的是晋升时刻的激活版本——激活为基线时目标为
+	// 空（回退即回基线），与版本号无必然绑定；非空目标必须是形态合法的
+	// 既有版本身份，其"同类型、更小版本且晋升时活跃"由存储事务强制。
+	if promotion.RollbackTargetID != "" && !DigestHexShape(promotion.RollbackTargetID) {
+		return errors.New("promotion rollback target must be a sha256-shaped promotion id when present")
 	}
 	return nil
 }

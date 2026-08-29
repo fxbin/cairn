@@ -682,15 +682,15 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 			} else {
 				expectedConclusion, rowStatus = evaluationInconclusive, memory.EvaluationStatusInconclusive
 			}
-			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || promotedAudits != 0 {
+			if evaluationStarted != 1 || expectedConclusion != 1 || terminalEvaluationAudits != 1 || rejected != 0 || invalidated != 0 || expired != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
 				return fmt.Errorf("%s evolution candidate %s has invalid evaluation audit state", candidate.Status, candidate.ID)
 			}
 			if !hasEvaluation || evaluationRow.Status != rowStatus {
 				return fmt.Errorf("%s evolution candidate %s lacks a matching evaluation row", candidate.Status, candidate.ID)
 			}
 		case memory.CandidateStateRejected:
-			if evaluationStarted != 0 || terminalEvaluationAudits != 0 {
-				return fmt.Errorf("rejected evolution candidate %s carries evaluation audits", candidate.ID)
+			if evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 || promotionRolledBack != 0 {
+				return fmt.Errorf("rejected evolution candidate %s carries evaluation or promotion audits", candidate.ID)
 			}
 			if rejected != 1 || invalidated != 0 || expired != 0 {
 				return fmt.Errorf("rejected evolution candidate %s has invalid audit state", candidate.ID)
@@ -709,7 +709,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("rejected evolution candidate %s has an incoherent cooldown deadline", candidate.ID)
 			}
 		case memory.CandidateStateInvalidated:
-			if rejected != 0 || expired != 0 {
+			if rejected != 0 || expired != 0 || promotedAudits != 0 {
 				return fmt.Errorf("invalidated evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation && evaluationRow.Status != memory.EvaluationStatusInvalid {
@@ -728,7 +728,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				}
 			}
 		case memory.CandidateStateExpired:
-			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 {
+			if rejected != 0 || invalidated != 0 || expired != 1 || evaluationStarted != 0 || terminalEvaluationAudits != 0 || promotedAudits != 0 {
 				return fmt.Errorf("expired evolution candidate %s has invalid audit state", candidate.ID)
 			}
 			if hasEvaluation {

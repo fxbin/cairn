@@ -99,15 +99,26 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 	if approvalFingerprint != expectedApproval {
 		return memory.Promotion{}, fmt.Errorf("%w: promotion approval fingerprint mismatch; expected %s", memory.ErrConflict, expectedApproval)
 	}
-	// 回退目标必须是同目标类型的既有活跃或历史版本；首版无目标（回基线）。
-	if promotion.RollbackTargetID != "" {
-		target, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
-		if err != nil {
-			return memory.Promotion{}, err
+	// 回退目标语义由激活指针唯一锚定：目标必须精确等于晋升时刻的激活版本
+	// 且其自身处于活跃态；激活为基线时目标必须为空。这保证任意版本在回退
+	// 后都能继续回退，不存在不可回退的死路版本。
+	currentActivation, activationFound, err := lookupEvolutionActivation(ctx, transaction, promotion.TargetKind)
+	if err != nil {
+		return memory.Promotion{}, err
+	}
+	if activationFound {
+		if promotion.RollbackTargetID != currentActivation.PromotionID {
+			return memory.Promotion{}, fmt.Errorf("%w: promotion rollback target must be the currently active version %s", memory.ErrConflict, currentActivation.PromotionID)
 		}
-		if !found || target.TargetKind != promotion.TargetKind {
-			return memory.Promotion{}, fmt.Errorf("%w: promotion rollback target must be an existing version of the same target kind", memory.ErrConflict)
+		target, found, targetErr := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
+		if targetErr != nil {
+			return memory.Promotion{}, targetErr
 		}
+		if !found || target.TargetKind != promotion.TargetKind || target.Status != memory.PromotionStatusActive {
+			return memory.Promotion{}, fmt.Errorf("%w: promotion rollback target must be an active version of the same target kind", memory.ErrConflict)
+		}
+	} else if promotion.RollbackTargetID != "" {
+		return memory.Promotion{}, fmt.Errorf("%w: promotion must carry an empty rollback target while the baseline is active", memory.ErrConflict)
 	}
 	if err := transitionEvolutionCandidate(ctx, transaction, candidate.ID, memory.CandidateStatePromoted); err != nil {
 		return memory.Promotion{}, err
@@ -457,7 +468,7 @@ func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
 	}
 	byKindVersions := map[string][]int{}
 	for _, id := range ids {
-		promotion, found, err := lookupEvotionPromotionByID(ctx, source, id)
+		promotion, found, err := lookupEvolutionPromotion(ctx, source, id)
 		if err != nil {
 			return err
 		}
@@ -468,11 +479,20 @@ func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
 		if deriveErr != nil || derivedID != promotion.ID {
 			return fmt.Errorf("promotion %s identity is not derivable", promotion.ID)
 		}
+		promotedCandidate, foundCandidate, candidateErr := lookupEvolutionCandidate(ctx, source, promotion.CandidateID)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		if !foundCandidate || promotedCandidate.Status != memory.CandidateStatePromoted {
+			return fmt.Errorf("promotion %s references a candidate outside the promoted state", promotion.ID)
+		}
 		if promotion.Version == 1 && promotion.RollbackTargetID != "" {
 			return fmt.Errorf("promotion %s is the first version but carries a rollback target", promotion.ID)
 		}
-		if promotion.Version > 1 {
-			target, found, err := lookupEvotionPromotionByID(ctx, source, promotion.RollbackTargetID)
+		// 目标存在时才校验其合法性：空目标表示晋升时激活为基线，任何版本
+		// 都合法；非空目标必须存在、同类型且版本更小。
+		if promotion.RollbackTargetID != "" {
+			target, found, err := lookupEvolutionPromotion(ctx, source, promotion.RollbackTargetID)
 			if err != nil {
 				return err
 			}
@@ -507,7 +527,7 @@ func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
 		return err
 	}
 	for _, ref := range activations {
-		promotion, found, err := lookupEvotionPromotionByID(ctx, source, ref.promotionID)
+		promotion, found, err := lookupEvolutionPromotion(ctx, source, ref.promotionID)
 		if err != nil {
 			return err
 		}
@@ -516,9 +536,4 @@ func checkPromotionInvariants(ctx context.Context, source queryerRows) error {
 		}
 	}
 	return nil
-}
-
-// lookupEvotionPromotionByID 是不变量检查内部的按身份读取封装。
-func lookupEvotionPromotionByID(ctx context.Context, source queryerRows, promotionID string) (memory.Promotion, bool, error) {
-	return lookupEvolutionPromotion(ctx, source, promotionID)
 }

@@ -216,3 +216,87 @@ func TestPromotionInvariantCatchesTampering(t *testing.T) {
 		t.Fatal("version tampering must fail the full check")
 	}
 }
+
+// TestPromoteRollbackSequenceNeverDeadEnds 验证回退目标锚定激活指针后的序
+// 列语义：回基线后再晋升的新版本目标为空、仍可回退；链式版本回退后指针逐
+// 级回移，不存在不可回退的死路版本。
+func TestPromoteRollbackSequenceNeverDeadEnds(t *testing.T) {
+	store, candidate, evaluation, _ := passedCandidateFixture(t, evalSetFrozen, suiteResultFrozen)
+	ctx := context.Background()
+
+	// v1：无激活 → 目标为空。
+	first := promotionRequestFor(candidate, evaluation, 1)
+	first.ID = promotionIDFor(t, candidate, 1)
+	if _, err := store.PromoteCandidate(ctx, first, approvalFor(t, first), first.CreatedAt); err != nil {
+		t.Fatalf("promote v1: %v", err)
+	}
+	// 回退 v1 → 基线激活。
+	if _, _, err := store.RollbackPromotion(ctx, memory.TargetKindContextCompactionParams, "human_request", first.CreatedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("rollback v1: %v", err)
+	}
+	// v2（同候选不可重复晋升——须新候选走链；此处以第二候选续链）。
+	secondCandidate, secondEvaluation := secondPassedCandidate(t, store, candidate, first.CreatedAt)
+	second := promotionRequestFor(secondCandidate, secondEvaluation, 2)
+	second.CreatedAt = first.CreatedAt.Add(10 * time.Minute)
+	second.ID = promotionIDFor(t, secondCandidate, 2)
+	if err := second.Validate(); err != nil {
+		t.Fatalf("baseline-active promotion with empty target must validate: %v", err)
+	}
+	// 基线激活下携带非空目标必须被拒。
+	staleTarget := second
+	staleTarget.RollbackTargetID = first.ID
+	if _, err := store.PromoteCandidate(ctx, staleTarget, approvalFor(t, staleTarget), second.CreatedAt); err == nil {
+		t.Fatal("non-empty target while baseline is active must fail closed")
+	}
+	if _, err := store.PromoteCandidate(ctx, second, approvalFor(t, second), second.CreatedAt); err != nil {
+		t.Fatalf("promote v2 with empty target: %v", err)
+	}
+	if _, _, err := store.RollbackPromotion(ctx, memory.TargetKindContextCompactionParams, "human_request", second.CreatedAt.Add(time.Hour)); err != nil {
+		t.Fatalf("v2 must remain rollback-capable: %v", err)
+	}
+	if err := store.Check(ctx); err != nil {
+		t.Fatalf("sequence check: %v", err)
+	}
+}
+
+// secondPassedCandidate 在同一库内追加第二个已通过候选供版本链续接：复用
+// 首个候选的来源与工作区，换变体参数形成新唯一键，走完整建档与评测链。
+func secondPassedCandidate(t *testing.T, store *Store, template memory.EvolutionCandidate, now time.Time) (memory.EvolutionCandidate, memory.Evaluation) {
+	t.Helper()
+	variant := memory.CompactionParamsVariant{
+		SchemaVersion: memory.EvolutionSchemaVersion, MaxPromptTokens: 51_000, MaxSummaryBytes: 16_384,
+		InventoryBudgetPercent: 25, ThresholdReservePercent: 20,
+	}
+	variantFingerprint, err := memory.VariantFingerprint(memory.TargetKindContextCompactionParams, variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variantDigest, err := memory.VariantSpecDigest(variant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := template
+	candidate.ID = memory.EvolutionCandidateID(template.WorkspaceHash, template.Source, memory.TargetKindContextCompactionParams, variantFingerprint)
+	candidate.VariantFingerprint = variantFingerprint
+	candidate.VariantSpecSHA256 = variantDigest
+	candidate.CreatedAt = now.Add(3 * time.Minute)
+	candidate.ExpiresAt = now.Add(memory.DefaultCandidateTTL)
+	candidate.Status = memory.CandidateStateReady
+	candidate.EvalSetFingerprint = evalSetFrozen
+	if _, err := store.CreateEvolutionCandidate(context.Background(), candidate, candidate.CreatedAt); err != nil {
+		t.Fatalf("create second candidate: %v", err)
+	}
+	started, err := newEvaluationForBound(candidate, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err = store.StartEvaluation(context.Background(), candidate.ID, started, evaluationBindingFor(candidate), now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatalf("start second evaluation: %v", err)
+	}
+	concluded, err := store.FinishEvaluation(context.Background(), started.ID, memory.EvaluationStatusPassed, suiteResultFrozen, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("conclude second evaluation: %v", err)
+	}
+	return candidate, concluded
+}

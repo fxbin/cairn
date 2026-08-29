@@ -1662,6 +1662,10 @@ Usage:
   cairn memory candidate invalidate [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
+  cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate promote --candidate <id> --approver <label> --approval-fingerprint <sha256> --suite-state-dir <dir> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory promotion rollback [--reason insufficient_evidence|human_request] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
 
@@ -1869,19 +1873,22 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 	if err != nil {
 		return memory.Promotion{}, err
 	}
-	promotions, _, _, err := command.Service.InspectEvolutionPromotions(ctx, candidate.TargetKind, workspace, stateDir, configuration)
+	promotions, activation, activationFound, err := command.Service.InspectEvolutionPromotions(ctx, candidate.TargetKind, workspace, stateDir, configuration)
 	if err != nil && !errors.Is(err, memory.ErrNotFound) {
 		return memory.Promotion{}, err
 	}
 	nextVersion := 1
-	rollbackTarget := ""
 	if len(promotions) > 0 {
-		latest := promotions[len(promotions)-1]
-		nextVersion = latest.Version + 1
-		rollbackTarget = latest.ID
+		nextVersion = promotions[len(promotions)-1].Version + 1
+	}
+	// 回退目标锚定晋升时刻的激活版本：激活为基线时目标为空（回退即回基
+	// 线），保证任意版本回退后仍可继续回退。
+	rollbackTarget := ""
+	if activationFound {
+		rollbackTarget = activation.PromotionID
 	}
 	promotion := memory.Promotion{
-		SchemaVersion: memory.EvaluationSchemaVersionV1, CandidateID: candidate.ID, TargetKind: candidate.TargetKind,
+		SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, TargetKind: candidate.TargetKind,
 		Version: nextVersion, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
 		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,
@@ -1910,10 +1917,15 @@ func resultAttemptsHint(result benchmark.SandboxSuiteResult) int {
 	if tasks == 0 {
 		return 0
 	}
+	attempts := 0
 	for _, count := range armCounts {
-		return count / tasks
+		if attempts == 0 {
+			attempts = count / tasks
+		} else if attempts != count/tasks {
+			return 0
+		}
 	}
-	return 0
+	return attempts
 }
 
 // memoryPromotionRollback 回退当前激活版本：指针移回回退目标或清空回产品
@@ -1925,6 +1937,7 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
 	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
 	}
@@ -1944,6 +1957,13 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory promotion rollback failed:", err)
 		return exitFor(err)
+	}
+	if *jsonOutput {
+		writeJSON(command.Stdout, struct {
+			Promotion  memory.Promotion  `json:"promotion"`
+			Activation memory.Activation `json:"activation"`
+		}{Promotion: promotion, Activation: activation})
+		return ExitOK
 	}
 	target := "baseline"
 	if activation.PromotionID != "" {
