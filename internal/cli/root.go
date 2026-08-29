@@ -1159,6 +1159,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	evidence := flags.String("evidence", "", "evidence reference for reconciliation")
 	note := flags.String("note", "", "non-empty reconciliation note")
 	reason := flags.String("reason", "", "reason for a denial")
+	trialActivation := flags.Bool("trial-activation", false, "resolve the sandbox-activated compaction variant before resuming")
 	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
 	if err := flags.Parse(normalizeResumeArguments(arguments)); err != nil {
 		return ExitUsage
@@ -1188,6 +1189,11 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
+	}
+	configuration, err = command.resolveTrialActivation(ctx, *trialActivation, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "trial activation error:", err)
+		return ExitFailed
 	}
 	onEvent := func(event domain.Event) {
 		if *jsonOutput {
@@ -1328,6 +1334,7 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	maxOutputTokens := flags.Int("max-output-tokens", 0, "maximum reported output tokens")
 	maxWallTime := flags.String("max-wall-time", "", "maximum wall-clock duration")
 	maxCostUSD := flags.Float64("max-cost-usd", 0, "maximum reported-token cost in USD (requires configured pricing)")
+	trialActivation := flags.Bool("trial-activation", false, "resolve the sandbox-activated compaction variant before running (explicit trial opt-in)")
 	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
 	if err := flags.Parse(normalizeRunArguments(arguments)); err != nil {
 		return ExitUsage
@@ -1344,6 +1351,11 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
+	}
+	configuration, err = command.resolveTrialActivation(ctx, *trialActivation, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "trial activation error:", err)
+		return ExitFailed
 	}
 	onEvent := func(event domain.Event) {
 		if *jsonOutput {
@@ -1412,6 +1424,7 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
 	configPath := flags.String("config", "", "configuration path")
+	trialActivation := flags.Bool("trial-activation", false, "resolve the sandbox-activated compaction variant before inspection")
 	includeEvents := flags.Bool("events", false, "include full event history")
 	jsonOutput := flags.Bool("json", false, "write JSON to stdout")
 	if err := flags.Parse(arguments); err != nil {
@@ -1425,6 +1438,11 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
+	}
+	configuration, err = command.resolveTrialActivation(ctx, *trialActivation, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "trial activation error:", err)
+		return ExitFailed
 	}
 	result, err := command.Service.Inspect(ctx, *workspace, *stateDir, configuration, domain.RunID(flags.Arg(0)), *includeEvents)
 	if err != nil {
@@ -1529,6 +1547,7 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
 	configPath := flags.String("config", "", "configuration path")
+	trialActivation := flags.Bool("trial-activation", false, "resolve the sandbox-activated compaction variant before diagnostics")
 	jsonOutput := flags.Bool("json", false, "write the doctor report as NDJSON to stdout")
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
@@ -1541,6 +1560,11 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
+	}
+	configuration, err = command.resolveTrialActivation(ctx, *trialActivation, *workspace, *stateDir, configuration)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "trial activation error:", err)
+		return ExitFailed
 	}
 	report, err := command.Service.Doctor(ctx, *workspace, *stateDir, configuration)
 	if err != nil {
@@ -1624,6 +1648,23 @@ func writeRunManifest(writer io.Writer, manifest contract.RunManifest) {
 }
 
 // loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。
+// resolveTrialActivation 按显式旗标解析沙箱激活的压缩变体并返回覆盖后
+// 的配置；未选择加入时原样返回。四命令共用，保证指纹与漂移守卫一致。
+func (command Command) resolveTrialActivation(ctx context.Context, requested bool, workspace, stateDir string, configuration config.Config) (config.Config, error) {
+	if !requested {
+		return configuration, nil
+	}
+	resolved, activated, err := command.Service.ResolveTrialActivation(ctx, workspace, stateDir, configuration)
+	if err != nil {
+		return config.Config{}, err
+	}
+	if !activated {
+		fmt.Fprintln(command.Stderr, "trial activation: no sandbox promotion is active; refusing to silently run the baseline")
+		return config.Config{}, errors.New("no active sandbox promotion to resolve")
+	}
+	return resolved, nil
+}
+
 func (command Command) loadConfig(workspace, configuredPath string, overrides config.Overrides) (config.Config, error) {
 	if workspace == "" {
 		current, err := os.Getwd()
@@ -1643,11 +1684,11 @@ func (command Command) usage() {
 	fmt.Fprint(command.Stderr, `Cairn — an event-sourced coding agent
 
 Usage:
-  cairn run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--base-url <url>] [--model <name>] [--api-key-env <name>] [--max-turns <n>] [--max-tool-calls <n>] [--max-input-tokens <n>] [--max-output-tokens <n>] [--max-wall-time <duration>] [--max-cost-usd <n>] [--json]
-  cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--json]
-  cairn inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--events] [--json] <run-id>
+  cairn run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--base-url <url>] [--model <name>] [--api-key-env <name>] [--max-turns <n>] [--max-tool-calls <n>] [--max-input-tokens <n>] [--max-output-tokens <n>] [--max-wall-time <duration>] [--max-cost-usd <n>] [--trial-activation] [--json]
+  cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--trial-activation] [--json]
+  cairn inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--trial-activation] [--events] [--json] <run-id>
   cairn evidence [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <run-id>
-  cairn doctor [--workspace <path>] [--state-dir <path>]
+  cairn doctor [--workspace <path>] [--state-dir <path>] [--trial-activation]
   cairn memory capture --run <run-id> [--ttl <duration>] [--supersedes <candidate-id>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory recall [--limit <n>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory explain [--task-digest <sha256>] [--outcome <value>] [--failure-class <value>] [--trusted-verification any|required|not_required] [--created-from <UTC-RFC3339>] [--created-until <UTC-RFC3339>] [--limit <n>] [--precision compact|trace] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]

@@ -470,3 +470,16 @@ func TestPromotionActivateUsageRequiresVersion(t *testing.T) {
 		t.Fatalf("promote against an unknown store must not succeed, exit=%d", exit)
 	}
 }
+
+// TestTrialActivationFlagFailsClosedWithoutPromotion 锁定试运行旗标的失败
+// 关闭面：显式请求激活但目标库无激活版本时拒绝运行，不沉默回基线。
+func TestTrialActivationFlagFailsClosedWithoutPromotion(t *testing.T) {
+	workspace := t.TempDir()
+	writeCapabilityConfig(t, workspace)
+	var stdout, stderr bytes.Buffer
+	command := Command{Service: app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}, Stdout: &stdout, Stderr: &stderr}
+	exit := command.Run(context.Background(), []string{"run", "trial task", "--workspace", workspace, "--state-dir", t.TempDir(), "--trial-activation"})
+	if exit == ExitOK || !strings.Contains(stderr.String(), "trial activation") {
+		t.Fatalf("explicit trial activation without a promotion must fail closed: exit=%d stderr=%q", exit, stderr.String())
+	}
+}

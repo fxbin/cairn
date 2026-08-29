@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
@@ -21,20 +22,10 @@ import (
 const variantConfigPrefix = "cairn-sandbox-variant-config-v1"
 
 // ExpandCompactionVariant 把四项压缩参数完整应用到基线配置副本上，返回
-// 可直接用于执行的变体臂配置；任何进入候选身份的字段都必须改变运行时语义。
+// 可直接用于执行的变体臂配置；实现委托应用层单一源，评测臂装配与试运行
+// 解析共用同一公式。
 func ExpandCompactionVariant(base config.Config, variant memory.CompactionParamsVariant) (config.Config, error) {
-	if err := variant.Validate(); err != nil {
-		return config.Config{}, fmt.Errorf("expand compaction variant: %w", err)
-	}
-	expanded := base
-	expanded.Context.MaxPromptTokens = variant.MaxPromptTokens
-	expanded.Context.MaxSummaryBytes = variant.MaxSummaryBytes
-	expanded.Context.InventoryBudgetPercent = variant.InventoryBudgetPercent
-	expanded.Context.ThresholdReservePercent = variant.ThresholdReservePercent
-	if err := config.Validate(expanded); err != nil {
-		return config.Config{}, fmt.Errorf("expanded variant config invalid: %w", err)
-	}
-	return expanded, nil
+	return app.ApplyCompactionVariant(base, variant)
 }
 
 // VariantExpandedFingerprint 以闭合视图计算展开后变体配置的身份：只取基线
