@@ -1,7 +1,6 @@
 package modelcatalog
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,5 +138,4 @@ func TestCacheWrapperRejectsForeignVersion(t *testing.T) {
 	if _, err := loadCache(path); err == nil {
 		t.Fatal("foreign schema version must be rejected")
 	}
-	var _ = json.Marshal
 }

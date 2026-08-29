@@ -28,7 +28,7 @@ var protocolStopReasons = []string{"stop", "length", "tool_calls"}
 
 // defaultProviderKeyEnv 是向导的密钥环境变量名默认值：语义中性，不预设厂
 // 商；用户可改。
-const defaultProviderKeyEnv = "CAIRN_PROVIDER_KEY"
+const defaultProviderKeyEnv = "AGENT_API_KEY"
 
 // initOutcome 承载向导的落盘结果与验证结论。
 type initOutcome struct {
@@ -42,10 +42,11 @@ type initOutcome struct {
 
 // initFlags 收集向导输入的三要素；任何一项缺省时进入交互问答。
 type initFlags struct {
-	BaseURL    string
-	Model      string
-	APIKeyEnv  string
-	CatalogURL string
+	BaseURL      string
+	Model        string
+	APIKeyEnv    string
+	CatalogURL   string
+	CatalogCache string
 }
 
 // interactivePrompt 在 stdin 上读取一行输入；空输入回车接受默认值。
@@ -93,7 +94,9 @@ func (command Command) runInit(ctx context.Context, flags initFlags) (*initOutco
 	// 目录预填：命中则以上限与单价充实能力卡；未命中走安全默认（上限零=
 	// 预算对照跳过）。缓存默认落用户缓存目录，弱网时降级陈旧缓存。
 	catalogOptions := modelcatalog.Options{CatalogURL: flags.CatalogURL}
-	if cacheDir, err := os.UserCacheDir(); err == nil {
+	if flags.CatalogCache != "" {
+		catalogOptions.CachePath = flags.CatalogCache
+	} else if cacheDir, err := os.UserCacheDir(); err == nil {
 		catalogOptions.CachePath = filepath.Join(cacheDir, "cairn", "models-catalog.json")
 	}
 	if catalog, err := modelcatalog.Load(catalogOptions); err == nil {
@@ -109,7 +112,7 @@ func (command Command) runInit(ctx context.Context, flags initFlags) (*initOutco
 			fmt.Fprintf(command.Stdout, "目录命中: %s（context %d / output %d / 单价 $%.2f|M in, $%.2f|M out——按你的实际账单口径可改）\n",
 				entry.Name, entry.ContextTokens, entry.OutputTokens, entry.InputUSDPerMillion, entry.OutputUSDPerMillion)
 		} else if len(candidates) > 1 {
-			fmt.Fprintf(command.Stdout, "目录命中 %d 个候选，取名称完全一致者或第一个：", len(candidates))
+			fmt.Fprintf(command.Stdout, "目录命中 %d 个候选（按精确度排序），取第一个：", len(candidates))
 			for _, entry := range candidates {
 				fmt.Fprintf(command.Stdout, " %s", entry.Name)
 			}
@@ -128,21 +131,18 @@ func (command Command) runInit(ctx context.Context, flags initFlags) (*initOutco
 		fmt.Fprintf(command.Stdout, "目录不可用（%v），使用安全默认能力声明\n", err)
 	}
 
-	// 实测探测：密钥已在环境时以零期望模式核对 usage 流式与 stop reason，
-	// 修正预填。密钥未设则跳过，落盘后提示 check-provider 验证。
+	// 实测探测：密钥已在环境时以零期望模式核对 usage 流式与 stop reason。
+	// 工具调用与流式 usage 是生产配置的硬性要求——目录或实测给出任一否定
+	// 即判定该端点/模型不可用于 Cairn 生产路径，向导终止且不落盘，绝不生
+	// 成一份必然无法通过严格校验的配置。
 	if os.Getenv(flags.APIKeyEnv) != "" {
 		observations, probeErr := probeEndpointBehavior(ctx, flags.BaseURL, flags.Model, flags.APIKeyEnv)
 		if probeErr != nil {
 			outcome.ProbeNotes = append(outcome.ProbeNotes, fmt.Sprintf("探测失败（配置仍按预填生成，建议稍后运行 check-provider 复核）: %v", probeErr))
 		} else {
 			outcome.ProbeRan = true
-			if observations.UsageStreamed {
-				outcome.ProbeNotes = append(outcome.ProbeNotes, "usage 流式: 实测支持")
-			} else {
-				capability.StreamingUsage = false
-				outcome.ProbeNotes = append(outcome.ProbeNotes, "usage 流式: 实测未见（能力卡已按实测修正为 false）")
-			}
-			if observations.StopReason != "" && !containsString(protocolStopReasons, observations.StopReason) {
+			outcome.ProbeNotes = append(outcome.ProbeNotes, "usage 流式: 实测支持")
+			if observations.StopReason != "" && !containsString(capability.StopReasons, observations.StopReason) {
 				capability.StopReasons = append(capability.StopReasons, observations.StopReason)
 				outcome.ProbeNotes = append(outcome.ProbeNotes, fmt.Sprintf("停止原因: 实测 %q 不在协议标准集，已并入声明", observations.StopReason))
 			} else if observations.StopReason != "" {
@@ -151,6 +151,9 @@ func (command Command) runInit(ctx context.Context, flags initFlags) (*initOutco
 		}
 	} else {
 		outcome.ProbeNotes = append(outcome.ProbeNotes, "密钥未设置，跳过实测探测——建议 export 后运行 cairn check-provider 验证")
+	}
+	if !capability.ToolCalls || !capability.StreamingUsage {
+		return nil, fmt.Errorf("该模型/端点缺少工具调用或流式 usage 能力，不满足 Cairn 生产配置的硬性要求；向导终止且未写入任何文件")
 	}
 
 	// 生成最小 YAML：只写 provider 段，其余全部走默认值。
@@ -170,7 +173,8 @@ func (command Command) runInit(ctx context.Context, flags initFlags) (*initOutco
 	// 回读自证：生成的文件必须能严格装载且能力卡可解析。
 	loaded, err := config.Load(configPath, config.Overrides{})
 	if err != nil {
-		return nil, fmt.Errorf("生成的配置无法装载（即将删除）: %w", err)
+		os.Remove(configPath)
+		return nil, fmt.Errorf("生成的配置无法装载（已删除）: %w", err)
 	}
 	if loaded.Provider.Capability == nil {
 		os.Remove(configPath)
@@ -191,14 +195,17 @@ type probeObservations struct {
 
 // probeEndpointBehavior 以零期望 Requirements 向端点发一条极小探测请求，
 // 观测 usage 流式与停止原因的真实行为；不做任何合同判定，只收集事实。
+// probeRequestTimeout 是发现探测的单次请求与总超时。
+const probeRequestTimeout = 60 * time.Second
+
 func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKeyEnv string) (*probeObservations, error) {
 	client := openaicompat.Client{
 		BaseURL: baseURL, APIKey: os.Getenv(apiKeyEnv),
-		HTTPClient:   &http.Client{Timeout: 60 * time.Second},
+		HTTPClient:   &http.Client{Timeout: probeRequestTimeout},
 		Requirements: openaicompat.Requirements{RequireUsage: false},
 	}
 	observations := &probeObservations{}
-	requestCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, probeRequestTimeout)
 	defer cancel()
 	err := client.Stream(requestCtx, ports.ModelRequest{Model: model, Messages: []ports.Message{{Role: "user", Content: "Reply with the single word: ok."}}},
 		func(event ports.ModelEvent) error {
@@ -245,7 +252,7 @@ func renderMinimalConfig(flags initFlags, capability config.ProviderCapabilityCo
 	}
 	builder.WriteString("]\n")
 	if pricing != nil {
-		builder.WriteString("\n# 定价（每百万 token 的美元单价；目录预填，按实际账单口径修改）\n")
+		builder.WriteString("\n# 定价（每 token 的美元单价，已由目录每百万单价换算；按实际账单口径修改）\n")
 		builder.WriteString("pricing:\n")
 		fmt.Fprintf(&builder, "  input_token_usd: %.10g\n", pricing.InputTokenUSD)
 		fmt.Fprintf(&builder, "  output_token_usd: %.10g\n", pricing.OutputTokenUSD)

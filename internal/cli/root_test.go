@@ -496,7 +496,7 @@ func TestInitGeneratesLoadableMinimalConfig(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
 	exit := command.Run(context.Background(), []string{"init",
-		"--base-url", "https://provider.test/v4", "--model", "test-model-x", "--api-key-env", "TEST_KEY", "--catalog-url", "http://127.0.0.1:1/unreachable"})
+		"--base-url", "https://provider.test/v4", "--model", "test-model-x", "--api-key-env", "TEST_KEY", "--catalog-url", "http://127.0.0.1:1/unreachable", "--catalog-cache", filepath.Join(t.TempDir(), "catalog.json")})
 	if exit != ExitOK {
 		t.Fatalf("init exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
 	}
@@ -535,7 +535,7 @@ func TestInitRefusesToOverwriteExistingConfig(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
-	exit := command.Run(context.Background(), []string{"init", "--base-url", "https://x.test", "--model", "m", "--api-key-env", "K", "--catalog-url", "http://127.0.0.1:1/unreachable"})
+	exit := command.Run(context.Background(), []string{"init", "--base-url", "https://x.test", "--model", "m", "--api-key-env", "K", "--catalog-url", "http://127.0.0.1:1/unreachable", "--catalog-cache", filepath.Join(t.TempDir(), "catalog.json")})
 	if exit == ExitOK || !strings.Contains(stderr.String(), "不覆盖") {
 		t.Fatalf("must refuse overwrite: exit=%d stderr=%q", exit, stderr.String())
 	}

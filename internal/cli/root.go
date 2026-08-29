@@ -99,6 +99,7 @@ func (command Command) initCommand(ctx context.Context, arguments []string) int 
 	model := flags.String("model", "", "model name")
 	apiKeyEnv := flags.String("api-key-env", "", "environment variable name holding the API key")
 	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
+	catalogCache := flags.String("catalog-cache", "", "model metadata cache file path override")
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	if err := flags.Parse(arguments); err != nil {
 		return ExitUsage
@@ -113,7 +114,7 @@ func (command Command) initCommand(ctx context.Context, arguments []string) int 
 			return ExitFailed
 		}
 	}
-	outcome, err := command.runInit(ctx, initFlags{BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv, CatalogURL: *catalogURL})
+	outcome, err := command.runInit(ctx, initFlags{BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv, CatalogURL: *catalogURL, CatalogCache: *catalogCache})
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "init failed:", err)
 		return ExitFailed

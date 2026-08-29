@@ -61,7 +61,6 @@ type rawCatalogModel struct {
 		Input  *float64 `json:"input"`
 		Output *float64 `json:"output"`
 	} `json:"cost"`
-	Status *string `json:"status"`
 }
 
 type rawCatalogProvider struct {
@@ -127,10 +126,10 @@ func Load(options Options) (*Catalog, error) {
 	if err != nil {
 		return staleFallback(options.CachePath, err)
 	}
+	// 缓存写失败只损失下次的新鲜度：网络成果已在内存中，降级返回而不作
+	// 废整个获取。
 	if options.CachePath != "" {
-		if err := writeCache(options.CachePath, catalog); err != nil {
-			return nil, fmt.Errorf("write catalog cache: %w", err)
-		}
+		_ = writeCache(options.CachePath, catalog)
 	}
 	return catalog, nil
 }
@@ -273,7 +272,27 @@ func (catalog *Catalog) Lookup(query string) []ModelEntry {
 	if len(exact) > 0 {
 		return exact
 	}
-	return partial
+	if len(partial) > 0 {
+		return partial
+	}
+	// 点号变体兜底：gpt4.1 与 gpt-4.1 互查——两侧去掉点号与连字符后再比。
+	dotsStripped := stripDotsAndDashes(normalized)
+	if dotsStripped == "" {
+		return nil
+	}
+	var loose []ModelEntry
+	for _, entry := range catalog.Entries {
+		if stripDotsAndDashes(normalizeModelName(entry.Name)) == dotsStripped || stripDotsAndDashes(normalizeModelName(entry.ID)) == dotsStripped {
+			loose = append(loose, entry)
+		}
+	}
+	return loose
+}
+
+// stripDotsAndDashes 移除点号与连字符，供最宽松一级的形态匹配。
+func stripDotsAndDashes(value string) string {
+	value = strings.ReplaceAll(value, ".", "")
+	return strings.ReplaceAll(value, "-", "")
 }
 
 // normalizeModelName 把模型名归一为可比形态：小写、空白与连字符统一。
