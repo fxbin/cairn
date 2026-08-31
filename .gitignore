@@ -7,6 +7,10 @@
 # content under this directory.
 /benchmarks/
 
+# Workspace-local runtime configuration may reference machine-local credential
+# environment variables; it is per-machine state and must never be committed.
+/.agent/
+
 # macOS and Go build/test outputs.
 .DS_Store
 **/.DS_Store
