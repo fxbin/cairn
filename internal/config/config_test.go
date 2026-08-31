@@ -714,3 +714,54 @@ func TestValidateRejectsInvalidGenerationValues(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAPIKeyEnvOnlyRejectsNonPortableSyntax 锁定 provider.api_key_env 的
+// 确定性语法校验合同：可移植变量名（含语法合法但看起来像密钥的字母数字
+// 串）通过装载；非法字符与非法形态失败关闭，且错误文本不回显输入值。是
+// 否疑似密钥不靠形状猜测——实际凭据治理依靠轮换、环境注入与禁止落盘。
+func TestValidateAPIKeyEnvOnlyRejectsNonPortableSyntax(t *testing.T) {
+	validNames := []string{
+		"ZHIPU_API_KEY",
+		"agent_api_key",
+		"AGENT_KEY_V2",
+		// 语法合法的字母数字串即使形似密钥也必须放行：校验不做形状猜测。
+		"abcdef0123456789abcdef0123456789",
+		"aBcDeF0123456789aBcDeF01",
+		strings.Repeat("A", 65),
+	}
+	invalidValues := []string{
+		"sk-proj-abcdef123456",
+		"id.secret.payload",
+		"1ST_VARIABLE",
+		"WITH SPACE",
+	}
+	writeConfig := func(value string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), ".agent", "config.yaml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "version: 1\nprovider:\n  base_url: http://key.test/v1\n  model: key-model\n  api_key_env: " + value + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, name := range validNames {
+		if _, err := Load(writeConfig(name), Overrides{}); err != nil {
+			t.Fatalf("api_key_env %q must load: %v", name, err)
+		}
+	}
+	for _, value := range invalidValues {
+		_, err := Load(writeConfig(value), Overrides{})
+		if err == nil {
+			t.Fatalf("invalid api_key_env must be rejected")
+		}
+		if strings.Contains(err.Error(), value) {
+			t.Fatalf("rejection must not echo the input value: %v", err)
+		}
+		if !strings.Contains(err.Error(), "api_key_env") {
+			t.Fatalf("rejection must name the offending field: %v", err)
+		}
+	}
+}

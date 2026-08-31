@@ -508,6 +508,9 @@ func Validate(config Config) error {
 	if config.Provider.APIKeyEnv == "" {
 		return fmt.Errorf("provider.api_key_env is required")
 	}
+	if err := providerAPIKeyEnv(config.Provider.APIKeyEnv); err != nil {
+		return fmt.Errorf("provider.api_key_env: %w", err)
+	}
 	if config.Provider.BaseURL != "" {
 		if err := validateProviderBaseURL(config.Provider.BaseURL); err != nil {
 			return err
@@ -713,6 +716,17 @@ func validEnvironmentKey(key string) bool {
 		}
 	}
 	return true
+}
+
+// providerAPIKeyEnv 拒绝把 provider.api_key_env 配成非法变量名；校验只覆盖
+// 确定性语法（可移植字符集），不做密钥形状猜测——语法合法的值一律放行，
+// 实际凭据治理依靠轮换、环境注入与禁止落盘完成。错误文本不回显输入值，
+// 防止误填的真实密钥随错误输出扩散。
+func providerAPIKeyEnv(name string) error {
+	if !validEnvironmentKey(name) {
+		return errors.New("api_key_env must be a portable environment variable name: letters, digits and underscores, not starting with a digit")
+	}
+	return nil
 }
 
 // RequestTimeout 解析模型请求超时配置。
