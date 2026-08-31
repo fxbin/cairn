@@ -47,12 +47,27 @@ type providerGenerationSummary struct {
 // generationUnsupportedText 是摘要中表达全块未声明的固定文本。
 const generationUnsupportedText = "unsupported"
 
-// toolRoundtripSkipped 与相关常量构成工具回路检查结论的闭合词表。
+// toolRoundtripSkipped 与相关常量构成工具回路检查结论的闭合词表：skipped=
+// 未启用探测；ok=两程全通（工具调用、tool result 回喂、最终回答）；
+// not_invoked=模型未调用工具；failed=第一程失败；second_leg_failed=第一程
+// 成功但第二程失败或无最终回答。
 const (
-	toolRoundtripSkipped    = "skipped"
-	toolRoundtripOK         = "ok"
-	toolRoundtripNotInvoked = "not_invoked"
+	toolRoundtripSkipped         = "skipped"
+	toolRoundtripOK              = "ok"
+	toolRoundtripNotInvoked      = "not_invoked"
+	toolRoundtripFailed          = "failed"
+	toolRoundtripSecondLegFailed = "second_leg_failed"
 )
+
+// probeResultPass 等常量构成探测结论的闭合词表。
+const (
+	probeResultPass         = "pass"
+	probeResultFail         = "fail"
+	probeResultInconclusive = "inconclusive"
+)
+
+// contractProbeToolResult 是探测工具回喂给第二程的固定 tool result 内容。
+const contractProbeToolResult = `{"value":7}`
 
 // checkProvider 对当前配置解析出的 OpenAI-compatible 提供方执行一次真实模型
 // 合同探测：验证 usage 流、声明集合内的 stop reason、显式生成参数被端点接
@@ -84,7 +99,7 @@ func (command Command) checkProvider(ctx context.Context, arguments []string) in
 		command.writeProviderCheck(result)
 	}
 	switch result.Result {
-	case "pass":
+	case probeResultPass:
 		return ExitOK
 	default:
 		return ExitFailed
@@ -94,7 +109,7 @@ func (command Command) checkProvider(ctx context.Context, arguments []string) in
 // runProviderProbe 执行探测主流程并始终返回完整结果结构：配置与能力卡不满足
 // 合同时直接产出 fail 结论，而不是依赖错误路径拼装输出。
 func (command Command) runProviderProbe(ctx context.Context, configuration config.Config, probeTools bool) providerCheckResult {
-	result := providerCheckResult{Result: "fail", ProviderKind: contract.ProviderKindOpenAICompatible}
+	result := providerCheckResult{Result: probeResultFail, ProviderKind: contract.ProviderKindOpenAICompatible}
 	if configuration.Provider.BaseURL == "" || configuration.Provider.Model == "" {
 		result.Error = "provider.base_url and provider.model must be configured"
 		return result
@@ -152,14 +167,16 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	}
 	request.Messages = []ports.Message{{Role: "user", Content: promptText}}
 	textSeen := false
-	var toolSeen bool
+	var toolCalls []ports.ToolCall
 	var stopReason string
 	eventsErr := client.Stream(ctx, request, func(event ports.ModelEvent) error {
 		switch event.Kind {
 		case ports.TextDelta:
 			textSeen = true
 		case ports.ToolCallEvent:
-			toolSeen = true
+			if event.ToolCall != nil {
+				toolCalls = append(toolCalls, *event.ToolCall)
+			}
 		case ports.UsageEvent:
 			result.UsageStreamed = true
 		case ports.Done:
@@ -169,26 +186,82 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	})
 	if eventsErr != nil {
 		result.Error = eventsErr.Error()
+		if probeTools {
+			result.ToolRoundtrip = toolRoundtripFailed
+		} else {
+			result.ToolRoundtrip = toolRoundtripSkipped
+		}
 		return result
 	}
 	result.StopReason = stopReason
-	result.ToolRoundtrip = map[bool]string{true: toolRoundtripOK, false: toolRoundtripSkipped}[probeTools]
-	result.Result = judgeProbe(probeTools, toolSeen, textSeen, result)
-	return result
-}
-
-// judgeProbe 汇总探测事实给出闭合结论：usage 与 stop reason 的缺失已由适配
-// 器层失败关闭走到 error 分支，此处只剩工具回路的可判性问题。
-func judgeProbe(probeTools, toolSeen, textSeen bool, result providerCheckResult) string {
-	if !textSeen && !(probeTools && toolSeen) {
-		result.Error = "provider produced no observable output"
-		return "fail"
+	if !probeTools {
+		result.ToolRoundtrip = toolRoundtripSkipped
+		if !textSeen {
+			result.Error = "provider produced no observable output"
+			result.Result = probeResultFail
+			return result
+		}
+		result.Result = probeResultPass
+		return result
 	}
-	if probeTools && !toolSeen {
+	if len(toolCalls) == 0 {
 		result.ToolRoundtrip = toolRoundtripNotInvoked
-		return "inconclusive"
+		if !textSeen {
+			// 既无文本也无工具调用的空响应说明端点异常，属于失败而不是
+			// 可判性存疑；只有输出了普通文本但未按要求调用工具才是
+			// inconclusive。
+			result.Error = "provider produced no observable output"
+			result.Result = probeResultFail
+			return result
+		}
+		result.Result = probeResultInconclusive
+		return result
 	}
-	return "pass"
+	// 两程合同：第一程的每个工具调用都必须回喂 tool result；回路可用性以
+	// 第二程能否产出最终回答判定，单程收到工具调用不足以判定 ok。
+	secondLegMessages := append(append([]ports.Message(nil), request.Messages...), ports.Message{Role: "assistant", ToolCalls: toolCalls})
+	for _, call := range toolCalls {
+		secondLegMessages = append(secondLegMessages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: contractProbeToolResult})
+	}
+	secondLeg := request
+	secondLeg.Messages = secondLegMessages
+	secondTextSeen := false
+	secondToolCalls := 0
+	secondStopReason := ""
+	secondErr := client.Stream(ctx, secondLeg, func(event ports.ModelEvent) error {
+		switch event.Kind {
+		case ports.TextDelta:
+			secondTextSeen = true
+		case ports.ToolCallEvent:
+			secondToolCalls++
+		case ports.UsageEvent:
+			result.UsageStreamed = true
+		case ports.Done:
+			if event.StopReason != "" {
+				secondStopReason = event.StopReason
+			}
+		}
+		return nil
+	})
+	if secondErr != nil {
+		result.Error = secondErr.Error()
+		result.ToolRoundtrip = toolRoundtripSecondLegFailed
+		result.Result = probeResultFail
+		return result
+	}
+	// 最终回答的三要件：存在最终文本、没有再次请求工具、不以 tool_calls 终
+	// 止。先说几句话再继续调工具的响应没有完成回路，不得判 ok。
+	secondLegComplete := secondTextSeen && secondToolCalls == 0 && secondStopReason != "tool_calls"
+	if !secondLegComplete {
+		result.Error = "second leg did not produce a final answer"
+		result.ToolRoundtrip = toolRoundtripSecondLegFailed
+		result.Result = probeResultFail
+		return result
+	}
+	result.StopReason = secondStopReason
+	result.ToolRoundtrip = toolRoundtripOK
+	result.Result = probeResultPass
+	return result
 }
 
 // probeTimeout 返回探测专用超时：优先复用请求超时配置，保证与生产一致的
