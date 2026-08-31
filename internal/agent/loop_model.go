@@ -44,6 +44,20 @@ type collectedResponse struct {
 
 var errSensitiveToolArguments = errors.New("model tool arguments contain a secret-like value")
 
+// validateUsage 校验提供方回报的用量自洽：token 计数不得为负，total 在提供
+// 时必须等于 prompt 与 completion 之和。total 缺席（0）不构成不一致，因为
+// 部分按量端点不回填汇总值。不一致按能力合同漂移失败关闭，错误文本只给
+// 定性描述、不回显具体数值，避免把响应细节写入事件。
+func validateUsage(usage *ports.Usage) error {
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 {
+		return &ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "negative token count"}
+	}
+	if usage.TotalTokens != 0 && usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
+		return &ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "total does not equal prompt plus completion"}
+	}
+	return nil
+}
+
 // callModel 调用 Provider 并严格收集一个以 Done 结束的有效流式响应。
 func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (collectedResponse, error) {
 	var response collectedResponse
@@ -72,6 +86,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 		case ports.UsageEvent:
 			if event.Usage == nil || response.Usage != nil {
 				return errors.New("provider emitted invalid usage event")
+			}
+			if err := validateUsage(event.Usage); err != nil {
+				return err
 			}
 			usage := *event.Usage
 			response.Usage = &usage

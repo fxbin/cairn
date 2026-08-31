@@ -110,6 +110,20 @@ func validateRange(name string, value, minimum, maximum int) error {
 	return nil
 }
 
+// validateUsageAccounting 校验提供方回报的用量自洽：计数非负、total 在提供
+// 时必须等于 prompt 与 completion 之和；total 缺席（0）不构成不一致，因为
+// 部分按量端点不回填汇总值。校验在协议边界失败关闭（invalid_response），
+// Agent Loop 保留同一规则作为纵深防御；错误文本只定性、不回显数值。
+func validateUsageAccounting(usage *ports.Usage) error {
+	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 {
+		return errors.New("provider usage contains a negative token count")
+	}
+	if usage.TotalTokens != 0 && usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
+		return errors.New("provider usage total does not equal prompt plus completion")
+	}
+	return nil
+}
+
 // checkStreamContract 在一次流成功完成后核对响应闭合合同：usage 缺失或
 // stop reason 缺失/未声明都按 invalid_response 失败关闭，不做重试。
 func (client Client) checkStreamContract(usageSeen bool, stopReason string) error {
@@ -180,6 +194,11 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 		switch event.Kind {
 		case ports.UsageEvent:
 			usageSeen = true
+			if event.Usage != nil {
+				if err := validateUsageAccounting(event.Usage); err != nil {
+					return &ProviderError{Kind: "invalid_response", Cause: err}
+				}
+			}
 		case ports.Done:
 			stopReason = event.StopReason
 		}
@@ -531,13 +550,14 @@ func orderedToolCalls(calls map[int]*toolCallAccumulator) ([]*toolCallAccumulato
 	return ordered, nil
 }
 
-// statusKind 将 HTTP 状态码归类为稳定的提供方错误种类。
+// statusKind 将 HTTP 状态码归类为稳定的提供方错误种类；429 必须复用统一
+// 失败词表的 rate_limited，禁止在此自造别名造成词表漂移。
 func statusKind(statusCode int) string {
 	switch {
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
 		return "auth"
 	case statusCode == http.StatusTooManyRequests:
-		return "rate_limit"
+		return contract.FailureRateLimited
 	case statusCode >= 500:
 		return "server"
 	default:

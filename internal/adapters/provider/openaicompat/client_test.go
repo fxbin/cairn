@@ -260,3 +260,69 @@ func TestContractFailsClosedOnUndeclaredStopReason(t *testing.T) {
 		t.Fatalf("missing finish reason must fail closed, got %v", err)
 	}
 }
+
+// TestContractClassifiesRateLimitWithUnifiedVocabulary 锁定 429 的失败分类：
+// 适配器必须复用统一失败词表的 rate_limited 并保持可重试，禁止自造
+// rate_limit 别名造成词表漂移。
+func TestContractClassifiesRateLimitWithUnifiedVocabulary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusTooManyRequests)
+		_, _ = writer.Write([]byte("rate limited"))
+	}))
+	defer server.Close()
+	err := (Client{BaseURL: server.URL}).Stream(context.Background(), ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	var providerError *ProviderError
+	if err == nil || !errors.As(err, &providerError) {
+		t.Fatalf("expected provider error, got %v", err)
+	}
+	if providerError.ErrorClass() != "rate_limited" {
+		t.Fatalf("429 must classify as rate_limited, got %q", providerError.ErrorClass())
+	}
+	if !providerError.Retryable {
+		t.Fatal("429 must remain retryable")
+	}
+}
+
+// TestContractFailsClosedOnInconsistentUsage 锁定协议边界的用量自洽校验：
+// 负数计数与 total 不等于分项之和的响应按 invalid_response 失败关闭且不可
+// 重试；total 缺席（0）不构成不一致。
+func TestContractFailsClosedOnInconsistentUsage(t *testing.T) {
+	usageFrame := func(usage string) http.HandlerFunc {
+		return func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"stop\"}],\"usage\":" + usage + "}\n\n"))
+			_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+		}
+	}
+	cases := []struct {
+		name  string
+		usage string
+		want  string
+	}{
+		{"负数 token 计数", `{"prompt_tokens":-1,"completion_tokens":2,"total_tokens":1}`, "negative"},
+		{"total 与分项不一致", `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":7}`, "total does not equal"},
+		{"total 缺席通过", `{"prompt_tokens":3,"completion_tokens":2}`, ""},
+		{"分项一致通过", `{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(usageFrame(testCase.usage))
+			defer server.Close()
+			client := Client{BaseURL: server.URL, Requirements: Requirements{RequireUsage: true, AllowedStopReasons: []string{"stop"}}}
+			err := client.Stream(context.Background(), ports.ModelRequest{Model: "m"}, func(ports.ModelEvent) error { return nil })
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				return
+			}
+			var providerError *ProviderError
+			if !errors.As(err, &providerError) || providerError.Kind != "invalid_response" || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("expected non-retryable invalid_response containing %q, got %v", testCase.want, err)
+			}
+			if providerError.Retryable {
+				t.Fatal("inconsistent usage must not be retried")
+			}
+		})
+	}
+}

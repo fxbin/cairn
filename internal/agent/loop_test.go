@@ -2370,3 +2370,43 @@ func TestLoopPersistsDeclaredProviderStopReason(t *testing.T) {
 		t.Fatalf("model response did not retain finish reason: %#v", events)
 	}
 }
+
+// TestCallModelRejectsInconsistentUsage 锁定用量的运行期自洽校验：负数计数
+// 与 total 不等于 prompt+completion 的响应按能力合同漂移失败关闭；total 缺
+// 席（0）不构成不一致，因为部分按量端点不回填汇总值。错误必须携带
+// provider_capability_mismatch 分类，且不回显具体数值。
+func TestCallModelRejectsInconsistentUsage(t *testing.T) {
+	registry, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name         string
+		script       []ports.ModelEvent
+		wantObserved string
+	}{
+		{"负数 token 计数", []ports.ModelEvent{{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: -1, CompletionTokens: 2, TotalTokens: 1}}, {Kind: ports.Done, StopReason: "stop"}}, "negative"},
+		{"total 与分项不一致", []ports.ModelEvent{{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 7}}, {Kind: ports.Done, StopReason: "stop"}}, "total does not equal"},
+		{"total 缺席不构成不一致", []ports.ModelEvent{{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 3, CompletionTokens: 2}}, {Kind: ports.Done, StopReason: "stop"}}, ""},
+		{"分项一致通过", []ports.ModelEvent{{Kind: ports.UsageEvent, Usage: &ports.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5}}, {Kind: ports.Done, StopReason: "stop"}}, ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			loop := &Loop{Provider: &scriptedProvider{scripts: [][]ports.ModelEvent{testCase.script}}, Tools: registry}
+			_, err := loop.callModel(context.Background(), []ports.Message{{Role: "user", Content: "hi"}})
+			if testCase.wantObserved == "" {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				return
+			}
+			var mismatch *ProviderCapabilityMismatchError
+			if !errors.As(err, &mismatch) || !strings.Contains(mismatch.Observed, testCase.wantObserved) {
+				t.Fatalf("expected capability mismatch with observed containing %q, got %v", testCase.wantObserved, err)
+			}
+			if mismatch.ErrorClass() != "provider_capability_mismatch" {
+				t.Fatalf("unexpected error class %q", mismatch.ErrorClass())
+			}
+		})
+	}
+}
