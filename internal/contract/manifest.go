@@ -7,8 +7,14 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// manifestSchemaV1 是 RunManifest 的当前产品合同版本。
+// manifestSchemaV1 是 version 1 配置对应的 RunManifest 产品合同版本。
 const manifestSchemaV1 = 1
+
+// manifestSchemaV2 是 version 2 配置对应的 RunManifest 产品合同版本：新增
+// ProviderSelection 身份投影。由发起 run 时的 Config.Version 决定，历史
+// （version 1）run 的投影永不自动补造 Selection；新 reader 支持 v1/v2，旧
+// reader 不保证消费 v2。
+const manifestSchemaV2 = 2
 
 // ProviderKindOpenAICompatible 是当前唯一生产 Provider 线协议标识。
 const ProviderKindOpenAICompatible = "openai_compatible"
@@ -18,10 +24,11 @@ const ProviderKindOpenAICompatible = "openai_compatible"
 // 真实模型请求。卡回放与 Boot 共用同一解析函数：仅显式能力声明产出卡；
 // 声明缺失或解析失败（防御路径，合法 run 不可达）时保持 nil 不伪造。
 type ProviderIdentity struct {
-	Kind    string                  `json:"kind,omitempty"`
-	BaseURL string                  `json:"base_url,omitempty"`
-	Model   string                  `json:"model,omitempty"`
-	Card    *ProviderCapabilityCard `json:"card,omitempty"`
+	Kind      string                  `json:"kind,omitempty"`
+	BaseURL   string                  `json:"base_url,omitempty"`
+	Model     string                  `json:"model,omitempty"`
+	Card      *ProviderCapabilityCard `json:"card,omitempty"`
+	Selection *ProviderSelection      `json:"selection,omitempty"`
 }
 
 // PolicyIdentity 暴露进入执行语义的写入与命令策略；它们已绑定在配置指纹内。
@@ -59,11 +66,14 @@ type RunManifest struct {
 // 结构仅带 yaml 标签，其 JSON 编码沿用 Go 字段名（如 BaseURL），此处必须
 // 与之对齐。它绝不反序列化凭据类内容，未知字段一律忽略。
 type frozenConfigView struct {
+	Version  int    `json:"Version"`
 	Preset   string `json:"Preset"`
 	Profile  string `json:"Profile"`
 	Provider struct {
 		BaseURL    string `json:"BaseURL"`
 		Model      string `json:"Model"`
+		ID         string `json:"ID"`
+		Admission  string `json:"Admission"`
 		Capability *struct {
 			ToolCalls           bool     `json:"ToolCalls"`
 			StreamingUsage      bool     `json:"StreamingUsage"`
@@ -141,6 +151,10 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 			if manifest.Provider.Model == "" {
 				manifest.Provider.Model = view.Provider.Model
 			}
+			if view.Version == manifestSchemaV2 {
+				manifest.SchemaVersion = manifestSchemaV2
+				manifest.Provider.Selection = manifestProviderSelection(view)
+			}
 			manifest.Policy = PolicyIdentity{Write: view.Policy.Write, Exec: view.Policy.Exec, ProtectedPaths: view.Policy.ProtectedPaths}
 			manifest.Verification.Commands = len(view.Verification.Commands)
 			if view.Provider.Capability != nil {
@@ -149,6 +163,29 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 		}
 	}
 	return manifest, nil
+}
+
+// manifestProviderSelection 由冻结配置视图派生 version 2 的 ProviderSelection
+// 身份投影：provider_id 缺省归一为 custom；protocol_id 取当前唯一注册协议
+// （注册表成员与协议的编译期绑定，此处不引入第二份映射）；model_ref 是派生
+// 值；endpoint_digest 复用无凭据规范化摘要。派生失败（防御路径，version 2
+// 配置已在校验期保证基地址合法）时保持 nil 不伪造身份。
+func manifestProviderSelection(view frozenConfigView) *ProviderSelection {
+	providerID := view.Provider.ID
+	if providerID == "" {
+		providerID = ProviderIDCustom
+	}
+	digest, err := BaseURLIdentityDigest(view.Provider.BaseURL)
+	if err != nil || view.Provider.Model == "" {
+		return nil
+	}
+	return &ProviderSelection{
+		SchemaVersion:  1,
+		ProviderID:     providerID,
+		ProtocolID:     ProtocolOpenAIChatCompletions,
+		ModelRef:       providerID + "/" + view.Provider.Model,
+		EndpointDigest: digest,
+	}
 }
 
 // manifestCapabilityCard 由冻结配置中的显式能力声明构建运行期卡；它与 Boot

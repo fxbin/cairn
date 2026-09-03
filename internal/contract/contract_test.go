@@ -236,3 +236,56 @@ func TestManifestReplaysProviderCardFromConfigOnly(t *testing.T) {
 		t.Fatalf("unknown model must not invent a card: %#v", manifest.Provider.Card)
 	}
 }
+
+// frozenFixtureConfigV2 模拟 version 2 冻结配置制品：Provider 携带 ID 与
+// Admission，供 schema v2 投影测试消费。
+const frozenFixtureConfigV2 = `{"Version":2,"Preset":"coding","Profile":"default","Provider":{"BaseURL":"https://example.invalid/v1","Model":"test-model","ID":"","Admission":"optional"},"Policy":{"Write":"ask","Exec":"ask","ProtectedPaths":[".env"]},"Verification":{"Commands":[{"Argv":["true"]}]}}`
+
+// TestManifestProjectsVersion2Selection 锁定 schema v2 投影：冻结配置为
+// version 2 时 manifest 升为 v2 并派生 ProviderSelection（provider_id 缺省
+// 归一 custom、model_ref 派生、endpoint_digest 规范化摘要）；version 1 的
+// 既有投影保持 v1 且永不补造 Selection。
+func TestManifestProjectsVersion2Selection(t *testing.T) {
+	events := manifestFixtureEvents(t)
+	manifest, err := ManifestFromRun(events, FreeformTaskSpec("v2 run"), json.RawMessage(frozenFixtureConfigV2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != manifestSchemaV2 {
+		t.Fatalf("schema version = %d", manifest.SchemaVersion)
+	}
+	selection := manifest.Provider.Selection
+	if selection == nil {
+		t.Fatal("version 2 manifest must project a provider selection")
+	}
+	if selection.ProviderID != ProviderIDCustom || selection.ProtocolID != ProtocolOpenAIChatCompletions {
+		t.Fatalf("selection identity = %+v", selection)
+	}
+	if selection.ModelRef != ProviderIDCustom+"/test-model" {
+		t.Fatalf("model ref = %q", selection.ModelRef)
+	}
+	if !strings.HasPrefix(selection.EndpointDigest, "sha256:") {
+		t.Fatalf("endpoint digest = %q", selection.EndpointDigest)
+	}
+	legacy, err := ManifestFromRun(events, FreeformTaskSpec("v1 run"), json.RawMessage(frozenFixtureConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.SchemaVersion != manifestSchemaV1 || legacy.Provider.Selection != nil {
+		t.Fatalf("version 1 projection must stay v1 without a fabricated selection: %+v", legacy.Provider)
+	}
+}
+
+// TestManifestSelectionFallsBackToNilOnInvalidFacts 锁定防御路径：version 2
+// 冻结视图的基地址不合法或模型缺席时 Selection 保持 nil，不伪造身份。
+func TestManifestSelectionFallsBackToNilOnInvalidFacts(t *testing.T) {
+	events := manifestFixtureEvents(t)
+	broken := `{"Version":2,"Provider":{"BaseURL":"not-a-url","Model":"m","Admission":"optional"}}`
+	manifest, err := ManifestFromRun(events, FreeformTaskSpec("broken"), json.RawMessage(broken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Provider.Selection != nil {
+		t.Fatal("invalid facts must not fabricate a selection")
+	}
+}
