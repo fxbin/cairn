@@ -106,16 +106,29 @@ type ConfigWizard struct {
 	commitErr error
 }
 
+// defaultBaseURL 与 defaultAPIKeyEnv 是向导输入框的显式默认值：与 init 问
+// 答一致，进入输入步即预填为可编辑内容，回车即接受——不使用仅作视觉提示
+// 的 placeholder 承载默认值语义，避免"看着有值回车却无响应"的卡死观感。
+const (
+	defaultBaseURL   = "https://api.deepseek.com"
+	defaultAPIKeyEnv = "AGENT_API_KEY"
+)
+
 // NewConfigWizard 构造向导模型：input 携带调用方决定的非交互项（workspace、
-// 目录选项、配置版本与准入语义），三要素留给交互补齐。
+// 目录选项、配置版本与准入语义），三要素留给交互补齐；端点与密钥变量名输
+// 入框预填默认值。
 func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
+	baseURLInput := newTextinput("Provider Base URL")
+	baseURLInput.SetValue(defaultBaseURL)
+	apiKeyEnvInput := newTextinput("API Key 环境变量名")
+	apiKeyEnvInput.SetValue(defaultAPIKeyEnv)
 	wizard := ConfigWizard{
 		ctx:              ctx,
 		service:          app.NewSetupService(),
 		input:            input,
-		baseURLInput:     newTextinput("https://api.deepseek.com", "Provider Base URL"),
-		modelInput:       newTextinput("", "模型名（如 glm-5.3）"),
-		apiKeyEnvInput:   newTextinput("AGENT_API_KEY", "API Key 环境变量名"),
+		baseURLInput:     baseURLInput,
+		modelInput:       newTextinput("模型名（如 glm-5.3）"),
+		apiKeyEnvInput:   apiKeyEnvInput,
 		catalogLoading:   true,
 		suggestionCursor: -1,
 	}
@@ -126,9 +139,8 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 }
 
 // newTextinput 构造统一样式的单行输入框。
-func newTextinput(placeholder, prompt string) textinput.Model {
+func newTextinput(prompt string) textinput.Model {
 	field := textinput.New()
-	field.Placeholder = placeholder
 	field.Prompt = prompt + ": "
 	field.CharLimit = 200
 	field.Width = 48
@@ -226,10 +238,12 @@ func (wizard ConfigWizard) updateProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.providerCursor = (wizard.providerCursor + 1) % len(providerChoices)
 	case "enter":
 		wizard.step = stepBaseURL
-		wizard.baseURLInput.Focus()
+		return wizard, wizard.baseURLInput.Focus()
 	}
 	return wizard, nil
-} // updateBaseURL 处理端点输入步：Enter 校验非空后进入模型步，Esc 返回。
+}
+
+// updateBaseURL 处理端点输入步：Enter 校验非空后进入模型步，Esc 返回。
 func (wizard ConfigWizard) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 	message, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -242,8 +256,8 @@ func (wizard ConfigWizard) updateBaseURL(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		wizard.step = stepModel
 		wizard.baseURLInput.Blur()
-		wizard.modelInput.Focus()
 		wizard.refreshSuggestions()
+		return wizard, wizard.modelInput.Focus()
 	case "esc":
 		wizard.step = stepProvider
 		wizard.baseURLInput.Blur()
@@ -271,19 +285,17 @@ func (wizard ConfigWizard) updateModel(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		wizard.step = stepAPIKeyEnv
 		wizard.modelInput.Blur()
-		wizard.apiKeyEnvInput.Focus()
+		return wizard, wizard.apiKeyEnvInput.Focus()
 	case "esc":
 		wizard.step = stepBaseURL
 		wizard.modelInput.Blur()
-		wizard.baseURLInput.Focus()
-		return wizard, nil
+		return wizard, wizard.baseURLInput.Focus()
 	default:
 		var cmd tea.Cmd
 		wizard.modelInput, cmd = wizard.modelInput.Update(msg)
 		wizard.refreshSuggestions()
 		return wizard, cmd
 	}
-	return wizard, nil
 }
 
 // receiveCatalog 消费异步目录结果：成功填充建议，失败置降级提示。
@@ -333,8 +345,7 @@ func (wizard ConfigWizard) updateAPIKeyEnv(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "esc":
 		wizard.step = stepModel
 		wizard.apiKeyEnvInput.Blur()
-		wizard.modelInput.Focus()
-		return wizard, nil
+		return wizard, wizard.modelInput.Focus()
 	default:
 		var cmd tea.Cmd
 		wizard.apiKeyEnvInput, cmd = wizard.apiKeyEnvInput.Update(msg)
@@ -359,7 +370,7 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return wizard, commitCmd(wizard.service, wizard.ctx, wizard.input)
 	case "esc":
 		wizard.step = stepAPIKeyEnv
-		wizard.apiKeyEnvInput.Focus()
+		return wizard, wizard.apiKeyEnvInput.Focus()
 	}
 	return wizard, nil
 }

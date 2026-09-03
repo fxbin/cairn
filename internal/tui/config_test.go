@@ -150,11 +150,13 @@ func TestWizardAdvancesThroughSteps(t *testing.T) {
 	if wizard.step != stepBaseURL {
 		t.Fatalf("Enter 后应进入端点输入，得到 %d", wizard.step)
 	}
-	wizard.baseURLInput.SetValue("https://api.example.com")
+	if wizard.baseURLInput.Value() != defaultBaseURL {
+		t.Fatalf("端点输入应预填默认值 %q，得到 %q", defaultBaseURL, wizard.baseURLInput.Value())
+	}
 	model, _ = wizard.Update(keyPress(tea.KeyEnter))
 	wizard = model.(ConfigWizard)
 	if wizard.step != stepModel {
-		t.Fatalf("端点输入后应进入模型步，得到 %d", wizard.step)
+		t.Fatalf("默认端点直接回车应推进到模型步（修复前会静默卡住），得到 %d", wizard.step)
 	}
 	if len(wizard.suggestions) != 0 {
 		t.Fatalf("空查询不应产生建议，得到 %d 条", len(wizard.suggestions))
@@ -181,8 +183,22 @@ func TestWizardAdvancesThroughSteps(t *testing.T) {
 	if wizard.step != stepCommitting {
 		t.Fatalf("确认页 Enter 应发起提交，得到 %d", wizard.step)
 	}
-	if wizard.input.BaseURL != "https://api.example.com" || wizard.input.Model != "glm-5.3x" || wizard.input.APIKeyEnv != "ZHIPU_API_KEY" {
+	if wizard.input.BaseURL != defaultBaseURL || wizard.input.Model != "glm-5.3x" || wizard.input.APIKeyEnv != "ZHIPU_API_KEY" {
 		t.Fatalf("提交输入未组装: %+v", wizard.input)
+	}
+}
+
+// TestEnvStepPrefillsDefault 验证密钥环境变量名步预填默认值且回车直接推进。
+func TestEnvStepPrefillsDefault(t *testing.T) {
+	wizard := NewConfigWizard(context.Background(), app.SetupInput{})
+	wizard.step = stepAPIKeyEnv
+	if wizard.apiKeyEnvInput.Value() != defaultAPIKeyEnv {
+		t.Fatalf("密钥变量名应预填默认值 %q，得到 %q", defaultAPIKeyEnv, wizard.apiKeyEnvInput.Value())
+	}
+	model, _ := wizard.Update(keyPress(tea.KeyEnter))
+	wizard = model.(ConfigWizard)
+	if wizard.step != stepConfirm {
+		t.Fatalf("默认变量名直接回车应进入确认页，得到 %d", wizard.step)
 	}
 }
 
