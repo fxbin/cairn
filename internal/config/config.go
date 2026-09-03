@@ -16,6 +16,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/provider"
 	"gopkg.in/yaml.v3"
 )
 
@@ -119,6 +120,8 @@ type providerOverlay struct {
 	BaseURL   *string `yaml:"base_url"`
 	Model     *string `yaml:"model"`
 	APIKeyEnv *string `yaml:"api_key_env"`
+	ID        *string `yaml:"id"`
+	Admission *string `yaml:"admission"`
 }
 
 // profileProbe 是第二轮宽松解码的目标：只提取 Profile 名称与显式字段设置。
@@ -184,12 +187,26 @@ func budgetSourceLabel(profile string) string {
 	return "profile:" + profile
 }
 
-// ProviderConfig 配置兼容 OpenAI API 的模型提供方。
+// ProviderConfig 配置兼容 OpenAI API 的模型提供方；ID 与 Admission 是
+// version 2 才启用的新字段，version 1 配置中出现即被严格校验拒绝。
+//
+// ProviderAdmissionOptional 与 ProviderAdmissionRequired 是 version 2 准入
+// 语义的显式取值：optional 表示门不拦截，required 表示启动前必须命中该绑定
+// 的唯一准入链头。version 2 下 admission 必填，不做静默默认。
+const (
+	ProviderAdmissionOptional = "optional"
+	ProviderAdmissionRequired = "required"
+)
+
+// ProviderConfig 汇集提供方连接与身份事实；ID 与 Admission 是 version 2 才
+// 启用的新字段，version 1 配置中出现即被严格校验拒绝。
 type ProviderConfig struct {
 	BaseURL        string                    `yaml:"base_url"`
 	Model          string                    `yaml:"model"`
 	APIKeyEnv      string                    `yaml:"api_key_env"`
 	RequestTimeout string                    `yaml:"request_timeout"`
+	ID             string                    `yaml:"id"`
+	Admission      string                    `yaml:"admission"`
 	Capability     *ProviderCapabilityConfig `yaml:"capability"`
 	Generation     *ProviderGenerationConfig `yaml:"generation"`
 }
@@ -379,6 +396,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 	recorder.record("provider.base_url", config.Provider.BaseURL, "default")
 	recorder.record("provider.model", config.Provider.Model, "default")
 	recorder.record("provider.api_key_env", config.Provider.APIKeyEnv, "default")
+	recorder.record("provider.id", contract.ProviderIDCustom, "default")
 	recorder.record("budget.max_turns", strconv.Itoa(config.Budget.MaxTurns), "default")
 	recorder.record("budget.max_tool_calls", strconv.Itoa(config.Budget.MaxToolCalls), "default")
 	recorder.record("budget.max_input_tokens", strconv.Itoa(config.Budget.MaxInputTokens), "default")
@@ -427,6 +445,12 @@ func Load(path string, overrides Overrides) (Config, error) {
 			}
 			if probe.Provider.APIKeyEnv != nil {
 				recorder.record("provider.api_key_env", config.Provider.APIKeyEnv, "yaml")
+			}
+			if probe.Provider.ID != nil {
+				recorder.record("provider.id", config.Provider.ID, "yaml")
+			}
+			if probe.Provider.Admission != nil {
+				recorder.record("provider.admission", config.Provider.Admission, "yaml")
 			}
 			applyProfilePreset(&config, &probe.Budget, preset, profile, recorder)
 		}
@@ -489,8 +513,30 @@ func applyProfilePreset(config *Config, explicit *budgetOverlay, preset BudgetCo
 
 // Validate 验证配置版本、限额、时长、策略与验证命令的安全约束。
 func Validate(config Config) error {
-	if config.Version != 1 {
+	if config.Version != 1 && config.Version != 2 {
 		return fmt.Errorf("unsupported config version %d", config.Version)
+	}
+	if config.Version == 1 {
+		// version 1 保持全部历史行为：新身份字段出现即拒绝，避免同一配置
+		// 在两个版本语义下产生歧义指纹。
+		if config.Provider.ID != "" || config.Provider.Admission != "" {
+			return fmt.Errorf("provider.id and provider.admission require config version 2")
+		}
+	}
+	if config.Version == 2 {
+		if config.Provider.BaseURL == "" || config.Provider.Model == "" {
+			return fmt.Errorf("config version 2 requires provider.base_url and provider.model")
+		}
+		if config.Provider.Admission != ProviderAdmissionOptional && config.Provider.Admission != ProviderAdmissionRequired {
+			return fmt.Errorf("provider.admission must be %s or %s in config version 2", ProviderAdmissionOptional, ProviderAdmissionRequired)
+		}
+		if config.Provider.ID != "" {
+			// 完整注册表校验（形状 + 静态成员）：未知成员失败关闭，没有隐式
+			// 回退到 custom。
+			if _, err := provider.Lookup(config.Provider.ID); err != nil {
+				return fmt.Errorf("provider.id: %w", err)
+			}
+		}
 	}
 	if config.Profile != "" && config.Profile != ProfileDefault && config.Profile != ProfileComplex {
 		return fmt.Errorf("profile must be %s or %s", ProfileDefault, ProfileComplex)
@@ -889,7 +935,10 @@ func providerFingerprintFor(config Config) providerFingerprint {
 }
 
 // Fingerprint 生成可写入事件日志的冻结非敏感配置摘要；带版本前缀，指纹算法
-// 本身演进时递增前缀使新旧摘要天然不可比。
+// 本身演进时递增前缀使新旧摘要天然不可比。version 1 使用 v3 算法（冻结，
+// 一行不改）；version 2 使用 v4 算法：骨架与 v3 相同，provider 段替换为
+// ProviderSelection 身份投影（D5a：endpoint_digest 是规范化身份，不是保密
+// 手段）。落盘值只有 "sha256:<hex>"，禁止从中推断算法版本。
 func (config Config) Fingerprint() string {
 	profile := config.Profile
 	if profile == "" {
@@ -908,12 +957,100 @@ func (config Config) Fingerprint() string {
 		Pricing:      config.Pricing,
 		Sandbox:      config.Sandbox,
 	}
+	prefix := "cairn-config-fingerprint-v3\x00"
+	if config.Version == 2 {
+		viewV4 := fingerprintViewV4{
+			Version: view.Version, Profile: view.Profile, Preset: view.Preset,
+			Provider:  providerSelectionFingerprintFor(config),
+			Workspace: view.Workspace, Policy: view.Policy, Verification: view.Verification,
+			Budget: view.Budget, Context: view.Context, Pricing: view.Pricing, Sandbox: view.Sandbox,
+		}
+		encoded, err := json.Marshal(viewV4)
+		if err != nil {
+			panic(err)
+		}
+		digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v4\x00"), encoded...))
+		return "sha256:" + hex.EncodeToString(digest[:])
+	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		panic(err)
 	}
-	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v3\x00"), encoded...))
+	digest := sha256.Sum256(append([]byte(prefix), encoded...))
 	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+// fingerprintViewV4 是 version 2 配置的指纹视图：除 provider 段替换为身份
+// 投影外，与 v3 骨架保持字段对字段一致，保证非身份语义的漂移检测口径不变。
+type fingerprintViewV4 struct {
+	Version      int                          `json:"version"`
+	Profile      string                       `json:"profile"`
+	Preset       string                       `json:"preset"`
+	Provider     providerSelectionFingerprint `json:"provider"`
+	Workspace    WorkspaceConfig              `json:"workspace"`
+	Policy       PolicyConfig                 `json:"policy"`
+	Verification VerificationConfig           `json:"verification"`
+	Budget       BudgetConfig                 `json:"budget"`
+	Context      ContextConfig                `json:"context"`
+	Pricing      PricingConfig                `json:"pricing"`
+	Sandbox      SandboxConfig                `json:"sandbox"`
+}
+
+// providerSelectionFingerprint 是 v4 指纹的 provider 段：身份字段（provider_id、
+// protocol_id、model_ref、endpoint_digest、api_key_env、admission）永远在场，
+// 缺省 provider_id 归一为显式 "custom"，禁止 omitempty 制造同语义不同指纹；
+// 能力与生成参数块保留与 v3 相同的指针两态语义。
+type providerSelectionFingerprint struct {
+	ProviderID     string                         `json:"provider_id"`
+	ProtocolID     string                         `json:"protocol_id"`
+	Model          string                         `json:"model"`
+	ModelRef       string                         `json:"model_ref"`
+	EndpointDigest string                         `json:"endpoint_digest"`
+	APIKeyEnv      string                         `json:"api_key_env"`
+	Admission      string                         `json:"admission"`
+	Capability     *providerCapabilityFingerprint `json:"capability,omitempty"`
+	Generation     *providerGenerationFingerprint `json:"generation,omitempty"`
+}
+
+// providerSelectionFingerprintFor 组装 v4 的 provider 身份段：身份字段复用
+// 静态注册表与 Selection 派生函数，保证指纹、manifest 投影与准入绑定使用
+// 同一身份事实来源。调用前提是配置已通过 version 2 校验（base_url 与
+// admission 必在场）；派生失败属于防御路径，直接 panic 失败关闭。
+func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint {
+	selection, err := provider.ResolveSelection(provider.SelectionFacts{
+		ProviderID: config.Provider.ID,
+		Model:      config.Provider.Model,
+		BaseURL:    config.Provider.BaseURL,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("config version 2 must derive a provider selection: %v", err))
+	}
+	view := providerSelectionFingerprint{
+		ProviderID:     selection.ProviderID,
+		ProtocolID:     selection.ProtocolID,
+		Model:          config.Provider.Model,
+		ModelRef:       selection.ModelRef,
+		EndpointDigest: selection.EndpointDigest,
+		APIKeyEnv:      config.Provider.APIKeyEnv,
+		Admission:      config.Provider.Admission,
+	}
+	if capability := config.Provider.Capability; capability != nil {
+		view.Capability = &providerCapabilityFingerprint{
+			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
+			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
+			StopReasons: capability.StopReasons,
+		}
+	}
+	if generation := config.Provider.Generation; generation != nil {
+		view.Generation = &providerGenerationFingerprint{
+			TemperatureMilli: generation.TemperatureMilli,
+			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+		}
+		if generation.MaxOutputTokens != nil {
+			view.Generation.MaxOutputTokens = *generation.MaxOutputTokens
+		}
+	}
+	return view
 }
 
 // DefaultPath 返回工作区内的默认配置文件路径。

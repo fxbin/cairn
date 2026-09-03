@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -763,5 +764,106 @@ func TestValidateAPIKeyEnvOnlyRejectsNonPortableSyntax(t *testing.T) {
 		if !strings.Contains(err.Error(), "api_key_env") {
 			t.Fatalf("rejection must name the offending field: %v", err)
 		}
+	}
+}
+
+// writeVersionConfig 在临时目录写入指定 version 的最小合法配置；provider 段
+// 由调用方追加，供 version 2 门控与 v4 指纹测试复用。
+func writeVersionConfig(t *testing.T, version int, providerBlock string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), ".agent", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "version: " + strconv.Itoa(version) + "\nprovider:\n  base_url: https://api.example.com/v1\n  model: probe-model\n  api_key_env: AGENT_API_KEY\n" + providerBlock
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestValidateGatesVersion2IdentityFields 锁定 version 2 门控合同：version 1
+// 出现新身份字段即拒绝；version 2 下 admission 必显式 optional|required，
+// base_url 与 model 必填，provider.id 形状非法失败关闭。
+func TestValidateGatesVersion2IdentityFields(t *testing.T) {
+	cases := []struct {
+		name    string
+		version int
+		block   string
+		wantErr string
+	}{
+		{"version1出现provider.id被拒绝", 1, "  id: custom\n", "provider.id"},
+		{"version1出现provider.admission被拒绝", 1, "  admission: optional\n", "provider.admission"},
+		{"version2缺admission被拒绝", 2, "", "provider.admission"},
+		{"version2非法admission被拒绝", 2, "  admission: maybe\n", "provider.admission"},
+		{"version2非法provider.id被拒绝", 2, "  id: Not_Kebab\n  admission: optional\n", "provider.id"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := writeVersionConfig(t, testCase.version, testCase.block)
+			_, err := Load(path, Overrides{})
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("expected error naming %q, got %v", testCase.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestVersion2FingerprintDeterminismAndSeparation 锁定 v4 指纹合同：同一
+// version 2 配置两次解析指纹恒同；version 2 与 version 1 的指纹天然分离
+// （不同算法前缀）；admission 语义变化必然改变指纹，杜绝在途 run 静默漂移。
+func TestVersion2FingerprintDeterminismAndSeparation(t *testing.T) {
+	path := writeVersionConfig(t, 2, "  admission: optional\n")
+	first, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Fingerprint() != second.Fingerprint() {
+		t.Fatal("same version 2 config must yield a deterministic v4 fingerprint")
+	}
+	strictPath := writeVersionConfig(t, 2, "  admission: required\n")
+	strict, err := Load(strictPath, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Fingerprint() == strict.Fingerprint() {
+		t.Fatal("admission semantics change must change the v4 fingerprint")
+	}
+	legacyPath := writeVersionConfig(t, 1, "")
+	legacy, err := Load(legacyPath, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Fingerprint() == legacy.Fingerprint() {
+		t.Fatal("version 2 and version 1 fingerprints must be disjoint")
+	}
+}
+
+// TestVersion2FingerprintNormalizesDefaultProviderID 锁定同语义同指纹：
+// version 2 下缺省 provider.id 与显式 "custom" 是同一身份语义，归一后指纹
+// 逐位相同；显式具名 id 则构成新身份、必然改变指纹。
+func TestVersion2FingerprintNormalizesDefaultProviderID(t *testing.T) {
+	implicitPath := writeVersionConfig(t, 2, "  admission: optional\n")
+	explicitPath := writeVersionConfig(t, 2, "  id: custom\n  admission: optional\n")
+	implicit, err := Load(implicitPath, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := Load(explicitPath, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if implicit.Fingerprint() != explicit.Fingerprint() {
+		t.Fatal("default provider id must normalize to explicit custom with identical fingerprint")
+	}
+	namedPath := writeVersionConfig(t, 2, "  id: some-vendor\n  admission: optional\n")
+	if _, err := Load(namedPath, Overrides{}); err == nil {
+		t.Fatal("unregistered provider id must fail closed")
+	} else if !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("rejection must name the registry miss: %v", err)
 	}
 }

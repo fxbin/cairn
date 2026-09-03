@@ -48,7 +48,7 @@ func KindFromProtocol(protocolID string) (string, error) {
 // Lookup 返回静态注册表中的 ProviderDefinition；未知 ProviderID 失败关闭，
 // 不存在隐式回退到 custom。
 func Lookup(providerID string) (contract.ProviderDefinition, error) {
-	if err := validateProviderID(providerID); err != nil {
+	if err := ValidateProviderID(providerID); err != nil {
 		return contract.ProviderDefinition{}, err
 	}
 	definition, ok := staticDefinitions[providerID]
@@ -56,6 +56,29 @@ func Lookup(providerID string) (contract.ProviderDefinition, error) {
 		return contract.ProviderDefinition{}, fmt.Errorf("provider %q is not registered", providerID)
 	}
 	return definition, nil
+}
+
+// ValidateProviderID 校验 ProviderID 的确定性形状：小写 kebab
+// （[a-z][a-z0-9-]*）且不超过上限。空值用于缺省归一路径、由调用方先处理。
+// ProviderID 非敏感，错误文本允许回显值本身以便定位配置错误；config 层在
+// version 2 校验中复用本函数，保证注册表与配置层形状规则单一来源。
+func ValidateProviderID(providerID string) error {
+	if providerID == "" {
+		return errors.New("provider id must not be empty")
+	}
+	if len(providerID) > providerIDMaxLen {
+		return fmt.Errorf("provider id exceeds %d characters", providerIDMaxLen)
+	}
+	for index := 0; index < len(providerID); index++ {
+		character := providerID[index]
+		lower := character >= 'a' && character <= 'z'
+		digit := index > 0 && character >= '0' && character <= '9'
+		dash := index > 0 && character == '-'
+		if !lower && !digit && !dash {
+			return fmt.Errorf("provider id %q must be lowercase kebab: [a-z][a-z0-9-]*", providerID)
+		}
+	}
+	return nil
 }
 
 // SelectionFacts 是解析 ProviderSelection 所需的全部显式身份事实：ProviderID
