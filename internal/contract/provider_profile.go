@@ -20,6 +20,35 @@ import (
 // providerProfileSchemaV1 是 ProviderRequestProfile 的当前合同版本。
 const providerProfileSchemaV1 = 1
 
+// ProtocolOpenAIChatCompletions 是规范线协议标识（D1 词表的公共合同常量），
+// 由能力卡的 Protocol 字面值提升而来；与 internal/contract/provider_card.go
+// 的私有常量同值，两处不得漂移。历史 ProviderKind "openai_compatible" 永久
+// 保留原义，映射关系由 internal/provider 的闭合函数承载。
+const ProtocolOpenAIChatCompletions = "openai-chat-completions"
+
+// ProviderIDCustom 表示"用户显式 base_url + model + api_key_env"的注册表
+// 成员；它既是静态注册表的具名成员，也是 provider.id 缺省时的归一值。
+const ProviderIDCustom = "custom"
+
+// ProviderDefinition 是静态注册表的成员合同：ProviderID 与其规范协议的
+// 编译期绑定。注册表不做目录扫描、动态注册或按端点猜测。
+type ProviderDefinition struct {
+	ProviderID string `json:"provider_id"`
+	ProtocolID string `json:"protocol_id"`
+}
+
+// ProviderSelection 是版本化的 Provider 身份合同：注册表成员、规范协议、
+// 派生模型引用与端点摘要。model_ref 是派生值而非配置输入（由 provider_id
+// 与原始 model 拼接，解析按第一个斜杠分割）；endpoint_digest 复用无凭据
+// 规范化摘要，不承载保密语义。
+type ProviderSelection struct {
+	SchemaVersion  int    `json:"schema_version"`
+	ProviderID     string `json:"provider_id"`
+	ProtocolID     string `json:"protocol_id"`
+	ModelRef       string `json:"model_ref"`
+	EndpointDigest string `json:"endpoint_digest"`
+}
+
 // 生成参数枚举与 Milli 边界是产品合同的单一事实源：config 层引用同一常量
 // 完成校验，契约层在直接构造调用时重复防线，两处取值不允许漂移。
 const (
