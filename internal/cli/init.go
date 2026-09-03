@@ -18,13 +18,14 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/modelcatalog"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
 // 协议标准停止原因集：OpenAI 兼容线协议的闭合词表；目录不含此维度，由实
 // 测探测核对实际观测值。
-var protocolStopReasons = []string{"stop", "length", "tool_calls"}
+var protocolStopReasons = []string{contract.StopReasonStop, contract.StopReasonLength, contract.StopReasonToolCalls}
 
 // defaultProviderKeyEnv 是向导的密钥环境变量名默认值：语义中性，不预设厂
 // 商；用户可改。

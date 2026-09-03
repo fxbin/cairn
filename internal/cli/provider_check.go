@@ -251,7 +251,7 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	}
 	// 最终回答的三要件：存在最终文本、没有再次请求工具、不以 tool_calls 终
 	// 止。先说几句话再继续调工具的响应没有完成回路，不得判 ok。
-	secondLegComplete := secondTextSeen && secondToolCalls == 0 && secondStopReason != "tool_calls"
+	secondLegComplete := secondTextSeen && secondToolCalls == 0 && secondStopReason != contract.StopReasonToolCalls
 	if !secondLegComplete {
 		result.Error = "second leg did not produce a final answer"
 		result.ToolRoundtrip = toolRoundtripSecondLegFailed

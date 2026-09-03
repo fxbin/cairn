@@ -16,9 +16,19 @@ const ProviderCardSourceConfig = "config"
 // providerCardProtocolChatCompletions 限定当前唯一生产线协议。
 const providerCardProtocolChatCompletions = "openai-chat-completions"
 
+// StopReasonContentFilter 等常量构成 OpenAI Chat Completions 线协议
+// finish_reason 的闭合词表单一来源；生产代码比较或列举终止原因时必须引用
+// 此处常量，不得散落字面量造成词表漂移。
+const (
+	StopReasonContentFilter = "content_filter"
+	StopReasonLength        = "length"
+	StopReasonStop          = "stop"
+	StopReasonToolCalls     = "tool_calls"
+)
+
 // chatCompletionStopReasons 是 OpenAI Chat Completions 线协议定义的
 // finish_reason 集合；它描述协议兼容性，不承诺具体模型会全部产生。
-var chatCompletionStopReasons = []string{"content_filter", "length", "stop", "tool_calls"}
+var chatCompletionStopReasons = []string{StopReasonContentFilter, StopReasonLength, StopReasonStop, StopReasonToolCalls}
 
 // ProviderCapabilityDeclaration 是用户经 provider.capability 配置块给出的
 // 显式能力声明；由 config 层完成严格 YAML 校验后传入解析。
