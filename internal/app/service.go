@@ -25,6 +25,7 @@ import (
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/provider"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -118,6 +119,9 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
+		return RunResult{}, err
+	}
 	active, err := boot.Journal.NonTerminalRuns(ctx, boot.WorkspaceHash)
 	if err != nil {
 		return RunResult{}, err
@@ -927,4 +931,44 @@ func runBudgetContext(ctx context.Context, createdAt time.Time, configuration co
 // expiredWallBudgetContext 返回已过期上下文，供持久化墙钟预算耗尽事件使用。
 func expiredWallBudgetContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
+}
+
+// enforceAdmissionGate 执行版本 2 配置的准入门（D4 优先级链的最后一环）：
+// version 1 配置无准入语义直接通过；optional 门不拦截（缺失决定即未准入，
+// 由展示层如实呈现）；required 时打开工作区作用域的决定与证据存储，重算
+// 请求合同指纹并要求该绑定分区存在唯一 admitted 链头且证据在档、身份一
+// 致——任一不成立都在写第一个事件之前失败关闭。门是门不是源：决定不覆盖
+// 配置，只决定能否启动。
+func enforceAdmissionGate(stateDir, workspaceHash string, configuration config.Config) error {
+	if configuration.Version != 2 {
+		return nil
+	}
+	if configuration.Provider.Admission == config.ProviderAdmissionOptional {
+		return nil
+	}
+	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
+		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL},
+		Capability:    config.ProviderCapabilityDeclaration(configuration),
+		Generation:    config.ProviderGenerationDeclaration(configuration),
+		CredentialRef: configuration.Provider.APIKeyEnv,
+	})
+	if err != nil {
+		return fmt.Errorf("admission gate: %w", err)
+	}
+	decisions, err := provider.OpenDecisionStore(stateDir, workspaceHash)
+	if err != nil {
+		return fmt.Errorf("admission gate: %w", err)
+	}
+	evidence, err := provider.OpenEvidenceStore(stateDir, workspaceHash)
+	if err != nil {
+		return fmt.Errorf("admission gate: %w", err)
+	}
+	outcome, err := provider.EvaluateAdmissionGate(decisions, evidence, profile, configuration.Provider.Admission)
+	if err != nil {
+		return fmt.Errorf("admission gate: %w", err)
+	}
+	if !outcome.Allowed {
+		return errors.New("admission gate: provider is not admitted for this binding")
+	}
+	return nil
 }

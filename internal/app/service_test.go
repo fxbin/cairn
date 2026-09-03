@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
@@ -20,6 +21,7 @@ import (
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/provider"
 	"github.com/fxbin/cairn/internal/tools"
 	_ "modernc.org/sqlite"
 )
@@ -1061,5 +1063,80 @@ func TestVerificationEnvironmentFlowsThroughConfiguredExecTool(t *testing.T) {
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, false)
 	if err != nil || !inspected.Projection.VerificationSucceeded {
 		t.Fatalf("inspect = %+v err = %v", inspected.Projection, err)
+	}
+}
+
+// TestEnforceAdmissionGateVersions 锁定准入门的版本语义：version 1 无准入
+// 语义直接通过；version 2 optional 门不拦截；version 2 required 在无决定、
+// 无证据时失败关闭，写入 admitted 决定与匹配证据后放行。
+func TestEnforceAdmissionGateVersions(t *testing.T) {
+	stateDir := t.TempDir()
+	workspaceHash := "sha256:" + strings.Repeat("a", 64)
+	base := config.Defaults()
+	base.Provider.BaseURL = "https://api.example.com/v1"
+	base.Provider.Model = "gate-model"
+	base.Provider.APIKeyEnv = "AGENT_API_KEY"
+	base.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true, StopReasons: []string{"stop"}}
+
+	legacy := base
+	if err := enforceAdmissionGate(stateDir, workspaceHash, legacy); err != nil {
+		t.Fatalf("version 1 must bypass the gate: %v", err)
+	}
+	optional := base
+	optional.Version = 2
+	optional.Provider.Admission = config.ProviderAdmissionOptional
+	if err := enforceAdmissionGate(stateDir, workspaceHash, optional); err != nil {
+		t.Fatalf("optional must not block: %v", err)
+	}
+	required := base
+	required.Version = 2
+	required.Provider.Admission = config.ProviderAdmissionRequired
+	if err := enforceAdmissionGate(stateDir, workspaceHash, required); err == nil {
+		t.Fatal("required with no decisions must fail closed")
+	}
+
+	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
+		Selection:     provider.SelectionFacts{Model: "gate-model", BaseURL: "https://api.example.com/v1"},
+		Capability:    &contract.ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true, StopReasons: []string{"stop"}},
+		CredentialRef: "AGENT_API_KEY",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestFingerprint, err := profile.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceStore, err := provider.OpenEvidenceStore(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := provider.ProviderProbeEvidence{
+		SchemaVersion: 1, Selection: profile.Selection, ProbeContractVersion: provider.CurrentProbeContractVersion,
+		Observations: provider.EvidenceObservations{
+			UsageStreamed: provider.ObservationObservedTrue, StopReasonsState: provider.StateObserved, StopReasons: []string{"stop"},
+			ToolRoundtrip: provider.RoundtripSkipped, ModelRevisionState: provider.StateNotObserved,
+		},
+		Outcome: provider.EvidenceOutcomeCompleted, ProbedAt: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
+	}
+	evidenceFingerprint, err := evidenceStore.Append(&evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions, err := provider.OpenDecisionStore(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := provider.ProviderAdmissionDecision{
+		SchemaVersion: 1, EvidenceFingerprint: evidenceFingerprint,
+		Binding:  provider.AdmissionBinding{RequestProfileFingerprint: requestFingerprint, ConfigFingerprint: required.Fingerprint()},
+		Decision: provider.DecisionAdmitted, DecidedAt: time.Date(2026, 9, 3, 12, 5, 0, 0, time.UTC),
+		Authority: provider.AuthorityMaintainer, Reason: "probe accepted",
+	}
+	if _, err := decisions.Append(&decision); err != nil {
+		t.Fatal(err)
+	}
+	if err := enforceAdmissionGate(stateDir, workspaceHash, required); err != nil {
+		t.Fatalf("admitted head with matching evidence must pass: %v", err)
 	}
 }
