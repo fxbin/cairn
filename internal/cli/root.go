@@ -79,6 +79,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.benchmark(ctx, args[1:])
 	case "check-provider":
 		return command.checkProvider(ctx, args[1:])
+	case "provider":
+		return command.providerCommand(ctx, args[1:])
 	case "init":
 		return command.initCommand(ctx, args[1:])
 	case "help", "--help", "-h":
@@ -124,7 +126,7 @@ func (command Command) initCommand(ctx context.Context, arguments []string) int 
 	for _, note := range outcome.ProbeNotes {
 		fmt.Fprintf(command.Stdout, "  %s\n", note)
 	}
-	fmt.Fprintf(command.Stdout, "\n下一步:\n  1. export %s=<你的密钥>\n  2. cairn check-provider 验证端点能力\n  3. cairn run \"你的任务\"\n", outcome.APIKeyEnv)
+	fmt.Fprintf(command.Stdout, "\n下一步:\n  1. export %s=<你的密钥>\n  2. cairn provider probe 验证端点能力（兼容命令 check-provider）\n  3. cairn run \"你的任务\"\n", outcome.APIKeyEnv)
 	return ExitOK
 }
 
@@ -1752,7 +1754,13 @@ Usage:
   cairn memory promotion list [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory telemetry [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
-  cairn check-provider [--workspace <path>] [--config <path>] [--probe-tools] [--json]
+  cairn check-provider [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
+  cairn provider list [--json]
+  cairn provider models [--query <name>] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
+  cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
+  cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--provider-id <id>] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
+  cairn provider admit --evidence <sha256> --decision admitted|rejected --reason <text> [--supersedes <sha256>] [--workspace <path>] [--config <path>] [--state-dir <path>]
+  cairn provider status [--workspace <path>] [--config <path>] [--state-dir <path>] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
 
 Exit status:

@@ -40,6 +40,11 @@ type SetupInput struct {
 	CatalogURL      string
 	CatalogCacheDir string
 	Workspace       string
+	// ConfigVersion 选择生成的配置版本：0 与 1 生成 version 1（历史行为）；
+	// 2 生成 version 2 身份配置，此时 ProviderID 与 Admission 必须显式合法。
+	ConfigVersion int
+	ProviderID    string
+	Admission     string
 }
 
 // SetupOutcome 承载向导的落盘结果与验证结论：全部字段非敏感，可安全进入
@@ -107,6 +112,14 @@ func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKeyEnv string
 func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupOutcome, error) {
 	if input.BaseURL == "" || input.Model == "" || input.APIKeyEnv == "" {
 		return nil, errors.New("base_url、模型名与密钥环境变量名均不可为空")
+	}
+	if input.ConfigVersion != 0 && input.ConfigVersion != 1 && input.ConfigVersion != 2 {
+		return nil, fmt.Errorf("unsupported config version %d", input.ConfigVersion)
+	}
+	if input.ConfigVersion == 2 {
+		if input.Admission != config.ProviderAdmissionOptional && input.Admission != config.ProviderAdmissionRequired {
+			return nil, fmt.Errorf("version 2 配置必须显式声明 admission（%s 或 %s）", config.ProviderAdmissionOptional, config.ProviderAdmissionRequired)
+		}
 	}
 	outcome := &SetupOutcome{APIKeyEnv: input.APIKeyEnv}
 	capability := config.ProviderCapabilityConfig{
@@ -202,10 +215,22 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 // 命中目录时的 pricing 段），其余全部走安全默认值；密钥只以环境变量名引用。
 func RenderMinimalConfig(input SetupInput, capability config.ProviderCapabilityConfig, pricing *config.PricingConfig) string {
 	var builder strings.Builder
-	builder.WriteString("# Cairn 配置——由 cairn init 生成；只写了 Provider 段，其余全部使用安全默认值。\n")
+	builder.WriteString("# Cairn 配置——由 cairn init/provider configure 生成；只写了 Provider 段，其余全部使用安全默认值。\n")
 	builder.WriteString("# 模型密钥只从环境变量读取，绝不写入本文件。\n")
-	builder.WriteString("version: 1\n\n")
+	if input.ConfigVersion == 2 {
+		builder.WriteString("version: 2\n\n")
+	} else {
+		builder.WriteString("version: 1\n\n")
+	}
 	builder.WriteString("provider:\n")
+	if input.ConfigVersion == 2 {
+		providerID := input.ProviderID
+		if providerID == "" {
+			providerID = contract.ProviderIDCustom
+		}
+		fmt.Fprintf(&builder, "  id: %s\n", providerID)
+		fmt.Fprintf(&builder, "  admission: %s\n", input.Admission)
+	}
 	fmt.Fprintf(&builder, "  base_url: %s\n", input.BaseURL)
 	fmt.Fprintf(&builder, "  model: %s\n", input.Model)
 	fmt.Fprintf(&builder, "  api_key_env: %s\n", input.APIKeyEnv)
