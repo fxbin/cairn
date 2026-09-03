@@ -154,7 +154,7 @@ func ResolveProviderRequestProfile(kind string, declaration ProviderRequestDecla
 	if err != nil {
 		return ProviderRequestProfile{}, err
 	}
-	generation, err := resolveGenerationProfile(declaration.Generation, card)
+	generation, err := ResolveGenerationProfile(declaration.Generation, card)
 	if err != nil {
 		return ProviderRequestProfile{}, err
 	}
@@ -173,10 +173,11 @@ func ResolveProviderRequestProfile(kind string, declaration ProviderRequestDecla
 	}, nil
 }
 
-// resolveGenerationProfile 校验并投影生成参数块；上限与枚举约束和能力卡
+// ResolveGenerationProfile 校验并投影生成参数块；上限与枚举约束和能力卡
 // 对照重复一次属于纵深防御：直接构造调用的调用方绕过了 config 层校验，
-// 合同层必须在发出网络请求前保持失败关闭。
-func resolveGenerationProfile(generation *ProviderGenerationDeclaration, card ProviderCapabilityCard) (ProviderGenerationProfile, error) {
+// 合同层必须在发出网络请求前保持失败关闭。导出供装配层（如
+// ResolvedProviderProfile 组装）复用，保证两态解析规则单一来源。
+func ResolveGenerationProfile(generation *ProviderGenerationDeclaration, card ProviderCapabilityCard) (ProviderGenerationProfile, error) {
 	if generation == nil {
 		return ProviderGenerationProfile{}, nil
 	}
@@ -324,6 +325,50 @@ func (card ProviderCapabilityCard) Fingerprint() (string, error) {
 		StopReasons: card.StopReasons,
 	}
 	return canonicaljson.Fingerprint(capabilityFingerprintPrefix, view)
+}
+
+// ResolvedProfileSchemaV1 是 ResolvedProviderProfile 的当前合同版本，导出
+// 供装配层构造时引用。
+const ResolvedProfileSchemaV1 = 1
+
+// resolvedProfileFingerprintPrefix 是 request_profile_fingerprint 的版本化
+// 域前缀；准入有效性只绑定该指纹，不绑定完整配置指纹。
+const resolvedProfileFingerprintPrefix = "cairn-resolved-provider-profile-v1"
+
+// ResolvedProviderProfile 是 run 启动时冻结的解析身份合同：身份选择、能力
+// 指纹、两态生成参数、模型修订与非敏感凭据槽位引用。它是准入绑定的唯一
+// 有效性依据（request_profile_fingerprint）；不内嵌证据或准入决定，三张
+// 合同互相引用指纹而不互相内嵌。
+type ResolvedProviderProfile struct {
+	SchemaVersion         int                       `json:"schema_version"`
+	Selection             ProviderSelection         `json:"selection"`
+	CapabilityFingerprint string                    `json:"capability_fingerprint"`
+	Generation            ProviderGenerationProfile `json:"generation"`
+	ModelRevision         string                    `json:"model_revision"`
+	CredentialRef         string                    `json:"credential_ref"`
+}
+
+// Fingerprint 计算请求合同指纹（request_profile_fingerprint）：同一指纹意味
+// 着同一身份、能力边界、生成参数与凭据槽位；任何 run override 改变其中任一
+// 事实都会改变指纹，从而要求重新匹配准入链。
+func (profile ResolvedProviderProfile) Fingerprint() (string, error) {
+	return canonicaljson.Fingerprint(resolvedProfileFingerprintPrefix, profile)
+}
+
+// ValidCredentialRefShape 校验凭据槽位引用的确定性变量名形状；契约层重复
+// 一道防线以覆盖绕过 config 校验的直接构造调用，并作为该形状的单一来源
+// 供装配层复用。
+func ValidCredentialRefShape(credentialRef string) bool {
+	if credentialRef == "" {
+		return false
+	}
+	for index := 0; index < len(credentialRef); index++ {
+		character := credentialRef[index]
+		if !(character == '_' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || index > 0 && character >= '0' && character <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // PricingSnapshot 用整数 micro-USD/M token 表达冻结单价：比较器成本指标与
