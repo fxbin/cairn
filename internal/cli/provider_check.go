@@ -5,7 +5,10 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -14,9 +17,12 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // providerCheckResult 是合同探测的闭合结论输出：无消息正文、无密钥、无明文
@@ -33,6 +39,12 @@ type providerCheckResult struct {
 	StopReason            string                     `json:"stop_reason"`
 	ToolRoundtrip         string                     `json:"tool_roundtrip"`
 	Error                 string                     `json:"error,omitempty"`
+	EvidenceFingerprint   string                     `json:"evidence_fingerprint,omitempty"`
+	// probed 记录网络探测是否真实执行过：仅执行过的探测才有观测事实可落
+	// 盘为证据；早期配置失败没有观测语义，不进入证据存储。
+	probed          bool
+	probeErrorClass string
+	probeStatusCode int
 }
 
 // providerGenerationSummary 是生成参数的人类可读两态投影。
@@ -78,6 +90,7 @@ func (command Command) checkProvider(ctx context.Context, arguments []string) in
 	flags.SetOutput(command.Stderr)
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	configPath := flags.String("config", "", "configuration path")
+	stateDir := flags.String("state-dir", "", "override the ignored Cairn state directory")
 	jsonOutput := flags.Bool("json", false, "write JSON to stdout")
 	probeTools := flags.Bool("probe-tools", false, "also verify the tool call round trip with a no-op probe tool")
 	if err := flags.Parse(arguments); err != nil {
@@ -93,6 +106,11 @@ func (command Command) checkProvider(ctx context.Context, arguments []string) in
 		return ExitUsage
 	}
 	result := command.runProviderProbe(ctx, configuration, *probeTools)
+	if fingerprint, err := persistProbeEvidence(*workspace, *stateDir, configuration, result); err != nil {
+		fmt.Fprintln(command.Stderr, "evidence persistence failed:", err)
+	} else {
+		result.EvidenceFingerprint = fingerprint
+	}
 	if *jsonOutput {
 		writeJSON(command.Stdout, result)
 	} else {
@@ -166,6 +184,8 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 		promptText = "Call the contract_probe tool once with value set to 7, then reply with the single word: ok."
 	}
 	request.Messages = []ports.Message{{Role: "user", Content: promptText}}
+	// 网络探测自此开始执行：后续结论（含失败）都携带可落盘的观测事实。
+	result.probed = true
 	textSeen := false
 	var toolCalls []ports.ToolCall
 	var stopReason string
@@ -186,6 +206,7 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	})
 	if eventsErr != nil {
 		result.Error = eventsErr.Error()
+		captureProbeErrorClass(&result, eventsErr)
 		if probeTools {
 			result.ToolRoundtrip = toolRoundtripFailed
 		} else {
@@ -245,6 +266,7 @@ func (command Command) runProviderProbe(ctx context.Context, configuration confi
 	})
 	if secondErr != nil {
 		result.Error = secondErr.Error()
+		captureProbeErrorClass(&result, secondErr)
 		result.ToolRoundtrip = toolRoundtripSecondLegFailed
 		result.Result = probeResultFail
 		return result
@@ -332,4 +354,82 @@ func stopReasonOrUnknown(reason string) string {
 		return "unknown"
 	}
 	return reason
+}
+
+// captureProbeErrorClass 从探测错误中提取稳定分类与状态码：仅接受
+// ProviderError 的闭合词表，其他错误不猜测类别，保持证据的脱敏合同。
+func captureProbeErrorClass(result *providerCheckResult, err error) {
+	var providerError *openaicompat.ProviderError
+	if !errors.As(err, &providerError) {
+		return
+	}
+	result.probeErrorClass = providerError.ErrorClass()
+	result.probeStatusCode = providerError.StatusCode
+}
+
+// persistProbeEvidence 把一次真实执行过的探测观测落盘为内容寻址证据：
+// 工作区哈希与 app 装配使用同一规范化算法（符号链接解析后的绝对路径摘要），
+// 保证证据分区与准入门的绑定一致。落盘失败只报告不改变探测结论；未执行
+// 网络探测的早期失败没有观测语义，直接跳过。
+func persistProbeEvidence(workspacePath, stateDir string, configuration config.Config, result providerCheckResult) (string, error) {
+	if !result.probed {
+		return "", nil
+	}
+	root := workspacePath
+	if root == "" {
+		current, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		root = current
+	}
+	workspace, err := tools.NewWorkspace(root, configuration.Workspace.Ignore, configuration.Workspace.MaxReadBytes, configuration.Workspace.MaxSearchFiles, configuration.Workspace.MaxSearchBytes)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(workspace.Root))
+	workspaceHash := "sha256:" + hex.EncodeToString(digest[:])
+	if stateDir == "" {
+		stateDir = app.DefaultStateDir()
+	}
+	store, err := provider.OpenEvidenceStore(stateDir, workspaceHash)
+	if err != nil {
+		return "", err
+	}
+	selection, err := provider.ResolveSelection(provider.SelectionFacts{
+		ProviderID: configuration.Provider.ID,
+		Model:      configuration.Provider.Model,
+		BaseURL:    configuration.Provider.BaseURL,
+	})
+	if err != nil {
+		return "", err
+	}
+	observations := provider.EvidenceObservations{
+		UsageStreamed:      provider.ObservationObservedFalse,
+		StopReasonsState:   provider.StateNotObserved,
+		ToolRoundtrip:      result.ToolRoundtrip,
+		ModelRevisionState: provider.StateNotObserved,
+	}
+	if result.UsageStreamed {
+		observations.UsageStreamed = provider.ObservationObservedTrue
+	}
+	if result.StopReason != "" {
+		observations.StopReasonsState = provider.StateObserved
+		observations.StopReasons = []string{result.StopReason}
+	}
+	if result.ModelRevision != "" {
+		observations.ModelRevisionState = provider.StateObserved
+		observations.ModelRevision = result.ModelRevision
+	}
+	outcome := provider.EvidenceOutcomeCompleted
+	if result.Result == probeResultFail {
+		outcome = provider.EvidenceOutcomeFailed
+	}
+	evidence := provider.ProviderProbeEvidence{
+		SchemaVersion: 1, Selection: selection, ProbeContractVersion: provider.CurrentProbeContractVersion,
+		Observations: observations, Outcome: outcome,
+		ErrorClass: result.probeErrorClass, StatusCode: result.probeStatusCode,
+		ProbedAt: time.Now().UTC(),
+	}
+	return store.Append(&evidence)
 }

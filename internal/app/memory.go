@@ -543,7 +543,7 @@ func verifyCandidateEvidence(candidate memory.Candidate, events []domain.Event, 
 // 工作区目录和锁，不共享表、事务或事实所有权。
 func memoryDBPath(stateDir, workspaceHash string) string {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	return filepath.Join(stateDir, "workspaces", workspaceHash, "memory.db")
 }

@@ -661,7 +661,7 @@ func execToolFor(workspace tools.Workspace, configuration config.Config) (tools.
 // openJournal 打开指定工作区的可写 SQLite 事件日志。
 func openJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
 	return sqlite.Open(filepath.Join(directory, "runs.db"))
@@ -670,7 +670,7 @@ func openJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 // openArtifactStore 打开指定工作区的脱敏内容寻址制品库。
 func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfig) (*artifact.Store, error) {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	store, err := artifact.New(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), output.MaxPreviewBytes)
 	if err != nil {
@@ -730,7 +730,7 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 // 使用同一路径布局，保证投影读取与写入视角一致。
 func manifestArtifactRoot(stateDir, workspaceHash string) string {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	return filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts")
 }
@@ -758,7 +758,7 @@ func checkArtifactReference(root string, reference artifact.Ref) error {
 // openReadOnlyJournal 打开指定工作区的不可写 SQLite 事件日志。
 func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
 	return sqlite.OpenReadOnly(filepath.Join(directory, "runs.db"))
@@ -767,13 +767,14 @@ func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error
 // acquireWorkspaceLock 为指定工作区获取进程级排他锁。
 func acquireWorkspaceLock(stateDir, workspaceHash string) (*lock.Lock, error) {
 	if stateDir == "" {
-		stateDir = defaultStateDir()
+		stateDir = DefaultStateDir()
 	}
 	return lock.Acquire(filepath.Join(stateDir, "workspaces", workspaceHash, "run.lock"))
 }
 
-// defaultStateDir 按当前操作系统约定返回 Cairn 本地状态目录。
-func defaultStateDir() string {
+// DefaultStateDir 返回平台默认的 Cairn 状态目录；空 stateDir 参数的装配路径
+// 统一回退到此值，导出供 CLI 命令复用同一解析。
+func DefaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".cairn"

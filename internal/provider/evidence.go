@@ -26,6 +26,10 @@ const probeEvidenceSchemaV1 = 1
 // 比较。当前代数覆盖两程工具回路判定。
 const probeContractVersion = 1
 
+// CurrentProbeContractVersion 导出当前探测行为代数，供探测命令构造证据
+// 时引用，杜绝 CLI 侧硬编码漂移。
+const CurrentProbeContractVersion = probeContractVersion
+
 // evidenceFingerprintPrefix 是探测证据内容指纹的版本化域前缀。
 const evidenceFingerprintPrefix = "cairn-provider-probe-evidence-v1"
 

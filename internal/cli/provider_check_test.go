@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // sseFrame 输出一个带内容增量、可选 finish_reason 与 usage 的完整 SSE 帧。
@@ -317,4 +323,57 @@ func TestCheckProviderProbeToolsInconclusiveWhenToolNotInvoked(t *testing.T) {
 	if report["tool_roundtrip"] != "not_invoked" || report["result"] != "inconclusive" {
 		t.Fatalf("not-invoked probe mismatch: %v", report)
 	}
+}
+
+// TestCheckProviderPersistsProbeEvidence 验证探测观测落盘：真实执行过网络
+// 探测后，JSON 结论携带 evidence_fingerprint，且证据文件在
+// provider/evidence/ 下可按指纹读回；早期配置失败则不落证据。
+func TestCheckProviderPersistsProbeEvidence(t *testing.T) {
+	t.Setenv("CAIRN_PROBE_KEY", "sk-probe-sentinel")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		sseFrame(writer, "stop")
+	}))
+	defer server.Close()
+	configPath := writeProbeConfig(t, server.URL)
+	workspace := t.TempDir()
+	stateDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	exit := command.Run(context.Background(), []string{"check-provider", "--config", configPath, "--workspace", workspace, "--state-dir", stateDir, "--json"})
+	if exit != ExitOK {
+		t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &report); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, _ := report["evidence_fingerprint"].(string)
+	if !strings.HasPrefix(fingerprint, "sha256:") {
+		t.Fatalf("probe must report an evidence fingerprint: %v", report)
+	}
+	store, err := provider.OpenEvidenceStore(stateDir, probeWorkspaceHash(t, workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := store.Get(fingerprint)
+	if err != nil {
+		t.Fatalf("evidence must be readable back by fingerprint: %v", err)
+	}
+	if evidence.Outcome != provider.EvidenceOutcomeCompleted || evidence.Observations.UsageStreamed != provider.ObservationObservedTrue {
+		t.Fatalf("unexpected evidence observations: %+v", evidence.Observations)
+	}
+	if evidence.Selection.ProviderID != contract.ProviderIDCustom {
+		t.Fatalf("evidence selection provider = %q", evidence.Selection.ProviderID)
+	}
+}
+
+// probeWorkspaceHash 复刻 app 装配的工作区哈希算法，供测试定位证据分区。
+func probeWorkspaceHash(t *testing.T, workspace string) string {
+	t.Helper()
+	view, err := tools.NewWorkspace(workspace, nil, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(view.Root))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
