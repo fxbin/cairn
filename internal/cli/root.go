@@ -83,6 +83,8 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		return command.providerCommand(ctx, args[1:])
 	case "init":
 		return command.initCommand(ctx, args[1:])
+	case "tui":
+		return command.tuiCommand(ctx, args[1:])
 	case "help", "--help", "-h":
 		command.usage()
 		return ExitOK
@@ -1762,6 +1764,7 @@ Usage:
   cairn provider admit --evidence <sha256> --decision admitted|rejected --reason <text> [--supersedes <sha256>] [--workspace <path>] [--config <path>] [--state-dir <path>]
   cairn provider status [--workspace <path>] [--config <path>] [--state-dir <path>] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
+  cairn tui [--workspace <path>] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed
