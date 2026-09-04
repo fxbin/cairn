@@ -228,6 +228,19 @@ func (catalog *Catalog) LookupProvider(id string) (ProviderInfo, error) {
 	return ProviderInfo{}, fmt.Errorf("provider %q is not in the catalog", id)
 }
 
+// EntriesOf 列出指定 provider 的全部目录模型条目，按模型标识稳定排序；供
+// 向导在选定 provider 后默认展示该家模型清单，仅是预填建议。
+func (catalog *Catalog) EntriesOf(providerID string) []ModelEntry {
+	var entries []ModelEntry
+	for _, entry := range catalog.Entries {
+		if entry.Provider == providerID {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	return entries
+}
+
 // projectEntry 把单条原始条目投影为闭合形态；tool_call 与 limit 为消费
 // 必需字段，缺失即整条跳过。
 func projectEntry(providerKey, modelKey string, model rawCatalogModel) (ModelEntry, bool) {

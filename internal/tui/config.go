@@ -97,6 +97,7 @@ type ConfigWizard struct {
 	providerWindow    int
 	selectedProvider  string
 	suggestionCursor  int
+	suggestionWindow  int
 	suggestions       []modelcatalog.ModelEntry
 	baseURLInput      textinput.Model
 	modelInput        textinput.Model
@@ -446,22 +447,41 @@ func (wizard ConfigWizard) receiveCatalog(message catalogLoadedMsg) (tea.Model, 
 	return wizard, nil
 }
 
-// moveSuggestionCursor 在目录建议列表内移动光标；无建议时不动。
+// moveSuggestionCursor 在目录建议列表内线性移动光标并让展示窗口跟随：到
+// 边界即停不循环，配合计数行明示还有更多条目；无建议时不动。
 func (wizard *ConfigWizard) moveSuggestionCursor(down bool) {
 	if len(wizard.suggestions) == 0 {
 		wizard.suggestionCursor = -1
+		wizard.suggestionWindow = 0
 		return
 	}
 	if wizard.suggestionCursor < 0 {
 		if down {
 			wizard.suggestionCursor = 0
 		}
+		wizard.scrollSuggestionWindow()
 		return
 	}
-	if down {
-		wizard.suggestionCursor = (wizard.suggestionCursor + 1) % len(wizard.suggestions)
-	} else {
-		wizard.suggestionCursor = (wizard.suggestionCursor + len(wizard.suggestions) - 1) % len(wizard.suggestions)
+	if down && wizard.suggestionCursor < len(wizard.suggestions)-1 {
+		wizard.suggestionCursor++
+	}
+	if !down && wizard.suggestionCursor > 0 {
+		wizard.suggestionCursor--
+	}
+	wizard.scrollSuggestionWindow()
+}
+
+// scrollSuggestionWindow 让模型建议展示窗口跟随光标，窗口上限为
+// maxModelSuggestions 条目。
+func (wizard *ConfigWizard) scrollSuggestionWindow() {
+	if wizard.suggestionCursor < wizard.suggestionWindow {
+		wizard.suggestionWindow = wizard.suggestionCursor
+	}
+	if wizard.suggestionCursor >= wizard.suggestionWindow+maxModelSuggestions {
+		wizard.suggestionWindow = wizard.suggestionCursor - maxModelSuggestions + 1
+	}
+	if wizard.suggestionWindow < 0 {
+		wizard.suggestionWindow = 0
 	}
 }
 
@@ -584,18 +604,27 @@ func RunConfigWizard(ctx context.Context, input app.SetupInput) error {
 }
 
 // refreshSuggestions 按当前输入与所选 provider 刷新目录建议列表并重置建议
-// 光标。
+// 光标与窗口。
 func (wizard *ConfigWizard) refreshSuggestions() {
 	wizard.suggestions = filterSuggestions(wizard.catalog, wizard.selectedProvider, wizard.modelInput.Value())
 	wizard.suggestionCursor = -1
+	wizard.suggestionWindow = 0
 }
 
-// filterSuggestions 按查询词截取目录建议前缀清单；已选目录 provider 时建议
-// 收窄到该 provider 的模型，custom 或未选时跨全目录。目录缺失或查询为空时
-// 返回空切片，由调用方降级为纯手动输入。
+// filterSuggestions 组装目录建议清单：已选目录 provider 且查询为空时默认列
+// 出该家全部模型（按标识稳定排序）；查询非空时按名称模糊匹配，已选目录
+// provider 时结果收窄到该家，custom 跨全目录；custom 且查询为空时无默认清
+// 单（目录不承载 custom 端点的模型事实），由用户搜索或手输。过滤层不截
+// 断，同屏条数由渲染窗口控制。
 func filterSuggestions(catalog *modelcatalog.Catalog, selectedProvider, query string) []modelcatalog.ModelEntry {
-	if catalog == nil || strings.TrimSpace(query) == "" {
+	if catalog == nil {
 		return nil
+	}
+	if strings.TrimSpace(query) == "" {
+		if selectedProvider == "" {
+			return nil
+		}
+		return catalog.EntriesOf(selectedProvider)
 	}
 	var entries []modelcatalog.ModelEntry
 	if selectedProvider == "" {
@@ -606,9 +635,6 @@ func filterSuggestions(catalog *modelcatalog.Catalog, selectedProvider, query st
 				entries = append(entries, entry)
 			}
 		}
-	}
-	if len(entries) > maxModelSuggestions {
-		entries = entries[:maxModelSuggestions]
 	}
 	return entries
 }
@@ -705,13 +731,19 @@ func (wizard ConfigWizard) viewProvider() string {
 func (wizard ConfigWizard) viewModel() string {
 	lines := []string{wizard.modelInput.View()}
 	if wizard.catalogLoading {
-		lines = append(lines, dimStyle.Render("目录装载中…（不可用时降级为手动输入）"))
+		lines = append(lines, dimStyle.Render(wizard.catalogSpinner.View()+" 目录装载中…（不可用时降级为手动输入）"))
 	} else if wizard.catalogErr != nil {
 		lines = append(lines, warnStyle.Render("目录不可用（手动输入模型名）: "+wizard.catalogErr.Error()))
 	}
-	if len(wizard.suggestions) > 0 {
-		lines = append(lines, dimStyle.Render("目录建议（↑↓ 选择，Enter/Tab 采纳或按输入框原文继续）:"))
-		for index, entry := range wizard.suggestions {
+	switch {
+	case len(wizard.suggestions) > 0:
+		lines = append(lines, dimStyle.Render("目录模型（↑↓ 选择，Enter/Tab 采纳或按输入框原文继续）:"))
+		end := wizard.suggestionWindow + maxModelSuggestions
+		if end > len(wizard.suggestions) {
+			end = len(wizard.suggestions)
+		}
+		for index := wizard.suggestionWindow; index < end; index++ {
+			entry := wizard.suggestions[index]
 			cursor := "  "
 			style := itemStyle
 			if index == wizard.suggestionCursor {
@@ -721,6 +753,11 @@ func (wizard ConfigWizard) viewModel() string {
 			lines = append(lines, style.Render(fmt.Sprintf("%s%s [%s] ctx %d / out %d / $%.2f $%.2f per M",
 				cursor, entry.ID, entry.Provider, entry.ContextTokens, entry.OutputTokens, entry.InputUSDPerMillion, entry.OutputUSDPerMillion)))
 		}
+		if len(wizard.suggestions) > maxModelSuggestions {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("第 %d–%d 个 / 共 %d 个 · ↑↓ 滚动浏览", wizard.suggestionWindow+1, end, len(wizard.suggestions))))
+		}
+	case wizard.catalog != nil && wizard.catalogErr == nil && wizard.selectedProvider == "" && strings.TrimSpace(wizard.modelInput.Value()) == "":
+		lines = append(lines, dimStyle.Render("custom 端点没有目录模型清单——输入关键词搜索目录（如 glm、deepseek），或直接输入自定义模型名。"))
 	}
 	lines = append(lines, dimStyle.Render("建议仅为预填来源，能力以提交时的实测探测与合同校验为准。"))
 	return strings.Join(lines, "\n")

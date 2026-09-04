@@ -30,23 +30,37 @@ func testCatalogEntries(count int) []modelcatalog.ModelEntry {
 	return entries
 }
 
-// TestFilterSuggestionsEmptyInputs 验证目录缺失与空查询都降级为无建议。
+// TestFilterSuggestionsEmptyInputs 验证目录缺失与 custom 空查询都无默认清
+// 单（custom 端点的模型不在目录事实内）。
 func TestFilterSuggestionsEmptyInputs(t *testing.T) {
 	catalog := &modelcatalog.Catalog{Entries: testCatalogEntries(3)}
 	if got := filterSuggestions(nil, "", "model"); got != nil {
 		t.Fatalf("nil 目录应返回 nil 建议，得到 %d 条", len(got))
 	}
 	if got := filterSuggestions(catalog, "", "   "); got != nil {
-		t.Fatalf("空查询应返回 nil 建议，得到 %d 条", len(got))
+		t.Fatalf("custom 空查询应无默认清单，得到 %d 条", len(got))
 	}
 }
 
-// TestFilterSuggestionsCapsLimit 验证建议条数被上限截断。
-func TestFilterSuggestionsCapsLimit(t *testing.T) {
-	catalog := &modelcatalog.Catalog{Entries: testCatalogEntries(maxModelSuggestions + 5)}
-	got := filterSuggestions(catalog, "", "model")
-	if len(got) != maxModelSuggestions {
-		t.Fatalf("建议应截断为 %d 条，得到 %d 条", maxModelSuggestions, len(got))
+// TestFilterSuggestionsDefaultsToProviderModels 验证已选目录 provider 时空
+// 查询默认列出该家全部模型；查询非空时不截断——同屏条数由渲染窗口控制。
+func TestFilterSuggestionsDefaultsToProviderModels(t *testing.T) {
+	entries := append(testCatalogEntries(maxModelSuggestions+5),
+		modelcatalog.ModelEntry{Provider: "other", ID: "model-x", Name: "Model X"},
+	)
+	catalog := &modelcatalog.Catalog{Entries: entries}
+	got := filterSuggestions(catalog, "test", "")
+	if len(got) != maxModelSuggestions+5 {
+		t.Fatalf("空查询应默认列出该 provider 全部模型，得到 %d 条", len(got))
+	}
+	for _, entry := range got {
+		if entry.Provider != "test" {
+			t.Fatalf("默认清单泄漏了其他 provider 条目: %+v", entry)
+		}
+	}
+	searched := filterSuggestions(catalog, "", "model")
+	if len(searched) != maxModelSuggestions+6 {
+		t.Fatalf("custom 搜索应返回全部命中不截断，得到 %d 条", len(searched))
 	}
 }
 
@@ -190,30 +204,41 @@ func TestConfirmLinesCarriesNonSecretSummary(t *testing.T) {
 	}
 }
 
-// TestMoveSuggestionCursorCycles 验证建议光标在列表内循环且空列表不动。
-func TestMoveSuggestionCursorCycles(t *testing.T) {
+// TestMoveSuggestionCursorLinearWithWindow 验证建议光标线性移动（到边界即
+// 停不循环）、展示窗口跟随滚动且空列表不动。
+func TestMoveSuggestionCursorLinearWithWindow(t *testing.T) {
 	wizard := ConfigWizard{suggestions: testCatalogEntries(0)}
 	wizard.moveSuggestionCursor(true)
-	if wizard.suggestionCursor != -1 {
-		t.Fatalf("空列表光标应保持 -1，得到 %d", wizard.suggestionCursor)
+	if wizard.suggestionCursor != -1 || wizard.suggestionWindow != 0 {
+		t.Fatalf("空列表光标与窗口应复位，得到 cursor=%d window=%d", wizard.suggestionCursor, wizard.suggestionWindow)
 	}
-	wizard.suggestions = testCatalogEntries(3)
+	wizard.suggestions = testCatalogEntries(maxModelSuggestions + 5)
 	wizard.moveSuggestionCursor(true)
 	if wizard.suggestionCursor != 0 {
 		t.Fatalf("首次下移应落到 0，得到 %d", wizard.suggestionCursor)
 	}
-	wizard.moveSuggestionCursor(true)
-	wizard.moveSuggestionCursor(true)
-	if wizard.suggestionCursor != 2 {
-		t.Fatalf("三次下移应到达 2，得到 %d", wizard.suggestionCursor)
+	for index := 1; index < len(wizard.suggestions); index++ {
+		wizard.moveSuggestionCursor(true)
+	}
+	if wizard.suggestionCursor != len(wizard.suggestions)-1 {
+		t.Fatalf("连续下移应停在末条，得到 %d", wizard.suggestionCursor)
 	}
 	wizard.moveSuggestionCursor(true)
-	if wizard.suggestionCursor != 0 {
-		t.Fatalf("继续下移应循环回 0，得到 %d", wizard.suggestionCursor)
+	if wizard.suggestionCursor != len(wizard.suggestions)-1 {
+		t.Fatalf("末条继续下移应停在边界，得到 %d", wizard.suggestionCursor)
+	}
+	if wizard.suggestionWindow != len(wizard.suggestions)-maxModelSuggestions {
+		t.Fatalf("窗口应跟随到末屏，得到 %d", wizard.suggestionWindow)
 	}
 	wizard.moveSuggestionCursor(false)
-	if wizard.suggestionCursor != 2 {
-		t.Fatalf("0 上移应循环回 2，得到 %d", wizard.suggestionCursor)
+	wizard.moveSuggestionCursor(false)
+	if wizard.suggestionCursor != len(wizard.suggestions)-3 {
+		t.Fatalf("上移应线性后退，得到 %d", wizard.suggestionCursor)
+	}
+	wizard.suggestionCursor = 0
+	wizard.moveSuggestionCursor(false)
+	if wizard.suggestionCursor != 0 || wizard.suggestionWindow != 0 {
+		t.Fatalf("顶部上移应停在边界且窗口回顶，得到 cursor=%d window=%d", wizard.suggestionCursor, wizard.suggestionWindow)
 	}
 }
 
