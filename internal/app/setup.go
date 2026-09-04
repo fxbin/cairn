@@ -141,8 +141,8 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	options := modelcatalog.Options{CatalogURL: input.CatalogURL}
 	if input.CatalogCacheDir != "" {
 		options.CachePath = input.CatalogCacheDir
-	} else if cacheDir, err := os.UserCacheDir(); err == nil {
-		options.CachePath = filepath.Join(cacheDir, "cairn", "models-catalog.json")
+	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
+		options.CachePath = cachePath
 	}
 	if catalog, err := service.CatalogLoader(options); err == nil {
 		candidates := catalog.Lookup(input.Model)

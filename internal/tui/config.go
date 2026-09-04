@@ -190,11 +190,14 @@ func (wizard ConfigWizard) Init() tea.Cmd {
 	return tea.Batch(loadCatalogCmd(wizard.input.CatalogURL, wizard.input.CatalogCacheDir), wizard.providerSearch.Focus(), wizard.catalogSpinner.Tick)
 }
 
-// loadCatalogCmd 异步装载模型元数据目录；失败只影响建议列表，不阻塞向导。
+// loadCatalogCmd 异步装载模型元数据目录；缺省缓存路径与配置提交路径共用
+// 单一来源，保证 TUI 启动装载同样读写 24 小时磁盘缓存而不是每次走网络。
 func loadCatalogCmd(catalogURL, cacheDir string) tea.Cmd {
 	options := modelcatalog.Options{CatalogURL: catalogURL}
 	if cacheDir != "" {
 		options.CachePath = cacheDir
+	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
+		options.CachePath = cachePath
 	}
 	return func() tea.Msg {
 		catalog, err := modelcatalog.Load(options)

@@ -95,6 +95,8 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	options := modelcatalog.Options{CatalogURL: *catalogURL}
 	if *catalogCache != "" {
 		options.CachePath = *catalogCache
+	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
+		options.CachePath = cachePath
 	}
 	catalog, err := modelcatalog.Load(options)
 	if err != nil {

@@ -21,6 +21,17 @@ import (
 // DefaultCatalogURL 是模型元数据目录的默认网络源；可用选项换镜像。
 const DefaultCatalogURL = "https://models.dev/api.json"
 
+// DefaultCachePath 返回目录缓存的默认磁盘位置；向导各装载点（TUI 启动与
+// 配置提交）共用本函数作为缺省缓存路径，保证任何一次网络获取都会落缓存、
+// 后续装载命中 24 小时窗口。
+func DefaultCachePath() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cacheDir, "cairn", "models-catalog.json"), nil
+}
+
 // catalogTTL 是磁盘缓存的刷新间隔；目录仅在首跑向导时消费，24 小时的
 // 陈旧度不构成问题，而更短的间隔只会在弱网下制造无谓的失败面。
 const catalogTTL = 24 * time.Hour
