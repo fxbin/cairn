@@ -345,6 +345,9 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.stopWait = true
 	close(console.events)
 	console.appendLine(console.verdictLine())
+	if console.result != nil && console.result.ID != "" {
+		console.appendLine(dimStyle.Render("run " + string(console.result.ID) + "（cairn inspect 查证）"))
+	}
 	return console, nil
 }
 
