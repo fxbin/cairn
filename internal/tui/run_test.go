@@ -260,3 +260,55 @@ func TestMaxTurnsBudgetFromResolution(t *testing.T) {
 		t.Fatalf("应读取 resolved 轮次预算 48，得到 %d", got)
 	}
 }
+
+// TestSlashCommands 锁定命令基线：help/new/status/cost 就地反馈、未知命令
+// 提示、quit 请求退出、非斜杠输入不拦截。
+func TestSlashCommands(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.input.Config.Provider.Model = "test-model"
+
+	if handled, cmd := console.runCommand("普通任务"); handled || cmd != nil {
+		t.Fatal("非斜杠输入不应按命令处理")
+	}
+	console.mode = consoleInput
+	console.taskField.SetValue("/help")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleInput || len(console.lines) == 0 {
+		t.Fatal("/help 应就地反馈且不进入运行")
+	}
+	if strings.Contains(strings.Join(console.lines, "\n"), "/new") != true {
+		t.Fatal("/help 输出应包含命令清单")
+	}
+
+	console.taskField.SetValue("/status")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !strings.Contains(strings.Join(console.lines, "\n"), "test-model") {
+		t.Fatal("/status 应展示模型")
+	}
+
+	console.turn = 3
+	console.promptTokens = 100
+	console.taskField.SetValue("/cost")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !strings.Contains(strings.Join(console.lines, "\n"), "in 100") {
+		t.Fatal("/cost 应展示累计")
+	}
+
+	console.lines = nil
+	console.taskField.SetValue("/new")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if len(console.lines) != 1 || console.turn != 0 || console.sessionPromptTokens != 100 {
+		t.Fatalf("/new 应清屏并保留会话累计，lines=%d turn=%d session=%d", len(console.lines), console.turn, console.sessionPromptTokens)
+	}
+
+	console.taskField.SetValue("/quit")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("/quit 应请求退出")
+	}
+}

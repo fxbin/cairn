@@ -96,10 +96,12 @@ type RunConsole struct {
 	outputTokens     int64
 	toolCalls        int
 
-	waiting        *agent.WaitingApprovalError
-	approvalDetail []string
-	result         *app.RunResult
-	runErr         error
+	sessionPromptTokens int64
+	sessionOutputTokens int64
+	waiting             *agent.WaitingApprovalError
+	approvalDetail      []string
+	result              *app.RunResult
+	runErr              error
 }
 
 // NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
@@ -250,6 +252,10 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if task == "" {
 				return console, nil
 			}
+			if handled, cmd := console.runCommand(task); handled {
+				console.taskField.Reset()
+				return console, cmd
+			}
 			console.mode = consoleRunning
 			console.resetRun()
 			console.appendLine(okStyle.Render("▶ 任务已提交，运行中（Ctrl+C 取消）"))
@@ -344,6 +350,8 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 // resetRun 清空上一轮运行的展示与统计，保留输入态历史行由滚动缓冲自然
 // 淘汰。
 func (console *RunConsole) resetRun() {
+	console.sessionPromptTokens += console.promptTokens
+	console.sessionOutputTokens += console.outputTokens
 	console.lines = nil
 	console.transcript = nil
 	console.transcriptCursor = 0
@@ -701,6 +709,53 @@ func (console RunConsole) View() string {
 		sections = append(sections, dimStyle.Render(queueHint))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...) + "\n"
+}
+
+// runCommand 处理输入态的斜杠命令：纯界面层操作（帮助、清屏、状态、成
+// 本与退出），不触发任何后端能力；返回 handled=false 表示输入不是命令，
+// 按普通任务处理。
+func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
+	if !strings.HasPrefix(task, "/") {
+		return false, nil
+	}
+	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
+	switch name {
+	case "/help", "/?":
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /new 新任务清屏 · /status 配置与预算 · /cost 会话累计 · /quit 退出"))
+		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
+	case "/new":
+		console.sessionPromptTokens += console.promptTokens
+		console.sessionOutputTokens += console.outputTokens
+		console.lines = nil
+		console.transcript = nil
+		console.turn, console.toolCalls = 0, 0
+		console.promptTokens, console.outputTokens = 0, 0
+		console.appendLine(dimStyle.Render("已清屏（会话累计保留，完整历史在事件日志）"))
+	case "/status":
+		turns := "未配置"
+		if budget := console.maxTurnsBudget(); budget > 0 {
+			turns = strconv.Itoa(budget)
+		}
+		console.appendLine(itemStyle.Render(fmt.Sprintf("模型 %s · 端点 %s", console.input.Config.Provider.Model, console.input.Config.Provider.BaseURL)))
+		console.appendLine(dimStyle.Render(fmt.Sprintf("轮次预算 %s · 工作区 %s", turns, console.statusWorkspace())))
+	case "/cost":
+		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
+			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))
+	case "/quit", "/exit":
+		console.cancel()
+		return true, tea.Quit
+	default:
+		console.appendLine(warnStyle.Render("未知命令 " + name + "（/help 查看清单）" + remainder))
+	}
+	return true, nil
+}
+
+// statusWorkspace 返回展示用工作区标识；空工作区显示当前目录语义。
+func (console RunConsole) statusWorkspace() string {
+	if console.input.Workspace == "" {
+		return "当前目录"
+	}
+	return console.input.Workspace
 }
 
 // statusLine 生成运行中的统计行：轮次、工具调用与累计 token。
