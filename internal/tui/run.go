@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -677,6 +678,9 @@ func (console RunConsole) View() string {
 	sections = append(sections, strings.Join(console.lines, "\n"))
 	switch console.mode {
 	case consoleInput:
+		if len(console.lines) == 0 {
+			sections = append(sections, console.welcomeBlock())
+		}
 		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Ctrl+C 退出"))
 	case consoleRunning:
 		if console.queuing {
@@ -709,6 +713,40 @@ func (console RunConsole) View() string {
 		sections = append(sections, dimStyle.Render(queueHint))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...) + "\n"
+}
+
+// welcomeBlock 生成空态启动信息区：模型与端点、工作区、轮次预算与审计
+// 提示——全部来自已加载配置的只读投影，让用户打开即知"我在用什么、在哪
+// 干活、从哪查证"。
+func (console RunConsole) welcomeBlock() string {
+	turns := "未配置"
+	if budget := console.maxTurnsBudget(); budget > 0 {
+		turns = strconv.Itoa(budget)
+	}
+	model := console.input.Config.Provider.Model
+	if model == "" {
+		model = "未配置模型"
+	}
+	lines := []string{
+		itemStyle.Render(fmt.Sprintf("模型 %s · %s", model, hostOf(console.input.Config.Provider.BaseURL))),
+		dimStyle.Render(fmt.Sprintf("工作区 %s · 轮次预算 %s", console.statusWorkspace(), turns)),
+		dimStyle.Render("运行全程事件可审计（cairn inspect <run-id> 查证）· 密钥仅环境与本机凭据文件"),
+		"",
+		dimStyle.Render("输入任务开始 · /help 查看命令"),
+		"",
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hostOf 从端点地址提取主机名用于展示；解析失败返回原串截断。
+func hostOf(baseURL string) string {
+	if parsed, err := url.Parse(baseURL); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	if len(baseURL) > 40 {
+		return baseURL[:40] + "…"
+	}
+	return baseURL
 }
 
 // runCommand 处理输入态的斜杠命令：纯界面层操作（帮助、清屏、状态、成
