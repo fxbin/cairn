@@ -68,22 +68,48 @@ func TestFilterSuggestionsScopedToSelectedProvider(t *testing.T) {
 	}
 }
 
-// TestFilterProvidersMatchesAndCaps 验证 provider 过滤按标识与名称匹配并截断
-// 到上限，空查询取排序前缀。
-func TestFilterProvidersMatchesAndCaps(t *testing.T) {
+// TestFilterProvidersMatchesWithoutTruncation 验证 provider 过滤按标识与名
+// 称匹配且不截断——同屏条数由渲染窗口控制，过滤层不丢弃结果。
+func TestFilterProvidersMatchesWithoutTruncation(t *testing.T) {
 	providers := []modelcatalog.ProviderInfo{
 		{ID: "openrouter", Name: "OpenRouter", ModelCount: 360},
 		{ID: "openai", Name: "OpenAI", ModelCount: 80},
 		{ID: "deepseek", Name: "DeepSeek", ModelCount: 10},
 	}
-	if got := filterProviders(providers, "deep", 10); len(got) != 1 || got[0].ID != "deepseek" {
+	if got := filterProviders(providers, "deep"); len(got) != 1 || got[0].ID != "deepseek" {
 		t.Fatalf("deep 应只命中 deepseek，得到 %+v", got)
 	}
-	if got := filterProviders(providers, "open", 2); len(got) != 2 {
-		t.Fatalf("open 命中应截断为 2，得到 %d 条", len(got))
+	if got := filterProviders(providers, "open"); len(got) != 2 {
+		t.Fatalf("open 应命中 openrouter 与 openai 共 2 条，得到 %d 条", len(got))
 	}
-	if got := filterProviders(providers, "", 2); len(got) != 2 || got[0].ID != "openrouter" {
-		t.Fatalf("空查询应取已排序输入的前缀，得到 %+v", got)
+	if got := filterProviders(providers, ""); len(got) != 3 || got[0].ID != "openrouter" {
+		t.Fatalf("空查询应返回完整已排序输入，得到 %+v", got)
+	}
+	if got := filterProviders(providers, "missing"); got != nil {
+		t.Fatalf("无命中应返回空，得到 %+v", got)
+	}
+}
+
+// TestScrollProviderWindowFollowsCursor 验证展示窗口跟随光标滚动：光标回
+// custom 窗口回顶，越界下移时窗口前滚，上移时窗口回卷。
+func TestScrollProviderWindowFollowsCursor(t *testing.T) {
+	wizard := ConfigWizard{}
+	for index := 0; index < maxProviderChoices+5; index++ {
+		wizard.providerCursor = index + 1
+		wizard.scrollProviderWindow()
+	}
+	if wizard.providerWindow != 5 {
+		t.Fatalf("光标越界下移后窗口应前滚到 5，得到 %d", wizard.providerWindow)
+	}
+	wizard.providerCursor = 1
+	wizard.scrollProviderWindow()
+	if wizard.providerWindow != 0 {
+		t.Fatalf("光标回到顶部条目时窗口应回卷到 0，得到 %d", wizard.providerWindow)
+	}
+	wizard.providerCursor = 0
+	wizard.scrollProviderWindow()
+	if wizard.providerWindow != 0 {
+		t.Fatalf("custom 光标时窗口应回顶，得到 %d", wizard.providerWindow)
 	}
 }
 

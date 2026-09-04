@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -93,6 +94,7 @@ type ConfigWizard struct {
 
 	providerSearch    textinput.Model
 	providerCursor    int
+	providerWindow    int
 	selectedProvider  string
 	suggestionCursor  int
 	suggestions       []modelcatalog.ModelEntry
@@ -100,6 +102,7 @@ type ConfigWizard struct {
 	modelInput        textinput.Model
 	apiKeyEnvInput    textinput.Model
 	apiKeySecretInput textinput.Model
+	catalogSpinner    spinner.Model
 	existingConfigTip string
 
 	catalog        *modelcatalog.Catalog
@@ -128,6 +131,7 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 	apiKeyEnvInput.SetValue(defaultAPIKeyEnv)
 	secretInput := newTextinput("密钥值（粘贴后回车；留空跳过）")
 	secretInput.EchoMode = textinput.EchoPassword
+	catalogSpinner := spinner.New(spinner.WithSpinner(spinner.Dot))
 	wizard := ConfigWizard{
 		ctx:               ctx,
 		service:           app.NewSetupService(),
@@ -137,6 +141,7 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 		modelInput:        newTextinput("模型名（如 glm-5.3）"),
 		apiKeyEnvInput:    apiKeyEnvInput,
 		apiKeySecretInput: secretInput,
+		catalogSpinner:    catalogSpinner,
 		catalogLoading:    true,
 		suggestionCursor:  -1,
 	}
@@ -171,9 +176,9 @@ func configPath(workspace string) string {
 	return config.DefaultPath(workspace)
 }
 
-// Init 启动向导：异步装载模型目录并启动搜索框光标闪烁。
+// Init 启动向导：异步装载模型目录、启动搜索框光标闪烁与目录装载指示。
 func (wizard ConfigWizard) Init() tea.Cmd {
-	return tea.Batch(loadCatalogCmd(wizard.input.CatalogURL, wizard.input.CatalogCacheDir), wizard.providerSearch.Focus())
+	return tea.Batch(loadCatalogCmd(wizard.input.CatalogURL, wizard.input.CatalogCacheDir), wizard.providerSearch.Focus(), wizard.catalogSpinner.Tick)
 }
 
 // loadCatalogCmd 异步装载模型元数据目录；失败只影响建议列表，不阻塞向导。
@@ -209,6 +214,14 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if catalogMsg, ok := msg.(catalogLoadedMsg); ok {
 		return wizard.receiveCatalog(catalogMsg)
 	}
+	if tick, ok := msg.(spinner.TickMsg); ok {
+		var cmd tea.Cmd
+		wizard.catalogSpinner, cmd = wizard.catalogSpinner.Update(tick)
+		if !wizard.catalogLoading {
+			return wizard, nil
+		}
+		return wizard, cmd
+	}
 	if finished, ok := msg.(commitFinishedMsg); ok && wizard.step == stepCommitting {
 		wizard.step = stepDone
 		wizard.outcome = finished.outcome
@@ -237,7 +250,9 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // updateProvider 处理 provider 选择步：搜索词过滤目录 provider，上下移动在
-// custom 与过滤结果间选择，Enter 选定并预填端点与密钥变量名后进入端点输入。
+// custom 与过滤结果间线性选择并滚动展示窗口，Enter 选定并预填端点与密钥变
+// 量名后进入端点输入。移动到边界即停，不循环——配合计数行明示还有更多
+// 条目。
 func (wizard ConfigWizard) updateProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
 	message, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -246,9 +261,15 @@ func (wizard ConfigWizard) updateProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
 	choiceCount := 1 + len(wizard.filteredProviders())
 	switch message.String() {
 	case "up", "k":
-		wizard.providerCursor = (wizard.providerCursor + choiceCount - 1) % choiceCount
+		if wizard.providerCursor > 0 {
+			wizard.providerCursor--
+		}
+		wizard.scrollProviderWindow()
 	case "down", "j":
-		wizard.providerCursor = (wizard.providerCursor + 1) % choiceCount
+		if wizard.providerCursor < choiceCount-1 {
+			wizard.providerCursor++
+		}
+		wizard.scrollProviderWindow()
 	case "enter":
 		wizard.applyProviderChoice()
 		wizard.step = stepBaseURL
@@ -259,9 +280,26 @@ func (wizard ConfigWizard) updateProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if wizard.providerCursor >= choiceCount {
 			wizard.providerCursor = choiceCount - 1
 		}
+		wizard.scrollProviderWindow()
 		return wizard, cmd
 	}
 	return wizard, nil
+}
+
+// scrollProviderWindow 让展示窗口跟随光标：光标指向 custom 时窗口回顶，指
+// 向目录条目时保证该条目落在窗口内；窗口上限为 maxProviderChoices 条目。
+func (wizard *ConfigWizard) scrollProviderWindow() {
+	if wizard.providerCursor == 0 {
+		wizard.providerWindow = 0
+		return
+	}
+	index := wizard.providerCursor - 1
+	if index < wizard.providerWindow {
+		wizard.providerWindow = index
+	}
+	if index >= wizard.providerWindow+maxProviderChoices {
+		wizard.providerWindow = index - maxProviderChoices + 1
+	}
 }
 
 // applyProviderChoice 按当前光标应用 provider 选择：custom 恢复向导默认值；
@@ -292,32 +330,27 @@ func (wizard *ConfigWizard) applyProviderChoice() {
 	}
 }
 
-// filteredProviders 按搜索词过滤目录 provider 摘要：空搜索词取排序后的前
-// 缀清单；非空搜索词对标识与显示名做大小写不敏感的包含匹配。
+// filteredProviders 按搜索词过滤目录 provider 摘要：空搜索词返回完整排序
+// 清单，非空搜索词对标识与显示名做大小写不敏感的包含匹配；展示截断由滚
+// 动窗口负责，过滤层不做丢弃。
 func (wizard ConfigWizard) filteredProviders() []modelcatalog.ProviderInfo {
 	if wizard.catalog == nil {
 		return nil
 	}
-	return filterProviders(wizard.catalog.Providers, wizard.providerSearch.Value(), maxProviderChoices)
+	return filterProviders(wizard.catalog.Providers, wizard.providerSearch.Value())
 }
 
 // filterProviders 是 provider 过滤的纯函数形态；目录摘要已按模型条数降序，
-// 过滤结果按原顺序截断到上限。
-func filterProviders(providers []modelcatalog.ProviderInfo, query string, limit int) []modelcatalog.ProviderInfo {
+// 过滤结果保持原顺序且不截断——同屏展示条数由渲染窗口控制。
+func filterProviders(providers []modelcatalog.ProviderInfo, query string) []modelcatalog.ProviderInfo {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
-		if len(providers) > limit {
-			return providers[:limit]
-		}
 		return providers
 	}
 	var matched []modelcatalog.ProviderInfo
 	for _, provider := range providers {
 		if strings.Contains(strings.ToLower(provider.ID), query) || strings.Contains(strings.ToLower(provider.Name), query) {
 			matched = append(matched, provider)
-			if len(matched) == limit {
-				break
-			}
 		}
 	}
 	return matched
@@ -599,30 +632,42 @@ func (wizard ConfigWizard) progressOrdinal() int {
 	return int(wizard.step) + 1
 }
 
-// viewProvider 渲染 provider 选择列表：custom 固定置顶，目录 provider 按搜
-// 索词过滤展示默认端点与模型条数。
+// viewProvider 渲染 provider 选择列表：custom 固定置顶，目录 provider 以滚
+// 动窗口展示（窗口随光标滚动），底部计数行明示过滤结果总量，装载期间以
+// 转圈指示占位并告知可直接选 custom 继续。
 func (wizard ConfigWizard) viewProvider() string {
-	lines := []string{wizard.providerSearch.View(), "选择 Provider（↑↓ 移动，Enter 选定，输入即过滤）:"}
+	lines := []string{wizard.providerSearch.View(), "选择 Provider（↑↓ 移动滚动，Enter 选定，输入即过滤）:"}
 	cursorMark, style := "  ", itemStyle
 	if wizard.providerCursor == 0 {
 		cursorMark, style = "> ", itemSelectedStyle
 	}
 	lines = append(lines, style.Render(fmt.Sprintf("%s%s — %s", cursorMark, contract.ProviderIDCustom, providerCustomSummary)))
-	for index, choice := range wizard.filteredProviders() {
-		cursorMark, style := "  ", itemStyle
-		if index+1 == wizard.providerCursor {
-			cursorMark, style = "> ", itemSelectedStyle
-		}
-		endpoint := choice.APIBaseURL
-		if endpoint == "" {
-			endpoint = "端点见厂商文档"
-		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%s [%s] · %d 个模型 · %s", cursorMark, choice.Name, choice.ID, choice.ModelCount, endpoint)))
-	}
-	if wizard.catalogLoading {
-		lines = append(lines, dimStyle.Render("目录装载中…"))
-	} else if wizard.catalogErr != nil {
+	filtered := wizard.filteredProviders()
+	switch {
+	case wizard.catalogLoading:
+		lines = append(lines, dimStyle.Render(wizard.catalogSpinner.View()+" 正在拉取模型目录（约 2MB，24 小时内缓存；可直接选 custom 继续）…"))
+	case wizard.catalogErr != nil:
 		lines = append(lines, warnStyle.Render("目录不可用（仅可选 custom 手动输入）"))
+	case len(filtered) == 0:
+		lines = append(lines, dimStyle.Render("没有匹配的 Provider——换个关键词，或选 custom 手动输入。"))
+	default:
+		end := wizard.providerWindow + maxProviderChoices
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		for index := wizard.providerWindow; index < end; index++ {
+			choice := filtered[index]
+			cursorMark, style := "  ", itemStyle
+			if index+1 == wizard.providerCursor {
+				cursorMark, style = "> ", itemSelectedStyle
+			}
+			endpoint := choice.APIBaseURL
+			if endpoint == "" {
+				endpoint = "端点见厂商文档"
+			}
+			lines = append(lines, style.Render(fmt.Sprintf("%s%s [%s] · %d 个模型 · %s", cursorMark, choice.Name, choice.ID, choice.ModelCount, endpoint)))
+		}
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("第 %d–%d 条 / 共 %d 家 · ↑↓ 滚动浏览，输入关键词过滤", wizard.providerWindow+1, end, len(filtered))))
 	}
 	lines = append(lines, dimStyle.Render("目录清单与端点仅为预填建议，不构成已验证能力。"))
 	return strings.Join(lines, "\n")
