@@ -16,6 +16,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -212,5 +213,50 @@ func TestApprovalProposalPreview(t *testing.T) {
 	lines = approvalProposalPreview(events)
 	if !strings.Contains(strings.Join(lines, "\n"), "go test ./...") {
 		t.Fatalf("exec 预览应展示 argv:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// TestTranscriptViewerToggleAndScroll 锁定事件查看器：无事件不进入、有事件
+// Ctrl+O 进入并落到底部窗口、↑↓ 滚动、Esc 返回原模式。
+func TestTranscriptViewerToggleAndScroll(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{})
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	console = model.(RunConsole)
+	if console.mode != consoleInput {
+		t.Fatal("无事件时 Ctrl+O 不应进入查看器")
+	}
+	console.mode = consoleRunning
+	for index := 0; index < transcriptWindowHeight+5; index++ {
+		console.applyEvent(eventWithPayload(domain.EventTurnOpened, `{"turn_index":1}`))
+	}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	console = model.(RunConsole)
+	if console.mode != consoleTranscript || console.transcriptReturn != consoleRunning {
+		t.Fatalf("运行中 Ctrl+O 应进入查看器并记住来源，得到 mode=%d", console.mode)
+	}
+	if console.transcriptCursor != 5 {
+		t.Fatalf("进入时应落到底部窗口起点 5，得到 %d", console.transcriptCursor)
+	}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyUp})
+	console = model.(RunConsole)
+	if console.transcriptCursor != 4 {
+		t.Fatalf("上移应滚动，得到 %d", console.transcriptCursor)
+	}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	console = model.(RunConsole)
+	if console.mode != consoleRunning {
+		t.Fatal("Esc 应返回来源模式")
+	}
+}
+
+// TestMaxTurnsBudgetFromResolution 锁定轮次水位读取 Resolved Plan。
+func TestMaxTurnsBudgetFromResolution(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	if console.maxTurnsBudget() != 0 {
+		t.Fatal("无 Resolution 时不应展示上限")
+	}
+	console.input.Config.Resolution = []config.ResolutionEntry{{Field: "budget.max_turns", Value: "48"}}
+	if got := console.maxTurnsBudget(); got != 48 {
+		t.Fatalf("应读取 resolved 轮次预算 48，得到 %d", got)
 	}
 }

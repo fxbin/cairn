@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -33,6 +34,7 @@ const (
 	consoleRunning
 	consoleApproval
 	consoleDone
+	consoleTranscript
 )
 
 // maxConsoleLines 是事件摘要的滚动缓冲行数上限；更早的行滚出屏幕，完整事
@@ -45,6 +47,13 @@ const consoleEventBuffer = 256
 
 // consoleInputPrompt 是任务输入框提示语。
 const consoleInputPrompt = "任务描述"
+
+// transcriptEventLimit 是查看器保留的事件数上限；更早事件仍完整存在于
+// 事件日志，超出部分从内存查看器淘汰。
+const transcriptEventLimit = 5000
+
+// transcriptWindowHeight 是查看器同屏行数。
+const transcriptWindowHeight = 15
 
 // RunConsoleInput 是运行主界面的装配输入：配置与 Provider 语义由调用方加
 // 载（与 CLI 共用同一配置解析链），本界面不重复装载。
@@ -78,11 +87,14 @@ type RunConsole struct {
 	queuing    bool
 	queue      []string
 
-	lines        []string
-	turn         int
-	promptTokens int64
-	outputTokens int64
-	toolCalls    int
+	lines            []string
+	transcript       []domain.Event
+	transcriptCursor int
+	transcriptReturn consoleMode
+	turn             int
+	promptTokens     int64
+	outputTokens     int64
+	toolCalls        int
 
 	waiting        *agent.WaitingApprovalError
 	approvalDetail []string
@@ -200,7 +212,34 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // updateKey 按模式分发按键：输入态 Enter 提交任务；运行态 Ctrl+C 请求取
 // 消；审批态 Enter 批准、Esc 拒绝；终态 Enter 回到输入、Ctrl+C 退出。
 func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if message.String() == "ctrl+o" && console.mode != consoleApproval && console.mode != consoleTranscript {
+		if len(console.transcript) == 0 {
+			return console, nil
+		}
+		console.transcriptReturn = console.mode
+		console.transcriptCursor = len(console.transcript) - transcriptWindowHeight
+		if console.transcriptCursor < 0 {
+			console.transcriptCursor = 0
+		}
+		console.mode = consoleTranscript
+		return console, nil
+	}
 	switch console.mode {
+	case consoleTranscript:
+		switch message.String() {
+		case "ctrl+c", "esc":
+			console.mode = console.transcriptReturn
+			return console, nil
+		case "up", "k":
+			if console.transcriptCursor > 0 {
+				console.transcriptCursor--
+			}
+		case "down", "j":
+			if console.transcriptCursor < len(console.transcript)-1 {
+				console.transcriptCursor++
+			}
+		}
+		return console, nil
 	case consoleInput:
 		switch message.String() {
 		case "ctrl+c":
@@ -306,6 +345,8 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 // 淘汰。
 func (console *RunConsole) resetRun() {
 	console.lines = nil
+	console.transcript = nil
+	console.transcriptCursor = 0
 	console.turn = 0
 	console.promptTokens = 0
 	console.outputTokens = 0
@@ -318,6 +359,10 @@ func (console *RunConsole) resetRun() {
 
 // applyEvent 把已持久化事件追加为摘要行并累计运行统计。
 func (console *RunConsole) applyEvent(event domain.Event) {
+	console.transcript = append(console.transcript, event)
+	if len(console.transcript) > transcriptEventLimit {
+		console.transcript = console.transcript[len(console.transcript)-transcriptEventLimit:]
+	}
 	switch event.Type {
 	case domain.EventTurnOpened:
 		console.turn++
@@ -595,6 +640,27 @@ func summarizeEvent(event domain.Event) string {
 	}
 }
 
+// renderTranscriptLine 把单条事件投影为查看器行：序号、类型与轮次归属，
+// 只呈现结构事实不含 payload 全文。
+func renderTranscriptLine(event domain.Event) string {
+	return fmt.Sprintf("  %4d  %-28s turn=%d", event.Seq, string(event.Type), event.TurnID)
+}
+
+// maxTurnsBudget 从 Resolved Execution Plan 读取轮次预算；缺失或不可解析
+// 返回 0 表示不展示上限。
+func (console RunConsole) maxTurnsBudget() int {
+	for _, entry := range console.input.Config.Resolution {
+		if entry.Field == "budget.max_turns" {
+			value, err := strconv.Atoi(entry.Value)
+			if err == nil && value > 0 {
+				return value
+			}
+			return 0
+		}
+	}
+	return 0
+}
+
 // View 渲染主界面：输入态聚焦任务框，运行态滚动事件摘要与统计行，审批态
 // 展示决定入口，终态展示判定与后续动作。
 func (console RunConsole) View() string {
@@ -603,7 +669,7 @@ func (console RunConsole) View() string {
 	sections = append(sections, strings.Join(console.lines, "\n"))
 	switch console.mode {
 	case consoleInput:
-		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交 · Ctrl+J 换行 / Ctrl+C 退出"))
+		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Ctrl+C 退出"))
 	case consoleRunning:
 		if console.queuing {
 			sections = append(sections, "", console.queueField.View(), dimStyle.Render("Enter 入队（运行结束后预填）· Ctrl+J 换行"))
@@ -612,6 +678,15 @@ func (console RunConsole) View() string {
 	case consoleApproval:
 		sections = append(sections, strings.Join(console.approvalDetail, "\n"))
 		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝"))
+	case consoleTranscript:
+		sections = []string{titleStyle.Render("事件查看器") + dimStyle.Render(fmt.Sprintf("  %d 条已持久化事件 · ↑↓ 滚动 / Esc 返回", len(console.transcript)))}
+		end := console.transcriptCursor + transcriptWindowHeight
+		if end > len(console.transcript) {
+			end = len(console.transcript)
+		}
+		for index := console.transcriptCursor; index < end; index++ {
+			sections = append(sections, renderTranscriptLine(console.transcript[index]))
+		}
 	case consoleDone:
 		sections = append(sections, "")
 		if console.runErr == nil && console.result != nil && console.result.Result != nil {
@@ -630,7 +705,12 @@ func (console RunConsole) View() string {
 
 // statusLine 生成运行中的统计行：轮次、工具调用与累计 token。
 func (console RunConsole) statusLine() string {
-	return dimStyle.Render(fmt.Sprintf("轮次 %d · 工具调用 %d · 累计 in %d / out %d tok · Ctrl+C 取消", console.turn, console.toolCalls, console.promptTokens, console.outputTokens))
+	turns := fmt.Sprintf("轮次 %d", console.turn)
+	if budget := console.maxTurnsBudget(); budget > 0 {
+		turns = fmt.Sprintf("轮次 %d/%d", console.turn, budget)
+	}
+	hint := "Esc 取消 · 输入即排队 · Ctrl+O 事件"
+	return dimStyle.Render(fmt.Sprintf("%s · 工具调用 %d · 累计 in %d / out %d tok · %s", turns, console.toolCalls, console.promptTokens, console.outputTokens, hint))
 }
 
 // finalResponsePreview 截取最终回复的首段作为终态预览，完整回复以运行结
