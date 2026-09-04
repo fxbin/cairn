@@ -68,25 +68,41 @@ func TestFilterSuggestionsScopedToSelectedProvider(t *testing.T) {
 	}
 }
 
-// TestFilterProvidersMatchesWithoutTruncation 验证 provider 过滤按标识与名
-// 称匹配且不截断——同屏条数由渲染窗口控制，过滤层不丢弃结果。
-func TestFilterProvidersMatchesWithoutTruncation(t *testing.T) {
+// TestFilterProvidersFeaturedAndSearch 验证空搜索词返回精选常用序（目录缺
+// 失的精选成员跳过），非空搜索词全目录包含匹配且不截断——同屏条数由渲染
+// 窗口控制。
+func TestFilterProvidersFeaturedAndSearch(t *testing.T) {
 	providers := []modelcatalog.ProviderInfo{
 		{ID: "openrouter", Name: "OpenRouter", ModelCount: 360},
 		{ID: "openai", Name: "OpenAI", ModelCount: 80},
 		{ID: "deepseek", Name: "DeepSeek", ModelCount: 10},
+		{ID: "nano-gpt", Name: "NanoGPT", ModelCount: 591},
+	}
+	featured := filterProviders(providers, "")
+	if len(featured) != 3 || featured[0].ID != "deepseek" || featured[1].ID != "openrouter" || featured[2].ID != "openai" {
+		t.Fatalf("空查询应按精选序返回三家常用厂，得到 %+v", featured)
+	}
+	if got := filterProviders(providers, "nano"); len(got) != 1 || got[0].ID != "nano-gpt" {
+		t.Fatalf("搜索应能到达非精选目录成员，得到 %+v", got)
 	}
 	if got := filterProviders(providers, "deep"); len(got) != 1 || got[0].ID != "deepseek" {
 		t.Fatalf("deep 应只命中 deepseek，得到 %+v", got)
 	}
-	if got := filterProviders(providers, "open"); len(got) != 2 {
-		t.Fatalf("open 应命中 openrouter 与 openai 共 2 条，得到 %d 条", len(got))
-	}
-	if got := filterProviders(providers, ""); len(got) != 3 || got[0].ID != "openrouter" {
-		t.Fatalf("空查询应返回完整已排序输入，得到 %+v", got)
-	}
 	if got := filterProviders(providers, "missing"); got != nil {
 		t.Fatalf("无命中应返回空，得到 %+v", got)
+	}
+}
+
+// TestFeaturedProvidersSkipsMissingMembers 验证精选序里目录未收录的成员被
+// 静默跳过而不猜测。
+func TestFeaturedProvidersSkipsMissingMembers(t *testing.T) {
+	providers := []modelcatalog.ProviderInfo{
+		{ID: "deepseek", Name: "DeepSeek"},
+		{ID: "google", Name: "Google"},
+	}
+	featured := featuredProviders(providers)
+	if len(featured) != 2 || featured[0].ID != "deepseek" || featured[1].ID != "google" {
+		t.Fatalf("精选应只含目录命中成员且保持精选序，得到 %+v", featured)
 	}
 }
 

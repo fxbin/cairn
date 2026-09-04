@@ -330,9 +330,8 @@ func (wizard *ConfigWizard) applyProviderChoice() {
 	}
 }
 
-// filteredProviders 按搜索词过滤目录 provider 摘要：空搜索词返回完整排序
-// 清单，非空搜索词对标识与显示名做大小写不敏感的包含匹配；展示截断由滚
-// 动窗口负责，过滤层不做丢弃。
+// filteredProviders 按搜索词筛选目录 provider 摘要：空搜索词返回精选常用
+// 序，非空搜索词全目录包含匹配；展示截断由滚动窗口负责，过滤层不做丢弃。
 func (wizard ConfigWizard) filteredProviders() []modelcatalog.ProviderInfo {
 	if wizard.catalog == nil {
 		return nil
@@ -340,12 +339,21 @@ func (wizard ConfigWizard) filteredProviders() []modelcatalog.ProviderInfo {
 	return filterProviders(wizard.catalog.Providers, wizard.providerSearch.Value())
 }
 
-// filterProviders 是 provider 过滤的纯函数形态；目录摘要已按模型条数降序，
-// 过滤结果保持原顺序且不截断——同屏展示条数由渲染窗口控制。
+// featuredProviderIDs 是默认视图的常用 provider 精选序：直连厂商优先、主
+// 流网关其次，面向本产品的主流使用场景排序。这是产品展示选择而非能力或
+// 准入事实；目录中不存在的成员静默跳过，全量目录始终可以经搜索词到达。
+var featuredProviderIDs = []string{
+	"deepseek", "siliconflow-cn", "moonshotai", "alibaba",
+	"openrouter", "siliconflow", "openai", "anthropic", "google",
+}
+
+// filterProviders 是 provider 过滤的纯函数形态：空搜索词返回精选序（目录
+// 未收录的精选成员跳过），非空搜索词对标识与显示名做大小写不敏感的包含
+// 匹配并保持目录排序——同屏展示条数由渲染窗口控制，过滤层不截断。
 func filterProviders(providers []modelcatalog.ProviderInfo, query string) []modelcatalog.ProviderInfo {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
-		return providers
+		return featuredProviders(providers)
 	}
 	var matched []modelcatalog.ProviderInfo
 	for _, provider := range providers {
@@ -354,6 +362,22 @@ func filterProviders(providers []modelcatalog.ProviderInfo, query string) []mode
 		}
 	}
 	return matched
+}
+
+// featuredProviders 按精选序取目录命中成员；目录缺失的精选成员静默跳过，
+// 不猜测其端点或能力。
+func featuredProviders(providers []modelcatalog.ProviderInfo) []modelcatalog.ProviderInfo {
+	byID := make(map[string]modelcatalog.ProviderInfo, len(providers))
+	for _, provider := range providers {
+		byID[provider.ID] = provider
+	}
+	var featured []modelcatalog.ProviderInfo
+	for _, id := range featuredProviderIDs {
+		if provider, ok := byID[id]; ok {
+			featured = append(featured, provider)
+		}
+	}
+	return featured
 }
 
 // updateBaseURL 处理端点输入步：Enter 校验非空后进入模型步，Esc 返回。
@@ -667,7 +691,11 @@ func (wizard ConfigWizard) viewProvider() string {
 			}
 			lines = append(lines, style.Render(fmt.Sprintf("%s%s [%s] · %d 个模型 · %s", cursorMark, choice.Name, choice.ID, choice.ModelCount, endpoint)))
 		}
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("第 %d–%d 条 / 共 %d 家 · ↑↓ 滚动浏览，输入关键词过滤", wizard.providerWindow+1, end, len(filtered))))
+		if strings.TrimSpace(wizard.providerSearch.Value()) == "" {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("常用 %d 家 · 输入关键词搜索全部 %d 家", len(filtered), len(wizard.catalog.Providers))))
+		} else {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("第 %d–%d 条 / 共 %d 家 · ↑↓ 滚动浏览", wizard.providerWindow+1, end, len(filtered))))
+		}
 	}
 	lines = append(lines, dimStyle.Render("目录清单与端点仅为预填建议，不构成已验证能力。"))
 	return strings.Join(lines, "\n")
