@@ -133,6 +133,7 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
 	catalogCache := flags.String("catalog-cache", "", "model metadata cache file path override")
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	overwrite := flags.Bool("overwrite", false, "replace an existing config (backs it up as config.yaml.bak)")
 	jsonOutput := flags.Bool("json", false, "write JSON to stdout")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return ExitUsage
@@ -144,7 +145,7 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 	input := app.SetupInput{
 		BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv,
 		CatalogURL: *catalogURL, CatalogCacheDir: *catalogCache, Workspace: *workspace,
-		ProviderID: *providerID,
+		ProviderID: *providerID, OverwriteExisting: *overwrite,
 	}
 	if *admission != "" {
 		input.ConfigVersion = 2

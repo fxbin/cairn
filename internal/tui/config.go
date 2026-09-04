@@ -148,7 +148,7 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 	}
 	wizard.providerSearch.Focus()
 	if path, err := resolveExistingConfig(input.Workspace); err == nil {
-		wizard.existingConfigTip = fmt.Sprintf("注意: %s 已存在——向导不覆盖既有配置，需先处理该文件", path)
+		wizard.existingConfigTip = fmt.Sprintf("注意: %s 已存在——提交将覆盖它（旧文件备份为 config.yaml.bak，手调字段会重置为最小配置）", path)
 	}
 	return wizard
 }
@@ -547,6 +547,7 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.input.BaseURL = strings.TrimSpace(wizard.baseURLInput.Value())
 		wizard.input.Model = strings.TrimSpace(wizard.modelInput.Value())
 		wizard.input.APIKeyEnv = strings.TrimSpace(wizard.apiKeyEnvInput.Value())
+		wizard.input.OverwriteExisting = true
 		if secret := strings.TrimSpace(wizard.apiKeySecretInput.Value()); secret != "" {
 			if err := credential.UpsertEnvFile(keysPath(wizard.input.Workspace), wizard.input.APIKeyEnv, secret); err != nil {
 				wizard.step = stepDone

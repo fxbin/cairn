@@ -536,8 +536,8 @@ func TestInitRefusesToOverwriteExistingConfig(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
 	exit := command.Run(context.Background(), []string{"init", "--base-url", "https://x.test", "--model", "m", "--api-key-env", "K", "--catalog-url", "http://127.0.0.1:1/unreachable", "--catalog-cache", filepath.Join(t.TempDir(), "catalog.json")})
-	if exit == ExitOK || !strings.Contains(stderr.String(), "不覆盖") {
-		t.Fatalf("must refuse overwrite: exit=%d stderr=%q", exit, stderr.String())
+	if exit == ExitOK || !strings.Contains(stderr.String(), "配置已存在") {
+		t.Fatalf("must refuse overwrite by default: exit=%d stderr=%q", exit, stderr.String())
 	}
 }
 

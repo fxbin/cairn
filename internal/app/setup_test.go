@@ -70,8 +70,8 @@ func TestSetupRunPersistsValidatedConfig(t *testing.T) {
 		t.Fatalf("pricing prefill missing: %+v", loaded.Pricing)
 	}
 	_, err = service.Run(context.Background(), input)
-	if err == nil || !strings.Contains(err.Error(), "不覆盖") {
-		t.Fatalf("rerun must refuse to overwrite: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "配置已存在") {
+		t.Fatalf("rerun must refuse to overwrite by default: %v", err)
 	}
 }
 
@@ -144,5 +144,46 @@ func TestSetupRunRequiresAllInputs(t *testing.T) {
 		if _, err := service.Run(context.Background(), input); err == nil {
 			t.Fatalf("input %+v must be rejected", input)
 		}
+	}
+}
+
+// TestSetupRunOverwriteBacksUpExistingConfig 锁定覆盖语义：未显式允许时拒绝
+// 覆盖；显式允许时旧配置原子改名为 .bak，新配置照常落盘并通过回读自证。
+func TestSetupRunOverwriteBacksUpExistingConfig(t *testing.T) {
+	service, input := setupFixture(t, &modelcatalog.Catalog{}, nil, nil, nil)
+	t.Setenv("SETUP_TEST_KEY", "")
+	if _, err := service.Run(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	configPath := config.DefaultPath(input.Workspace)
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.Run(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "配置已存在") {
+		t.Fatalf("重复提交默认应拒绝覆盖，得到 err=%v", err)
+	}
+
+	input.OverwriteExisting = true
+	input.Model = "setup-model-v2"
+	outcome, err := service.Run(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := os.ReadFile(configPath + ".bak")
+	if err != nil {
+		t.Fatalf("覆盖后应存在 .bak 备份: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Fatal("备份内容应与覆盖前配置一致")
+	}
+	reloaded, err := config.Load(outcome.ConfigPath, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Provider.Model != "setup-model-v2" {
+		t.Fatalf("覆盖后应装载新模型，得到 %q", reloaded.Provider.Model)
 	}
 }

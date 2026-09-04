@@ -45,6 +45,11 @@ type SetupInput struct {
 	ConfigVersion int
 	ProviderID    string
 	Admission     string
+	// OverwriteExisting 允许覆盖既有配置：覆盖前旧文件被原子改名为同目录
+	// 的 config.yaml.bak 备份，生成仍走原子写与回读自证。调用方必须先让
+	// 用户知情（向导确认页或 CLI 显式旗标），因为覆盖会把手调字段重置为
+	// 最小配置。
+	OverwriteExisting bool
 }
 
 // SetupOutcome 承载向导的落盘结果与验证结论：全部字段非敏感，可安全进入
@@ -106,9 +111,10 @@ func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKeyEnv string
 }
 
 // Run 执行向导主流程：输入校验 → 目录预填 → 可选实测探测 → 硬性能力校验
-// → 生成最小 YAML → 落盘（不覆盖既有配置）→ 回读自证。任何失败都不留下
-// 半成品文件；工具调用与流式 usage 是生产配置的硬性要求，目录或实测给出
-// 任一否定即终止且不落盘。
+// → 生成最小 YAML → 落盘 → 回读自证。默认不覆盖既有配置；输入显式允许覆
+// 盖时旧文件先原子改名为 config.yaml.bak，再以临时文件与原子重命名写入新
+// 配置。任何失败都不留下半成品文件；工具调用与流式 usage 是生产配置的硬
+// 性要求，目录或实测给出任一否定即终止且不落盘。
 func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupOutcome, error) {
 	if input.BaseURL == "" || input.Model == "" || input.APIKeyEnv == "" {
 		return nil, errors.New("base_url、模型名与密钥环境变量名均不可为空")
@@ -187,10 +193,19 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 		return nil, fmt.Errorf("创建 .agent 目录: %w", err)
 	}
 	if _, err := os.Stat(configPath); err == nil {
-		return nil, fmt.Errorf("配置已存在（%s）；向导不覆盖既有配置", configPath)
+		if !input.OverwriteExisting {
+			return nil, fmt.Errorf("配置已存在（%s）；如确认覆盖请重试并显式允许（旧文件会备份为 config.yaml.bak）", configPath)
+		}
+		if err := os.Rename(configPath, configPath+".bak"); err != nil {
+			return nil, fmt.Errorf("备份既有配置失败（未做任何修改）: %w", err)
+		}
 	}
-	if err := os.WriteFile(configPath, []byte(RenderMinimalConfig(input, capability, pricing)), 0o600); err != nil {
+	temporary := configPath + ".tmp"
+	if err := os.WriteFile(temporary, []byte(RenderMinimalConfig(input, capability, pricing)), 0o600); err != nil {
 		return nil, fmt.Errorf("写入配置: %w", err)
+	}
+	if err := os.Rename(temporary, configPath); err != nil {
+		return nil, fmt.Errorf("落盘配置: %w", err)
 	}
 	outcome.ConfigPath = configPath
 
