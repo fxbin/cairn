@@ -182,7 +182,7 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	if os.Getenv(input.APIKeyEnv) != "" {
 		observations, probeErr := service.EndpointProber(ctx, input.BaseURL, input.Model, input.APIKeyEnv)
 		if probeErr != nil {
-			outcome.Notes = append(outcome.Notes, fmt.Sprintf("探测失败（配置仍按预填生成，建议稍后运行 check-provider 复核）: %v", probeErr))
+			outcome.Notes = append(outcome.Notes, fmt.Sprintf("探测失败（配置仍按预填生成）——可稍后以 cairn provider probe 复核: %v", probeErr))
 		} else {
 			outcome.ProbeRan = true
 			outcome.Notes = append(outcome.Notes, "usage 流式: 实测支持")
@@ -194,7 +194,7 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 			}
 		}
 	} else {
-		outcome.Notes = append(outcome.Notes, "密钥未设置，跳过实测探测——建议 export 后运行 cairn check-provider 验证")
+		outcome.Notes = append(outcome.Notes, "密钥未设置，跳过实测探测——可 export 变量或重跑向导粘贴密钥后以 cairn provider probe 复核")
 	}
 	if !capability.ToolCalls || !capability.StreamingUsage {
 		return nil, errors.New("该模型/端点缺少工具调用或流式 usage 能力，不满足 Cairn 生产配置的硬性要求；向导终止且未写入任何文件")

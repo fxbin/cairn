@@ -883,7 +883,7 @@ func (wizard ConfigWizard) viewDone() string {
 	if envPresent(wizard.outcome.APIKeyEnv) {
 		lines = append(lines, dimStyle.Render(`下一步: cairn run "你的任务" 即可开始使用`))
 	} else {
-		lines = append(lines, warnStyle.Render(fmt.Sprintf("尚未配置密钥（%s）——重跑向导在密钥步粘贴即可启用实测探测", wizard.outcome.APIKeyEnv)))
+		lines = append(lines, warnStyle.Render(fmt.Sprintf("尚未配置密钥（%s）——重跑向导粘贴，或 export 该变量后直接使用", wizard.outcome.APIKeyEnv)))
 	}
 	lines = append(lines, dimStyle.Render("Enter 退出"))
 	return strings.Join(lines, "\n")

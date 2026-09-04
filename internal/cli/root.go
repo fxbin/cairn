@@ -128,7 +128,7 @@ func (command Command) initCommand(ctx context.Context, arguments []string) int 
 	for _, note := range outcome.ProbeNotes {
 		fmt.Fprintf(command.Stdout, "  %s\n", note)
 	}
-	fmt.Fprintf(command.Stdout, "\n下一步:\n  1. export %s=<你的密钥>\n  2. cairn provider probe 验证端点能力（兼容命令 check-provider）\n  3. cairn run \"你的任务\"\n", outcome.APIKeyEnv)
+	fmt.Fprintf(command.Stdout, "\n下一步:\n  cairn run \"你的任务\"\n  密钥两种方式任选: export %s=<密钥>，或重跑 cairn tui 在向导内配置\n", outcome.APIKeyEnv)
 	return ExitOK
 }
 
