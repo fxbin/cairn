@@ -56,15 +56,13 @@ const (
 // 极小请求，密钥缺失时自动跳过。
 const probeNotice = "提交时将执行一次极小付费探测（数十 token；密钥未设置则跳过），并原子写入配置。"
 
-// providerChoices 是向导展示的静态注册表清单。注册表当前唯一成员是 custom
-// （用户显式端点的 OpenAI 兼容部署），与 CLI provider list 的清单同源；注
-// 册表扩员时本清单需同步。
-var providerChoices = []struct {
-	id      string
-	summary string
-}{
-	{id: contract.ProviderIDCustom, summary: "任意 OpenAI 兼容端点（显式 base_url）"},
-}
+// providerCustomSummary 是固定置顶的 custom 项说明：custom 是静态注册表的
+// 显式端点成员，选择它时端点与密钥变量名保持向导默认值由用户手改。
+const providerCustomSummary = "任意 OpenAI 兼容端点（手动输入 base_url）"
+
+// maxProviderChoices 是 provider 步同屏展示的目录条目上限；搜索词过滤后的
+// 超额条目不进入列表，用户始终可用更精确的搜索词或选 custom 手输。
+const maxProviderChoices = 10
 
 // catalogLoadedMsg 承载异步目录装载结果：目录不可用时 err 非空，向导降级为
 // 纯手动输入，不阻塞流程。
@@ -90,7 +88,9 @@ type ConfigWizard struct {
 
 	step wizardStep
 
+	providerSearch    textinput.Model
 	providerCursor    int
+	selectedProvider  string
 	suggestionCursor  int
 	suggestions       []modelcatalog.ModelEntry
 	baseURLInput      textinput.Model
@@ -126,12 +126,14 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 		ctx:              ctx,
 		service:          app.NewSetupService(),
 		input:            input,
+		providerSearch:   newTextinput("搜索 Provider（可选）"),
 		baseURLInput:     baseURLInput,
 		modelInput:       newTextinput("模型名（如 glm-5.3）"),
 		apiKeyEnvInput:   apiKeyEnvInput,
 		catalogLoading:   true,
 		suggestionCursor: -1,
 	}
+	wizard.providerSearch.Focus()
 	if path, err := resolveExistingConfig(input.Workspace); err == nil {
 		wizard.existingConfigTip = fmt.Sprintf("注意: %s 已存在——向导不覆盖既有配置，需先处理该文件", path)
 	}
@@ -162,9 +164,9 @@ func configPath(workspace string) string {
 	return config.DefaultPath(workspace)
 }
 
-// Init 启动向导：异步装载模型目录，输入框聚焦由各步骤进入时驱动。
+// Init 启动向导：异步装载模型目录并启动搜索框光标闪烁。
 func (wizard ConfigWizard) Init() tea.Cmd {
-	return loadCatalogCmd(wizard.input.CatalogURL, wizard.input.CatalogCacheDir)
+	return tea.Batch(loadCatalogCmd(wizard.input.CatalogURL, wizard.input.CatalogCacheDir), wizard.providerSearch.Focus())
 }
 
 // loadCatalogCmd 异步装载模型元数据目录；失败只影响建议列表，不阻塞向导。
@@ -225,22 +227,91 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return wizard, nil
 }
 
-// updateProvider 处理 provider 选择步：上下移动、Enter 选定进入端点输入。
+// updateProvider 处理 provider 选择步：搜索词过滤目录 provider，上下移动在
+// custom 与过滤结果间选择，Enter 选定并预填端点与密钥变量名后进入端点输入。
 func (wizard ConfigWizard) updateProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
 	message, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return wizard, nil
 	}
+	choiceCount := 1 + len(wizard.filteredProviders())
 	switch message.String() {
 	case "up", "k":
-		wizard.providerCursor = (wizard.providerCursor + len(providerChoices) - 1) % len(providerChoices)
+		wizard.providerCursor = (wizard.providerCursor + choiceCount - 1) % choiceCount
 	case "down", "j":
-		wizard.providerCursor = (wizard.providerCursor + 1) % len(providerChoices)
+		wizard.providerCursor = (wizard.providerCursor + 1) % choiceCount
 	case "enter":
+		wizard.applyProviderChoice()
 		wizard.step = stepBaseURL
 		return wizard, wizard.baseURLInput.Focus()
+	default:
+		var cmd tea.Cmd
+		wizard.providerSearch, cmd = wizard.providerSearch.Update(msg)
+		if wizard.providerCursor >= choiceCount {
+			wizard.providerCursor = choiceCount - 1
+		}
+		return wizard, cmd
 	}
 	return wizard, nil
+}
+
+// applyProviderChoice 按当前光标应用 provider 选择：custom 恢复向导默认值；
+// 目录 provider 则把目录声明的默认端点与推荐密钥变量名预填进输入框——目
+// 录值只是预填建议，用户可在后续步骤改写，也不构成任何准入事实。
+func (wizard *ConfigWizard) applyProviderChoice() {
+	if wizard.providerCursor == 0 {
+		wizard.selectedProvider = ""
+		wizard.baseURLInput.SetValue(defaultBaseURL)
+		wizard.apiKeyEnvInput.SetValue(defaultAPIKeyEnv)
+		return
+	}
+	filtered := wizard.filteredProviders()
+	index := wizard.providerCursor - 1
+	if index < 0 || index >= len(filtered) {
+		wizard.selectedProvider = ""
+		return
+	}
+	choice := filtered[index]
+	wizard.selectedProvider = choice.ID
+	if choice.APIBaseURL != "" {
+		wizard.baseURLInput.SetValue(choice.APIBaseURL)
+	}
+	if len(choice.EnvNames) > 0 {
+		wizard.apiKeyEnvInput.SetValue(choice.EnvNames[0])
+	} else {
+		wizard.apiKeyEnvInput.SetValue(defaultAPIKeyEnv)
+	}
+}
+
+// filteredProviders 按搜索词过滤目录 provider 摘要：空搜索词取排序后的前
+// 缀清单；非空搜索词对标识与显示名做大小写不敏感的包含匹配。
+func (wizard ConfigWizard) filteredProviders() []modelcatalog.ProviderInfo {
+	if wizard.catalog == nil {
+		return nil
+	}
+	return filterProviders(wizard.catalog.Providers, wizard.providerSearch.Value(), maxProviderChoices)
+}
+
+// filterProviders 是 provider 过滤的纯函数形态；目录摘要已按模型条数降序，
+// 过滤结果按原顺序截断到上限。
+func filterProviders(providers []modelcatalog.ProviderInfo, query string, limit int) []modelcatalog.ProviderInfo {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		if len(providers) > limit {
+			return providers[:limit]
+		}
+		return providers
+	}
+	var matched []modelcatalog.ProviderInfo
+	for _, provider := range providers {
+		if strings.Contains(strings.ToLower(provider.ID), query) || strings.Contains(strings.ToLower(provider.Name), query) {
+			matched = append(matched, provider)
+			if len(matched) == limit {
+				break
+			}
+		}
+	}
+	return matched
 }
 
 // updateBaseURL 处理端点输入步：Enter 校验非空后进入模型步，Esc 返回。
@@ -408,19 +479,30 @@ func RunConfigWizard(ctx context.Context, input app.SetupInput) error {
 	return err
 }
 
-// refreshSuggestions 按当前输入刷新目录建议列表并重置建议光标。
+// refreshSuggestions 按当前输入与所选 provider 刷新目录建议列表并重置建议
+// 光标。
 func (wizard *ConfigWizard) refreshSuggestions() {
-	wizard.suggestions = filterSuggestions(wizard.catalog, wizard.modelInput.Value())
+	wizard.suggestions = filterSuggestions(wizard.catalog, wizard.selectedProvider, wizard.modelInput.Value())
 	wizard.suggestionCursor = -1
 }
 
-// filterSuggestions 按查询词截取目录建议前缀清单；目录缺失或查询为空时返
-// 回空切片，由调用方降级为纯手动输入。
-func filterSuggestions(catalog *modelcatalog.Catalog, query string) []modelcatalog.ModelEntry {
+// filterSuggestions 按查询词截取目录建议前缀清单；已选目录 provider 时建议
+// 收窄到该 provider 的模型，custom 或未选时跨全目录。目录缺失或查询为空时
+// 返回空切片，由调用方降级为纯手动输入。
+func filterSuggestions(catalog *modelcatalog.Catalog, selectedProvider, query string) []modelcatalog.ModelEntry {
 	if catalog == nil || strings.TrimSpace(query) == "" {
 		return nil
 	}
-	entries := catalog.Lookup(query)
+	var entries []modelcatalog.ModelEntry
+	if selectedProvider == "" {
+		entries = catalog.Lookup(query)
+	} else {
+		for _, entry := range catalog.Lookup(query) {
+			if entry.Provider == selectedProvider {
+				entries = append(entries, entry)
+			}
+		}
+	}
 	if len(entries) > maxModelSuggestions {
 		entries = entries[:maxModelSuggestions]
 	}
@@ -468,18 +550,32 @@ func (wizard ConfigWizard) progressOrdinal() int {
 	return int(wizard.step) + 1
 }
 
-// viewProvider 渲染 provider 选择列表。
+// viewProvider 渲染 provider 选择列表：custom 固定置顶，目录 provider 按搜
+// 索词过滤展示默认端点与模型条数。
 func (wizard ConfigWizard) viewProvider() string {
-	lines := []string{"选择 Provider（↑↓ 移动，Enter 选定）:"}
-	for index, choice := range providerChoices {
-		cursor := "  "
-		style := itemStyle
-		if index == wizard.providerCursor {
-			cursor = "> "
-			style = itemSelectedStyle
-		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%s — %s", cursor, choice.id, choice.summary)))
+	lines := []string{wizard.providerSearch.View(), "选择 Provider（↑↓ 移动，Enter 选定，输入即过滤）:"}
+	cursorMark, style := "  ", itemStyle
+	if wizard.providerCursor == 0 {
+		cursorMark, style = "> ", itemSelectedStyle
 	}
+	lines = append(lines, style.Render(fmt.Sprintf("%s%s — %s", cursorMark, contract.ProviderIDCustom, providerCustomSummary)))
+	for index, choice := range wizard.filteredProviders() {
+		cursorMark, style := "  ", itemStyle
+		if index+1 == wizard.providerCursor {
+			cursorMark, style = "> ", itemSelectedStyle
+		}
+		endpoint := choice.APIBaseURL
+		if endpoint == "" {
+			endpoint = "端点见厂商文档"
+		}
+		lines = append(lines, style.Render(fmt.Sprintf("%s%s [%s] · %d 个模型 · %s", cursorMark, choice.Name, choice.ID, choice.ModelCount, endpoint)))
+	}
+	if wizard.catalogLoading {
+		lines = append(lines, dimStyle.Render("目录装载中…"))
+	} else if wizard.catalogErr != nil {
+		lines = append(lines, warnStyle.Render("目录不可用（仅可选 custom 手动输入）"))
+	}
+	lines = append(lines, dimStyle.Render("目录清单与端点仅为预填建议，不构成已验证能力。"))
 	return strings.Join(lines, "\n")
 }
 

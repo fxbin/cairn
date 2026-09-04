@@ -30,10 +30,10 @@ func testCatalogEntries(count int) []modelcatalog.ModelEntry {
 // TestFilterSuggestionsEmptyInputs 验证目录缺失与空查询都降级为无建议。
 func TestFilterSuggestionsEmptyInputs(t *testing.T) {
 	catalog := &modelcatalog.Catalog{Entries: testCatalogEntries(3)}
-	if got := filterSuggestions(nil, "model"); got != nil {
+	if got := filterSuggestions(nil, "", "model"); got != nil {
 		t.Fatalf("nil 目录应返回 nil 建议，得到 %d 条", len(got))
 	}
-	if got := filterSuggestions(catalog, "   "); got != nil {
+	if got := filterSuggestions(catalog, "", "   "); got != nil {
 		t.Fatalf("空查询应返回 nil 建议，得到 %d 条", len(got))
 	}
 }
@@ -41,9 +41,71 @@ func TestFilterSuggestionsEmptyInputs(t *testing.T) {
 // TestFilterSuggestionsCapsLimit 验证建议条数被上限截断。
 func TestFilterSuggestionsCapsLimit(t *testing.T) {
 	catalog := &modelcatalog.Catalog{Entries: testCatalogEntries(maxModelSuggestions + 5)}
-	got := filterSuggestions(catalog, "model")
+	got := filterSuggestions(catalog, "", "model")
 	if len(got) != maxModelSuggestions {
 		t.Fatalf("建议应截断为 %d 条，得到 %d 条", maxModelSuggestions, len(got))
+	}
+}
+
+// TestFilterSuggestionsScopedToSelectedProvider 验证已选目录 provider 时建议
+// 只保留该 provider 的条目。
+func TestFilterSuggestionsScopedToSelectedProvider(t *testing.T) {
+	entries := append(testCatalogEntries(2),
+		modelcatalog.ModelEntry{Provider: "other", ID: "model-x", Name: "Model X"},
+	)
+	catalog := &modelcatalog.Catalog{Entries: entries}
+	got := filterSuggestions(catalog, "test", "model")
+	if len(got) == 0 || len(got) != 2 {
+		t.Fatalf("provider 过滤应只剩 2 条 test 条目，得到 %d 条", len(got))
+	}
+	for _, entry := range got {
+		if entry.Provider != "test" {
+			t.Fatalf("建议泄漏了非所选 provider 条目: %+v", entry)
+		}
+	}
+}
+
+// TestFilterProvidersMatchesAndCaps 验证 provider 过滤按标识与名称匹配并截断
+// 到上限，空查询取排序前缀。
+func TestFilterProvidersMatchesAndCaps(t *testing.T) {
+	providers := []modelcatalog.ProviderInfo{
+		{ID: "openrouter", Name: "OpenRouter", ModelCount: 360},
+		{ID: "openai", Name: "OpenAI", ModelCount: 80},
+		{ID: "deepseek", Name: "DeepSeek", ModelCount: 10},
+	}
+	if got := filterProviders(providers, "deep", 10); len(got) != 1 || got[0].ID != "deepseek" {
+		t.Fatalf("deep 应只命中 deepseek，得到 %+v", got)
+	}
+	if got := filterProviders(providers, "open", 2); len(got) != 2 {
+		t.Fatalf("open 命中应截断为 2，得到 %d 条", len(got))
+	}
+	if got := filterProviders(providers, "", 2); len(got) != 2 || got[0].ID != "openrouter" {
+		t.Fatalf("空查询应取已排序输入的前缀，得到 %+v", got)
+	}
+}
+
+// TestApplyProviderChoicePrefills 验证选中目录 provider 预填端点与密钥变量
+// 名，选 custom 恢复向导默认值。
+func TestApplyProviderChoicePrefills(t *testing.T) {
+	wizard := NewConfigWizard(context.Background(), app.SetupInput{})
+	wizard.catalog = &modelcatalog.Catalog{Providers: []modelcatalog.ProviderInfo{
+		{ID: "deepseek", Name: "DeepSeek", APIBaseURL: "https://api.deepseek.com", EnvNames: []string{"DEEPSEEK_API_KEY"}, ModelCount: 10},
+	}}
+	wizard.providerCursor = 1
+	wizard.applyProviderChoice()
+	if wizard.selectedProvider != "deepseek" {
+		t.Fatalf("应记录所选 provider，得到 %q", wizard.selectedProvider)
+	}
+	if wizard.baseURLInput.Value() != "https://api.deepseek.com" {
+		t.Fatalf("端点应预填目录默认值，得到 %q", wizard.baseURLInput.Value())
+	}
+	if wizard.apiKeyEnvInput.Value() != "DEEPSEEK_API_KEY" {
+		t.Fatalf("密钥变量名应预填目录推荐值，得到 %q", wizard.apiKeyEnvInput.Value())
+	}
+	wizard.providerCursor = 0
+	wizard.applyProviderChoice()
+	if wizard.selectedProvider != "" || wizard.baseURLInput.Value() != defaultBaseURL || wizard.apiKeyEnvInput.Value() != defaultAPIKeyEnv {
+		t.Fatalf("custom 应恢复默认值，得到 provider=%q url=%q env=%q", wizard.selectedProvider, wizard.baseURLInput.Value(), wizard.apiKeyEnvInput.Value())
 	}
 }
 

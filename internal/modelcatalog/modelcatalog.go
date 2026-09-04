@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,8 +25,20 @@ const DefaultCatalogURL = "https://models.dev/api.json"
 // 陈旧度不构成问题，而更短的间隔只会在弱网下制造无谓的失败面。
 const catalogTTL = 24 * time.Hour
 
-// cacheSchemaV1 是缓存文件外层结构的当前版本。
-const cacheSchemaV1 = 1
+// cacheSchemaV2 是缓存文件外层结构的当前版本；v2 相比 v1 新增 provider 摘
+// 要投影，v1 缓存因缺少该投影而判不可用，由调用方走网络刷新。
+const cacheSchemaV2 = 2
+
+// ProviderInfo 是目录 provider 节点的闭合投影：默认端点与推荐密钥环境变
+// 量名只作向导预填建议，不构成已验证事实；ModelCount 反映该 provider 在目
+// 录中的模型条数，供列表排序与展示。
+type ProviderInfo struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	APIBaseURL string   `json:"api_base_url,omitempty"`
+	EnvNames   []string `json:"env_names,omitempty"`
+	ModelCount int      `json:"model_count"`
+}
 
 // ModelEntry 是向导消费的单模型元数据闭合投影：只声明使用的字段，目录
 // 的其余字段在解码时被忽略；消费字段形态非法的条目在装载阶段跳过并计
@@ -65,17 +78,20 @@ type rawCatalogModel struct {
 
 type rawCatalogProvider struct {
 	Name   string                     `json:"name"`
+	API    string                     `json:"api"`
+	Env    []string                   `json:"env"`
 	Models map[string]rawCatalogModel `json:"models"`
 }
 
 // cacheWrapper 是磁盘缓存的外层结构：版本字段使未来目录 schema 变更可
 // 失败关闭而不是把异构数据喂给消费者。
 type cacheWrapper struct {
-	SchemaVersion int          `json:"schema_version"`
-	FetchedAt     time.Time    `json:"fetched_at"`
-	Entries       []ModelEntry `json:"entries"`
-	SkippedCount  int          `json:"skipped_entries"`
-	_             struct{}     `json:"-"`
+	SchemaVersion int            `json:"schema_version"`
+	FetchedAt     time.Time      `json:"fetched_at"`
+	Entries       []ModelEntry   `json:"entries"`
+	Providers     []ProviderInfo `json:"providers,omitempty"`
+	SkippedCount  int            `json:"skipped_entries"`
+	_             struct{}       `json:"-"`
 }
 
 // Options 描述一次目录装载的全部输入。
@@ -89,6 +105,7 @@ type Options struct {
 // Catalog 是一次成功装载的目录实例。
 type Catalog struct {
 	Entries        []ModelEntry
+	Providers      []ProviderInfo
 	FetchedAt      time.Time
 	FromStaleCache bool
 	SkippedCount   int
@@ -104,7 +121,7 @@ func Load(options Options) (*Catalog, error) {
 		options.Now = time.Now
 	}
 	if cached, err := loadCache(options.CachePath); err == nil && options.Now().Sub(cached.FetchedAt) <= catalogTTL {
-		return &Catalog{Entries: cached.Entries, FetchedAt: cached.FetchedAt, SkippedCount: cached.SkippedCount}, nil
+		return &Catalog{Entries: cached.Entries, Providers: cached.Providers, FetchedAt: cached.FetchedAt, SkippedCount: cached.SkippedCount}, nil
 	}
 	client := &http.Client{Transport: options.Transport, Timeout: catalogFetchTimeout}
 	response, err := client.Get(options.CatalogURL)
@@ -150,12 +167,14 @@ func staleFallback(cachePath string, cause error) (*Catalog, error) {
 	if err != nil {
 		return nil, cause
 	}
-	return &Catalog{Entries: cached.Entries, FetchedAt: cached.FetchedAt, FromStaleCache: true, SkippedCount: cached.SkippedCount}, nil
+	return &Catalog{Entries: cached.Entries, Providers: cached.Providers, FetchedAt: cached.FetchedAt, FromStaleCache: true, SkippedCount: cached.SkippedCount}, nil
 }
 
 // parseCatalog 解码目录原文并投影为闭合条目：解码宽松、投影严格——消费
 // 字段（tool_call、limit）缺失或非法的条目跳过计数；定价缺失按零处理
-// （向导会展示并让用户按账单口径修正）。
+// （向导会展示并让用户按账单口径修正）。provider 节点同步投影为摘要列
+// 表（默认端点与推荐密钥环境变量名仅供向导预填，不是已验证事实），模型
+// 条数为零的 provider 不进入摘要。
 func parseCatalog(body []byte, fetchedAt time.Time) (*Catalog, error) {
 	var providers map[string]rawCatalogProvider
 	if err := json.Unmarshal(body, &providers); err != nil {
@@ -163,6 +182,7 @@ func parseCatalog(body []byte, fetchedAt time.Time) (*Catalog, error) {
 	}
 	catalog := &Catalog{FetchedAt: fetchedAt}
 	for providerKey, provider := range providers {
+		modelCount := 0
 		for modelKey, model := range provider.Models {
 			entry, ok := projectEntry(providerKey, modelKey, model)
 			if !ok {
@@ -170,12 +190,42 @@ func parseCatalog(body []byte, fetchedAt time.Time) (*Catalog, error) {
 				continue
 			}
 			catalog.Entries = append(catalog.Entries, entry)
+			modelCount++
 		}
+		if modelCount == 0 {
+			continue
+		}
+		catalog.Providers = append(catalog.Providers, ProviderInfo{
+			ID: providerKey, Name: provider.Name, APIBaseURL: provider.API,
+			EnvNames: append([]string(nil), provider.Env...), ModelCount: modelCount,
+		})
 	}
 	if len(catalog.Entries) == 0 {
 		return nil, fmt.Errorf("catalog carries no consumable model entries (%d skipped)", catalog.SkippedCount)
 	}
+	sortProviders(catalog.Providers)
 	return catalog, nil
+}
+
+// sortProviders 对 provider 摘要按模型条数降序排序，同数按标识升序，保证
+// 向导列表呈现稳定可复现。
+func sortProviders(providers []ProviderInfo) {
+	sort.Slice(providers, func(i, j int) bool {
+		if providers[i].ModelCount != providers[j].ModelCount {
+			return providers[i].ModelCount > providers[j].ModelCount
+		}
+		return providers[i].ID < providers[j].ID
+	})
+}
+
+// LookupProvider 按目录标识返回 provider 摘要；未知标识返回错误，不猜测。
+func (catalog *Catalog) LookupProvider(id string) (ProviderInfo, error) {
+	for _, provider := range catalog.Providers {
+		if provider.ID == id {
+			return provider, nil
+		}
+	}
+	return ProviderInfo{}, fmt.Errorf("provider %q is not in the catalog", id)
 }
 
 // projectEntry 把单条原始条目投影为闭合形态；tool_call 与 limit 为消费
@@ -222,7 +272,7 @@ func loadCache(path string) (*cacheWrapper, error) {
 	if err := json.Unmarshal(content, &wrapper); err != nil {
 		return nil, fmt.Errorf("decode catalog cache: %w", err)
 	}
-	if wrapper.SchemaVersion != cacheSchemaV1 {
+	if wrapper.SchemaVersion != cacheSchemaV2 {
 		return nil, fmt.Errorf("catalog cache schema_version %d is unsupported", wrapper.SchemaVersion)
 	}
 	if wrapper.FetchedAt.IsZero() || len(wrapper.Entries) == 0 {
@@ -233,7 +283,7 @@ func loadCache(path string) (*cacheWrapper, error) {
 
 // writeCache 以临时文件加原子重命名落盘缓存，目录按 0700 创建。
 func writeCache(path string, catalog *Catalog) error {
-	wrapper := cacheWrapper{SchemaVersion: cacheSchemaV1, FetchedAt: catalog.FetchedAt, Entries: catalog.Entries, SkippedCount: catalog.SkippedCount}
+	wrapper := cacheWrapper{SchemaVersion: cacheSchemaV2, FetchedAt: catalog.FetchedAt, Entries: catalog.Entries, Providers: catalog.Providers, SkippedCount: catalog.SkippedCount}
 	encoded, err := json.Marshal(wrapper)
 	if err != nil {
 		return err
