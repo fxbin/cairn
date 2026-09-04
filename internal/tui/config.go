@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -19,6 +20,7 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/modelcatalog"
 )
 
@@ -27,19 +29,20 @@ import (
 type wizardStep int
 
 // 向导步骤全集：provider 选择、端点输入、模型选择、密钥环境变量名输入、
-// 确认摘要、提交执行与终态展示。
+// 密钥值输入、确认摘要、提交执行与终态展示。
 const (
 	stepProvider wizardStep = iota
 	stepBaseURL
 	stepModel
 	stepAPIKeyEnv
+	stepAPIKeySecret
 	stepConfirm
 	stepCommitting
 	stepDone
 )
 
 // wizardStepCount 是向导可交互步骤总数（提交与终态不计入进度条）。
-const wizardStepCount = 5
+const wizardStepCount = 6
 
 // maxModelSuggestions 是模型步同屏展示的目录建议上限；目录仅是预填建议，
 // 超出上限的候选不出现在屏幕上，用户始终可以手输任意模型名。
@@ -96,6 +99,7 @@ type ConfigWizard struct {
 	baseURLInput      textinput.Model
 	modelInput        textinput.Model
 	apiKeyEnvInput    textinput.Model
+	apiKeySecretInput textinput.Model
 	existingConfigTip string
 
 	catalog        *modelcatalog.Catalog
@@ -116,22 +120,25 @@ const (
 
 // NewConfigWizard 构造向导模型：input 携带调用方决定的非交互项（workspace、
 // 目录选项、配置版本与准入语义），三要素留给交互补齐；端点与密钥变量名输
-// 入框预填默认值。
+// 入框预填默认值，密钥值输入框为密码回显且不预填。
 func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 	baseURLInput := newTextinput("Provider Base URL")
 	baseURLInput.SetValue(defaultBaseURL)
 	apiKeyEnvInput := newTextinput("API Key 环境变量名")
 	apiKeyEnvInput.SetValue(defaultAPIKeyEnv)
+	secretInput := newTextinput("密钥值（粘贴后回车；留空跳过）")
+	secretInput.EchoMode = textinput.EchoPassword
 	wizard := ConfigWizard{
-		ctx:              ctx,
-		service:          app.NewSetupService(),
-		input:            input,
-		providerSearch:   newTextinput("搜索 Provider（可选）"),
-		baseURLInput:     baseURLInput,
-		modelInput:       newTextinput("模型名（如 glm-5.3）"),
-		apiKeyEnvInput:   apiKeyEnvInput,
-		catalogLoading:   true,
-		suggestionCursor: -1,
+		ctx:               ctx,
+		service:           app.NewSetupService(),
+		input:             input,
+		providerSearch:    newTextinput("搜索 Provider（可选）"),
+		baseURLInput:      baseURLInput,
+		modelInput:        newTextinput("模型名（如 glm-5.3）"),
+		apiKeyEnvInput:    apiKeyEnvInput,
+		apiKeySecretInput: secretInput,
+		catalogLoading:    true,
+		suggestionCursor:  -1,
 	}
 	wizard.providerSearch.Focus()
 	if path, err := resolveExistingConfig(input.Workspace); err == nil {
@@ -217,6 +224,8 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return wizard.updateModel(msg)
 	case stepAPIKeyEnv:
 		return wizard.updateAPIKeyEnv(msg)
+	case stepAPIKeySecret:
+		return wizard.updateAPIKeySecret(msg)
 	case stepConfirm:
 		return wizard.updateConfirm(msg)
 	case stepCommitting:
@@ -400,7 +409,7 @@ func (wizard *ConfigWizard) moveSuggestionCursor(down bool) {
 }
 
 // updateAPIKeyEnv 处理密钥环境变量名输入步：实时展示存在性状态，Enter 进
-// 入确认页，Esc 返回模型步。
+// 入密钥值输入步，Esc 返回模型步。
 func (wizard ConfigWizard) updateAPIKeyEnv(msg tea.Msg) (tea.Model, tea.Cmd) {
 	message, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -411,8 +420,9 @@ func (wizard ConfigWizard) updateAPIKeyEnv(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(wizard.apiKeyEnvInput.Value()) == "" {
 			return wizard, nil
 		}
-		wizard.step = stepConfirm
+		wizard.step = stepAPIKeySecret
 		wizard.apiKeyEnvInput.Blur()
+		return wizard, wizard.apiKeySecretInput.Focus()
 	case "esc":
 		wizard.step = stepModel
 		wizard.apiKeyEnvInput.Blur()
@@ -422,11 +432,34 @@ func (wizard ConfigWizard) updateAPIKeyEnv(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.apiKeyEnvInput, cmd = wizard.apiKeyEnvInput.Update(msg)
 		return wizard, cmd
 	}
+}
+
+// updateAPIKeySecret 处理密钥值输入步：密码回显、可空跳过，Enter 进入确认
+// 页，Esc 返回变量名步。输入的密钥值在提交时才写盘，退出向导不产生任何
+// 残留。
+func (wizard ConfigWizard) updateAPIKeySecret(msg tea.Msg) (tea.Model, tea.Cmd) {
+	message, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return wizard, nil
+	}
+	switch message.String() {
+	case "enter":
+		wizard.step = stepConfirm
+		wizard.apiKeySecretInput.Blur()
+	case "esc":
+		wizard.step = stepAPIKeyEnv
+		wizard.apiKeySecretInput.Blur()
+		return wizard, wizard.apiKeyEnvInput.Focus()
+	default:
+		var cmd tea.Cmd
+		wizard.apiKeySecretInput, cmd = wizard.apiKeySecretInput.Update(msg)
+		return wizard, cmd
+	}
 	return wizard, nil
 }
 
-// updateConfirm 处理确认页：Enter 组装 SetupInput 并发起异步提交，Esc 返回
-// 密钥环境变量名步。
+// updateConfirm 处理确认页：Enter 组装 SetupInput、按需持久化密钥并发起异
+// 步提交，Esc 返回密钥值输入步。
 func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	message, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -437,11 +470,25 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.input.BaseURL = strings.TrimSpace(wizard.baseURLInput.Value())
 		wizard.input.Model = strings.TrimSpace(wizard.modelInput.Value())
 		wizard.input.APIKeyEnv = strings.TrimSpace(wizard.apiKeyEnvInput.Value())
+		if secret := strings.TrimSpace(wizard.apiKeySecretInput.Value()); secret != "" {
+			if err := credential.UpsertEnvFile(keysPath(wizard.input.Workspace), wizard.input.APIKeyEnv, secret); err != nil {
+				wizard.step = stepDone
+				wizard.commitErr = fmt.Errorf("写入本机凭据文件失败（配置未提交）: %w", err)
+				return wizard, nil
+			}
+			if os.Getenv(wizard.input.APIKeyEnv) == "" {
+				if err := os.Setenv(wizard.input.APIKeyEnv, secret); err != nil {
+					wizard.step = stepDone
+					wizard.commitErr = fmt.Errorf("注入进程环境失败（配置未提交）: %w", err)
+					return wizard, nil
+				}
+			}
+		}
 		wizard.step = stepCommitting
 		return wizard, commitCmd(wizard.service, wizard.ctx, wizard.input)
 	case "esc":
-		wizard.step = stepAPIKeyEnv
-		return wizard, wizard.apiKeyEnvInput.Focus()
+		wizard.step = stepAPIKeySecret
+		return wizard, wizard.apiKeySecretInput.Focus()
 	}
 	return wizard, nil
 }
@@ -530,6 +577,8 @@ func (wizard ConfigWizard) View() string {
 		sections = append(sections, wizard.viewModel())
 	case stepAPIKeyEnv:
 		sections = append(sections, wizard.viewAPIKeyEnv())
+	case stepAPIKeySecret:
+		sections = append(sections, wizard.viewAPIKeySecret())
 	case stepConfirm:
 		sections = append(sections, wizard.viewConfirm())
 	case stepCommitting:
@@ -618,9 +667,35 @@ func (wizard ConfigWizard) viewAPIKeyEnv() string {
 	return strings.Join(lines, "\n")
 }
 
-// viewConfirm 渲染提交前摘要：三要素、配置版本与付费探测告知。
+// viewAPIKeySecret 渲染密钥值输入步：密码回显、展示当前来源状态，输入值
+// 只在本向导进程内流转，提交时才写盘。
+func (wizard ConfigWizard) viewAPIKeySecret() string {
+	name := strings.TrimSpace(wizard.apiKeyEnvInput.Value())
+	lines := []string{wizard.apiKeySecretInput.View()}
+	switch {
+	case name != "" && envPresent(name):
+		lines = append(lines, okStyle.Render("环境已配置该变量——输入可更新本机凭据文件（环境值优先，重启后生效）"))
+	case name != "" && credential.EnvFileHas(keysPath(wizard.input.Workspace), name):
+		lines = append(lines, okStyle.Render("本机凭据文件已配置该变量——输入可覆盖文件值"))
+	case name != "":
+		lines = append(lines, dimStyle.Render("留空跳过：提交时不做实测探测，后续仍可写入或 export。"))
+	}
+	lines = append(lines, dimStyle.Render("输入的密钥只写入工作区内 0600 凭据文件并注入本进程，不进入配置、事件或任何提交内容。"))
+	return strings.Join(lines, "\n")
+}
+
+// keysPath 返回本机凭据文件路径：与配置文件同目录（.agent/），空 workspace
+// 即当前目录语义由 filepath.Join 承担。
+func keysPath(workspace string) string {
+	return filepath.Join(workspace, credential.KeysFileName)
+}
+
+// viewConfirm 渲染提交前摘要：三要素、凭据去向、配置版本与付费探测告知。
 func (wizard ConfigWizard) viewConfirm() string {
 	lines := confirmLines(wizard.baseURLInput.Value(), wizard.modelInput.Value(), wizard.apiKeyEnvInput.Value(), wizard.input)
+	if strings.TrimSpace(wizard.apiKeySecretInput.Value()) != "" {
+		lines = append(lines, fmt.Sprintf("  密钥:         写入本机凭据文件 %s（0600）", keysPath(wizard.input.Workspace)))
+	}
 	lines = append(lines, "", warnStyle.Render(probeNotice), "", dimStyle.Render("Enter 提交 / Esc 返回"))
 	return strings.Join(lines, "\n")
 }

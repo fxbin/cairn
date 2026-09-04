@@ -7,12 +7,15 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/modelcatalog"
 )
 
@@ -237,8 +240,13 @@ func TestWizardAdvancesThroughSteps(t *testing.T) {
 	wizard.apiKeyEnvInput.SetValue("ZHIPU_API_KEY")
 	model, _ = wizard.Update(keyPress(tea.KeyEnter))
 	wizard = model.(ConfigWizard)
+	if wizard.step != stepAPIKeySecret {
+		t.Fatalf("变量名输入后应进入密钥值步，得到 %d", wizard.step)
+	}
+	model, _ = wizard.Update(keyPress(tea.KeyEnter))
+	wizard = model.(ConfigWizard)
 	if wizard.step != stepConfirm {
-		t.Fatalf("变量名输入后应进入确认页，得到 %d", wizard.step)
+		t.Fatalf("密钥值步（空跳过）应进入确认页，得到 %d", wizard.step)
 	}
 	model, _ = wizard.Update(keyPress(tea.KeyEnter))
 	wizard = model.(ConfigWizard)
@@ -250,7 +258,8 @@ func TestWizardAdvancesThroughSteps(t *testing.T) {
 	}
 }
 
-// TestEnvStepPrefillsDefault 验证密钥环境变量名步预填默认值且回车直接推进。
+// TestEnvStepPrefillsDefault 验证密钥环境变量名步预填默认值且回车推进到密
+// 钥值步。
 func TestEnvStepPrefillsDefault(t *testing.T) {
 	wizard := NewConfigWizard(context.Background(), app.SetupInput{})
 	wizard.step = stepAPIKeyEnv
@@ -259,8 +268,41 @@ func TestEnvStepPrefillsDefault(t *testing.T) {
 	}
 	model, _ := wizard.Update(keyPress(tea.KeyEnter))
 	wizard = model.(ConfigWizard)
-	if wizard.step != stepConfirm {
-		t.Fatalf("默认变量名直接回车应进入确认页，得到 %d", wizard.step)
+	if wizard.step != stepAPIKeySecret {
+		t.Fatalf("默认变量名直接回车应进入密钥值步，得到 %d", wizard.step)
+	}
+}
+
+// TestSecretStepPersistsCredential 验证密钥值输入在提交时写入本机凭据文件、
+// 注入进程环境，且环境已存在时不覆盖文件之外的来源；使用临时目录隔离。
+func TestSecretStepPersistsCredential(t *testing.T) {
+	t.Cleanup(func() { os.Unsetenv("CAIRN_TUI_TEST_SECRET_KEY") })
+	workspace := t.TempDir()
+	wizard := NewConfigWizard(context.Background(), app.SetupInput{Workspace: workspace})
+	wizard.step = stepConfirm
+	wizard.apiKeyEnvInput.SetValue("CAIRN_TUI_TEST_SECRET_KEY")
+	wizard.apiKeySecretInput.SetValue("test-secret-value")
+	model, _ := wizard.Update(keyPress(tea.KeyEnter))
+	wizard = model.(ConfigWizard)
+	if wizard.step != stepCommitting {
+		t.Fatalf("带密钥提交应进入提交步，得到 %d（err=%v）", wizard.step, wizard.commitErr)
+	}
+	if got := os.Getenv("CAIRN_TUI_TEST_SECRET_KEY"); got != "test-secret-value" {
+		t.Fatalf("密钥应注入当前进程环境，得到 %q", got)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, credential.KeysFileName))
+	if err != nil {
+		t.Fatalf("凭据文件应已写入: %v", err)
+	}
+	if !strings.Contains(string(content), "CAIRN_TUI_TEST_SECRET_KEY=") {
+		t.Fatalf("凭据文件应包含变量名行:\n%s", content)
+	}
+	if strings.Contains(string(content), "test-secret-value\n") && strings.Count(string(content), "test-secret-value") > 1 {
+		t.Fatal("凭据文件出现重复条目")
+	}
+	info, err := os.Stat(filepath.Join(workspace, credential.KeysFileName))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("凭据文件权限应为 0600，得到 %v（err=%v）", info.Mode().Perm(), err)
 	}
 }
 

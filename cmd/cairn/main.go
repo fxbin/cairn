@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/fxbin/cairn/internal/cli"
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
@@ -55,11 +56,22 @@ func launchTrustedEvaluationChild(arguments []string) (bool, int) {
 	return true, 0
 }
 
+// loadLocalCredentials 按 ADR-0015 在进程启动时装载当前目录的本机凭据文
+// 件：已显式导出的环境变量优先、文件值不覆盖；装载失败只在 stderr 输出一
+// 条不含任何密钥值的警告并继续，环境变量主路径不受影响。正式评测子进程
+// 使用空环境白名单重启，不经此路径。
+func loadLocalCredentials() {
+	if _, err := credential.LoadEnvFile(credential.KeysFileName); err != nil {
+		fmt.Fprintln(os.Stderr, "本机凭据文件未装载:", err)
+	}
+}
+
 // main 建立可取消根上下文，并将两次中断分别映射为优雅取消和强制退出。
 func main() {
 	if handled, code := launchTrustedEvaluationChild(os.Args[1:]); handled {
 		os.Exit(code)
 	}
+	loadLocalCredentials()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signals := make(chan os.Signal, 2)

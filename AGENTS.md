@@ -5,7 +5,7 @@
 - Cairn 是 Go 1.26.4 实现的事件溯源编码 Agent V0，模块为 `github.com/fxbin/cairn`。
 - 可执行入口是 `cmd/cairn/main.go`；它处理 `SIGINT`/`SIGTERM`，第一次信号交由 Agent 持久化取消，第二次以 130 退出。
 - CLI 实现在 `internal/cli/`，命令为 `run`、`resume`、`inspect`、`doctor`、`benchmark run`、`help`。`--json` 时 stdout 只能输出 NDJSON。
-- 默认配置路径为 `<workspace>/.agent/config.yaml`。API key 只从 `provider.api_key_env` 指定的环境变量读取，不能写入 YAML 或事件。
+- 默认配置路径为 `<workspace>/.agent/config.yaml`。API key 只从 `provider.api_key_env` 指定的环境变量读取，不能写入 YAML 或事件；环境上游可为本机 0600 凭据文件 `<workspace>/.agent/keys.env`（ADR-0015）：启动时装载、显式导出优先不覆盖、密钥值永不进入配置、事件、制品、错误信息或提交内容。
 
 ## 模块地图
 
