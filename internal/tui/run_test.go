@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/modelcatalog"
 )
 
 // eventWithPayload 构造带 JSON payload 的测试事件。
@@ -310,5 +311,42 @@ func TestSlashCommands(t *testing.T) {
 	console = model.(RunConsole)
 	if cmd == nil {
 		t.Fatal("/quit 应请求退出")
+	}
+}
+
+// TestModelCommandEmbedsWizard 锁定 /model 嵌入向导：进入向导模式、按键转
+// 发、退出命令翻译为关闭消息并热重载配置。
+func TestModelCommandEmbedsWizard(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/model")
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleModelWizard || console.wizard == nil {
+		t.Fatal("/model 应进入嵌入的配置向导")
+	}
+	console.wizard.catalog = &modelcatalog.Catalog{Providers: []modelcatalog.ProviderInfo{
+		{ID: "deepseek", Name: "DeepSeek", ModelCount: 3},
+		{ID: "openai", Name: "OpenAI", ModelCount: 47},
+	}}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyDown})
+	console = model.(RunConsole)
+	if console.wizard.providerCursor != 1 {
+		t.Fatalf("按键应转发给向导，得到 cursor=%d", console.wizard.providerCursor)
+	}
+
+	reloadCalled := false
+	console.input.ReloadConfig = func() (config.Config, error) {
+		reloadCalled = true
+		return config.Config{}, nil
+	}
+	console.wizard.outcome = &app.SetupOutcome{ConfigPath: "x"}
+	model, _ = console.Update(wizardClosedMsg{})
+	console = model.(RunConsole)
+	if console.mode != consoleInput || console.wizard != nil {
+		t.Fatal("向导关闭消息应退出向导模式")
+	}
+	if !reloadCalled {
+		t.Fatal("提交成功应触发热重载回调")
 	}
 }

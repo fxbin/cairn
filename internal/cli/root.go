@@ -1751,7 +1751,11 @@ func (command Command) bareCommand(ctx context.Context) int {
 		fmt.Fprintln(command.Stderr, "配置装载失败（可运行 cairn doctor 诊断）:", err)
 		return ExitUsage
 	}
-	if err := tui.RunConsoleLoop(ctx, tui.RunConsoleInput{Workspace: workspace, Config: configuration, Service: command.Service}); err != nil {
+	consoleInput := tui.RunConsoleInput{Workspace: workspace, Config: configuration, Service: command.Service}
+	consoleInput.ReloadConfig = func() (config.Config, error) {
+		return command.loadConfig(workspace, "", config.Overrides{})
+	}
+	if err := tui.RunConsoleLoop(ctx, consoleInput); err != nil {
 		fmt.Fprintln(command.Stderr, "console failed:", err)
 		return ExitFailed
 	}

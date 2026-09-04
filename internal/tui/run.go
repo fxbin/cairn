@@ -36,6 +36,7 @@ const (
 	consoleApproval
 	consoleDone
 	consoleTranscript
+	consoleModelWizard
 )
 
 // maxConsoleLines 是事件摘要的滚动缓冲行数上限；更早的行滚出屏幕，完整事
@@ -62,10 +63,17 @@ type RunConsoleInput struct {
 	Workspace string
 	Config    config.Config
 	Service   app.Service
+	// ReloadConfig 在向导提交新配置后由调用方提供热重载（重新走同一配置
+	// 解析链）；缺省时新配置对后续 cairn 进程生效，当前界面如实提示。
+	ReloadConfig func() (config.Config, error)
 }
 
 // consoleEventMsg 把已持久化的领域事件送入界面事件循环。
 type consoleEventMsg struct{ event domain.Event }
+
+// wizardClosedMsg 表示嵌入的配置向导请求收束（完成或取消），由主界面退
+// 出向导模式并按提交结果决定是否热重载。
+type wizardClosedMsg struct{}
 
 // runFinishedMsg 承载一次 Run 或 Resume 的最终结果；err 可能携带等待审批
 // 错误，由界面转入审批模式而不是终止。
@@ -99,6 +107,7 @@ type RunConsole struct {
 
 	sessionPromptTokens int64
 	sessionOutputTokens int64
+	wizard              *ConfigWizard
 	waiting             *agent.WaitingApprovalError
 	approvalDetail      []string
 	result              *app.RunResult
@@ -198,6 +207,10 @@ func approvalReason(approve bool) string {
 func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if message, ok := msg.(tea.KeyMsg); ok {
 		return console.updateKey(message)
+	}
+	if _, closed := msg.(wizardClosedMsg); closed {
+		console.exitWizard()
+		return console, nil
 	}
 	switch typed := msg.(type) {
 	case consoleEventMsg:
@@ -302,6 +315,8 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return console, resolveApprovalCmd(console, false)
 		}
 		return console, nil
+	case consoleModelWizard:
+		return console.relayWizardKey(message)
 	case consoleDone:
 		switch message.String() {
 		case "ctrl+c":
@@ -367,6 +382,63 @@ func (console *RunConsole) resetRun() {
 	console.result = nil
 	console.runErr = nil
 	console.stopWait = false
+}
+
+// relayWizardKey 把按键转发给嵌入的配置向导并桥接其命令：非退出命令（如
+// 光标闪烁）透传给程序驱动，退出命令翻译为向导关闭消息，由主界面消费。
+func (console RunConsole) relayWizardKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if console.wizard == nil {
+		console.mode = consoleInput
+		return console, nil
+	}
+	model, cmd := console.wizard.Update(message)
+	wizard, ok := model.(ConfigWizard)
+	if !ok {
+		console.mode = consoleInput
+		return console, nil
+	}
+	console.wizard = &wizard
+	if cmd == nil {
+		return console, nil
+	}
+	return console, relayWizardCmd(cmd)
+}
+
+// relayWizardCmd 包装向导命令：执行结果为退出消息时翻译成向导关闭消息，
+// 其余消息原样透传。
+func relayWizardCmd(cmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		message := cmd()
+		if _, quit := message.(tea.QuitMsg); quit {
+			return wizardClosedMsg{}
+		}
+		return message
+	}
+}
+
+// exitWizard 退出配置向导回到输入态：提交成功时经调用方回调热重载配置
+// 使后续任务立即生效，重载失败如实提示（新配置对下次进程仍生效）；取消
+// 或失败时不改变现有配置。
+func (console *RunConsole) exitWizard() {
+	console.mode = consoleInput
+	submitted := console.wizard != nil && console.wizard.outcome != nil
+	console.wizard = nil
+	console.lines = nil
+	if submitted && console.input.ReloadConfig != nil {
+		if reloaded, err := console.input.ReloadConfig(); err == nil {
+			console.input.Config = reloaded
+			console.appendLine(okStyle.Render("配置已更新，后续任务即用新模型"))
+			return
+		} else {
+			console.appendLine(warnStyle.Render("配置已写入但当前界面重载失败: " + err.Error()))
+			return
+		}
+	}
+	if submitted {
+		console.appendLine(dimStyle.Render("配置已写入，重启或下次运行生效"))
+		return
+	}
+	console.appendLine(dimStyle.Render("已退出配置向导（配置未修改）"))
 }
 
 // applyEvent 把已持久化事件追加为摘要行并累计运行统计。
@@ -693,6 +765,10 @@ func (console RunConsole) View() string {
 	case consoleApproval:
 		sections = append(sections, strings.Join(console.approvalDetail, "\n"))
 		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝"))
+	case consoleModelWizard:
+		if console.wizard != nil {
+			sections = append(sections, console.wizard.View())
+		}
 	case consoleTranscript:
 		sections = []string{titleStyle.Render("事件查看器") + dimStyle.Render(fmt.Sprintf("  %d 条已持久化事件 · ↑↓ 滚动 / Esc 返回", len(console.transcript)))}
 		end := console.transcriptCursor + transcriptWindowHeight
@@ -762,7 +838,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /new 新任务清屏 · /status 配置与预算 · /cost 会话累计 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 新任务清屏 · /status 配置与预算 · /cost 会话累计 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -779,6 +855,11 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		}
 		console.appendLine(itemStyle.Render(fmt.Sprintf("模型 %s · 端点 %s", console.input.Config.Provider.Model, console.input.Config.Provider.BaseURL)))
 		console.appendLine(dimStyle.Render(fmt.Sprintf("轮次预算 %s · 工作区 %s", turns, console.statusWorkspace())))
+	case "/model":
+		wizard := NewConfigWizard(console.ctx, console.nextSetupInput())
+		console.wizard = &wizard
+		console.mode = consoleModelWizard
+		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
 	case "/cost":
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))
@@ -789,6 +870,24 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(warnStyle.Render("未知命令 " + name + "（/help 查看清单）" + remainder))
 	}
 	return true, nil
+}
+
+// nextSetupInput 构造向导输入：写入目标跟随当前实际生效的配置位置（用
+// 户级存在即用户级，否则工作区），避免改配置改到未生效的那份上。
+func (console RunConsole) nextSetupInput() app.SetupInput {
+	workspace := console.input.Workspace
+	if workspace == "" {
+		if current, err := os.Getwd(); err == nil {
+			workspace = current
+		}
+	}
+	input := app.SetupInput{Workspace: workspace, CatalogURL: "", CatalogCacheDir: ""}
+	if userPath, err := config.UserConfigPath(); err == nil {
+		if resolved := config.ResolveDefaultPath(workspace); resolved == userPath {
+			input.ScopeUserConfig = true
+		}
+	}
+	return input
 }
 
 // statusWorkspace 返回展示用工作区标识；空工作区显示当前目录语义。
