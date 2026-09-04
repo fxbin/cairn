@@ -862,19 +862,30 @@ func (wizard ConfigWizard) viewCommitting() string {
 	return dimStyle.Render("提交中：目录预填 → 实测探测 → 原子落盘 → 回读自证…")
 }
 
-// viewDone 渲染终态页：成功展示结果与观测注记，失败展示错误与重试出口。
+// viewDone 渲染终态页：成功展示完成状态、观测注记与下一步指引（不暴露配
+// 置文件路径——对向导用户那是内部细节），失败展示错误与重试出口。
 func (wizard ConfigWizard) viewDone() string {
 	if wizard.commitErr != nil {
 		return errStyle.Render("提交失败: "+wizard.commitErr.Error()) + "\n" + dimStyle.Render("Esc 重试 / Enter 退出")
 	}
-	lines := []string{okStyle.Render("配置已生成: " + wizard.outcome.ConfigPath)}
+	scope := "对所有工作区可用"
+	if !wizard.input.ScopeUserConfig {
+		scope = "仅当前工作区"
+	}
+	lines := []string{okStyle.Render("配置完成（" + scope + "）")}
 	if wizard.outcome.ProbeRan {
-		lines = append(lines, okStyle.Render("实测探测已执行（详见注记）"))
+		lines = append(lines, okStyle.Render("端点实测探测已执行（结果见注记）"))
 	}
 	for _, note := range wizard.outcome.Notes {
 		lines = append(lines, "  "+note)
 	}
-	lines = append(lines, "", dimStyle.Render(fmt.Sprintf("下一步: export %s=<密钥> 后运行 cairn provider probe 或 cairn run", wizard.outcome.APIKeyEnv)), dimStyle.Render("Enter 退出"))
+	lines = append(lines, "")
+	if envPresent(wizard.outcome.APIKeyEnv) {
+		lines = append(lines, dimStyle.Render(`下一步: cairn run "你的任务" 即可开始使用`))
+	} else {
+		lines = append(lines, warnStyle.Render(fmt.Sprintf("尚未配置密钥（%s）——重跑向导在密钥步粘贴即可启用实测探测", wizard.outcome.APIKeyEnv)))
+	}
+	lines = append(lines, dimStyle.Render("Enter 退出"))
 	return strings.Join(lines, "\n")
 }
 

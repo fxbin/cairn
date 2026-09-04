@@ -26,6 +26,9 @@ import (
 // setupProbeRequestTimeout 是向导零期望探测的单次请求与总超时。
 const setupProbeRequestTimeout = 60 * time.Second
 
+// catalogNamePreviewLimit 是多候选注记最多展示的候选名数量；其余以总数概括。
+const catalogNamePreviewLimit = 3
+
 // protocolStopReasons 是 OpenAI 兼容线协议的标准停止原因集；目录不含此维
 // 度，由实测探测核对实际观测值。
 var protocolStopReasons = []string{contract.StopReasonStop, contract.StopReasonLength, contract.StopReasonToolCalls}
@@ -150,11 +153,16 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 			outcome.Notes = append(outcome.Notes, "目录未命中该模型，使用安全默认能力声明（上下文/输出上限跳过预算对照）")
 		} else {
 			if len(candidates) > 1 {
-				names := make([]string, 0, len(candidates))
+				// 同名模型常被多家网关转售，命中数可能很大；只展示前几个名字
+				// 加总数，避免把整行淹没在候选清单里。
+				shown := make([]string, 0, catalogNamePreviewLimit)
 				for _, entry := range candidates {
-					names = append(names, entry.Name)
+					shown = append(shown, entry.Name)
+					if len(shown) == catalogNamePreviewLimit {
+						break
+					}
 				}
-				outcome.Notes = append(outcome.Notes, fmt.Sprintf("目录命中 %d 个候选（按精确度排序），取第一个：%s", len(candidates), strings.Join(names, " ")))
+				outcome.Notes = append(outcome.Notes, fmt.Sprintf("目录命中 %d 个候选（多为网关转售，按精确度排序），取第一个：%s", len(candidates), strings.Join(shown, "、")))
 			}
 			entry := candidates[0]
 			outcome.CatalogMatched = true
