@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -71,8 +71,11 @@ type RunConsole struct {
 	events   chan domain.Event
 	stopWait bool
 
-	mode      consoleMode
-	taskField textinput.Model
+	mode       consoleMode
+	taskField  textarea.Model
+	queueField textarea.Model
+	queuing    bool
+	queue      []string
 
 	lines        []string
 	turn         int
@@ -89,17 +92,31 @@ type RunConsole struct {
 // 中触发取消，Run 由 Loop 持久化取消终态后返回）。
 func NewRunConsole(ctx context.Context, runInput RunConsoleInput) RunConsole {
 	runCtx, cancel := context.WithCancel(ctx)
-	taskField := newTextinput(consoleInputPrompt)
 	console := RunConsole{
-		ctx:       runCtx,
-		cancel:    cancel,
-		input:     runInput,
-		events:    make(chan domain.Event, consoleEventBuffer),
-		mode:      consoleInput,
-		taskField: taskField,
+		ctx:        runCtx,
+		cancel:     cancel,
+		input:      runInput,
+		events:     make(chan domain.Event, consoleEventBuffer),
+		mode:       consoleInput,
+		taskField:  newTaskArea(consoleInputPrompt),
+		queueField: newTaskArea("排队输入"),
 	}
 	console.taskField.Focus()
 	return console
+}
+
+// newTaskArea 构造多行任务输入区：Enter 留给外层做提交，换行由 Ctrl+J 或
+// Shift+Enter 承担（对齐同类工具的跨终端兜底约定），宽高随终端约束。
+func newTaskArea(prompt string) textarea.Model {
+	area := textarea.New()
+	area.Placeholder = prompt
+	area.Prompt = ""
+	area.ShowLineNumbers = false
+	area.CharLimit = 0
+	area.SetHeight(3)
+	area.SetWidth(72)
+	area.KeyMap.InsertNewline.SetKeys("ctrl+j", "shift+enter")
+	return area
 }
 
 // Init 启动任务输入框与事件通道等待。
@@ -202,11 +219,29 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return console, cmd
 		}
 	case consoleRunning:
-		if message.String() == "ctrl+c" {
+		switch message.String() {
+		case "ctrl+c", "esc":
 			console.appendLine(warnStyle.Render("⏸ 已请求取消，等待运行持久化终态…"))
 			console.cancel()
+			return console, nil
+		case "enter":
+			if !console.queuing {
+				return console, nil
+			}
+			if text := strings.TrimSpace(console.queueField.Value()); text != "" {
+				console.queue = append(console.queue, text)
+				console.appendLine(dimStyle.Render(fmt.Sprintf("✎ 已排队 %d 条（运行结束后 Enter 逐条预填）", len(console.queue))))
+			}
+			console.queueField.Reset()
+			return console, nil
+		default:
+			if !console.queuing {
+				console.queuing = true
+			}
+			var cmd tea.Cmd
+			console.queueField, cmd = console.queueField.Update(message)
+			return console, cmd
 		}
-		return console, nil
 	case consoleApproval:
 		switch message.String() {
 		case "enter":
@@ -228,6 +263,16 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.mode = consoleInput
 			console.taskField.Reset()
 			console.taskField.Focus()
+			if len(console.queue) > 0 {
+				console.taskField.SetValue(console.queue[0])
+				console.queue = console.queue[1:]
+			}
+			return console, nil
+		case "tab":
+			if len(console.queue) > 0 {
+				console.queue = console.queue[1:]
+				console.appendLine(dimStyle.Render("已丢弃队首排队输入"))
+			}
 			return console, nil
 		}
 		return console, nil
@@ -433,8 +478,11 @@ func (console RunConsole) View() string {
 	sections = append(sections, strings.Join(console.lines, "\n"))
 	switch console.mode {
 	case consoleInput:
-		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交任务 / Ctrl+C 退出"))
+		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交 · Ctrl+J 换行 / Ctrl+C 退出"))
 	case consoleRunning:
+		if console.queuing {
+			sections = append(sections, "", console.queueField.View(), dimStyle.Render("Enter 入队（运行结束后预填）· Ctrl+J 换行"))
+		}
 		sections = append(sections, "", console.statusLine())
 	case consoleApproval:
 		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝"))
@@ -445,7 +493,11 @@ func (console RunConsole) View() string {
 				sections = append(sections, itemStyle.Render(finalResponsePreview(response)))
 			}
 		}
-		sections = append(sections, dimStyle.Render("Enter 新任务 / Ctrl+C 退出"))
+		queueHint := "Enter 新任务 / Ctrl+C 退出"
+		if len(console.queue) > 0 {
+			queueHint = fmt.Sprintf("Enter 预填排队任务（%d 条）· Tab 丢弃队首 / Ctrl+C 退出", len(console.queue))
+		}
+		sections = append(sections, dimStyle.Render(queueHint))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...) + "\n"
 }

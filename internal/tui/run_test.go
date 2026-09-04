@@ -148,3 +148,37 @@ func TestFinalResponsePreviewTruncates(t *testing.T) {
 		}
 	}
 }
+
+// TestQueueInputSurvivesRunBoundary 锁定跨运行输入队列：运行中输入入队、
+// 终态回车预填队首、Tab 丢弃队首——运行中的用户输入永不丢失。
+func TestQueueInputSurvivesRunBoundary(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{})
+	console.mode = consoleRunning
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'继'}})
+	console = model.(RunConsole)
+	if !console.queuing {
+		t.Fatal("运行中输入应进入排队输入态")
+	}
+	console.queueField.SetValue("继续上一步")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if len(console.queue) != 1 || console.queue[0] != "继续上一步" {
+		t.Fatalf("回车应入队，得到 %v", console.queue)
+	}
+	if console.queueField.Value() != "" {
+		t.Fatal("入队后排队框应清空")
+	}
+	model, _ = console.Update(runFinishedMsg{result: &app.RunResult{}})
+	console = model.(RunConsole)
+	if console.mode != consoleDone {
+		t.Fatal("运行结束应进入终态")
+	}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleInput || console.taskField.Value() != "继续上一步" {
+		t.Fatalf("终态回车应预填队首任务，得到 mode=%d value=%q", console.mode, console.taskField.Value())
+	}
+	if len(console.queue) != 0 {
+		t.Fatalf("预填后队列应弹出，得到 %v", console.queue)
+	}
+}
