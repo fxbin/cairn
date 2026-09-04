@@ -867,3 +867,40 @@ func TestVersion2FingerprintNormalizesDefaultProviderID(t *testing.T) {
 		t.Fatalf("rejection must name the registry miss: %v", err)
 	}
 }
+
+// TestResolveDefaultPathFallsBackToUserConfig 锁定 ADR-0016 回退链：工作区
+// 配置存在时优先；工作区缺失且用户级存在时回退用户级；两者皆缺返回工作区
+// 路径。HOME 重定向到临时目录以隔离真实用户目录。
+func TestResolveDefaultPathFallsBackToUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+
+	if got := ResolveDefaultPath(workspace); got != DefaultPath(workspace) {
+		t.Fatalf("两者皆缺时应返回工作区路径，得到 %q", got)
+	}
+
+	userPath, err := UserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveDefaultPath(workspace); got != userPath {
+		t.Fatalf("工作区缺失时应回退用户级 %q，得到 %q", userPath, got)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(DefaultPath(workspace)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DefaultPath(workspace), []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveDefaultPath(workspace); got != DefaultPath(workspace) {
+		t.Fatalf("工作区配置存在时应优先工作区，得到 %q", got)
+	}
+}

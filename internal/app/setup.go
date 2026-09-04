@@ -50,6 +50,10 @@ type SetupInput struct {
 	// 用户知情（向导确认页或 CLI 显式旗标），因为覆盖会把手调字段重置为
 	// 最小配置。
 	OverwriteExisting bool
+	// ScopeUserConfig 把写入目标从工作区 .agent/config.yaml 切换到用户级
+	// 配置（ADR-0016 回退层）：供"一次配置、多工作区可用"的向导默认路径；
+	// 用户级目录不可解析时失败关闭，不回退写工作区。
+	ScopeUserConfig bool
 }
 
 // SetupOutcome 承载向导的落盘结果与验证结论：全部字段非敏感，可安全进入
@@ -189,6 +193,13 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	}
 
 	configPath := config.DefaultPath(input.Workspace)
+	if input.ScopeUserConfig {
+		userPath, err := config.UserConfigPath()
+		if err != nil {
+			return nil, fmt.Errorf("解析用户级配置目录失败: %w", err)
+		}
+		configPath = userPath
+	}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return nil, fmt.Errorf("创建 .agent 目录: %w", err)
 	}

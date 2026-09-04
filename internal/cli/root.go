@@ -1710,7 +1710,8 @@ func (command Command) resolveTrialActivation(ctx context.Context, requested boo
 	return resolved, nil
 }
 
-// loadConfig 解析默认工作区与配置路径，再加载合并后的运行配置。
+// loadConfig 解析默认工作区与配置路径（缺省时按工作区→用户级回退，ADR-
+// 0016），再加载合并后的运行配置。
 func (command Command) loadConfig(workspace, configuredPath string, overrides config.Overrides) (config.Config, error) {
 	if workspace == "" {
 		current, err := os.Getwd()
@@ -1720,7 +1721,7 @@ func (command Command) loadConfig(workspace, configuredPath string, overrides co
 		workspace = current
 	}
 	if configuredPath == "" {
-		configuredPath = config.DefaultPath(workspace)
+		configuredPath = config.ResolveDefaultPath(workspace)
 	}
 	return config.Load(configuredPath, overrides)
 }
@@ -1760,11 +1761,11 @@ Usage:
   cairn provider list [--json]
   cairn provider models [--query <name>] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
-  cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--provider-id <id>] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
+  cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--provider-id <id>] [--admission optional|required] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
   cairn provider admit --evidence <sha256> --decision admitted|rejected --reason <text> [--supersedes <sha256>] [--workspace <path>] [--config <path>] [--state-dir <path>]
   cairn provider status [--workspace <path>] [--config <path>] [--state-dir <path>] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
-  cairn tui [--workspace <path>] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>]
+  cairn tui [--workspace <path>] [--local] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>]
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed

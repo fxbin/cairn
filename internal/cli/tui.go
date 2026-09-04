@@ -20,11 +20,13 @@ import (
 
 // tuiCommand 解析薄 TUI 旗标并启动模型配置向导：默认生成 version 1 配置，
 // 显式给出 --admission 时生成 version 2 身份配置（语义与 provider configure
-// 一致）。非 TTY 环境失败关闭并指引用 provider configure。
+// 一致）。写入目标默认为用户级配置（一次配置、全部工作区可用，ADR-0016），
+// --local 切回工作区。非 TTY 环境失败关闭并指引用 provider configure。
 func (command Command) tuiCommand(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	local := flags.Bool("local", false, "write the workspace config instead of the user-level config")
 	admission := flags.String("admission", "", "emit a version 2 identity config with this admission semantics (optional|required)")
 	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
 	catalogCache := flags.String("catalog-cache", "", "model metadata cache file path override")
@@ -43,6 +45,7 @@ func (command Command) tuiCommand(ctx context.Context, arguments []string) int {
 		Workspace:       *workspace,
 		CatalogURL:      *catalogURL,
 		CatalogCacheDir: *catalogCache,
+		ScopeUserConfig: !*local,
 	}
 	if *admission != "" {
 		if *admission != config.ProviderAdmissionOptional && *admission != config.ProviderAdmissionRequired {

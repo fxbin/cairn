@@ -1056,6 +1056,34 @@ func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint
 // DefaultPath 返回工作区内的默认配置文件路径。
 func DefaultPath(workspace string) string { return filepath.Join(workspace, ".agent", "config.yaml") }
 
+// UserConfigPath 返回用户级配置文件路径（ADR-0016 回退层）：作为工作区配
+// 置缺失时的整文件回退目标，让一次配置对全部工作区可用。
+func UserConfigPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "cairn", "config.yaml"), nil
+}
+
+// ResolveDefaultPath 解析无显式 --config 时的配置路径：工作区配置存在即用
+// 工作区，否则回退用户级；两者皆缺时返回工作区路径（调用方按不存在报
+// 错）。用户级路径不可解析（无 HOME 等）时同样返回工作区路径。
+func ResolveDefaultPath(workspace string) string {
+	workspacePath := DefaultPath(workspace)
+	if _, err := os.Stat(workspacePath); err == nil {
+		return workspacePath
+	}
+	userPath, err := UserConfigPath()
+	if err != nil {
+		return workspacePath
+	}
+	if _, err := os.Stat(userPath); err == nil {
+		return userPath
+	}
+	return workspacePath
+}
+
 // applyEnvironment 将允许的 AGENT_* 环境变量覆写到配置中并记录来源；非法数值
 // 视为配置错误而非静默忽略，与同名 CLI flag 的行为保持一致。
 func applyEnvironment(config *Config, recorder *resolutionRecorder) error {

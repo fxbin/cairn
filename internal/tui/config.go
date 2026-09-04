@@ -147,8 +147,8 @@ func NewConfigWizard(ctx context.Context, input app.SetupInput) ConfigWizard {
 		suggestionCursor:  -1,
 	}
 	wizard.providerSearch.Focus()
-	if path, err := resolveExistingConfig(input.Workspace); err == nil {
-		wizard.existingConfigTip = fmt.Sprintf("注意: %s 已存在——提交将覆盖它（旧文件备份为 config.yaml.bak，手调字段会重置为最小配置）", path)
+	if path, err := resolveExistingConfig(wizard.input); err == nil {
+		wizard.existingConfigTip = fmt.Sprintf("注意: %s 已存在——提交将覆盖它（旧文件备份为 .bak，手调字段会重置为最小配置）", path)
 	}
 	return wizard
 }
@@ -162,19 +162,27 @@ func newTextinput(prompt string) textinput.Model {
 	return field
 }
 
-// resolveExistingConfig 返回目标 workspace 的既有配置路径；不存在时返回错误。
-func resolveExistingConfig(workspace string) (string, error) {
-	path := configPath(workspace)
+// resolveExistingConfig 返回提交目标位置的既有配置路径；不存在时返回错
+// 误。目标与 SetupService 的写入位置保持一致：用户级 scope 解析用户级目
+// 录，否则工作区目录。
+func resolveExistingConfig(input app.SetupInput) (string, error) {
+	path, err := targetConfigPath(input)
+	if err != nil {
+		return "", err
+	}
 	if _, err := os.Stat(path); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-// configPath 与 SetupService 的落盘目标保持单一来源：空 workspace 即当前
-// 目录语义由 config.DefaultPath 承担。
-func configPath(workspace string) string {
-	return config.DefaultPath(workspace)
+// targetConfigPath 按 scope 解析配置写入目标，语义与 SetupService.Run 的
+// 落盘分支一致。
+func targetConfigPath(input app.SetupInput) (string, error) {
+	if input.ScopeUserConfig {
+		return config.UserConfigPath()
+	}
+	return config.DefaultPath(input.Workspace), nil
 }
 
 // Init 启动向导：异步装载模型目录、启动搜索框光标闪烁与目录装载指示。
@@ -549,7 +557,13 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.input.APIKeyEnv = strings.TrimSpace(wizard.apiKeyEnvInput.Value())
 		wizard.input.OverwriteExisting = true
 		if secret := strings.TrimSpace(wizard.apiKeySecretInput.Value()); secret != "" {
-			if err := credential.UpsertEnvFile(keysPath(wizard.input.Workspace), wizard.input.APIKeyEnv, secret); err != nil {
+			secretPath, err := keysPath(wizard.input)
+			if err != nil {
+				wizard.step = stepDone
+				wizard.commitErr = fmt.Errorf("解析凭据文件路径失败（配置未提交）: %w", err)
+				return wizard, nil
+			}
+			if err := credential.UpsertEnvFile(secretPath, wizard.input.APIKeyEnv, secret); err != nil {
 				wizard.step = stepDone
 				wizard.commitErr = fmt.Errorf("写入本机凭据文件失败（配置未提交）: %w", err)
 				return wizard, nil
@@ -779,33 +793,43 @@ func (wizard ConfigWizard) viewAPIKeyEnv() string {
 }
 
 // viewAPIKeySecret 渲染密钥值输入步：密码回显、展示当前来源状态，输入值
-// 只在本向导进程内流转，提交时才写盘。
+// 只在本向导进程内流转，提交时才写盘。启动装载链（显式导出 > 工作区 >
+// 用户级）已把两级凭据文件注入环境，因此环境存在性即代表全部已配置场景。
 func (wizard ConfigWizard) viewAPIKeySecret() string {
 	name := strings.TrimSpace(wizard.apiKeyEnvInput.Value())
 	lines := []string{wizard.apiKeySecretInput.View()}
 	switch {
 	case name != "" && envPresent(name):
-		lines = append(lines, okStyle.Render("环境已配置该变量——输入可更新本机凭据文件（环境值优先，重启后生效）"))
-	case name != "" && credential.EnvFileHas(keysPath(wizard.input.Workspace), name):
-		lines = append(lines, okStyle.Render("本机凭据文件已配置该变量——输入可覆盖文件值"))
+		lines = append(lines, okStyle.Render("该变量已配置（显式导出或本机凭据文件）——输入可覆盖凭据文件值（当前进程中的环境值优先）"))
 	case name != "":
 		lines = append(lines, dimStyle.Render("留空跳过：提交时不做实测探测，后续仍可写入或 export。"))
 	}
-	lines = append(lines, dimStyle.Render("输入的密钥只写入工作区内 0600 凭据文件并注入本进程，不进入配置、事件或任何提交内容。"))
+	lines = append(lines, dimStyle.Render("输入的密钥只写入 0600 本机凭据文件并注入本进程，不进入配置、事件或任何提交内容。"))
 	return strings.Join(lines, "\n")
 }
 
-// keysPath 返回本机凭据文件路径：与配置文件同目录（.agent/），空 workspace
-// 即当前目录语义由 filepath.Join 承担。
-func keysPath(workspace string) string {
-	return filepath.Join(workspace, credential.KeysFileName)
+// keysPath 返回密钥值写入目标：与配置写入目标同 scope（用户级配置写用户
+// 级凭据文件，工作区配置写工作区凭据文件），保持配置与凭据的可解析性一
+// 致。
+func keysPath(input app.SetupInput) (string, error) {
+	if input.ScopeUserConfig {
+		return credential.UserKeysPath()
+	}
+	return filepath.Join(input.Workspace, credential.KeysFileName), nil
 }
 
 // viewConfirm 渲染提交前摘要：三要素、凭据去向、配置版本与付费探测告知。
 func (wizard ConfigWizard) viewConfirm() string {
 	lines := confirmLines(wizard.baseURLInput.Value(), wizard.modelInput.Value(), wizard.apiKeyEnvInput.Value(), wizard.input)
+	scope := "工作区"
+	if wizard.input.ScopeUserConfig {
+		scope = "用户级（全部工作区可用）"
+	}
+	lines = append(lines, fmt.Sprintf("  写入位置:     %s", scope))
 	if strings.TrimSpace(wizard.apiKeySecretInput.Value()) != "" {
-		lines = append(lines, fmt.Sprintf("  密钥:         写入本机凭据文件 %s（0600）", keysPath(wizard.input.Workspace)))
+		if secretPath, err := keysPath(wizard.input); err == nil {
+			lines = append(lines, fmt.Sprintf("  密钥:         写入本机凭据文件 %s（0600）", secretPath))
+		}
 	}
 	lines = append(lines, "", warnStyle.Render(probeNotice), "", dimStyle.Render("Enter 提交 / Esc 返回"))
 	return strings.Join(lines, "\n")

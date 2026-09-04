@@ -56,13 +56,21 @@ func launchTrustedEvaluationChild(arguments []string) (bool, int) {
 	return true, 0
 }
 
-// loadLocalCredentials 按 ADR-0015 在进程启动时装载当前目录的本机凭据文
-// 件：已显式导出的环境变量优先、文件值不覆盖；装载失败只在 stderr 输出一
-// 条不含任何密钥值的警告并继续，环境变量主路径不受影响。正式评测子进程
-// 使用空环境白名单重启，不经此路径。
+// loadLocalCredentials 按 ADR-0015/0016 在进程启动时装载两级本机凭据文
+// 件：当前工作区 .agent/keys.env 优先，用户级凭据文件按同名变量补缺；已
+// 显式导出的环境变量优先、文件值不覆盖。装载失败只在 stderr 输出不含任
+// 何密钥值的警告并继续，环境变量主路径不受影响。正式评测子进程使用空环
+// 境白名单重启，不经此路径。
 func loadLocalCredentials() {
 	if _, err := credential.LoadEnvFile(credential.KeysFileName); err != nil {
 		fmt.Fprintln(os.Stderr, "本机凭据文件未装载:", err)
+	}
+	userKeys, err := credential.UserKeysPath()
+	if err != nil {
+		return
+	}
+	if _, err := credential.LoadEnvFile(userKeys); err != nil {
+		fmt.Fprintln(os.Stderr, "用户级凭据文件未装载:", err)
 	}
 }
 

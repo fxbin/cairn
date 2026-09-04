@@ -117,3 +117,32 @@ func TestUpsertEnvFileValidatesInput(t *testing.T) {
 		t.Fatal("空值应拒绝")
 	}
 }
+
+// TestCredentialChainPrefersWorkspace 锁定 ADR-0016 两级装载链：工作区凭据
+// 先装载、用户级按同名变量补缺，两层文件可同时生效于不同变量。
+func TestCredentialChainPrefersWorkspace(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workspace := t.TempDir()
+	workspaceKeys := filepath.Join(workspace, KeysFileName)
+	writeKeysFile(t, workspaceKeys, 0o600, "CAIRN_CHAIN_TEST_SHARED=from-workspace\nCAIRN_CHAIN_TEST_ONLY_WS=ws\n")
+	if _, err := LoadEnvFile(workspaceKeys); err != nil {
+		t.Fatal(err)
+	}
+	userKeys, err := UserKeysPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKeysFile(t, userKeys, 0o600, "CAIRN_CHAIN_TEST_SHARED=from-user\nCAIRN_CHAIN_TEST_ONLY_USER=user\n")
+	if _, err := LoadEnvFile(userKeys); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("CAIRN_CHAIN_TEST_SHARED"); got != "from-workspace" {
+		t.Fatalf("同名变量工作区应优先，得到 %q", got)
+	}
+	if got := os.Getenv("CAIRN_CHAIN_TEST_ONLY_WS"); got != "ws" {
+		t.Fatalf("工作区独有变量应装载，得到 %q", got)
+	}
+	if got := os.Getenv("CAIRN_CHAIN_TEST_ONLY_USER"); got != "user" {
+		t.Fatalf("用户级独有变量应补缺装载，得到 %q", got)
+	}
+}

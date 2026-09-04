@@ -187,3 +187,27 @@ func TestSetupRunOverwriteBacksUpExistingConfig(t *testing.T) {
 		t.Fatalf("覆盖后应装载新模型，得到 %q", reloaded.Provider.Model)
 	}
 }
+
+// TestSetupRunWritesUserConfigScope 锁定用户级写入目标：ScopeUserConfig 时
+// 配置落在用户配置目录而非工作区，工作区保持无配置。HOME 重定向隔离。
+func TestSetupRunWritesUserConfigScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	service, input := setupFixture(t, &modelcatalog.Catalog{}, nil, nil, nil)
+	t.Setenv("SETUP_TEST_KEY", "")
+	input.ScopeUserConfig = true
+	outcome, err := service.Run(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPath, err := config.UserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.ConfigPath != userPath {
+		t.Fatalf("用户级 scope 应写入 %q，得到 %q", userPath, outcome.ConfigPath)
+	}
+	if _, err := os.Stat(config.DefaultPath(input.Workspace)); !os.IsNotExist(err) {
+		t.Fatal("用户级 scope 不应在工作区留下配置")
+	}
+}
