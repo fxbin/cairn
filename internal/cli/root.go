@@ -26,6 +26,8 @@ import (
 	"github.com/fxbin/cairn/internal/memory"
 	"github.com/fxbin/cairn/internal/sandboxeval"
 	"github.com/mattn/go-isatty"
+
+	"github.com/fxbin/cairn/internal/tui"
 )
 
 const (
@@ -60,11 +62,7 @@ func (command Command) Run(ctx context.Context, args []string) int {
 		command.Stderr = os.Stderr
 	}
 	if len(args) == 0 {
-		if command.shouldLaunchWizardOnBareInvoke() {
-			return command.tuiCommand(ctx, []string{})
-		}
-		command.usage()
-		return ExitUsage
+		return command.bareCommand(ctx)
 	}
 	switch args[0] {
 	case "run":
@@ -1730,21 +1728,34 @@ func (command Command) loadConfig(workspace, configuredPath string, overrides co
 	return config.Load(configuredPath, overrides)
 }
 
-// shouldLaunchWizardOnBareInvoke 判定裸命令是否直接进入配置向导：仅当处
-// 于交互终端（stdin/stdout 都是 TTY）且工作区与用户级都没有配置（ADR-0016
-// 回退链两处皆缺）时成立——即首次使用的 onboarding 路径，对齐同类工具
-// "裸命令进入交互界面"的默认。已配置与非 TTY 场景保持 usage，脚本永不因
-// 裸命令挂起；help/-h 永远输出纯文本。
-func (command Command) shouldLaunchWizardOnBareInvoke() bool {
+// bareCommand 处理裸命令：交互终端下未配置（工作区与用户级皆缺，ADR-0016
+// 回退链两处无配置）直接进入配置向导，已配置则装载配置并进入单任务运行
+// 主界面——对齐同类工具"裸命令进入交互界面"的默认。非交互终端输出使用
+// 说明，脚本永不因裸命令挂起；配置装载失败如实报错并指引 doctor，
+// help/-h 永远纯文本。
+func (command Command) bareCommand(ctx context.Context) int {
 	if !isatty.IsTerminal(os.Stdin.Fd()) || !isatty.IsTerminal(os.Stdout.Fd()) {
-		return false
+		command.usage()
+		return ExitUsage
 	}
 	workspace, err := os.Getwd()
 	if err != nil {
-		return false
+		command.usage()
+		return ExitUsage
 	}
-	_, statErr := os.Stat(config.ResolveDefaultPath(workspace))
-	return statErr != nil
+	if _, statErr := os.Stat(config.ResolveDefaultPath(workspace)); statErr != nil {
+		return command.tuiCommand(ctx, []string{})
+	}
+	configuration, err := command.loadConfig(workspace, "", config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "配置装载失败（可运行 cairn doctor 诊断）:", err)
+		return ExitUsage
+	}
+	if err := tui.RunConsoleLoop(ctx, tui.RunConsoleInput{Workspace: workspace, Config: configuration, Service: command.Service}); err != nil {
+		fmt.Fprintln(command.Stderr, "console failed:", err)
+		return ExitFailed
+	}
+	return ExitOK
 }
 
 // usage 向错误输出写入 CLI 使用说明与退出码语义。
@@ -1752,8 +1763,8 @@ func (command Command) usage() {
 	fmt.Fprint(command.Stderr, `Cairn — an event-sourced coding agent
 
 快速开始:
-  cairn tui          配置向导（provider/模型/密钥，一次配置全部工作区可用）
-  cairn run <task>   运行一个任务
+  cairn              交互界面（未配置时进入配置向导；已配置时进入单任务运行）
+  cairn run <task>   非交互运行一个任务
 
 Usage:
   cairn run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--base-url <url>] [--model <name>] [--api-key-env <name>] [--max-turns <n>] [--max-tool-calls <n>] [--max-input-tokens <n>] [--max-output-tokens <n>] [--max-wall-time <duration>] [--max-cost-usd <n>] [--trial-activation] [--json]
