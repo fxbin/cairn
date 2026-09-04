@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -83,9 +84,10 @@ type RunConsole struct {
 	outputTokens int64
 	toolCalls    int
 
-	waiting *agent.WaitingApprovalError
-	result  *app.RunResult
-	runErr  error
+	waiting        *agent.WaitingApprovalError
+	approvalDetail []string
+	result         *app.RunResult
+	runErr         error
 }
 
 // NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
@@ -346,6 +348,129 @@ func (console *RunConsole) appendLine(line string) {
 	}
 }
 
+// loadApprovalDetail 在审批暂停时从事件日志提取最近一次工具提议的参数预
+// 览：apply_patch 展示写入模式、目标路径与内容/替换摘要，exec 展示 argv，
+// 其余工具截断参数原文。预览是已持久化事实的只读投影，不可用时如实标注
+// 而不阻塞审批。
+func (console RunConsole) loadApprovalDetail(waiting *agent.WaitingApprovalError) []string {
+	workspace := console.input.Workspace
+	if workspace == "" {
+		if current, err := os.Getwd(); err == nil {
+			workspace = current
+		}
+	}
+	inspected, err := console.input.Service.Inspect(console.ctx, workspace, "", console.input.Config, waiting.RunID, true)
+	if err != nil {
+		return []string{dimStyle.Render("（参数预览不可用: " + err.Error() + "）")}
+	}
+	return approvalProposalPreview(inspected.Events)
+}
+
+// approvalProposalPreview 从事件流尾部提取最近一次工具提议的参数预览行；
+// 无提议事件时返回空切片。
+func approvalProposalPreview(events []domain.Event) []string {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventToolCallProposed {
+			continue
+		}
+		var payload struct {
+			ToolName  string          `json:"tool_name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if !eventPayload(event, &payload) {
+			return nil
+		}
+		return proposalLines(payload.ToolName, payload.Arguments)
+	}
+	return nil
+}
+
+// proposalLines 按工具类型把提议参数投影为预览行；内容预览截断到固定行数
+// 与字符宽度，完整参数以事件日志与制品为准。
+func proposalLines(toolName string, arguments json.RawMessage) []string {
+	const previewLines = 8
+	const previewWidth = 72
+	switch toolName {
+	case "apply_patch":
+		var patch struct {
+			Path         string `json:"path"`
+			Mode         string `json:"mode"`
+			ExpectedSHA  string `json:"expected_sha256"`
+			Content      string `json:"content"`
+			Replacements []struct {
+				Old string `json:"old"`
+				New string `json:"new"`
+			} `json:"replacements"`
+		}
+		if !jsonPiece(arguments, &patch) {
+			return []string{dimStyle.Render("（apply_patch 参数不可解码）")}
+		}
+		lines := []string{itemStyle.Render(fmt.Sprintf("  apply_patch %s · %s · 基线 %s", patch.Mode, patch.Path, shortDigest(patch.ExpectedSHA)))}
+		if patch.Content != "" {
+			lines = append(lines, dimStyle.Render("  将写入内容预览:"))
+			lines = append(lines, previewText(patch.Content, previewLines, previewWidth)...)
+		}
+		for _, replacement := range patch.Replacements {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("  替换: %s → %s", clip(replacement.Old, previewWidth), clip(replacement.New, previewWidth))))
+		}
+		return lines
+	case "exec_command":
+		var command struct {
+			Argv []string `json:"argv"`
+		}
+		if !jsonPiece(arguments, &command) {
+			return []string{dimStyle.Render("（exec_command 参数不可解码）")}
+		}
+		return []string{itemStyle.Render("  exec_command argv: " + strings.Join(command.Argv, " "))}
+	default:
+		if len(arguments) == 0 {
+			return nil
+		}
+		return []string{itemStyle.Render("  " + clip(string(arguments), previewWidth))}
+	}
+}
+
+// jsonPiece 解码提议参数片段；空参数返回 false。
+func jsonPiece(raw json.RawMessage, target any) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	return json.Unmarshal(raw, target) == nil
+}
+
+// previewText 把多行文本投影为带缩进的预览行并截断行数。
+func previewText(text string, maxLines, width int) []string {
+	rows := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(rows) > maxLines {
+		rows = append(rows[:maxLines], fmt.Sprintf("  …（共 %d 行）", len(strings.Split(text, "\n"))))
+	}
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		lines = append(lines, dimStyle.Render("  | "+clip(row, width)))
+	}
+	return lines
+}
+
+// clip 截断单行文本到字符宽度。
+func clip(text string, width int) string {
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	return string(runes[:width]) + "…"
+}
+
+// shortDigest 缩短十六进制摘要便于展示。
+func shortDigest(digest string) string {
+	const digestPrefix = 12
+	runes := []rune(digest)
+	if len(runes) <= digestPrefix {
+		return digest
+	}
+	return string(runes[:digestPrefix]) + "…"
+}
+
 // verdictLine 生成终态判定行：成功展示结果摘要，失败展示错误与失败分类。
 func (console RunConsole) verdictLine() string {
 	if console.runErr != nil {
@@ -485,6 +610,7 @@ func (console RunConsole) View() string {
 		}
 		sections = append(sections, "", console.statusLine())
 	case consoleApproval:
+		sections = append(sections, strings.Join(console.approvalDetail, "\n"))
 		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝"))
 	case consoleDone:
 		sections = append(sections, "")

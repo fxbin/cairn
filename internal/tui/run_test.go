@@ -182,3 +182,35 @@ func TestQueueInputSurvivesRunBoundary(t *testing.T) {
 		t.Fatalf("预填后队列应弹出，得到 %v", console.queue)
 	}
 }
+
+// TestApprovalProposalPreview 锁定审批参数预览：从事件尾部提取最近工具提
+// 议，apply_patch 展示模式/路径/内容行，exec 展示 argv，内容截断带总数。
+func TestApprovalProposalPreview(t *testing.T) {
+	events := []domain.Event{
+		{Type: domain.EventRunCreated},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"a.go"}}`)},
+		{Type: domain.EventModelResponseFinished},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"main.go","mode":"update","expected_sha256":"abcdef1234567890","content":"line1\nline2\nline3"}}`)},
+	}
+	lines := approvalProposalPreview(events)
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"apply_patch update", "main.go", "line1", "line3"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("apply_patch 预览应包含 %q:\n%s", want, joined)
+		}
+	}
+
+	long := strings.Repeat("row\n", 20)
+	events[len(events)-1].Payload = json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"x.go","mode":"create","expected_sha256":"s","content":"` + strings.ReplaceAll(long, "\n", `\n`) + `"}}`)
+	lines = approvalProposalPreview(events)
+	joined = strings.Join(lines, "\n")
+	if !strings.Contains(joined, "共 21 行") {
+		t.Fatalf("内容预览应标注总行数:\n%s", joined)
+	}
+
+	events[len(events)-1].Payload = json.RawMessage(`{"tool_name":"exec_command","arguments":{"argv":["go","test","./..."]}}`)
+	lines = approvalProposalPreview(events)
+	if !strings.Contains(strings.Join(lines, "\n"), "go test ./...") {
+		t.Fatalf("exec 预览应展示 argv:\n%s", strings.Join(lines, "\n"))
+	}
+}
