@@ -44,7 +44,7 @@ type verificationProposalPayload struct {
 // runVerification 创建并执行冻结验证计划，任何失败都会反馈给后续模型轮次。
 func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
 	if projection.LastMutationSeq != 0 && len(loop.Verification) == 0 {
-		return errors.New("workspace changed but no verification commands are configured")
+		return loop.finishUnverifiedRun(ctx, projection, input, turnID)
 	}
 	verificationID := domain.NewID("verify")
 	plan, planRef, err := loop.createVerificationPlan(verificationID, projection.LastMutationSeq)
@@ -68,6 +68,32 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 		return loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: true})})
 	}
 	return loop.runVerificationCommands(ctx, projection, input, turnID, verificationID, planRef, 0)
+}
+
+// finishUnverifiedRun 处理"有工作区变更但未配置验证命令"的完成（ADR-0017）：
+// 完成事实与可信等级分离——如实发出零命令验证的 started 与 finished
+// {OK:false}（变更未经验证），随后按既有路径落 run_completed。完成可信
+// 判定公式将自动把该完成归为不可信，证据等级不弱化。
+func (loop *Loop) finishUnverifiedRun(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
+	verificationID := domain.NewID("verify")
+	plan, planRef, err := loop.createVerificationPlan(verificationID, projection.LastMutationSeq)
+	if err != nil {
+		return err
+	}
+	observation, err := loop.verificationObservation()
+	if err != nil {
+		return fmt.Errorf("observe workspace before verification plan: %w", err)
+	}
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: mustJSON(struct {
+		VerificationID       string        `json:"verification_id"`
+		MutationSeq          uint64        `json:"last_mutation_seq"`
+		PlanRef              *artifact.Ref `json:"plan_ref,omitempty"`
+		CommandsFingerprint  string        `json:"commands_fingerprint"`
+		WorkspaceObservation string        `json:"workspace_observation"`
+	}{VerificationID: verificationID, MutationSeq: projection.LastMutationSeq, PlanRef: planRef, CommandsFingerprint: plan.CommandsFingerprint, WorkspaceObservation: observation})}); err != nil {
+		return err
+	}
+	return loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: false})})
 }
 
 // createVerificationPlan 冻结验证命令及配置指纹，并将计划作为脱敏制品保存。

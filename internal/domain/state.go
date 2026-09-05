@@ -554,8 +554,11 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.State = RunCancelling
 	case EventRunCompleted:
-		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil || !projection.VerificationSucceeded || projection.LastVerificationSeq == 0 || (projection.LastMutationSeq != 0 && projection.LastVerificationSeq <= projection.LastMutationSeq) {
-			return fmt.Errorf("run_completed without a closed successful verification")
+		// ADR-0017：完成的结构前置是"验证已收束"——验证事件存在且覆盖最后
+		// 变更；验证是否成功不影响完成合法性，完成可信等级由
+		// contract.CompletionTrusted 依据 VerificationSucceeded 分离判定。
+		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil || projection.LastVerificationSeq == 0 || (projection.LastMutationSeq != 0 && projection.LastVerificationSeq <= projection.LastMutationSeq) {
+			return fmt.Errorf("run_completed without a closed verification")
 		}
 		projection.State = RunCompleted
 	case EventRunFailed:
