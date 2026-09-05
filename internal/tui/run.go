@@ -269,6 +269,14 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			console.cancel()
 			return console, tea.Quit
+		case "tab":
+			current := strings.TrimSpace(console.taskField.Value())
+			if strings.HasPrefix(current, "/") {
+				if completed := completeCommand(current); completed != "" {
+					console.taskField.SetValue(completed)
+				}
+			}
+			return console, nil
 		case "enter":
 			task := strings.TrimSpace(console.taskField.Value())
 			if task == "" {
@@ -770,7 +778,14 @@ func (console RunConsole) View() string {
 		if len(console.lines) == 0 {
 			sections = append(sections, console.welcomeBlock())
 		}
-		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Ctrl+C 退出"))
+		if current := strings.TrimSpace(console.taskField.Value()); strings.HasPrefix(current, "/") {
+			if suggestions := commandSuggestions(current); len(suggestions) > 0 {
+				sections = append(sections, "", strings.Join(suggestions, "\n"))
+			} else {
+				sections = append(sections, "", warnStyle.Render("没有匹配的命令（/help 查看全部）"))
+			}
+		}
+		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 执行/提交 · Tab 补全命令 · Ctrl+J 换行 · Ctrl+O 事件 · Ctrl+C 退出"))
 	case consoleRunning:
 		if console.queuing {
 			sections = append(sections, "", console.queueField.View(), dimStyle.Render("Enter 入队（运行结束后预填）· Ctrl+J 换行"))
@@ -840,6 +855,71 @@ func hostOf(baseURL string) string {
 		return baseURL[:40] + "…"
 	}
 	return baseURL
+}
+
+// consoleCommands 是主界面的命令清单：候选提示、Tab 补全与分发校验共用
+// 本表，新增命令必须在此登记。
+var consoleCommands = []struct {
+	name        string
+	description string
+}{
+	{"/help", "命令与按键清单"},
+	{"/model", "模型配置向导（提交后热生效）"},
+	{"/new", "新任务清屏（会话累计保留）"},
+	{"/status", "模型、端点与预算"},
+	{"/cost", "本任务与会话累计 token"},
+	{"/quit", "退出"},
+}
+
+// commandSuggestions 按输入前缀匹配命令清单，返回展示行；空前缀返回全部。
+func commandSuggestions(text string) []string {
+	var lines []string
+	for _, command := range consoleCommands {
+		if text == "" || strings.HasPrefix(command.name, text) {
+			lines = append(lines, itemStyle.Render(command.name)+dimStyle.Render("  "+command.description))
+		}
+	}
+	return lines
+}
+
+// completeCommand 返回前缀匹配的补全结果：唯一匹配补全到完整命令，多
+// 匹配补全到公共前缀（比输入长时），零匹配返回空串——与 readline 的
+// Tab 行为一致。
+func completeCommand(text string) string {
+	if text == "" {
+		return ""
+	}
+	common := ""
+	count := 0
+	for _, command := range consoleCommands {
+		if !strings.HasPrefix(command.name, text) {
+			continue
+		}
+		count++
+		if count == 1 {
+			common = command.name
+		} else {
+			common = commonPrefix(common, command.name)
+		}
+	}
+	if count == 0 || len(common) <= len(text) {
+		return ""
+	}
+	return common
+}
+
+// commonPrefix 返回两串的最长公共前缀。
+func commonPrefix(left, right string) string {
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	for index := 0; index < limit; index++ {
+		if left[index] != right[index] {
+			return left[:index]
+		}
+	}
+	return left[:limit]
 }
 
 // runCommand 处理输入态的斜杠命令：纯界面层操作（帮助、清屏、状态、成

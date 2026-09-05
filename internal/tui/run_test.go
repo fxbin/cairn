@@ -366,3 +366,33 @@ func TestModelCommandStartsWizardInit(t *testing.T) {
 		_ = cmd
 	}
 }
+
+// TestCommandSuggestionsAndCompletion 锁定命令候选与补全：斜杠前缀过滤候
+// 选、唯一前缀补全完整命令、多匹配补全公共前缀、零匹配为空。
+func TestCommandSuggestionsAndCompletion(t *testing.T) {
+	if got := commandSuggestions("/mo"); len(got) != 1 || !strings.Contains(got[0], "/model") {
+		t.Fatalf("/mo 应唯一命中 /model，得到 %v", got)
+	}
+	if got := commandSuggestions("/zzz"); len(got) != 0 {
+		t.Fatalf("零匹配应为空，得到 %v", got)
+	}
+	if got := completeCommand("/s"); got != "/status" {
+		t.Fatalf("/s 应补全到 /status，得到 %q", got)
+	}
+	if got := completeCommand("/c"); got != "/cost" {
+		t.Fatalf("/c 应补全到 /cost，得到 %q", got)
+	}
+	if got := completeCommand("/"); got != "" {
+		t.Fatalf("/ 多匹配无更长公共前缀应不动，得到 %q", got)
+	}
+	if got := completeCommand(""); got != "" {
+		t.Fatal("空输入不应补全")
+	}
+	// 清单与分发一致性：每个登记命令都必须被分发器接受
+	for _, command := range consoleCommands {
+		console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+		if handled, _ := console.runCommand(command.name); !handled {
+			t.Fatalf("清单命令 %s 未被分发器接受（清单与 switch 漂移）", command.name)
+		}
+	}
+}
