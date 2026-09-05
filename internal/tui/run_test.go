@@ -396,3 +396,18 @@ func TestCommandSuggestionsAndCompletion(t *testing.T) {
 		}
 	}
 }
+
+// TestReceiveResultLoadsApprovalDetail 锁定审批集成：进入审批模式必须加载
+// 参数预览（此前曾在重构中丢失而纯函数测试无法发现）。
+func TestReceiveResultLoadsApprovalDetail(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Defaults()})
+	console.mode = consoleRunning
+	model, _ := console.receiveResult(runFinishedMsg{err: &agent.WaitingApprovalError{RunID: "run-missing", Fingerprint: "f", Summary: "s"}})
+	console = model.(RunConsole)
+	if console.mode != consoleApproval {
+		t.Fatal("应进入审批模式")
+	}
+	if len(console.approvalDetail) == 0 {
+		t.Fatal("审批参数预览必须加载（不可用时也应有标注行）")
+	}
+}

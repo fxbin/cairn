@@ -366,6 +366,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	if errors.As(finished.err, &waiting) {
 		console.mode = consoleApproval
 		console.waiting = waiting
+		console.approvalDetail = console.loadApprovalDetail(waiting)
 		console.appendLine(warnStyle.Render("⏸ 等待审批: " + waiting.Summary))
 		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝"))
 		return console, waitForEvent(console.events)
