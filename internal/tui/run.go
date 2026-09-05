@@ -212,6 +212,14 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.exitWizard()
 		return console, nil
 	}
+	if console.mode == consoleModelWizard {
+		if message, isKey := msg.(tea.KeyMsg); isKey {
+			return console.relayWizardKey(message)
+		}
+		if _, isConsoleEvent := msg.(consoleEventMsg); !isConsoleEvent {
+			return console.relayWizardMsg(msg)
+		}
+	}
 	switch typed := msg.(type) {
 	case consoleEventMsg:
 		console.applyEvent(typed.event)
@@ -387,11 +395,17 @@ func (console *RunConsole) resetRun() {
 // relayWizardKey 把按键转发给嵌入的配置向导并桥接其命令：非退出命令（如
 // 光标闪烁）透传给程序驱动，退出命令翻译为向导关闭消息，由主界面消费。
 func (console RunConsole) relayWizardKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	return console.relayWizardMsg(message)
+}
+
+// relayWizardMsg 把任意消息（按键、spinner 节拍、输入框闪烁等）转发给嵌
+// 入向导并桥接其命令；consoleEventMsg 属于主界面运行流不进入向导。
+func (console RunConsole) relayWizardMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if console.wizard == nil {
 		console.mode = consoleInput
 		return console, nil
 	}
-	model, cmd := console.wizard.Update(message)
+	model, cmd := console.wizard.Update(msg)
 	wizard, ok := model.(ConfigWizard)
 	if !ok {
 		console.mode = consoleInput
@@ -860,6 +874,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.wizard = &wizard
 		console.mode = consoleModelWizard
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
+		return true, wizard.Init()
 	case "/cost":
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))

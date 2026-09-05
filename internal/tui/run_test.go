@@ -350,3 +350,19 @@ func TestModelCommandEmbedsWizard(t *testing.T) {
 		t.Fatal("提交成功应触发热重载回调")
 	}
 }
+
+// TestModelCommandStartsWizardInit 锁定嵌入向导的启动命令：/model 必须把向
+// 导的 Init 命令（目录装载与指示启动）交给程序，否则目录永远停在装载中。
+func TestModelCommandStartsWizardInit(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/model")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleModelWizard || cmd == nil {
+		t.Fatal("/model 应返回向导的 Init 命令驱动目录装载")
+	}
+	if console.wizard.catalogLoading {
+		_ = cmd
+	}
+}
