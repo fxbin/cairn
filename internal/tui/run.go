@@ -397,7 +397,6 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.result = finished.result
 	console.runErr = finished.err
 	console.stopWait = true
-	close(console.events)
 	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
 		console.sessionPrev = finished.result.ID
 		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText()})
