@@ -165,12 +165,16 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
+	sessionID, priorContext, priorContextRef, err := service.resolveSessionContext(ctx, boot.Journal, boot.Artifacts, options)
+	if err != nil {
+		return RunResult{}, err
+	}
 	runID := domain.NewRunID()
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
 		domain.RunCreatedPayload
 		ConfigRef       artifact.Ref `json:"config_ref"`
 		PriorContextRef artifact.Ref `json:"prior_context_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr(), SessionID: options.SessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(options.PriorContextRef)})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr(), SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(priorContextRef)})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -191,11 +195,11 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer cancelRun()
-	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: options.SessionID, PrevRunID: options.PrevRunID, PriorContext: options.PriorContext, PriorContextRef: options.PriorContextRef})
+	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
-		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: options.SessionID, PrevRunID: options.PrevRunID, PriorContext: options.PriorContext, PriorContextRef: options.PriorContextRef})
+		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
 	}
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }
