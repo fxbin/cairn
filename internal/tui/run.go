@@ -82,6 +82,13 @@ type runFinishedMsg struct {
 	err    error
 }
 
+// sessionRunEntry 是会话链内的单个运行记录：运行标识与终态结论，供
+// /sessions 展示当前链。
+type sessionRunEntry struct {
+	id      domain.RunID
+	verdict string
+}
+
 // RunConsole 是单任务运行闭环的 bubbletea 模型。
 type RunConsole struct {
 	ctx      context.Context
@@ -107,11 +114,16 @@ type RunConsole struct {
 
 	sessionPromptTokens int64
 	sessionOutputTokens int64
-	wizard              *ConfigWizard
-	waiting             *agent.WaitingApprovalError
-	approvalDetail      []string
-	result              *app.RunResult
-	runErr              error
+	// 会话链状态（ADR-0018）：首个任务生成会话标识开链，后续任务自动以
+	// 前一运行为前置续链；/new 断链后回到无前情状态。
+	sessionID      string
+	sessionPrev    domain.RunID
+	sessionRuns    []sessionRunEntry
+	wizard         *ConfigWizard
+	waiting        *agent.WaitingApprovalError
+	approvalDetail []string
+	result         *app.RunResult
+	runErr         error
 }
 
 // NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
@@ -172,6 +184,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := service.Run(runCtx, app.RunOptions{
 			Task: task, Workspace: console.input.Workspace, Config: console.input.Config, OnEvent: onEvent,
+			SessionID: console.sessionID, PrevRunID: console.sessionPrev,
 		})
 		return runFinishedMsg{result: &result, err: err}
 	}
@@ -287,7 +300,16 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return console, cmd
 			}
 			console.mode = consoleRunning
+			carryingPrior := false
+			if console.sessionID == "" {
+				console.sessionID = domain.NewID("session")
+			} else if console.sessionPrev != "" {
+				carryingPrior = true
+			}
 			console.resetRun()
+			if carryingPrior {
+				console.appendLine(dimStyle.Render("已携带上一任务前情（/new 可断开会话）"))
+			}
 			console.appendLine(okStyle.Render("▶ 任务已提交，运行中（Ctrl+C 取消）"))
 			return console, startRunCmd(console, task)
 		default:
@@ -376,6 +398,10 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.runErr = finished.err
 	console.stopWait = true
 	close(console.events)
+	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
+		console.sessionPrev = finished.result.ID
+		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText()})
+	}
 	console.appendLine(console.verdictLine())
 	if console.result != nil && console.result.ID != "" {
 		console.appendLine(dimStyle.Render("run " + string(console.result.ID) + "（cairn inspect 查证）"))
@@ -623,6 +649,17 @@ func shortDigest(digest string) string {
 	return string(runes[:digestPrefix]) + "…"
 }
 
+// verdictText 返回不带样式的终态结论短语，供链记录使用。
+func (console RunConsole) verdictText() string {
+	if console.runErr != nil {
+		return "失败"
+	}
+	if console.result == nil || console.result.Result == nil {
+		return "结束（投影缺失）"
+	}
+	return runStateText(console.result.Result.State)
+}
+
 // verdictLine 生成终态判定行：成功展示结果摘要，失败展示错误与失败分类。
 func (console RunConsole) verdictLine() string {
 	if console.runErr != nil {
@@ -868,6 +905,7 @@ var consoleCommands = []struct {
 	{"/model", "模型配置向导（提交后热生效）"},
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
+	{"/sessions", "当前会话链"},
 	{"/cost", "本任务与会话累计 token"},
 	{"/quit", "退出"},
 }
@@ -942,6 +980,13 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.transcript = nil
 		console.turn, console.toolCalls = 0, 0
 		console.promptTokens, console.outputTokens = 0, 0
+		if console.sessionID != "" {
+			console.sessionID = ""
+			console.sessionPrev = ""
+			console.sessionRuns = nil
+			console.appendLine(dimStyle.Render("已断开会话链并清屏（新任务不带前情；完整历史在事件日志）"))
+			return true, nil
+		}
 		console.appendLine(dimStyle.Render("已清屏（会话累计保留，完整历史在事件日志）"))
 	case "/status":
 		turns := "未配置"
@@ -956,6 +1001,15 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.mode = consoleModelWizard
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
 		return true, wizard.Init()
+	case "/sessions":
+		if console.sessionID == "" {
+			console.appendLine(dimStyle.Render("当前无活跃会话（提交首个任务自动开链）"))
+			return true, nil
+		}
+		console.appendLine(itemStyle.Render(fmt.Sprintf("会话 %s · 已链 %d 个任务", console.sessionID, len(console.sessionRuns))))
+		for index, entry := range console.sessionRuns {
+			console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s", index+1, entry.id, entry.verdict)))
+		}
 	case "/cost":
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))

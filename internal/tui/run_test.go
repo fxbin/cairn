@@ -376,8 +376,11 @@ func TestCommandSuggestionsAndCompletion(t *testing.T) {
 	if got := commandSuggestions("/zzz"); len(got) != 0 {
 		t.Fatalf("零匹配应为空，得到 %v", got)
 	}
-	if got := completeCommand("/s"); got != "/status" {
-		t.Fatalf("/s 应补全到 /status，得到 %q", got)
+	if got := completeCommand("/st"); got != "/status" {
+		t.Fatalf("/st 应补全到 /status，得到 %q", got)
+	}
+	if got := completeCommand("/s"); got != "" {
+		t.Fatalf("/s 多匹配无更长公共前缀应不动，得到 %q", got)
 	}
 	if got := completeCommand("/c"); got != "/cost" {
 		t.Fatalf("/c 应补全到 /cost，得到 %q", got)
@@ -410,4 +413,56 @@ func TestReceiveResultLoadsApprovalDetail(t *testing.T) {
 	if len(console.approvalDetail) == 0 {
 		t.Fatal("审批参数预览必须加载（不可用时也应有标注行）")
 	}
+}
+
+// TestSessionChainCarriesPriorRun 锁定 TUI 会话模式：首个任务开链、终态记
+// 链尾、后续任务携带会话与前运行标识、/new 断链。
+func TestSessionChainCarriesPriorRun(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("第一个任务")
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.sessionID == "" {
+		t.Fatal("首个任务应生成会话标识开链")
+	}
+
+	console.mode = consoleRunning
+	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-1", Response: "ok", Result: nil}})
+	console = model.(RunConsole)
+	if console.sessionPrev != "run-1" || len(console.sessionRuns) != 1 {
+		t.Fatalf("终态应记录链尾，得到 prev=%q runs=%v", console.sessionPrev, console.sessionRuns)
+	}
+
+	console.mode = consoleInput
+	console.taskField.SetValue("第二个任务")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleRunning || cmd == nil {
+		t.Fatal("第二任务应正常发起")
+	}
+	if console.sessionPrev != "run-1" {
+		t.Fatal("第二任务应携带前一运行标识")
+	}
+	if len(console.lines) == 0 || !containsLine(console.lines, "前情") {
+		t.Fatalf("续链任务应提示携带前情: %v", console.lines)
+	}
+
+	console.mode = consoleInput
+	console.taskField.SetValue("/new")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.sessionID != "" || console.sessionPrev != "" || console.sessionRuns != nil {
+		t.Fatal("/new 应断开会话链")
+	}
+}
+
+// containsLine 判断展示行集合是否含关键词。
+func containsLine(lines []string, keyword string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, keyword) {
+			return true
+		}
+	}
+	return false
 }
