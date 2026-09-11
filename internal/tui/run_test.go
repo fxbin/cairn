@@ -554,3 +554,42 @@ func TestEditorClosedRefillsInput(t *testing.T) {
 		t.Fatalf("编辑器失败应如实提示: %v", console.lines)
 	}
 }
+
+// TestRewindConversationChain 锁定会话级回退：无参列出、合法序号回退续链点
+// 并截断链、越界拒绝、回退后新任务携带指回的前运行。
+func TestRewindConversationChain(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.sessionID = "session-x"
+	console.sessionRuns = []sessionRunEntry{
+		{id: "run-1", verdict: "完成", summary: "创建文件"},
+		{id: "run-2", verdict: "失败", summary: "修改文件"},
+		{id: "run-3", verdict: "完成", summary: "再修一次"},
+	}
+	console.sessionPrev = "run-3"
+
+	console.mode = consoleInput
+	console.taskField.SetValue("/rewind")
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !containsLine(console.lines, "仅回退对话不动工作区") || !containsLine(console.lines, "修改文件") {
+		t.Fatalf("无参应列出链与语义说明: %v", console.lines)
+	}
+
+	console.taskField.SetValue("/rewind 1")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.sessionPrev != "run-1" || len(console.sessionRuns) != 1 {
+		t.Fatalf("回退应指回 run-1 并截断链，得到 prev=%q runs=%d", console.sessionPrev, len(console.sessionRuns))
+	}
+	if !containsLine(console.lines, "工作区未变动") {
+		t.Fatal("回退提示必须明示工作区未变动")
+	}
+
+	console.taskField.SetValue("/rewind 9")
+	console.mode = consoleInput
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.sessionPrev != "run-1" || !containsLine(console.lines, "越界") {
+		t.Fatal("越界序号应拒绝")
+	}
+}

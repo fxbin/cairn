@@ -89,6 +89,7 @@ type runFinishedMsg struct {
 type sessionRunEntry struct {
 	id      domain.RunID
 	verdict string
+	summary string
 }
 
 // RunConsole 是单任务运行闭环的 bubbletea 模型。
@@ -121,6 +122,7 @@ type RunConsole struct {
 	sessionID      string
 	sessionPrev    domain.RunID
 	sessionRuns    []sessionRunEntry
+	lastTask       string
 	wizard         *ConfigWizard
 	waiting        *agent.WaitingApprovalError
 	approvalDetail []string
@@ -322,6 +324,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				task = expanded
 			}
 			console.mode = consoleRunning
+			console.lastTask = task
 			carryingPrior := false
 			if console.sessionID == "" {
 				console.sessionID = domain.NewID("session")
@@ -421,7 +424,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.stopWait = true
 	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
 		console.sessionPrev = finished.result.ID
-		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText()})
+		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText(), summary: firstLineClip(console.lastTask, 48)})
 	}
 	console.appendLine(console.verdictLine())
 	if console.result != nil && console.result.ID != "" {
@@ -927,6 +930,7 @@ var consoleCommands = []struct {
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链"},
+	{"/rewind", "回退会话对话链"},
 	{"/cost", "本任务与会话累计 token"},
 	{"/theme", "切换主题"},
 	{"/editor", "外部编辑器编辑当前输入"},
@@ -994,7 +998,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /rewind 回退对话 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1035,6 +1039,29 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		}
 	case "/editor":
 		return true, console.openEditorCmd()
+	case "/rewind":
+		argument := strings.TrimSpace(remainder)
+		if argument == "" {
+			if console.sessionID == "" || len(console.sessionRuns) == 0 {
+				console.appendLine(warnStyle.Render("当前无可回退的会话链"))
+				return true, nil
+			}
+			console.appendLine(itemStyle.Render("会话链（/rewind <序号> 从该任务之后重来，仅回退对话不动工作区）:"))
+			for index, entry := range console.sessionRuns {
+				console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s · %s", index+1, entry.id, entry.verdict, entry.summary)))
+			}
+			return true, nil
+		}
+		index, convErr := strconv.Atoi(argument)
+		if convErr != nil || index < 1 || index > len(console.sessionRuns) {
+			console.appendLine(warnStyle.Render("序号越界（/rewind 列出可用节点）"))
+			return true, nil
+		}
+		entry := console.sessionRuns[index-1]
+		console.sessionPrev = entry.id
+		console.sessionRuns = console.sessionRuns[:index]
+		console.appendLine(okStyle.Render(fmt.Sprintf("已回退对话到第 %d 个任务之后（%s）；下一任务从该点前情继续，工作区未变动", index, entry.summary)))
+		return true, nil
 	case "/theme":
 		console.appendLine(dimStyle.Render(cycleTheme() + "（会话内生效）"))
 		return true, nil
@@ -1117,6 +1144,16 @@ func (console RunConsole) openEditorCmd() tea.Cmd {
 		}
 		return editorClosedMsg{content: string(content), err: err}
 	})
+}
+
+// firstLineClip 取文本首行并按字符截断，作为链节点的任务摘要。
+func firstLineClip(text string, limit int) string {
+	first := strings.SplitN(strings.TrimSpace(text), "\n", 2)[0]
+	runes := []rune(first)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return first
 }
 
 // statusWorkspace 返回展示用工作区标识；空工作区显示当前目录语义。
