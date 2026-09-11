@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // consoleMode 是运行主界面的模式全集：任务输入、运行中、等待审批与终态。
@@ -221,6 +223,17 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if message, ok := msg.(tea.KeyMsg); ok {
 		return console.updateKey(message)
 	}
+	if edited, isEditor := msg.(editorClosedMsg); isEditor {
+		if console.mode == consoleInput {
+			if edited.err != nil {
+				console.appendLine(warnStyle.Render("外部编辑器执行失败: " + edited.err.Error()))
+			} else {
+				console.taskField.SetValue(edited.content)
+				console.appendLine(dimStyle.Render("已从外部编辑器回填任务输入"))
+			}
+		}
+		return console, nil
+	}
 	if _, closed := msg.(wizardClosedMsg); closed {
 		console.exitWizard()
 		return console, nil
@@ -298,6 +311,15 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if handled, cmd := console.runCommand(task); handled {
 				console.taskField.Reset()
 				return console, cmd
+			}
+			expanded, expandErr := expandTaskReferences(task, console.referenceWorkspace())
+			if expandErr != nil {
+				console.appendLine(errStyle.Render("✗ " + expandErr.Error()))
+				return console, nil
+			}
+			if expanded != task {
+				console.appendLine(dimStyle.Render(fmt.Sprintf("已展开 %d 处文件引用进任务文本", len(referencePattern.FindAllStringSubmatch(task, -1)))))
+				task = expanded
 			}
 			console.mode = consoleRunning
 			carryingPrior := false
@@ -906,6 +928,8 @@ var consoleCommands = []struct {
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链"},
 	{"/cost", "本任务与会话累计 token"},
+	{"/theme", "切换主题"},
+	{"/editor", "外部编辑器编辑当前输入"},
 	{"/quit", "退出"},
 }
 
@@ -970,7 +994,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 新任务清屏 · /status 配置与预算 · /cost 会话累计 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1009,6 +1033,11 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		for index, entry := range console.sessionRuns {
 			console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s", index+1, entry.id, entry.verdict)))
 		}
+	case "/editor":
+		return true, console.openEditorCmd()
+	case "/theme":
+		console.appendLine(dimStyle.Render(cycleTheme() + "（会话内生效）"))
+		return true, nil
 	case "/cost":
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))
@@ -1019,6 +1048,16 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(warnStyle.Render("未知命令 " + name + "（/help 查看清单）" + remainder))
 	}
 	return true, nil
+}
+
+// referenceWorkspace 构造 @ 引用解析用的工作区视图（按输入工作区或当前目
+// 录），构造失败返回零值工作区并由解析层对首个引用失败关闭。
+func (console RunConsole) referenceWorkspace() tools.Workspace {
+	workspace, err := workspaceForRoot(workspaceRootOrDefault(console.input.Workspace))
+	if err != nil {
+		return tools.Workspace{}
+	}
+	return workspace
 }
 
 // nextSetupInput 构造向导输入：写入目标跟随当前实际生效的配置位置（用
@@ -1037,6 +1076,47 @@ func (console RunConsole) nextSetupInput() app.SetupInput {
 		}
 	}
 	return input
+}
+
+// editorClosedMsg 承载外部编辑器收束后的输入内容与执行错误。
+type editorClosedMsg struct {
+	content string
+	err     error
+}
+
+// openEditorCmd 把当前输入送外部编辑器（VISUAL 优先于 EDITOR）：临时文件
+// 写入、挂起界面执行编辑、恢复后读回内容并清理临时文件。未配置编辑器时
+// 就地提示。
+func (console RunConsole) openEditorCmd() tea.Cmd {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		console.appendLine(warnStyle.Render("未配置 VISUAL/EDITOR 环境变量，无法打开外部编辑器"))
+		return nil
+	}
+	temporary, err := os.CreateTemp("", "cairn-task-*.md")
+	if err != nil {
+		console.appendLine(warnStyle.Render("创建编辑临时文件失败: " + err.Error()))
+		return nil
+	}
+	path := temporary.Name()
+	if _, err := temporary.WriteString(console.taskField.Value()); err != nil {
+		temporary.Close()
+		os.Remove(path)
+		console.appendLine(warnStyle.Render("写入编辑临时文件失败: " + err.Error()))
+		return nil
+	}
+	temporary.Close()
+	return tea.ExecProcess(exec.Command(editor, path), func(err error) tea.Msg {
+		content, readErr := os.ReadFile(path)
+		os.Remove(path)
+		if readErr != nil {
+			return editorClosedMsg{err: readErr}
+		}
+		return editorClosedMsg{content: string(content), err: err}
+	})
 }
 
 // statusWorkspace 返回展示用工作区标识；空工作区显示当前目录语义。

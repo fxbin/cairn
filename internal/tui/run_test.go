@@ -6,9 +6,12 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -465,4 +468,89 @@ func containsLine(lines []string, keyword string) bool {
 		}
 	}
 	return false
+}
+
+// TestExpandTaskReferences 锁定 @ 引用展开：合法引用附加内容块、去重、越
+// 界与缺失失败关闭、无引用原文返回、超长截断标注。
+func TestExpandTaskReferences(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello note"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), bytes.Repeat([]byte("x"), referencePreviewLimit+100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "out"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := workspaceForRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expanded, err := expandTaskReferences("看看 @note.txt 的内容", workspace)
+	if err != nil || !strings.Contains(expanded, "hello note") || !strings.Contains(expanded, "看看") {
+		t.Fatalf("合法引用应展开: %q err=%v", expanded, err)
+	}
+	if expanded, err := expandTaskReferences("重复 @note.txt 与 @note.txt", workspace); err != nil || strings.Count(expanded, "[引用文件") != 1 {
+		t.Fatalf("重复引用应去重: %q err=%v", expanded, err)
+	}
+	if expanded, err := expandTaskReferences("邮箱 a@b.com 不算引用", workspace); err != nil || expanded != "邮箱 a@b.com 不算引用" {
+		t.Fatalf("词内 @ 不应被识别为引用: %q err=%v", expanded, err)
+	}
+	if _, err := expandTaskReferences("越界 @../etc/passwd", workspace); err == nil {
+		t.Fatal("越界引用应失败关闭")
+	}
+	if _, err := expandTaskReferences("缺失 @nope.txt", workspace); err == nil {
+		t.Fatal("缺失引用应失败关闭")
+	}
+	expanded, err = expandTaskReferences("大文件 @big.txt", workspace)
+	if err != nil || !strings.Contains(expanded, "已截断") || !strings.Contains(expanded, "read_file") {
+		t.Fatalf("超长应截断并提示: err=%v", err)
+	}
+	if expanded, err := expandTaskReferences("普通任务", workspace); err != nil || expanded != "普通任务" {
+		t.Fatal("无引用应原文返回")
+	}
+}
+
+// TestCycleThemeRotatesAndFailsClosed 锁定主题切换：循环推进全部内置主题、
+// 越界回落默认、当前标签一致。
+func TestCycleThemeRotatesAndFailsClosed(t *testing.T) {
+	applyTheme(0)
+	seen := map[string]bool{}
+	for index := 0; index < len(builtinThemes); index++ {
+		message := cycleTheme()
+		seen[currentThemeLabel()] = true
+		if message == "" {
+			t.Fatal("切换应返回提示")
+		}
+	}
+	if len(seen) != len(builtinThemes) {
+		t.Fatalf("一轮切换应遍历全部主题，见到 %v", seen)
+	}
+	applyTheme(len(builtinThemes) + 5)
+	if activeThemeIndex != 0 {
+		t.Fatalf("越界序号应回落默认主题，得到 %d", activeThemeIndex)
+	}
+}
+
+// TestEditorClosedRefillsInput 锁定外部编辑器回填：输入态收消息回填，错误
+// 如实提示。
+func TestEditorClosedRefillsInput(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	model, _ := console.Update(editorClosedMsg{content: "编辑后的任务"})
+	console = model.(RunConsole)
+	if console.taskField.Value() != "编辑后的任务" {
+		t.Fatalf("应回填输入框，得到 %q", console.taskField.Value())
+	}
+	console.lines = nil
+	model, _ = console.Update(editorClosedMsg{err: errors.New("exit 1")})
+	console = model.(RunConsole)
+	if len(console.lines) == 0 || !containsLine(console.lines, "外部编辑器") {
+		t.Fatalf("编辑器失败应如实提示: %v", console.lines)
+	}
 }
