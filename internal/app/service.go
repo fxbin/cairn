@@ -48,6 +48,14 @@ type Service struct {
 	NewProvider func(config.Config) (ports.Provider, error)
 }
 
+// derefRef 解引用可选制品引用；nil 返回零值（配合 omitempty 不写入事件）。
+func derefRef(ref *artifact.Ref) artifact.Ref {
+	if ref == nil {
+		return artifact.Ref{}
+	}
+	return *ref
+}
+
 // RunOptions 描述启动一次全新 Agent 运行所需的输入与依赖。
 type RunOptions struct {
 	Task      string
@@ -55,6 +63,13 @@ type RunOptions struct {
 	StateDir  string
 	Config    config.Config
 	OnEvent   EventSink
+	// 会话链关系（ADR-0018）：显式携带时写入创建事件并注入前情；空值时
+	// 行为与无会话场景完全一致。前情文本与制品引用由调用方成对提供，或
+	// 由应用层从上一 run 生成（前情卡服务）。
+	SessionID       string
+	PrevRunID       domain.RunID
+	PriorContext    string
+	PriorContextRef *artifact.Ref
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -153,8 +168,9 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	runID := domain.NewRunID()
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
 		domain.RunCreatedPayload
-		ConfigRef artifact.Ref `json:"config_ref"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr()}, ConfigRef: configRef})})
+		ConfigRef       artifact.Ref `json:"config_ref"`
+		PriorContextRef artifact.Ref `json:"prior_context_ref,omitempty"`
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr(), SessionID: options.SessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(options.PriorContextRef)})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -175,11 +191,11 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer cancelRun()
-	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
+	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: options.SessionID, PrevRunID: options.PrevRunID, PriorContext: options.PriorContext, PriorContextRef: options.PriorContextRef})
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
-		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash})
+		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: options.SessionID, PrevRunID: options.PrevRunID, PriorContext: options.PriorContext, PriorContextRef: options.PriorContextRef})
 	}
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }

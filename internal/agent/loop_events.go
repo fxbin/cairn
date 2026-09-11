@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -40,6 +42,8 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 // messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文。
 func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) []ports.Message {
 	task := fallbackTask
+	priorContext := loop.PriorContext
+	priorRef := loop.PriorContextRef
 	checkpoint, throughSeq := latestContextCheckpoint(events)
 	proposals := make(map[domain.OperationID]ports.ToolCall)
 	completedCalls := make(map[string]bool)
@@ -50,6 +54,17 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		var payload domain.RunCreatedPayload
 		if json.Unmarshal(event.Payload, &payload) == nil && payload.Task != "" {
 			task = payload.Task
+			// resume 回放时链关系与制品引用来自创建事件；输入侧显式携带
+			// 优先（新 run 场景），缺省时按事件回放，保持重放一致性。
+			if loop.PriorContext == "" && loop.PriorContextRef == nil && len(payload.PriorContextRef) > 0 {
+				var ref artifact.Ref
+				if json.Unmarshal(payload.PriorContextRef, &ref) == nil {
+					priorRef = &ref
+					if loaded, err := loop.loadPriorContext(priorRef); err == nil {
+						priorContext = loaded
+					}
+				}
+			}
 		}
 	}
 	for _, event := range events {
@@ -75,6 +90,16 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		}
 	}
 	messages := loop.contextMessages(task, checkpoint)
+	if priorContext != "" {
+		// 前情块插在系统提示与任务原文之间：背景先于指令，任务语义不被
+		// 前情改写（与压缩检查点的注入层级平行）。
+		contextBlock := ports.Message{Role: "user", Content: sessionContextBlock(priorContext)}
+		if len(messages) > 1 {
+			messages = append([]ports.Message{messages[0], contextBlock}, messages[1:]...)
+		} else {
+			messages = append([]ports.Message{contextBlock}, messages...)
+		}
+	}
 	for _, event := range events {
 		if event.Seq <= throughSeq {
 			continue
@@ -125,6 +150,25 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 		}
 	}
 	return messages
+}
+
+// sessionContextBlock 把前情文本包装为标注来源的会话前情块；任务原文始
+// 终是独立的最新用户消息，前情只提供背景不改变任务语义。
+func sessionContextBlock(prior string) string {
+	return "以下本会话前情供背景参考，由上一任务的事件投影生成：\n" + prior
+}
+
+// loadPriorContext 从制品库读取前情卡文本；读取失败由调用方按缺省降级处
+// 理（不注入、不失败关闭——前情是增强而非合同必需）。
+func (loop *Loop) loadPriorContext(ref *artifact.Ref) (string, error) {
+	if loop.Artifacts == nil || ref == nil {
+		return "", errors.New("artifact store unavailable")
+	}
+	content, err := loop.Artifacts.Open(*ref)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
 }
 
 // malformedToolArgumentsFailureCount 从持久化模型失败中统计畸形工具参数次数，

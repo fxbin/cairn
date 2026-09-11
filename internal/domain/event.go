@@ -99,6 +99,7 @@ type EventDraft struct {
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
 		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "build": {}, "budget": {},
+		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {},
 	},
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},

@@ -29,6 +29,10 @@ func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval)
 
 // resume 执行恢复主流程：处理挂起审批、未完成模型尝试与悬挂读操作。
 func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
+	// 会话前情装配（ADR-0018）：恢复场景下消息组装按创建事件回放补齐，
+	// 输入显式携带仍优先——与 run 的装配语义一致。
+	loop.PriorContext = input.PriorContext
+	loop.PriorContextRef = input.PriorContextRef
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
 	}

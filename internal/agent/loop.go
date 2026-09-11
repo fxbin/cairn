@@ -44,6 +44,10 @@ type Loop struct {
 	Artifacts             *artifact.Store
 	OnEvent               EventSink
 	SystemPrompt          string
+	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
+	// 同时进入创建事件以支持 resume 回放。
+	PriorContext    string
+	PriorContextRef *artifact.Ref
 	// startedOperations 与 startedOperationsKnown 增量维护已启动操作计数，
 	// 供工具调用预算检查复用，避免每次工具调用都全量重载事件日志。
 	startedOperations      int
@@ -58,6 +62,12 @@ type RunInput struct {
 	ResumeInvocation  string
 	ResumeFromSeq     uint64
 	ResumeObservation string
+	// 会话链关系（ADR-0018）：调用方显式携带时写入创建事件并作为消息首位
+	// 注入前情；空值时运行行为与无会话场景完全一致。
+	SessionID       string
+	PrevRunID       domain.RunID
+	PriorContext    string
+	PriorContextRef *artifact.Ref
 }
 
 // Result 返回 Loop 完成或暂停后的运行标识与最终回复。
@@ -95,6 +105,10 @@ func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input Ru
 
 // run 执行模型轮次、工具与验证的主循环，直至终态或可恢复暂停。
 func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
+	// 会话前情装配（ADR-0018）：输入显式携带优先，供消息组装与创建事件
+	// 一致引用；resume 场景在 messagesFromEvents 中按事件回放补齐。
+	loop.PriorContext = input.PriorContext
+	loop.PriorContextRef = input.PriorContextRef
 	if loop.Journal == nil || loop.Provider == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
 	}

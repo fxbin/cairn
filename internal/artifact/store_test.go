@@ -206,3 +206,29 @@ func TestPutUsesStructuralRedactionForJSONArtifacts(t *testing.T) {
 		t.Fatalf("non-sensitive content was removed: %s", stored)
 	}
 }
+
+// TestOpenVerifiesContentHash 锁定制品读取完整性：正确内容可读回，篡改或
+// 缺失按引用失败关闭。
+func TestOpenVerifiesContentHash(t *testing.T) {
+	store, err := New(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put([]byte("prior-context-card"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := store.Open(ref)
+	if err != nil || string(content) != "prior-context-card" {
+		t.Fatalf("应读回制品内容: %q err=%v", content, err)
+	}
+	tampered := Ref{SHA256: ref.SHA256, Bytes: ref.Bytes, MediaType: ref.MediaType}
+	tampered.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	if _, err := store.Open(tampered); err == nil {
+		t.Fatal("摘要不符的引用应失败关闭")
+	}
+	missing := Ref{SHA256: "abcdef0000000000000000000000000000000000000000000000000000000000"}
+	if _, err := store.Open(missing); err == nil {
+		t.Fatal("缺失制品应返回错误")
+	}
+}

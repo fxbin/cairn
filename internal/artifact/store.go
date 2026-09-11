@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,29 @@ type Ref struct {
 	Bytes            int64  `json:"bytes"`
 	MediaType        string `json:"media_type"`
 	TruncatedPreview string `json:"truncated_preview"`
+}
+
+// Open 读取并校验一个已存在制品：内容 SHA-256 必须与引用一致，否则失败
+// 关闭——制品引用的完整性承诺对读取侧与写入侧同等生效。不存在的引用返
+// 回错误，由调用方决定降级语义。
+func (store *Store) Open(ref Ref) ([]byte, error) {
+	if ref.SHA256 == "" {
+		return nil, errors.New("artifact ref without digest")
+	}
+	hexDigest := strings.TrimPrefix(ref.SHA256, "sha256:")
+	if len(hexDigest) != sha256.Size*2 {
+		return nil, fmt.Errorf("artifact ref digest has unexpected length")
+	}
+	path := filepath.Join(store.Root, "sha256", hexDigest[:2], hexDigest)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(content)
+	if hex.EncodeToString(digest[:]) != hexDigest {
+		return nil, fmt.Errorf("artifact content hash mismatch at %s", path)
+	}
+	return content, nil
 }
 
 // Store 管理本地制品目录、预览上限和单个制品大小上限。

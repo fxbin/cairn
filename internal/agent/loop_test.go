@@ -2410,3 +2410,58 @@ func TestCallModelRejectsInconsistentUsage(t *testing.T) {
 		})
 	}
 }
+
+// TestMessagesFromEventsInjectsPriorContext 锁定会话前情注入（ADR-0018）：
+// 显式携带时前情块为消息首位、任务原文为独立最新用户消息；未携带时消息
+// 序列与无会话场景完全一致。
+func TestMessagesFromEventsInjectsPriorContext(t *testing.T) {
+	loop := &Loop{}
+	messages := loop.messagesFromEvents(nil, "修复这个错误")
+	if len(messages) != 2 || messages[0].Role != "system" || messages[1].Content != "修复这个错误" {
+		t.Fatalf("未携带前情时消息应为系统提示加任务原文: %+v", messages)
+	}
+
+	loop.PriorContext = "上一任务：创建 note.txt，验证未通过"
+	messages = loop.messagesFromEvents(nil, "再改一下")
+	if len(messages) != 3 {
+		t.Fatalf("携带前情应在系统提示与任务之间注入，得到 %d 条", len(messages))
+	}
+	if messages[0].Role != "system" {
+		t.Fatalf("系统提示应保持首位: %+v", messages[0])
+	}
+	if messages[1].Role != "user" || !strings.Contains(messages[1].Content, "会话前情") || !strings.Contains(messages[1].Content, "note.txt") {
+		t.Fatalf("次位应为会话前情块: %+v", messages[1])
+	}
+	if messages[2].Content != "再改一下" {
+		t.Fatalf("任务原文应保持独立最新消息: %+v", messages[2])
+	}
+}
+
+// TestMessagesFromEventsReplaysPriorContextFromArtifact 锁定 resume 回放：
+// 创建事件携带前情卡制品引用时从制品库回放注入，输入显式携带仍优先。
+func TestMessagesFromEventsReplaysPriorContextFromArtifact(t *testing.T) {
+	store, err := artifact.New(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put([]byte("上一任务：创建 note.txt"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refJSON, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []domain.Event{{Type: domain.EventRunCreated, Payload: mustJSON(domain.RunCreatedPayload{Task: "上一任务原文", PriorContextRef: refJSON})}}
+	loop := &Loop{Artifacts: store}
+	messages := loop.messagesFromEvents(events, "再改一下")
+	if len(messages) != 3 || messages[0].Role != "system" || !strings.Contains(messages[1].Content, "note.txt") || messages[2].Content != "上一任务原文" {
+		t.Fatalf("回放应从制品注入前情且任务按事件恢复: %+v", messages)
+	}
+
+	loop.PriorContext = "显式携带优先的前情"
+	messages = loop.messagesFromEvents(events, "再改一下")
+	if !strings.Contains(messages[1].Content, "显式携带优先") {
+		t.Fatalf("显式携带应优先于事件回放: %+v", messages[1])
+	}
+}

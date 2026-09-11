@@ -207,6 +207,12 @@ type RunCreatedPayload struct {
 	Workspace         string         `json:"workspace"`
 	ConfigFingerprint string         `json:"config_fingerprint,omitempty"`
 	Build             *BuildIdentity `json:"build,omitempty"`
+	// 会话链关系为可选字段（ADR-0018）：session 是 run 链的投影，旧事件
+	// 无字段合法，replay 不引入新规则；prior_context_ref 指向前情卡制品，
+	// resume 按其回放注入会话前情。
+	SessionID       string          `json:"session_id,omitempty"`
+	PrevRunID       RunID           `json:"prev_run_id,omitempty"`
+	PriorContextRef json.RawMessage `json:"prior_context_ref,omitempty"`
 }
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。
