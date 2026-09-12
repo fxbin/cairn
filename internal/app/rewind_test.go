@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -335,5 +336,54 @@ func TestRewindReversesSequentialPatchesOnSameFile(t *testing.T) {
 	}
 	if content, err := os.ReadFile(filepath.Join(workspace, path)); err != nil || string(content) != "v1" {
 		t.Fatalf("note.txt=%q err=%v（应恢复到链前 v1）", content, err)
+	}
+}
+
+// TestReadRunArtifactVerifiesContent 锁定只读制品解引用：内容与引用一致可
+// 读回，篡改摘要失败关闭。
+func TestReadRunArtifactVerifiesContent(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	const path = "note.txt"
+	if err := os.WriteFile(filepath.Join(workspace, path), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runID, service, configuration := runApprovedUpdateTask(t, workspace, stateDir, path, "original", "updated")
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := openReadOnlyJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	events, err := readOnly.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reference *artifact.Ref
+	for _, event := range events {
+		if event.Type != domain.EventOperationStarted {
+			continue
+		}
+		var payload struct {
+			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.PlannedBeforeRef != nil {
+			reference = payload.PlannedBeforeRef
+			break
+		}
+	}
+	if reference == nil {
+		t.Fatal("run must carry a planned_before_ref for the update")
+	}
+	content, err := service.ReadRunArtifact(workspace, stateDir, configuration, *reference)
+	if err != nil || string(content) != "original" {
+		t.Fatalf("artifact=%q err=%v", content, err)
+	}
+	tampered := *reference
+	tampered.SHA256 = "sha256:" + strings.Repeat("0", 64)
+	if _, err := service.ReadRunArtifact(workspace, stateDir, configuration, tampered); err == nil {
+		t.Fatal("tampered digest must fail closed")
 	}
 }

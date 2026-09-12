@@ -23,12 +23,14 @@ import (
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
-// consoleMode 是运行主界面的模式全集：任务输入、运行中、等待审批与终态。
+// consoleMode 是运行主界面的模式全集：任务输入、运行中、等待审批、终态、
+// 事件查看、差异查看与配置向导。
 type consoleMode int
 
 // 运行主界面模式；转换经事件驱动，禁止跳过运行态直接进入审批或终态。
@@ -39,6 +41,7 @@ const (
 	consoleDone
 	consoleTranscript
 	consoleModelWizard
+	consoleDiff
 )
 
 // maxConsoleLines 是事件摘要的滚动缓冲行数上限；更早的行滚出屏幕，完整事
@@ -117,6 +120,9 @@ type RunConsole struct {
 	transcript       []domain.Event
 	transcriptCursor int
 	transcriptReturn consoleMode
+	diffLines        []string
+	diffCursor       int
+	diffReturn       consoleMode
 	turn             int
 	promptTokens     int64
 	outputTokens     int64
@@ -327,6 +333,23 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if console.transcriptCursor < len(console.transcript)-1 {
 				console.transcriptCursor++
 			}
+		case "v":
+			return console.openTranscriptDiff()
+		}
+		return console, nil
+	case consoleDiff:
+		switch message.String() {
+		case "ctrl+c", "esc", "q":
+			console.mode = console.diffReturn
+			return console, nil
+		case "up", "k":
+			if console.diffCursor > 0 {
+				console.diffCursor--
+			}
+		case "down", "j":
+			if console.diffCursor < len(console.diffLines)-1 {
+				console.diffCursor++
+			}
 		}
 		return console, nil
 	case consoleInput:
@@ -413,6 +436,8 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.mode = consoleRunning
 			console.appendLine(warnStyle.Render("▶ 已拒绝，运行将按拒绝终态收束"))
 			return console, resolveApprovalCmd(console, false)
+		case "v":
+			return console.openApprovalDiff()
 		}
 		return console, nil
 	case consoleModelWizard:
@@ -452,7 +477,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 		console.waiting = waiting
 		console.approvalDetail = console.loadApprovalDetail(waiting)
 		console.appendLine(warnStyle.Render("⏸ 等待审批: " + waiting.Summary))
-		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝"))
+		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝 / v 差异"))
 		return console, waitForEvent(console.events)
 	}
 	console.mode = consoleDone
@@ -479,7 +504,7 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 		console.waiting = waiting
 		console.approvalDetail = console.loadApprovalDetail(waiting)
 		console.appendLine(warnStyle.Render("⏸ 回退等待审批: " + waiting.Summary))
-		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝（拒绝即中止回退）"))
+		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝（拒绝即中止回退）/ v 差异"))
 		return console, waitForEvent(console.events)
 	}
 	console.mode = consoleDone
@@ -518,6 +543,9 @@ func (console *RunConsole) resetRun() {
 	console.result = nil
 	console.runErr = nil
 	console.rewinding = nil
+	console.diffLines = nil
+	console.diffCursor = 0
+	console.diffReturn = consoleInput
 	console.stopWait = false
 }
 
@@ -665,6 +693,162 @@ func approvalProposalPreview(events []domain.Event) []string {
 		return proposalLines(payload.ToolName, payload.Arguments)
 	}
 	return nil
+}
+
+// openApprovalDiff 在审批态打开待审批补丁的差异视图；差异不可用时就地提示
+// 并留在审批态，不阻塞审批决定。
+func (console RunConsole) openApprovalDiff() (tea.Model, tea.Cmd) {
+	lines, err := console.patchApprovalDiff()
+	if err != nil {
+		console.appendLine(warnStyle.Render("差异不可用: " + err.Error()))
+		return console, nil
+	}
+	console.diffLines = lines
+	console.diffCursor = 0
+	console.diffReturn = consoleApproval
+	console.mode = consoleDiff
+	return console, nil
+}
+
+// patchApprovalDiff 现算待审批补丁的前后全文：审批发生在快照生成之前，磁盘
+// 现内容即 before，由 ApplyPatch.Plan 以零写入方式给出确定性改写计划。
+func (console RunConsole) patchApprovalDiff() ([]string, error) {
+	if console.waiting == nil {
+		return nil, errors.New("当前无待审批操作")
+	}
+	inspected, err := console.input.Service.Inspect(console.ctx, workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, console.waiting.RunID, true)
+	if err != nil {
+		return nil, err
+	}
+	toolName, arguments, found := proposalArgumentsForOperation(inspected.Events, console.waiting.OperationID)
+	if !found {
+		return nil, errors.New("未找到待审批操作的提议参数")
+	}
+	if toolName != "apply_patch" {
+		return nil, errors.New("该审批不是补丁写入，无差异可看")
+	}
+	workspace, err := console.previewWorkspace()
+	if err != nil {
+		return nil, err
+	}
+	plan, err := tools.ApplyPatch{Workspace: workspace}.Plan(arguments)
+	if err != nil {
+		return nil, err
+	}
+	return renderPlannedPatchDiff(plan, arguments), nil
+}
+
+// previewWorkspace 构造补丁差异预览用的工作区视图：与 Boot 装配同一 ignore
+// 与读取上限配置来源，保证 Plan 的边界判定与策略侧一致。
+func (console RunConsole) previewWorkspace() (tools.Workspace, error) {
+	configuration := console.input.Config
+	return tools.NewWorkspace(workspaceRootOrDefault(console.input.Workspace), configuration.Workspace.Ignore, configuration.Workspace.MaxReadBytes, configuration.Workspace.MaxSearchFiles, configuration.Workspace.MaxSearchBytes)
+}
+
+// proposalArgumentsForOperation 从事件流提取指定操作的工具提议身份与参数。
+func proposalArgumentsForOperation(events []domain.Event, operationID domain.OperationID) (string, json.RawMessage, bool) {
+	for _, event := range events {
+		if event.Type != domain.EventToolCallProposed || event.OperationID == nil || *event.OperationID != operationID {
+			continue
+		}
+		var payload struct {
+			ToolName  string          `json:"tool_name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return "", nil, false
+		}
+		return payload.ToolName, payload.Arguments, payload.ToolName != "" && len(payload.Arguments) != 0
+	}
+	return "", nil, false
+}
+
+// openTranscriptDiff 在事件查看器中打开光标所在补丁提议的差异视图。
+func (console RunConsole) openTranscriptDiff() (tea.Model, tea.Cmd) {
+	console.diffLines = console.transcriptPatchDiff()
+	console.diffCursor = 0
+	console.diffReturn = consoleTranscript
+	console.mode = consoleDiff
+	return console, nil
+}
+
+// transcriptPatchDiff 渲染光标所在补丁提议的差异：before 优先取同一操作
+// operation_started 的 planned_before_ref 制品（只读解引用并校验哈希），缺省
+// 时按参数如实降级——create 仍可完整渲染，update 只显示无定位替换块。
+func (console RunConsole) transcriptPatchDiff() []string {
+	if len(console.transcript) == 0 || console.transcriptCursor >= len(console.transcript) {
+		return []string{warnStyle.Render("（无事件可看）")}
+	}
+	event := console.transcript[console.transcriptCursor]
+	if event.Type != domain.EventToolCallProposed {
+		return []string{warnStyle.Render("（光标行不是工具提议；v 仅对补丁提议有效）")}
+	}
+	toolName, arguments, found := "", json.RawMessage(nil), false
+	if event.OperationID != nil {
+		toolName, arguments, found = proposalArgumentsForOperation(console.transcript, *event.OperationID)
+	}
+	if !found {
+		return []string{warnStyle.Render("（提议参数不可解码，无法生成差异）")}
+	}
+	if toolName != "apply_patch" {
+		return []string{warnStyle.Render("（该提议是 " + toolName + "，无补丁差异）")}
+	}
+	before, beforeKnown := console.beforeSnapshotFor(event)
+	lines := renderPatchDiff(arguments, before, beforeKnown)
+	// 未生效补丁的差异是提议参数的改写推演而非既成事实，头部如实标注终态。
+	if outcome, terminal := operationOutcomeFor(console.transcript, event); terminal && outcome != domain.EventOperationSucceeded && outcome != domain.EventOperationReconciled {
+		note := "（该补丁未生效（" + string(outcome) + "），以下为提议参数的改写推演）"
+		if len(lines) > 0 {
+			lines = append([]string{lines[0], warnStyle.Render(note)}, lines[1:]...)
+		} else {
+			lines = []string{warnStyle.Render(note)}
+		}
+	}
+	return lines
+}
+
+// operationOutcomeFor 在事件查看器内查找同一操作的终态事件；未到终态（等待
+// 审批、悬挂）返回 terminal=false。
+func operationOutcomeFor(events []domain.Event, proposal domain.Event) (domain.EventType, bool) {
+	if proposal.OperationID == nil {
+		return "", false
+	}
+	for _, event := range events {
+		if event.OperationID == nil || *event.OperationID != *proposal.OperationID {
+			continue
+		}
+		switch event.Type {
+		case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled, domain.EventOperationReconciled:
+			return event.Type, true
+		}
+	}
+	return "", false
+}
+
+// beforeSnapshotFor 在事件查看器内查找同一操作 operation_started 的 before
+// 快照制品并只读解引用；无制品（旧运行或脱敏跳过）或读取失败均如实返回不
+// 可用。
+func (console RunConsole) beforeSnapshotFor(proposal domain.Event) ([]byte, bool) {
+	if proposal.OperationID == nil {
+		return nil, false
+	}
+	for _, event := range console.transcript {
+		if event.Type != domain.EventOperationStarted || event.OperationID == nil || *event.OperationID != *proposal.OperationID {
+			continue
+		}
+		var payload struct {
+			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.PlannedBeforeRef == nil {
+			return nil, false
+		}
+		content, err := console.input.Service.ReadRunArtifact(workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, *payload.PlannedBeforeRef)
+		if err != nil {
+			return nil, false
+		}
+		return content, true
+	}
+	return nil, false
 }
 
 // proposalLines 按工具类型把提议参数投影为预览行；内容预览截断到固定行数
@@ -934,19 +1118,28 @@ func (console RunConsole) View() string {
 		sections = append(sections, "", console.statusLine())
 	case consoleApproval:
 		sections = append(sections, strings.Join(console.approvalDetail, "\n"))
-		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝"))
+		sections = append(sections, "", warnStyle.Render("Enter 批准 / Esc 拒绝 / v 差异"))
 	case consoleModelWizard:
 		if console.wizard != nil {
 			sections = append(sections, console.wizard.View())
 		}
 	case consoleTranscript:
-		sections = []string{titleStyle.Render("事件查看器") + dimStyle.Render(fmt.Sprintf("  %d 条已持久化事件 · ↑↓ 滚动 / Esc 返回", len(console.transcript)))}
+		sections = []string{titleStyle.Render("事件查看器") + dimStyle.Render(fmt.Sprintf("  %d 条已持久化事件 · ↑↓ 滚动 / v 补丁差异 / Esc 返回", len(console.transcript)))}
 		end := console.transcriptCursor + transcriptWindowHeight
 		if end > len(console.transcript) {
 			end = len(console.transcript)
 		}
 		for index := console.transcriptCursor; index < end; index++ {
 			sections = append(sections, renderTranscriptLine(console.transcript[index]))
+		}
+	case consoleDiff:
+		sections = []string{titleStyle.Render("补丁差异") + dimStyle.Render(fmt.Sprintf("  %d 行 · ↑↓ 滚动 / Esc 返回", len(console.diffLines)))}
+		end := console.diffCursor + diffWindowHeight
+		if end > len(console.diffLines) {
+			end = len(console.diffLines)
+		}
+		for index := console.diffCursor; index < end; index++ {
+			sections = append(sections, "  "+console.diffLines[index])
 		}
 	case consoleDone:
 		sections = append(sections, "")
@@ -1079,7 +1272,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	switch name {
 	case "/help", "/?":
 		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
-		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
+		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
 		console.sessionOutputTokens += console.outputTokens

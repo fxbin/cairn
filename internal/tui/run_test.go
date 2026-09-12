@@ -668,3 +668,72 @@ func TestReceiveRewindResultTransitions(t *testing.T) {
 		t.Fatal("终态应展示反放计数")
 	}
 }
+
+// TestApprovalDiffKeyRouting 锁定审批态差异键路由：v 进入差异视图、Esc 返回
+// 审批态；差异不可用时就地提示且不改变审批决定入口。
+func TestApprovalDiffKeyRouting(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleApproval
+	console.waiting = &agent.WaitingApprovalError{RunID: "run_missing", OperationID: "op_missing", Fingerprint: "sha256:f", Summary: "update note.txt"}
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	console = model.(RunConsole)
+	if console.mode != consoleApproval || !strings.Contains(strings.Join(console.lines, "\n"), "差异不可用") {
+		t.Fatalf("差异不可用应留在审批态并提示: mode=%d lines=%v", console.mode, console.lines)
+	}
+}
+
+// TestTranscriptDiffKeyRouting 锁定事件查看器差异键路由：补丁提议行渲染差
+// 异，非提议行如实提示，Esc 返回查看器。
+func TestTranscriptDiffKeyRouting(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	operation := domain.OperationID("op_diff")
+	proposal := eventWithPayload(domain.EventToolCallProposed, `{"call_id":"c1","tool_name":"apply_patch","arguments":{"path":"fresh.txt","mode":"create","content":"created\n"}}`)
+	proposal.OperationID = &operation
+	started := eventWithPayload(domain.EventOperationStarted, `{"tool_name":"apply_patch","side_effect_class":"workspace","planned_path":"fresh.txt","planned_before":"absent","planned_after":"sha256:x"}`)
+	started.OperationID = &operation
+	console.transcript = []domain.Event{eventWithPayload(domain.EventTurnOpened, `{"turn":1}`), proposal, started}
+	console.transcriptCursor = 1
+	console.mode = consoleTranscript
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	console = model.(RunConsole)
+	if console.mode != consoleDiff || len(console.diffLines) == 0 {
+		t.Fatalf("补丁提议应进入差异视图: mode=%d lines=%d", console.mode, len(console.diffLines))
+	}
+	rendered := strings.Join(console.diffLines, "\n")
+	if !strings.Contains(rendered, "补丁 create · fresh.txt") {
+		t.Fatalf("差异头缺失: %s", rendered)
+	}
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	console = model.(RunConsole)
+	if console.mode != consoleTranscript {
+		t.Fatalf("Esc 应返回事件查看器: mode=%d", console.mode)
+	}
+	console.transcriptCursor = 0
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	console = model.(RunConsole)
+	if console.mode != consoleDiff || !strings.Contains(strings.Join(console.diffLines, "\n"), "不是工具提议") {
+		t.Fatalf("非提议行应如实提示: %v", console.diffLines)
+	}
+}
+
+// TestTranscriptDiffAnnotatesUnappliedPatch 锁定回看诚实性：未生效补丁的差
+// 异头部标注终态，明示其为提议推演而非既成事实。
+func TestTranscriptDiffAnnotatesUnappliedPatch(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	operation := domain.OperationID("op_failed")
+	proposal := eventWithPayload(domain.EventToolCallProposed, `{"call_id":"c2","tool_name":"apply_patch","arguments":{"path":"note.txt","mode":"update","replacements":[{"old":"a","new":"b"}]}}`)
+	proposal.OperationID = &operation
+	started := eventWithPayload(domain.EventOperationStarted, `{"tool_name":"apply_patch","side_effect_class":"workspace","planned_path":"note.txt","planned_before":"sha256:b","planned_after":"sha256:c"}`)
+	started.OperationID = &operation
+	failed := eventWithPayload(domain.EventOperationFailed, `{"tool_name":"apply_patch","error_class":"io"}`)
+	failed.OperationID = &operation
+	console.transcript = []domain.Event{proposal, started, failed}
+	console.transcriptCursor = 0
+	console.mode = consoleTranscript
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	console = model.(RunConsole)
+	rendered := strings.Join(console.diffLines, "\n")
+	if !strings.Contains(rendered, "该补丁未生效（operation_failed）") {
+		t.Fatalf("unapplied annotation missing: %s", rendered)
+	}
+}

@@ -770,22 +770,39 @@ func manifestArtifactRoot(stateDir, workspaceHash string) string {
 
 // checkArtifactReference 验证单个制品引用的格式、存在性和内容摘要。
 func checkArtifactReference(root string, reference artifact.Ref) error {
+	_, err := readArtifactContent(root, reference)
+	return err
+}
+
+// readArtifactContent 读取并校验制品内容：摘要格式合法、文件在档且内容哈
+// 希与引用一致；失败关闭，供诊断校验与展示层只读解引用共用。
+func readArtifactContent(root string, reference artifact.Ref) ([]byte, error) {
 	digest := strings.TrimPrefix(reference.SHA256, "sha256:")
 	if len(digest) != sha256.Size*2 {
-		return fmt.Errorf("invalid artifact digest %q", reference.SHA256)
+		return nil, fmt.Errorf("invalid artifact digest %q", reference.SHA256)
 	}
 	if _, err := hex.DecodeString(digest); err != nil {
-		return fmt.Errorf("decode artifact digest: %w", err)
+		return nil, fmt.Errorf("decode artifact digest: %w", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "sha256", digest[:2], digest))
 	if err != nil {
-		return fmt.Errorf("read referenced artifact: %w", err)
+		return nil, fmt.Errorf("read referenced artifact: %w", err)
 	}
 	actual := sha256.Sum256(content)
 	if hex.EncodeToString(actual[:]) != digest {
-		return errors.New("referenced artifact hash mismatch")
+		return nil, errors.New("referenced artifact hash mismatch")
 	}
-	return nil
+	return content, nil
+}
+
+// ReadRunArtifact 只读解引用当前工作区制品库中的一个制品：内容哈希必须与
+// 引用一致，供展示层（如补丁差异视图）消费已持久化证据而不触碰任何状态。
+func (service Service) ReadRunArtifact(workspacePath, stateDir string, configuration config.Config, reference artifact.Ref) ([]byte, error) {
+	_, hash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return nil, err
+	}
+	return readArtifactContent(manifestArtifactRoot(stateDir, hash), reference)
 }
 
 // openReadOnlyJournal 打开指定工作区的不可写 SQLite 事件日志。
