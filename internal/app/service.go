@@ -333,6 +333,13 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=<verdict>", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
+	// 回退 run（task_ref 承载计划制品）不进入模型续跑：按同一计划重推导反放
+	// 调用后交给脚本化执行器收束，普通 run 行为不变。
+	if plan, isRewind, planErr := rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); planErr != nil {
+		return RunResult{ID: options.RunID}, planErr
+	} else if isRewind {
+		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, Approval: options.Approval, OnEvent: options.OnEvent})
+	}
 	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err

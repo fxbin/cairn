@@ -92,6 +92,13 @@ type sessionRunEntry struct {
 	summary string
 }
 
+// rewindState 标记主界面正在执行工作区回退：审批续跑走 Resume 但结果按回退
+// 语义呈现，回退 run 不进入会话对话链；applied 累计本轮回退中反放成功的补
+// 丁数（来自已持久化事件，不是界面推测）。
+type rewindState struct {
+	applied int
+}
+
 // RunConsole 是单任务运行闭环的 bubbletea 模型。
 type RunConsole struct {
 	ctx      context.Context
@@ -128,6 +135,7 @@ type RunConsole struct {
 	approvalDetail []string
 	result         *app.RunResult
 	runErr         error
+	rewinding      *rewindState
 }
 
 // NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
@@ -195,12 +203,14 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 }
 
 // resolveApprovalCmd 以用户决定恢复运行：指纹与策略重放校验由既有 Loop 合
-// 同承担，界面只传递显式决定。
+// 同承担，界面只传递显式决定；工作区回退的审批续跑同样经 Resume，但结果按
+// 回退语义呈现。
 func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 	service := console.input.Service
 	runCtx := console.ctx
 	events := console.events
 	waiting := console.waiting
+	rewinding := console.rewinding
 	onEvent := func(event domain.Event) { events <- event }
 	return func() tea.Msg {
 		result, err := service.Resume(runCtx, app.ResumeOptions{
@@ -208,8 +218,33 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 			Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: approve, Reason: approvalReason(approve)},
 			OnEvent:  onEvent,
 		})
+		if rewinding != nil {
+			return rewindFinishedMsg{result: &result, err: err}
+		}
 		return runFinishedMsg{result: &result, err: err}
 	}
+}
+
+// rewindFilesCmd 发起工作区回退：逐项反放选定节点之后的已生效补丁，事件流
+// 与审批复用运行通道，最终结果按回退语义收束。
+func rewindFilesCmd(console RunConsole, runs []domain.RunID) tea.Cmd {
+	service := console.input.Service
+	runCtx := console.ctx
+	events := console.events
+	onEvent := func(event domain.Event) { events <- event }
+	return func() tea.Msg {
+		result, err := service.Rewind(runCtx, app.RewindOptions{
+			Workspace: console.input.Workspace, Config: console.input.Config,
+			Runs: runs, OnEvent: onEvent,
+		})
+		return rewindFinishedMsg{result: &result, err: err}
+	}
+}
+
+// rewindFinishedMsg 承载一次工作区回退（或其审批续跑）的最终结果。
+type rewindFinishedMsg struct {
+	result *app.RunResult
+	err    error
 }
 
 // approvalReason 是界面审批决定的固定理由文案，进入审批事件留痕。
@@ -257,6 +292,8 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return console, waitForEvent(console.events)
 	case runFinishedMsg:
 		return console.receiveResult(typed)
+	case rewindFinishedMsg:
+		return console.receiveRewindResult(typed)
 	}
 	return console, nil
 }
@@ -433,6 +470,38 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	return console, nil
 }
 
+// receiveRewindResult 消费一次工作区回退（或其审批续跑）的结果：等待审批转
+// 入审批模式；终态展示回退结论。回退 run 不进入会话对话链，对话前情不变。
+func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.Model, tea.Cmd) {
+	var waiting *agent.WaitingApprovalError
+	if errors.As(finished.err, &waiting) {
+		console.mode = consoleApproval
+		console.waiting = waiting
+		console.approvalDetail = console.loadApprovalDetail(waiting)
+		console.appendLine(warnStyle.Render("⏸ 回退等待审批: " + waiting.Summary))
+		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝（拒绝即中止回退）"))
+		return console, waitForEvent(console.events)
+	}
+	console.mode = consoleDone
+	console.result = finished.result
+	console.runErr = finished.err
+	console.stopWait = true
+	applied := 0
+	if console.rewinding != nil {
+		applied = console.rewinding.applied
+	}
+	console.rewinding = nil
+	if finished.err != nil {
+		console.appendLine(errStyle.Render("● 工作区回退失败: " + finished.err.Error()))
+	} else {
+		console.appendLine(okStyle.Render(fmt.Sprintf("● 工作区已回退（反放 %d 个补丁；对话链与前情未变）", applied)))
+	}
+	if console.result != nil && console.result.ID != "" {
+		console.appendLine(dimStyle.Render("回退 run " + string(console.result.ID) + "（cairn inspect 查证）"))
+	}
+	return console, nil
+}
+
 // resetRun 清空上一轮运行的展示与统计，保留输入态历史行由滚动缓冲自然
 // 淘汰。
 func (console *RunConsole) resetRun() {
@@ -448,6 +517,7 @@ func (console *RunConsole) resetRun() {
 	console.waiting = nil
 	console.result = nil
 	console.runErr = nil
+	console.rewinding = nil
 	console.stopWait = false
 }
 
@@ -535,6 +605,15 @@ func (console *RunConsole) applyEvent(event domain.Event) {
 		if eventPayload(event, &payload) {
 			console.promptTokens += int64(payload.Usage.PromptTokens)
 			console.outputTokens += int64(payload.Usage.CompletionTokens)
+		}
+	case domain.EventOperationSucceeded:
+		if console.rewinding != nil {
+			var payload struct {
+				ToolName string `json:"tool_name"`
+			}
+			if eventPayload(event, &payload) && payload.ToolName == "apply_patch" {
+				console.rewinding.applied++
+			}
 		}
 	}
 	if line := summarizeEvent(event); line != "" {
@@ -931,6 +1010,7 @@ var consoleCommands = []struct {
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链"},
 	{"/rewind", "回退会话对话链"},
+	{"/rewind-files", "回退工作区补丁（撤销所选任务起）"},
 	{"/cost", "本任务与会话累计 token"},
 	{"/theme", "切换主题"},
 	{"/editor", "外部编辑器编辑当前输入"},
@@ -998,7 +1078,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /rewind 回退对话 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1062,6 +1142,32 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.sessionRuns = console.sessionRuns[:index]
 		console.appendLine(okStyle.Render(fmt.Sprintf("已回退对话到第 %d 个任务之后（%s）；下一任务从该点前情继续，工作区未变动", index, entry.summary)))
 		return true, nil
+	case "/rewind-files":
+		argument := strings.TrimSpace(remainder)
+		if argument == "" {
+			if console.sessionID == "" || len(console.sessionRuns) == 0 {
+				console.appendLine(warnStyle.Render("当前无可回退的会话链"))
+				return true, nil
+			}
+			console.appendLine(itemStyle.Render("会话链（/rewind-files <序号> 撤销该任务起的补丁，工作区回到其开始前；逐项需审批）:"))
+			for index, entry := range console.sessionRuns {
+				console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s · %s", index+1, entry.id, entry.verdict, entry.summary)))
+			}
+			return true, nil
+		}
+		index, convErr := strconv.Atoi(argument)
+		if convErr != nil || index < 1 || index > len(console.sessionRuns) {
+			console.appendLine(warnStyle.Render("序号越界（/rewind-files 列出可用节点）"))
+			return true, nil
+		}
+		runs := make([]domain.RunID, 0, len(console.sessionRuns)-index+1)
+		for _, entry := range console.sessionRuns[index-1:] {
+			runs = append(runs, entry.id)
+		}
+		console.mode = consoleRunning
+		console.rewinding = &rewindState{}
+		console.appendLine(okStyle.Render(fmt.Sprintf("▶ 工作区回退中：撤销第 %d 个任务起的 %d 个任务的补丁（Ctrl+C 取消；每个补丁需审批）", index, len(runs))))
+		return true, rewindFilesCmd(*console, runs)
 	case "/theme":
 		console.appendLine(dimStyle.Render(cycleTheme() + "（会话内生效）"))
 		return true, nil

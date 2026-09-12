@@ -593,3 +593,78 @@ func TestRewindConversationChain(t *testing.T) {
 		t.Fatal("越界序号应拒绝")
 	}
 }
+
+// TestRewindFilesCommandDispatch 锁定 /rewind-files 的输入态分发：空链提示、
+// 列表、越界与末节点守卫、有效选点进入运行态并保持回退标记。
+func TestRewindFilesCommandDispatch(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/rewind-files\r")
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !strings.Contains(strings.Join(console.lines, "\n"), "无可回退的会话链") {
+		t.Fatal("空链应提示无可回退")
+	}
+
+	console.sessionID = "session_test"
+	console.sessionRuns = []sessionRunEntry{
+		{id: "run_first", verdict: "运行完成", summary: "first"},
+		{id: "run_second", verdict: "运行完成", summary: "second"},
+	}
+	console.lines = nil
+	console.taskField.SetValue("/rewind-files\r")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !strings.Contains(strings.Join(console.lines, "\n"), "run_second") {
+		t.Fatal("无参调用应列出会话链节点")
+	}
+
+	console.lines = nil
+	console.taskField.SetValue("/rewind-files 3\r")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !strings.Contains(strings.Join(console.lines, "\n"), "序号越界") {
+		t.Fatal("越界序号应被拒绝")
+	}
+
+	console.lines = nil
+	console.taskField.SetValue("/rewind-files 1\r")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleRunning || console.rewinding == nil {
+		t.Fatalf("有效选点应进入运行态并保持回退标记: mode=%d rewinding=%v", console.mode, console.rewinding)
+	}
+	if cmd == nil {
+		t.Fatal("有效选点应发起回退命令")
+	}
+}
+
+// TestReceiveRewindResultTransitions 锁定回退结果的状态机：审批暂停保持回退
+// 标记并进入审批模式；终态清标记并展示反放计数。
+func TestReceiveRewindResultTransitions(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleRunning
+	console.rewinding = &rewindState{}
+	waiting := &agent.WaitingApprovalError{RunID: "run_rewind", Fingerprint: "sha256:f", Summary: "update note.txt"}
+	model, cmd := console.Update(rewindFinishedMsg{err: waiting})
+	console = model.(RunConsole)
+	if console.mode != consoleApproval || console.rewinding == nil {
+		t.Fatalf("审批暂停应保持回退标记: mode=%d rewinding=%v", console.mode, console.rewinding)
+	}
+	if cmd == nil {
+		t.Fatal("审批暂停应继续消费事件通道")
+	}
+	if !strings.Contains(strings.Join(console.lines, "\n"), "回退等待审批") {
+		t.Fatal("审批暂停应展示回退语义提示")
+	}
+
+	console.rewinding = &rewindState{applied: 2}
+	model, _ = console.Update(rewindFinishedMsg{result: &app.RunResult{ID: "run_rewind"}})
+	console = model.(RunConsole)
+	if console.mode != consoleDone || console.rewinding != nil {
+		t.Fatalf("终态应清回退标记: mode=%d rewinding=%v", console.mode, console.rewinding)
+	}
+	if !strings.Contains(strings.Join(console.lines, "\n"), "反放 2 个补丁") {
+		t.Fatal("终态应展示反放计数")
+	}
+}
