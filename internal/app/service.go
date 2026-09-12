@@ -728,17 +728,19 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 	root := manifestArtifactRoot(stateDir, workspaceHash)
 	for _, event := range events {
 		var payload struct {
-			ResultRef   *artifact.Ref `json:"result_ref"`
-			PlanRef     *artifact.Ref `json:"plan_ref"`
-			ConfigRef   *artifact.Ref `json:"config_ref"`
-			EvidenceRef *artifact.Ref `json:"evidence_ref"`
+			ResultRef        *artifact.Ref `json:"result_ref"`
+			PlanRef          *artifact.Ref `json:"plan_ref"`
+			ConfigRef        *artifact.Ref `json:"config_ref"`
+			EvidenceRef      *artifact.Ref `json:"evidence_ref"`
+			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			continue
 		}
 		// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
-		// 存在性与摘要校验，防止被删除或篡改后静默通过诊断。
-		for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef} {
+		// 存在性与摘要校验，防止被删除或篡改后静默通过诊断；before 快照
+		// 是工作区回退的恢复源，同样必须完整在档。
+		for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef, payload.PlannedBeforeRef} {
 			if reference == nil {
 				continue
 			}

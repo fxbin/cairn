@@ -28,6 +28,7 @@ type operationPayload struct {
 	MutationBarrier    bool          `json:"mutation_barrier,omitempty"`
 	PlannedPath        string        `json:"planned_path,omitempty"`
 	PlannedBefore      string        `json:"planned_before,omitempty"`
+	PlannedBeforeRef   *artifact.Ref `json:"planned_before_ref,omitempty"`
 	PlannedAfter       string        `json:"planned_after,omitempty"`
 	Result             any           `json:"result,omitempty"`
 	ResultRef          *artifact.Ref `json:"result_ref,omitempty"`
@@ -134,14 +135,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}
 		return result, nil
 	}
-	sideEffect := loop.Tools.SideEffect(call.Name)
-	startedPayload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}
-	if call.Name == "apply_patch" {
-		plan, err := loop.Gate.Patch.Plan(call.Arguments)
-		if err != nil {
-			return tools.Result{}, err
-		}
-		startedPayload.PlannedPath, startedPayload.PlannedBefore, startedPayload.PlannedAfter = plan.Path, plan.BeforeHash, plan.AfterHash
+	startedPayload, err := loop.plannedOperationPayload(call)
+	if err != nil {
+		return tools.Result{}, err
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return tools.Result{}, err
@@ -210,6 +206,39 @@ func freshApprovalDecision(projection domain.RunProjection, decision policy.Deci
 		decision.Summary = "the same action was previously reconciled after an uncertain side effect; explicit approval is required"
 	}
 	return decision
+}
+
+// plannedOperationPayload 为已授权的工具调用构造 operation_started 载荷：
+// 标注副作用类别，apply_patch 额外携带确定性改写计划（相对路径与前后摘要），
+// 并在改写现文件前生成可回退的 before 快照引用。
+func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload, error) {
+	sideEffect := loop.Tools.SideEffect(call.Name)
+	payload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}
+	if call.Name != "apply_patch" {
+		return payload, nil
+	}
+	plan, err := loop.Gate.Patch.Plan(call.Arguments)
+	if err != nil {
+		return operationPayload{}, err
+	}
+	payload.PlannedPath, payload.PlannedBefore, payload.PlannedAfter = plan.Path, plan.BeforeHash, plan.AfterHash
+	payload.PlannedBeforeRef = loop.snapshotPatchBefore(plan)
+	return payload, nil
+}
+
+// snapshotPatchBefore 在 update/delete 改写现文件前，把旧内容制品化为回退
+// 快照。制品库会先脱敏再存储：只有写入后的内容哈希仍等于原文件摘要（无损）
+// 才返回引用；脱敏改写了内容或制品库不可用时返回 nil，该次改写将如实不可
+// 回退，绝不以被改写的副本冒充快照。create 无旧内容，恒返回 nil。
+func (loop *Loop) snapshotPatchBefore(plan tools.PatchPlan) *artifact.Ref {
+	if (plan.Mode != "update" && plan.Mode != "delete") || !plan.Exists || loop.Artifacts == nil {
+		return nil
+	}
+	ref, err := loop.Artifacts.Put(plan.Before, "application/octet-stream")
+	if err != nil || ref.SHA256 != plan.BeforeHash {
+		return nil
+	}
+	return &ref
 }
 
 // resultPayload 将工具结果包装为事件载荷，并尽力持久化脱敏制品引用。

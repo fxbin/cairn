@@ -254,14 +254,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 		}
 		return Result{RunID: input.RunID, Response: finalResponse}, nil
 	}
-	sideEffect := loop.Tools.SideEffect(call.Name)
-	startedPayload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}
-	if call.Name == "apply_patch" {
-		plan, err := loop.Gate.Patch.Plan(call.Arguments)
-		if err != nil {
-			return Result{}, err
-		}
-		startedPayload.PlannedPath, startedPayload.PlannedBefore, startedPayload.PlannedAfter = plan.Path, plan.BeforeHash, plan.AfterHash
+	startedPayload, err := loop.plannedOperationPayload(call)
+	if err != nil {
+		return Result{}, err
 	}
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err

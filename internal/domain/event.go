@@ -125,7 +125,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventApprovalGranted:   {"payload_version": {}, "fingerprint": {}, "actor": {}},
 	EventApprovalDenied:    {"payload_version": {}, "fingerprint": {}, "actor": {}, "reason": {}, "stop_cause": {}},
 	EventOperationStarted: {
-		"payload_version": {}, "tool_name": {}, "kind": {}, "side_effect_class": {}, "mutation_barrier": {}, "request_ref": {}, "planned_path": {}, "planned_before": {}, "planned_after": {},
+		"payload_version": {}, "tool_name": {}, "kind": {}, "side_effect_class": {}, "mutation_barrier": {}, "request_ref": {}, "planned_path": {}, "planned_before": {}, "planned_after": {}, "planned_before_ref": {},
 	},
 	EventOperationSucceeded: {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "duration_ms": {}},
 	EventOperationFailed:    {"payload_version": {}, "tool_name": {}, "result": {}, "result_ref": {}, "result_storage_error": {}, "error_class": {}, "after_observation": {}, "duration_ms": {}},
