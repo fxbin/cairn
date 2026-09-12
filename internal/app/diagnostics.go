@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime/debug"
 
+	"github.com/fxbin/cairn/internal/buildinfo"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -73,13 +74,17 @@ type PolicyHealth struct {
 	Exec  string `json:"exec"`
 }
 
-// TelemetryHealth 如实报告遥测的真实接线状态。当前版本的遥测面 = 记忆
-// 体系只读聚合快照（cairn memory telemetry）+ 召回聚合采集点；运行级
-// TelemetrySink（OTLP 导出）仍未接线。状态取值：snapshot_available 表示
-// 只读聚合与召回采集可用；disabled 表示运行级导出未接线。测试锁定该诚
-// 实合同——新增观测能力时必须同步更新本投影，不得提前宣称。
+// TelemetryHealth 如实报告遥测的真实接线状态。Status 是记忆体系的只读
+// 聚合快照（cairn memory telemetry）+ 召回聚合采集点状态：snapshot_available
+// 表示只读聚合与召回采集可用；disabled 表示该面未接线。OTLP 是构建形态维
+// 度的运行级导出状态（可选编译期探针）：unavailable 表示 plain 构建无观测
+// 探针；disabled 表示 otelc 构建且 OTEL_SDK_DISABLED=true 显式关闭；otlp 表
+// 示注入 SDK 按标准 OTel 环境变量运行。端点与认证只存在于环境，本投影永远
+// 不携带端点值。测试锁定该诚实合同——新增观测能力时必须同步更新本投影，
+// 不得提前宣称。
 type TelemetryHealth struct {
 	Status string `json:"status"`
+	OTLP   string `json:"otlp,omitempty"`
 }
 
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性，并返回环境可运行性
@@ -101,7 +106,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 		MemoryState:       "absent",
-		Telemetry:         TelemetryHealth{Status: "disabled"},
+		Telemetry:         TelemetryHealth{Status: "disabled", OTLP: buildinfo.TelemetryMode()},
 	}
 	report.BuildRevision = report.Build.Revision
 	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
@@ -167,7 +172,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.MemoryState, report.MemoryOK = memoryState, memoryOK
-	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState)}
+	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState), OTLP: buildinfo.TelemetryMode()}
 	report.evaluateReadiness()
 	return report, nil
 }
@@ -189,10 +194,12 @@ func buildIdentity() domain.BuildIdentity {
 	return buildIdentityFromSettings(nil)
 }
 
-// buildIdentityFromSettings 从 Go BuildInfo 中可公开的 VCS 设置派生构建身份；缺失
-// dirty 设置必须保留 unknown，避免把不可知状态误报为干净工作树。
+// buildIdentityFromSettings 从 Go BuildInfo 中可公开的 VCS 设置与编译期固化
+// 的构建形态派生构建身份；缺失 dirty 设置必须保留 unknown，避免把不可知状态
+// 误报为干净工作树。观测工具链事实只来自 internal/buildinfo 的编译期注入，
+// 不从环境推导。
 func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdentity {
-	identity := domain.BuildIdentity{Dirty: "unknown", Flavor: "plain"}
+	identity := domain.BuildIdentity{Dirty: "unknown", Flavor: buildinfo.Flavor, OtelcVersion: buildinfo.ToolchainVersion, InstrumentationDigest: buildinfo.InstrumentationDigest}
 	for _, setting := range settings {
 		switch setting.Key {
 		case "vcs.revision":
@@ -202,6 +209,9 @@ func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdenti
 				identity.Dirty = setting.Value
 			}
 		}
+	}
+	if identity.Flavor != "otelc" {
+		identity.OtelcVersion, identity.InstrumentationDigest = "", ""
 	}
 	identity.Fingerprint = identity.ComputeFingerprint()
 	return identity

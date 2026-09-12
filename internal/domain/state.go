@@ -153,27 +153,36 @@ type PendingOperation struct {
 }
 
 // BuildIdentity 描述实际启动 Run 的二进制身份；它仅保存修订、三态 dirty 状态
-// （unknown/true/false）、明确的 plain flavor 与这些事实的确定性摘要，不承诺
-// 可选探针或构建标签存在。
+// （unknown/true/false）、明确的 plain/otelc flavor、可选观测工具链事实与这些
+// 事实的确定性摘要，不承诺可选探针或构建标签存在。OtelcVersion 与
+// InstrumentationDigest 仅在 otelc flavor 下非空，旧事件缺省合法。
 type BuildIdentity struct {
 	Revision    string `json:"revision"`
 	Dirty       string `json:"dirty"`
 	Flavor      string `json:"flavor"`
 	Fingerprint string `json:"fingerprint"`
+	// 可选观测工具链事实：otelc 构建注入的工具链版本与插桩集合摘要；
+	// plain 构建恒为空且必须为空，防止构建身份证据自相矛盾。
+	OtelcVersion          string `json:"otelc_version,omitempty"`
+	InstrumentationDigest string `json:"instrumentation_digest,omitempty"`
 }
 
 // buildIdentityFingerprintPrefix 是构建身份摘要的版本化域前缀。
 const buildIdentityFingerprintPrefix = "cairn-build-identity-v1"
 
-// ComputeFingerprint 为身份事实计算稳定的版本化摘要：只覆盖可公开的三个字
-// 段，不读取环境变量、配置或任何凭据；派生方在装配时把结果写回 Fingerprint
-// 字段。方法名刻意区别于同名字段。
+// ComputeFingerprint 为身份事实计算稳定的版本化摘要：覆盖可公开的修订、
+// dirty、flavor 与可选工具链事实，不读取环境变量、配置或任何凭据；可选字段
+// 缺省不进入编码，plain 身份摘要与历史二进制逐字节一致。派生方在装配时把
+// 结果写回 Fingerprint 字段。方法名刻意区别于同名字段。
 func (identity BuildIdentity) ComputeFingerprint() string {
 	view := struct {
-		Revision string `json:"revision"`
-		Dirty    string `json:"dirty"`
-		Flavor   string `json:"flavor"`
-	}{Revision: identity.Revision, Dirty: identity.Dirty, Flavor: identity.Flavor}
+		Revision              string `json:"revision"`
+		Dirty                 string `json:"dirty"`
+		Flavor                string `json:"flavor"`
+		OtelcVersion          string `json:"otelc_version,omitempty"`
+		InstrumentationDigest string `json:"instrumentation_digest,omitempty"`
+	}{Revision: identity.Revision, Dirty: identity.Dirty, Flavor: identity.Flavor,
+		OtelcVersion: identity.OtelcVersion, InstrumentationDigest: identity.InstrumentationDigest}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		return ""
@@ -182,13 +191,15 @@ func (identity BuildIdentity) ComputeFingerprint() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// validateBuildIdentity 拒绝无法解释为当前 plain 二进制的新增 Run 身份；nil 是
-// 旧 run 的合法兼容形式。Revision 可以为空、dirty 必须明确为 unknown/true/false。
+// validateBuildIdentity 拒绝无法解释为当前二进制形态的新增 Run 身份；nil 是
+// 旧 run 的合法兼容形式。Revision 可以为空、dirty 必须明确为
+// unknown/true/false；工具链事实只在 otelc flavor 下允许出现，且 otelc 必须
+// 同时携带版本与插桩摘要，防止半配置身份进入事件链。
 func validateBuildIdentity(identity *BuildIdentity) error {
 	if identity == nil {
 		return nil
 	}
-	if identity.Flavor != "plain" {
+	if identity.Flavor != "plain" && identity.Flavor != "otelc" {
 		return fmt.Errorf("run build flavor %q is unsupported", identity.Flavor)
 	}
 	if identity.Dirty != "unknown" && identity.Dirty != "true" && identity.Dirty != "false" {
@@ -196,6 +207,12 @@ func validateBuildIdentity(identity *BuildIdentity) error {
 	}
 	if identity.Fingerprint == "" {
 		return errors.New("run build fingerprint is required")
+	}
+	if identity.Flavor == "plain" && (identity.OtelcVersion != "" || identity.InstrumentationDigest != "") {
+		return errors.New("plain build identity must not carry optional toolchain facts")
+	}
+	if identity.Flavor == "otelc" && (identity.OtelcVersion == "" || identity.InstrumentationDigest == "") {
+		return errors.New("otelc build identity requires toolchain version and instrumentation digest")
 	}
 	return nil
 }

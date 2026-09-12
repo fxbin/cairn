@@ -17,6 +17,8 @@
 /bin/
 /dist/
 /cairn
+/cairn-otelc
+.otelc-build/
 *.test
 *.out
 coverage.out
