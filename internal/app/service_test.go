@@ -1447,3 +1447,42 @@ func TestServiceListRunsClassifiesInvalidDatabaseAsCorrupt(t *testing.T) {
 		t.Fatalf("ListRuns error = %v", err)
 	}
 }
+
+// TestResumeAndDoctorRejectMissingPriorContextArtifact 锁定前情制品属于运行完整
+// 性合同：引用目标缺失时 Resume 与 Doctor 都返回状态损坏类别。
+func TestResumeAndDoctorRejectMissingPriorContextArtifact(t *testing.T) {
+	provider := &patchThenFinalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	configuration := withTestProvider(config.Defaults())
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration, PriorContext: "必须持久恢复的前情"})
+	var waiting *agent.WaitingApprovalError
+	if !errors.As(err, &waiting) {
+		t.Fatalf("initial=%#v err=%v", initial, err)
+	}
+	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		PriorContextRef *artifact.Ref `json:"prior_context_ref"`
+	}
+	if err := json.Unmarshal(inspected.Events[0].Payload, &payload); err != nil || payload.PriorContextRef == nil {
+		t.Fatalf("run_created 缺少前情引用: payload=%s err=%v", inspected.Events[0].Payload, err)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimPrefix(payload.PriorContextRef.SHA256, "sha256:")
+	path := filepath.Join(stateDir, "workspaces", hash, "artifacts", "sha256", digest[:2], digest)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("resume error=%v, want state corrupt", err)
+	}
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("doctor error=%v, want state corrupt", err)
+	}
+}

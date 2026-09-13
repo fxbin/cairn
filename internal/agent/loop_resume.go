@@ -360,7 +360,10 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 		}
 		var verificationFailure *VerificationFailureError
 		if errors.As(err, &verificationFailure) {
-			messages := loop.messagesFromEvents(events, input.Task)
+			messages, rebuildErr := loop.messagesFromEvents(events, input.Task)
+			if rebuildErr != nil {
+				return Result{RunID: input.RunID}, rebuildErr
+			}
 			messages = append(messages, ports.Message{Role: "user", Content: verificationFailure.Feedback})
 			if _, closeErr := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); closeErr != nil {
 				return Result{RunID: input.RunID}, closeErr
@@ -432,7 +435,10 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 		if err != nil || feedback == "" {
 			return result, err
 		}
-		messages := loop.messagesFromEvents(events, input.Task)
+		messages, rebuildErr := loop.messagesFromEvents(events, input.Task)
+		if rebuildErr != nil {
+			return Result{RunID: input.RunID}, rebuildErr
+		}
 		messages = append(messages, ports.Message{Role: "user", Content: feedback})
 		if _, err := loop.closeTurnAndCompact(ctx, projection, input, turnID, messages); err != nil {
 			return Result{}, err

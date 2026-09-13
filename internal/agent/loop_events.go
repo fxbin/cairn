@@ -39,8 +39,9 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 	return nil
 }
 
-// messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文。
-func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) []ports.Message {
+// messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文；
+// 创建事件声明的前情引用必须可解析且可完整读取，否则失败关闭。
+func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) ([]ports.Message, error) {
 	task := fallbackTask
 	priorContext := loop.PriorContext
 	priorRef := loop.PriorContextRef
@@ -52,20 +53,26 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			continue
 		}
 		var payload domain.RunCreatedPayload
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.Task != "" {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode run_created for message reconstruction: %w", err)
+		}
+		if payload.Task != "" {
 			task = payload.Task
-			// resume 回放时链关系与制品引用来自创建事件；输入侧显式携带
-			// 优先（新 run 场景），缺省时按事件回放，保持重放一致性。
-			if loop.PriorContext == "" && loop.PriorContextRef == nil && len(payload.PriorContextRef) > 0 {
-				var ref artifact.Ref
-				if json.Unmarshal(payload.PriorContextRef, &ref) == nil {
-					priorRef = &ref
-					if loaded, err := loop.loadPriorContext(priorRef); err == nil {
-						priorContext = loaded
-						loop.PriorContext = loaded
-						loop.PriorContextRef = priorRef
-					}
-				}
+		}
+		if len(payload.PriorContextRef) > 0 {
+			var ref artifact.Ref
+			if err := json.Unmarshal(payload.PriorContextRef, &ref); err != nil {
+				return nil, fmt.Errorf("decode prior context ref: %w", err)
+			}
+			loaded, err := loop.loadPriorContext(&ref)
+			if err != nil {
+				return nil, fmt.Errorf("load prior context: %w", err)
+			}
+			if loop.PriorContext == "" && loop.PriorContextRef == nil {
+				priorContext = loaded
+				priorRef = &ref
+				loop.PriorContext = loaded
+				loop.PriorContextRef = priorRef
 			}
 		}
 	}
@@ -141,7 +148,7 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			}
 		}
 	}
-	return messages
+	return messages, nil
 }
 
 // sessionContextPrefix 标识会话前情消息，并用于压缩时精确提取而不重复注入。
@@ -153,8 +160,8 @@ func sessionContextBlock(prior string) string {
 	return sessionContextPrefix + prior
 }
 
-// loadPriorContext 从制品库读取前情卡文本；读取失败由调用方按缺省降级处
-// 理（不注入、不失败关闭——前情是增强而非合同必需）。
+// loadPriorContext 从制品库严格读取并校验前情卡；引用存在即属于可回放合同，
+// 任一格式、存在性或摘要错误都必须由调用方传播。
 func (loop *Loop) loadPriorContext(ref *artifact.Ref) (string, error) {
 	if loop.Artifacts == nil || ref == nil {
 		return "", errors.New("artifact store unavailable")

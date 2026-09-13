@@ -214,9 +214,9 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	runID := domain.NewRunID()
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
 		domain.RunCreatedPayload
-		ConfigRef       artifact.Ref `json:"config_ref"`
-		PriorContextRef artifact.Ref `json:"prior_context_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(priorContextRef)})})
+		ConfigRef       artifact.Ref  `json:"config_ref"`
+		PriorContextRef *artifact.Ref `json:"prior_context_ref,omitempty"`
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -1026,14 +1026,24 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 	root := manifestArtifactRoot(stateDir, workspaceHash)
 	for _, event := range events {
 		var payload struct {
-			ResultRef        *artifact.Ref `json:"result_ref"`
-			PlanRef          *artifact.Ref `json:"plan_ref"`
-			ConfigRef        *artifact.Ref `json:"config_ref"`
-			EvidenceRef      *artifact.Ref `json:"evidence_ref"`
-			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+			ResultRef        *artifact.Ref   `json:"result_ref"`
+			PlanRef          *artifact.Ref   `json:"plan_ref"`
+			ConfigRef        *artifact.Ref   `json:"config_ref"`
+			EvidenceRef      *artifact.Ref   `json:"evidence_ref"`
+			PlannedBeforeRef *artifact.Ref   `json:"planned_before_ref"`
+			PriorContextRef  json.RawMessage `json:"prior_context_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			continue
+		}
+		if len(payload.PriorContextRef) > 0 {
+			var reference artifact.Ref
+			if string(payload.PriorContextRef) == "null" || json.Unmarshal(payload.PriorContextRef, &reference) != nil {
+				return fmt.Errorf("run %s event %d: invalid prior context ref", event.RunID, event.Seq)
+			}
+			if err := checkArtifactReference(root, reference); err != nil {
+				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
+			}
 		}
 		// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
 		// 存在性与摘要校验，防止被删除或篡改后静默通过诊断；before 快照

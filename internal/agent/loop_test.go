@@ -393,7 +393,10 @@ func TestMessagesFromEventsPlacesMalformedToolArgumentsFeedbackInHistoricalOrder
 	if err != nil {
 		t.Fatal(err)
 	}
-	messages := loop.messagesFromEvents(events, "fallback")
+	messages, err := loop.messagesFromEvents(events, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(messages) != 5 || messages[2].Role != "user" || messages[2].Content != malformedToolArgumentsFeedback || messages[3].Role != "assistant" || messages[3].Content != "after repair" || messages[4].Role != "tool" {
 		t.Fatalf("messages=%#v", messages)
 	}
@@ -651,7 +654,10 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 		}
 		break
 	}
-	rebuilt := loop.messagesFromEvents(events, "fallback")
+	rebuilt, err := loop.messagesFromEvents(events, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(rebuilt, secondRequest) {
 		t.Fatalf("replayed context = %#v, want %#v", rebuilt, secondRequest)
 	}
@@ -1091,7 +1097,10 @@ func TestLoopFeedsStalePatchPreconditionBackForRecovery(t *testing.T) {
 			t.Fatalf("stale Patch must not start a side effect: %#v", event)
 		}
 	}
-	replayed := loop.messagesFromEvents(events, "recover stale patch")
+	replayed, err := loop.messagesFromEvents(events, "recover stale patch")
+	if err != nil {
+		t.Fatal(err)
+	}
 	foundReplay := false
 	for _, message := range replayed {
 		if message.Role == "tool" && message.ToolCallID == "stale_patch" {
@@ -2425,13 +2434,19 @@ func TestCallModelRejectsInconsistentUsage(t *testing.T) {
 // 序列与无会话场景完全一致。
 func TestMessagesFromEventsInjectsPriorContext(t *testing.T) {
 	loop := &Loop{}
-	messages := loop.messagesFromEvents(nil, "修复这个错误")
+	messages, err := loop.messagesFromEvents(nil, "修复这个错误")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(messages) != 2 || messages[0].Role != "system" || messages[1].Content != "修复这个错误" {
 		t.Fatalf("未携带前情时消息应为系统提示加任务原文: %+v", messages)
 	}
 
 	loop.PriorContext = "上一任务：创建 note.txt，验证未通过"
-	messages = loop.messagesFromEvents(nil, "再改一下")
+	messages, err = loop.messagesFromEvents(nil, "再改一下")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(messages) != 3 {
 		t.Fatalf("携带前情应在系统提示与任务之间注入，得到 %d 条", len(messages))
 	}
@@ -2463,13 +2478,19 @@ func TestMessagesFromEventsReplaysPriorContextFromArtifact(t *testing.T) {
 	}
 	events := []domain.Event{{Type: domain.EventRunCreated, Payload: mustJSON(domain.RunCreatedPayload{Task: "上一任务原文", PriorContextRef: refJSON})}}
 	loop := &Loop{Artifacts: store}
-	messages := loop.messagesFromEvents(events, "再改一下")
+	messages, err := loop.messagesFromEvents(events, "再改一下")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(messages) != 3 || messages[0].Role != "system" || !strings.Contains(messages[1].Content, "note.txt") || messages[2].Content != "上一任务原文" {
 		t.Fatalf("回放应从制品注入前情且任务按事件恢复: %+v", messages)
 	}
 
 	loop.PriorContext = "显式携带优先的前情"
-	messages = loop.messagesFromEvents(events, "再改一下")
+	messages, err = loop.messagesFromEvents(events, "再改一下")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(messages[1].Content, "显式携带优先") {
 		t.Fatalf("显式携带应优先于事件回放: %+v", messages[1])
 	}
@@ -2498,7 +2519,10 @@ func TestMessagesFromEventsColdReplayPriorContextWithCheckpoint(t *testing.T) {
 		{Seq: 3, Type: domain.EventContextCompacted, Payload: mustJSON(domain.ContextCompactedPayload{ThroughSeq: 2, Summary: summary})},
 	}
 	loop := &Loop{Artifacts: store}
-	messages := loop.messagesFromEvents(events, "fallback")
+	messages, err := loop.messagesFromEvents(events, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if loop.PriorContext != priorContext || loop.PriorContextRef == nil || *loop.PriorContextRef != ref {
 		t.Fatalf("冷回放未保存解析后的前情状态: context=%q ref=%#v", loop.PriorContext, loop.PriorContextRef)
 	}
@@ -2511,6 +2535,49 @@ func TestMessagesFromEventsColdReplayPriorContextWithCheckpoint(t *testing.T) {
 	}
 	if strings.Count(joined, priorContext) != 1 || strings.Count(joined, task) != 1 || strings.Count(joined, summary) != 1 {
 		t.Fatalf("冷回放持久上下文发生重复: %#v", messages)
+	}
+}
+
+// TestMessagesFromEventsRejectsInvalidPriorContextRefs 锁定已声明前情引用的
+// 格式、存在性和摘要完整性错误均不得静默降级；旧事件无字段仍兼容。
+func TestMessagesFromEventsRejectsInvalidPriorContextRefs(t *testing.T) {
+	store, err := artifact.New(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := store.Put([]byte("前情"), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimPrefix(valid.SHA256, "sha256:")
+	validPath := filepath.Join(store.Root, "sha256", digest[:2], digest)
+	if err := os.WriteFile(validPath, []byte("被篡改的前情"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{name: "malformed", raw: json.RawMessage(`{"task":"t","prior_context_ref":{`)},
+		{name: "null", raw: mustJSON(struct {
+			Task            string          `json:"task"`
+			PriorContextRef json.RawMessage `json:"prior_context_ref"`
+		}{Task: "t", PriorContextRef: json.RawMessage("null")})},
+		{name: "invalid", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: json.RawMessage(`{"sha256":"bad"}`)})},
+		{name: "missing", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: mustJSON(artifact.Ref{SHA256: "sha256:" + strings.Repeat("0", 64)})})},
+		{name: "hash_mismatch", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: mustJSON(valid)})},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			loop := &Loop{Artifacts: store}
+			if _, err := loop.messagesFromEvents([]domain.Event{{Type: domain.EventRunCreated, Payload: test.raw}}, "fallback"); err == nil {
+				t.Fatal("损坏的前情引用应失败关闭")
+			}
+		})
+	}
+	loop := &Loop{Artifacts: store}
+	if messages, err := loop.messagesFromEvents([]domain.Event{{Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"legacy"}`)}}, "fallback"); err != nil || len(messages) != 2 {
+		t.Fatalf("旧事件无前情字段应兼容: messages=%#v err=%v", messages, err)
 	}
 }
 

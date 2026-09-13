@@ -89,3 +89,27 @@ func TestResolveSessionContextWithoutPrevRun(t *testing.T) {
 		t.Fatalf("无会话输入应原样返回空值: session=%q prior=%q ref=%v err=%v", sessionID, priorContext, ref, err)
 	}
 }
+
+// TestResolveSessionContextPersistsExplicitTextAndRestoresReference 锁定显式文本与
+// 仅引用两条入口都以同一内容寻址制品为事实源。
+func TestResolveSessionContextPersistsExplicitTextAndRestoresReference(t *testing.T) {
+	store, err := artifact.New(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := Service{}
+	_, text, ref, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContext: "已验证的显式前情", PriorContextRef: &artifact.Ref{SHA256: "sha256:stale"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref == nil || text != "已验证的显式前情" || ref.SHA256 == "sha256:stale" {
+		t.Fatalf("显式文本未生成规范引用: text=%q ref=%#v", text, ref)
+	}
+	_, restored, restoredRef, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContextRef: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored != text || restoredRef == nil || *restoredRef != *ref {
+		t.Fatalf("仅引用未恢复原文: text=%q ref=%#v", restored, restoredRef)
+	}
+}

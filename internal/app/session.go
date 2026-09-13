@@ -8,6 +8,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -122,16 +123,35 @@ func stateText(state string) string {
 	}
 }
 
-// resolveSessionContext 装配本次运行的会话链关系：显式提供的前情与标识
-// 原样透传；仅给出前置运行时从其事件投影前情卡、内容寻址落制品库，并
-// 沿用其会话标识延续链。无会话输入返回空值，运行行为与现状一致。
+// resolveSessionContext 装配本次运行的会话链关系。显式前情总是重新写入
+// 内容寻址制品库并返回规范引用；仅有引用时必须完整读取校验。仅给出前置
+// 运行且没有显式前情时，从其事件投影前情卡并持久化。
 func (service Service) resolveSessionContext(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, options RunOptions) (string, string, *artifact.Ref, error) {
-	if options.PrevRunID == "" {
-		return options.SessionID, options.PriorContext, options.PriorContextRef, nil
-	}
 	sessionID := options.SessionID
 	priorContext := options.PriorContext
 	priorContextRef := options.PriorContextRef
+	if priorContext != "" {
+		if artifacts == nil {
+			return "", "", nil, errors.New("artifact store unavailable for prior context")
+		}
+		ref, err := artifacts.Put([]byte(priorContext), "text/plain")
+		if err != nil {
+			return "", "", nil, fmt.Errorf("store explicit prior context: %w", err)
+		}
+		priorContextRef = &ref
+	} else if priorContextRef != nil {
+		if artifacts == nil {
+			return "", "", nil, errors.New("artifact store unavailable for prior context")
+		}
+		content, err := artifacts.Open(*priorContextRef)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("open prior context artifact: %w", err)
+		}
+		priorContext = string(content)
+	}
+	if options.PrevRunID == "" {
+		return sessionID, priorContext, priorContextRef, nil
+	}
 	previous, err := journal.Load(ctx, options.PrevRunID)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("load prior run %s for session context: %w", options.PrevRunID, err)

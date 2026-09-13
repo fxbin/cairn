@@ -50,7 +50,10 @@ func TestMessagesFromEventsReplayKeepsLegacySecretOutOfCheckpoint(t *testing.T) 
 		{Seq: 4, Type: domain.EventToolResultAppended, OperationID: &operation, Payload: json.RawMessage(`{"ok":true,"code":"ok","preview":"command finished"}`)},
 	}
 	loop := Loop{}
-	rebuilt := loop.messagesFromEvents(events, "fallback")
+	rebuilt, err := loop.messagesFromEvents(events, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var replayedRaw bool
 	for _, message := range rebuilt {
 		for _, call := range message.ToolCalls {

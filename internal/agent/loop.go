@@ -132,7 +132,10 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if projection.State != domain.RunRunning {
 		return Result{}, fmt.Errorf("run %s is not runnable from state %s", input.RunID, projection.State)
 	}
-	messages := loop.messagesFromEvents(events, input.Task)
+	messages, err := loop.messagesFromEvents(events, input.Task)
+	if err != nil {
+		return Result{}, err
+	}
 	messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
 	if err != nil {
 		return Result{}, err
