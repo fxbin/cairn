@@ -86,6 +86,12 @@ type commitFinishedMsg struct {
 	err     error
 }
 
+// wizardShutdownMsg 表示独立向导的调用方 context 已取消；handled 在模型实
+// 际消费消息时闭合，用于区分外部取消与正常退出后的并发取消。
+type wizardShutdownMsg struct {
+	handled chan<- struct{}
+}
+
 // credentialSnapshot 保存一次向导提交前的凭据文件与环境变量状态；内容仅在
 // 提交命令闭包中用于失败补偿，不进入界面模型、错误或持久化输出。
 type credentialSnapshot struct {
@@ -359,6 +365,20 @@ func syncDirectory(path string) error {
 // Update 处理向导的全部按键与异步消息：Ctrl+C 在提交前后退出，提交期间须
 // 等待成功或失败补偿完成；Enter 推进、Esc 后退。
 func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if shutdown, shuttingDown := msg.(wizardShutdownMsg); shuttingDown {
+		select {
+		case shutdown.handled <- struct{}{}:
+		default:
+		}
+		if wizard.step == stepCommitting {
+			wizard.exitAfterCommit = true
+			if wizard.commitCancel != nil {
+				wizard.commitCancel()
+			}
+			return wizard, nil
+		}
+		return wizard, tea.Quit
+	}
 	if message, ok := msg.(tea.KeyMsg); ok {
 		switch message.String() {
 		case "ctrl+c":
@@ -391,7 +411,7 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			wizard.commitCancel()
 		}
 		wizard.commitCancel = nil
-		if wizard.exitAfterCommit || wizard.ctx.Err() != nil {
+		if wizard.exitAfterCommit {
 			return wizard, tea.Quit
 		}
 		return wizard, nil
@@ -823,11 +843,28 @@ func (wizard ConfigWizard) updateDone(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return wizard, nil
 }
 
-// RunConfigWizard 以终端模式运行模型配置向导并返回进程级结论；ctx 承载取
-// 消语义，非 TTY 环境由调用方先行拦截。
+// RunConfigWizard 以终端模式运行模型配置向导并返回进程级结论；外部取消通过
+// 模型消息收束，提交中须等待 Setup 停止和凭据补偿完成后才能退出。
 func RunConfigWizard(ctx context.Context, input app.SetupInput) error {
 	program := tea.NewProgram(NewConfigWizard(ctx, input))
+	watchDone := make(chan struct{})
+	cancelHandled := make(chan struct{}, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			program.Send(wizardShutdownMsg{handled: cancelHandled})
+		case <-watchDone:
+		}
+	}()
 	_, err := program.Run()
+	close(watchDone)
+	if err == nil {
+		select {
+		case <-cancelHandled:
+			return ctx.Err()
+		default:
+		}
+	}
 	return err
 }
 
