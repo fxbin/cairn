@@ -579,9 +579,10 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 	}
 	console.rewinding = nil
 	if finished.err != nil {
-		console.appendLine(errStyle.Render("● 工作区回退失败: " + finished.err.Error()))
+		console.appendLine(errStyle.Render(fmt.Sprintf("● 工作区回退中止: 界面已观察到 %d 次补丁操作成功；实际断点以事件日志为准: %v", applied, finished.err)))
+		console.appendLine(dimStyle.Render("整批回退非原子；请 inspect 回退 run 查证，悬挂操作按提示使用 resume --resolve 对账"))
 	} else {
-		console.appendLine(okStyle.Render(fmt.Sprintf("● 工作区已回退（反放 %d 个补丁；对话链与前情未变）", applied)))
+		console.appendLine(okStyle.Render(fmt.Sprintf("● 工作区回退完成（界面已观察到反放 %d 个补丁操作；逐项持久化；对话链与前情未变）", applied)))
 	}
 	if console.result != nil && console.result.ID != "" {
 		console.appendLine(dimStyle.Render("回退 run " + string(console.result.ID) + "（cairn inspect 查证）"))
@@ -1450,7 +1451,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 				console.appendLine(warnStyle.Render("当前无可回退的会话链"))
 				return true, nil
 			}
-			console.appendLine(itemStyle.Render("会话链（/rewind-files <序号> 撤销该任务起的补丁，工作区回到其开始前；逐项需审批）:"))
+			console.appendLine(itemStyle.Render("会话链（/rewind-files <序号> 反放该任务起由 Cairn 记录且可恢复的补丁；整批非原子，逐项经策略判定并在必要时审批，不撤销命令或链外副作用）:"))
 			for index, entry := range console.sessionRuns {
 				console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s · %s", index+1, entry.id, entry.verdict, entry.summary)))
 			}
@@ -1467,7 +1468,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		}
 		console.mode = consoleRunning
 		console.rewinding = &rewindState{}
-		console.appendLine(okStyle.Render(fmt.Sprintf("▶ 工作区回退中：撤销第 %d 个任务起的 %d 个任务的补丁（Ctrl+C 取消；每个补丁需审批）", index, len(runs))))
+		console.appendLine(okStyle.Render(fmt.Sprintf("▶ 工作区回退中：撤销第 %d 个任务起的 %d 个任务的补丁（Ctrl+C 取消；逐项经策略判定并在必要时审批；整批非原子）", index, len(runs))))
 		return true, rewindFilesCmd(*console, runs)
 	case "/theme":
 		console.appendLine(dimStyle.Render(cycleTheme() + "（会话内生效）"))

@@ -1,6 +1,6 @@
 // rewind.go 提供工作区回退用例：从会话链各 run 的已生效补丁事件逆序推导反
-// 放计划，在新 run 中以脚本化工具计划逐项走完整审批链执行。推导是纯函数，
-// 全量预校验（before 制品在档、工作区摘要与链一致）失败关闭，绝不部分回退。
+// 放计划，在新 run 中以脚本化工具计划逐项走完整审批链执行。执行前会全量预
+// 校验；执行阶段逐操作持久化，每个单文件操作原子，逻辑补丁及整批均非原子。
 package app
 
 import (
@@ -59,8 +59,8 @@ type RewindOptions struct {
 }
 
 // Rewind 反放选定链节点之后的所有已生效补丁：全新回退创建脚本化 run 执行；
-// 同计划的未收口回退 run 幂等续跑（审批中断或崩溃后再次调用即可）。每个反
-// 放补丁独立走 提议 → 策略 → 审批 → operation_started → 结果 事件链。
+// 同计划的未收口回退 run 可在审批中断后幂等续跑，悬挂副作用须先对账。每个
+// 反放补丁独立走 提议 → 策略 → 必要时审批 → operation_started → 结果 事件链。
 func (service Service) Rewind(ctx context.Context, options RewindOptions) (outcome RunResult, err error) {
 	if len(options.Runs) == 0 {
 		return RunResult{}, errors.New("rewind requires at least one run")
@@ -163,8 +163,8 @@ func (service Service) driveRewindRun(ctx context.Context, boot *Boot, runID dom
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }
 
-// rewindToolCalls 由链上事件推导反放调用清单：done 是已完成（已在回退 run
-// 中提议过）的调用标识集合，续跑时用于跳过已生效的反放。
+// rewindToolCalls 由链上事件推导反放调用清单：done 是已有终态或对账结论、
+// 无需再次提议的调用标识集合；not_applied 对账结论仍会重新提议。
 func (service Service) rewindToolCalls(ctx context.Context, boot *Boot, runs []domain.RunID, done map[string]bool) ([]ports.ToolCall, error) {
 	patches, err := collectRewindPatches(ctx, boot.Journal, runs)
 	if err != nil {
@@ -250,8 +250,8 @@ type simulatedFile struct {
 }
 
 // deriveRewindCalls 逆序反放已生效补丁并全量预校验：从当前工作区状态出发，
-// 逐项校验文件摘要与链上 planned_after 一致、before 制品在档可读，构造反放
-// 参数。任一项不可恢复即拒绝整个回退（不做部分回退、不猜测）。
+// 逐项校验文件摘要与链上 planned_after 一致、before 制品在档可读。任一项
+// 不可恢复即在计划生成阶段拒绝；该保证不表示后续逐项执行具有整批原子性。
 func deriveRewindCalls(patches []rewindPatch, workspace tools.Workspace, artifacts *artifact.Store, done map[string]bool) ([]ports.ToolCall, error) {
 	simulated := make(map[string]*simulatedFile)
 	state := func(path string) (*simulatedFile, error) {
