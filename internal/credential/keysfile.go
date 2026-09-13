@@ -6,6 +6,7 @@
 package credential
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func LoadEnvFile(path string) ([]string, error) {
 // UpsertEnvFile 把 name=value 合并写入凭据文件：保留其他行与既有行序、
 // 更新同名行、新变量追加到末尾；写入经临时文件与原子重命名，文件与目录
 // 权限强制收紧。
-func UpsertEnvFile(path, name, value string) error {
+func UpsertEnvFile(path, name, value string) (err error) {
 	if !validEnvName(name) {
 		return fmt.Errorf("invalid variable name %q", name)
 	}
@@ -100,11 +101,33 @@ func UpsertEnvFile(path, name, value string) error {
 		builder.WriteString(entries[existing])
 		builder.WriteString("\n")
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, []byte(builder.String()), keysFileRequiredPerm); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".keys-write-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(temporary, path)
+	temporaryPath := temporary.Name()
+	defer func() {
+		if temporary != nil {
+			err = errors.Join(err, temporary.Close())
+		}
+		if temporaryPath != "" {
+			if removeErr := os.Remove(temporaryPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, removeErr)
+			}
+		}
+	}()
+	if _, err = temporary.Write([]byte(builder.String())); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	temporary = nil
+	if err = os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	temporaryPath = ""
+	return nil
 }
 
 // EnvFileHas 报告凭据文件中是否已配置指定变量；文件不存在或不可读时返回
