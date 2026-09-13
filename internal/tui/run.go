@@ -73,18 +73,26 @@ type RunConsoleInput struct {
 	ReloadConfig func() (config.Config, error)
 }
 
-// consoleEventMsg 把已持久化的领域事件送入界面事件循环。
-type consoleEventMsg struct{ event domain.Event }
+// consoleEventMsg 把已持久化的领域事件及其操作世代送入界面事件循环。
+type consoleEventMsg struct {
+	generation uint64
+	event      domain.Event
+}
 
 // wizardClosedMsg 表示嵌入的配置向导请求收束（完成或取消），由主界面退
 // 出向导模式并按提交结果决定是否热重载。
 type wizardClosedMsg struct{}
 
-// runFinishedMsg 承载一次 Run 或 Resume 的最终结果；err 可能携带等待审批
-// 错误，由界面转入审批模式而不是终止。
+// consoleShutdownMsg 表示调用方已请求进程级收束；运行中必须先等待服务写入
+// 终态，空闲或审批等待时可直接退出。
+type consoleShutdownMsg struct{}
+
+// runFinishedMsg 承载一次 Run 或 Resume 的最终结果及操作世代；err 可能携带
+// 等待审批错误，由界面转入审批模式而不是终止。
 type runFinishedMsg struct {
-	result *app.RunResult
-	err    error
+	generation uint64
+	result     *app.RunResult
+	err        error
 }
 
 // sessionHistoryLoadedMsg 承载当前工作区的只读持久化历史；消息只驱动展示，
@@ -117,16 +125,20 @@ type rewindState struct {
 	applied int
 }
 
-// RunConsole 是单任务运行闭环的 bubbletea 模型。rootCtx 覆盖控制台生命周
-// 期，operationCtx 仅覆盖当前 Run、Resume 或 Rewind，避免单次取消污染后续操作。
+// RunConsole 是单任务运行闭环的 bubbletea 模型。rootCtx 覆盖控制台消息泵
+// 生命周期，operationParent 接收调用方取消，operationCtx 仅覆盖当前 Run、
+// Resume 或 Rewind，避免单次取消污染后续操作。
 type RunConsole struct {
-	rootCtx         context.Context
-	rootCancel      context.CancelFunc
-	operationCtx    context.Context
-	operationCancel context.CancelFunc
-	input           RunConsoleInput
-	events          chan domain.Event
-	stopWait        bool
+	rootCtx             context.Context
+	rootCancel          context.CancelFunc
+	operationParent     context.Context
+	operationCtx        context.Context
+	operationCancel     context.CancelFunc
+	operationGeneration uint64
+	input               RunConsoleInput
+	messages            chan tea.Msg
+	stopWait            bool
+	shutdownRequested   bool
 
 	mode       consoleMode
 	taskField  textarea.Model
@@ -164,18 +176,20 @@ type RunConsole struct {
 	rewinding           *rewindState
 }
 
-// NewRunConsole 构造运行主界面模型：根 context 承载控制台生命周期；每次
-// Run、Resume 或 Rewind 另建可取消 context，运行中 Ctrl+C 不影响后续操作。
+// NewRunConsole 构造运行主界面模型：内部根 context 承载消息泵生命周期，
+// 调用方 context 承载外部取消；每次 Run、Resume 或 Rewind 另建可取消
+// context，运行中 Ctrl+C 不影响后续操作，外部取消后仍可消费持久化终态。
 func NewRunConsole(ctx context.Context, runInput RunConsoleInput) RunConsole {
-	rootCtx, rootCancel := context.WithCancel(ctx)
+	rootCtx, rootCancel := context.WithCancel(context.Background())
 	console := RunConsole{
-		rootCtx:    rootCtx,
-		rootCancel: rootCancel,
-		input:      runInput,
-		events:     make(chan domain.Event, consoleEventBuffer),
-		mode:       consoleInput,
-		taskField:  newTaskArea(consoleInputPrompt),
-		queueField: newTaskArea("排队输入"),
+		rootCtx:         rootCtx,
+		rootCancel:      rootCancel,
+		operationParent: ctx,
+		input:           runInput,
+		messages:        make(chan tea.Msg, consoleEventBuffer),
+		mode:            consoleInput,
+		taskField:       newTaskArea(consoleInputPrompt),
+		queueField:      newTaskArea("排队输入"),
 	}
 	console.taskField.Focus()
 	return console
@@ -195,20 +209,38 @@ func newTaskArea(prompt string) textarea.Model {
 	return area
 }
 
-// Init 启动任务输入框与事件通道等待。
+// Init 启动任务输入框、内部消息等待与一次性的调用方取消观察。
 func (console RunConsole) Init() tea.Cmd {
-	return tea.Batch(console.taskField.Focus(), waitForEvent(console.events))
+	return tea.Batch(
+		console.taskField.Focus(),
+		waitForOperationMessage(console.rootCtx, console.messages),
+		waitForConsoleShutdown(console.rootCtx, console.operationParent),
+	)
 }
 
-// waitForEvent 阻塞等待下一条已持久化事件；通道关闭后返回 nil 消息结束
-// 等待链（运行收束时由界面停止消费）。
-func waitForEvent(events <-chan domain.Event) tea.Cmd {
+// waitForConsoleShutdown 把调用方取消转换为界面消息，使运行态先等待持久化
+// 终态再退出；控制台自身关闭时直接收束观察者，不遗留阻塞 goroutine。
+func waitForConsoleShutdown(rootCtx, operationParent context.Context) tea.Cmd {
 	return func() tea.Msg {
-		event, ok := <-events
-		if !ok {
+		select {
+		case <-rootCtx.Done():
 			return nil
+		case <-operationParent.Done():
+			return consoleShutdownMsg{}
 		}
-		return consoleEventMsg{event: event}
+	}
+}
+
+// waitForOperationMessage 按 FIFO 读取运行事件与终态；根 context 取消时退出，
+// 避免控制台关闭后遗留阻塞等待者。
+func waitForOperationMessage(ctx context.Context, messages <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case message := <-messages:
+			return message
+		}
 	}
 }
 
@@ -241,14 +273,16 @@ func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestI
 func startRunCmd(console RunConsole, task string) tea.Cmd {
 	service := console.input.Service
 	runCtx := console.operationContext()
-	events := console.events
-	onEvent := func(event domain.Event) { events <- event }
+	generation := console.operationGeneration
+	messages := console.messages
+	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Run(runCtx, app.RunOptions{
 			Task: task, Workspace: console.input.Workspace, Config: console.input.Config, OnEvent: onEvent,
 			SessionID: console.sessionID, PrevRunID: console.sessionPrev, RequireSessionTail: console.sessionTailRequired,
 		})
-		return runFinishedMsg{result: &result, err: err}
+		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})
+		return nil
 	}
 }
 
@@ -258,10 +292,11 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 	service := console.input.Service
 	runCtx := console.operationContext()
-	events := console.events
+	generation := console.operationGeneration
+	messages := console.messages
 	waiting := console.waiting
 	rewinding := console.rewinding
-	onEvent := func(event domain.Event) { events <- event }
+	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Resume(runCtx, app.ResumeOptions{
 			RunID: waiting.RunID, Workspace: console.input.Workspace, Config: console.input.Config,
@@ -269,9 +304,11 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 			OnEvent:  onEvent,
 		})
 		if rewinding != nil {
-			return rewindFinishedMsg{result: &result, err: err}
+			sendOperationMessage(console.rootCtx, messages, rewindFinishedMsg{generation: generation, result: &result, err: err})
+			return nil
 		}
-		return runFinishedMsg{result: &result, err: err}
+		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})
+		return nil
 	}
 }
 
@@ -280,22 +317,44 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 func rewindFilesCmd(console RunConsole, runs []domain.RunID) tea.Cmd {
 	service := console.input.Service
 	runCtx := console.operationContext()
-	events := console.events
-	onEvent := func(event domain.Event) { events <- event }
+	generation := console.operationGeneration
+	messages := console.messages
+	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Rewind(runCtx, app.RewindOptions{
 			Workspace: console.input.Workspace, Config: console.input.Config,
 			Runs: runs, OnEvent: onEvent,
 		})
-		return rewindFinishedMsg{result: &result, err: err}
+		sendOperationMessage(console.rootCtx, messages, rewindFinishedMsg{generation: generation, result: &result, err: err})
+		return nil
 	}
 }
 
-// rewindFinishedMsg 承载一次工作区回退（或其审批续跑）的最终结果。
+// rewindFinishedMsg 承载一次工作区回退（或其审批续跑）的最终结果及操作世代。
 type rewindFinishedMsg struct {
-	result *app.RunResult
-	err    error
+	generation uint64
+	result     *app.RunResult
+	err        error
 }
+
+// operationEventSink 把已持久化事件绑定到产生它的操作世代；操作取消时停止
+// 等待界面缓冲，避免同步事件回调阻塞服务收束。完整事实仍保存在 Journal。
+func operationEventSink(ctx context.Context, generation uint64, messages chan<- tea.Msg) func(domain.Event) {
+	return func(event domain.Event) {
+		sendOperationMessage(ctx, messages, consoleEventMsg{generation: generation, event: event})
+	}
+}
+
+// sendOperationMessage 按产生顺序投递事件与终态，并在生命周期取消时解除背压。
+func sendOperationMessage(ctx context.Context, messages chan<- tea.Msg, message tea.Msg) {
+	select {
+	case messages <- message:
+	case <-ctx.Done():
+	}
+}
+
+// noMessageCmd 满足状态转换需要返回命令的界面合同，但不建立第二个事件消费者。
+func noMessageCmd() tea.Msg { return nil }
 
 // approvalReason 是界面审批决定的固定理由文案，进入审批事件留痕。
 func approvalReason(approve bool) string {
@@ -345,25 +404,50 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.exitWizard()
 		return console, nil
 	}
-	if console.mode == consoleModelWizard {
-		if message, isKey := msg.(tea.KeyMsg); isKey {
-			return console.relayWizardKey(message)
+	if _, shuttingDown := msg.(consoleShutdownMsg); shuttingDown {
+		console.shutdownRequested = true
+		console.cancelOperation()
+		if console.mode == consoleRunning {
+			return console, nil
 		}
-		if _, isConsoleEvent := msg.(consoleEventMsg); !isConsoleEvent {
+		console.rootCancel()
+		return console, tea.Quit
+	}
+	if console.mode == consoleModelWizard {
+		switch msg.(type) {
+		case consoleEventMsg, runFinishedMsg, rewindFinishedMsg:
+		default:
 			return console.relayWizardMsg(msg)
 		}
 	}
 	switch typed := msg.(type) {
 	case consoleEventMsg:
-		console.applyEvent(typed.event)
-		if console.stopWait {
-			return console, nil
+		if typed.generation == console.operationGeneration {
+			console.applyEvent(typed.event)
 		}
-		return console, waitForEvent(console.events)
+		return console, waitForOperationMessage(console.rootCtx, console.messages)
 	case runFinishedMsg:
-		return console.receiveResult(typed)
+		if typed.generation != console.operationGeneration {
+			return console, waitForOperationMessage(console.rootCtx, console.messages)
+		}
+		model, _ := console.receiveResult(typed)
+		updated := model.(RunConsole)
+		if updated.shutdownRequested {
+			updated.rootCancel()
+			return updated, tea.Quit
+		}
+		return updated, waitForOperationMessage(updated.rootCtx, updated.messages)
 	case rewindFinishedMsg:
-		return console.receiveRewindResult(typed)
+		if typed.generation != console.operationGeneration {
+			return console, waitForOperationMessage(console.rootCtx, console.messages)
+		}
+		model, _ := console.receiveRewindResult(typed)
+		updated := model.(RunConsole)
+		if updated.shutdownRequested {
+			updated.rootCancel()
+			return updated, tea.Quit
+		}
+		return updated, waitForOperationMessage(updated.rootCtx, updated.messages)
 	}
 	return console, nil
 }
@@ -547,7 +631,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 		console.approvalDetail = console.loadApprovalDetail(waiting)
 		console.appendLine(warnStyle.Render("⏸ 等待审批: " + waiting.Summary))
 		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝 / v 差异"))
-		return console, waitForEvent(console.events)
+		return console, noMessageCmd
 	}
 	console.mode = consoleDone
 	console.result = finished.result
@@ -575,7 +659,7 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 		console.approvalDetail = console.loadApprovalDetail(waiting)
 		console.appendLine(warnStyle.Render("⏸ 回退等待审批: " + waiting.Summary))
 		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝（拒绝即中止回退）/ v 差异"))
-		return console, waitForEvent(console.events)
+		return console, noMessageCmd
 	}
 	console.mode = consoleDone
 	console.result = finished.result
@@ -599,10 +683,12 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 }
 
 // beginOperation 为一次 Run、Resume 或 Rewind 创建独立取消域；调用方必须
-// 在启动异步命令前调用，已有操作会先释放，避免遗留 context 泄漏。
+// 在启动异步命令前调用，已有操作会先释放。操作继承调用方取消源，但消息泵
+// 保持独立，确保外部取消后仍能按 FIFO 消费已持久化事件与最终结果。
 func (console *RunConsole) beginOperation() {
 	console.finishOperation()
-	console.operationCtx, console.operationCancel = context.WithCancel(console.rootCtx)
+	console.operationGeneration++
+	console.operationCtx, console.operationCancel = context.WithCancel(console.operationParent)
 }
 
 // operationContext 返回当前操作 context；未建立操作时返回根 context，供
