@@ -249,7 +249,13 @@ func (command Command) benchmarkRun(ctx context.Context, arguments []string) int
 		fmt.Fprintln(command.Stderr, "write benchmark report:", err)
 		return ExitFailed
 	}
-	if *prepareOnly || report.Passed() {
+	if *prepareOnly {
+		if report.Outcome == "prepared" {
+			return ExitOK
+		}
+		return ExitFailed
+	}
+	if report.Passed() {
 		return ExitOK
 	}
 	return ExitFailed

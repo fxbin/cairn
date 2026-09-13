@@ -219,6 +219,73 @@ func TestBenchmarkRunRequiresExplicitLocalConfig(t *testing.T) {
 	}
 }
 
+// TestBenchmarkPrepareOnlyEnvironmentInvalidReturnsFailed 锁定 CLI 在环境资格失败时
+// 仍输出完整报告，但不能把 prepare-only 请求误报为成功。
+func TestBenchmarkPrepareOnlyEnvironmentInvalidReturnsFailed(t *testing.T) {
+	assets := t.TempDir()
+	manifestPath := filepath.Join(assets, "tasks.yaml")
+	agentConfigPath := filepath.Join(assets, "agent.yaml")
+	localConfigPath := filepath.Join(assets, "local.yaml")
+	manifest := `version: 1
+suite: cli-regression
+intended_use: evaluation_only
+task_count: 1
+tasks:
+  - id: CLI-001
+    kind: natural
+    repository:
+      name: unavailable
+      url: https://127.0.0.1:1/unavailable.git
+      baseline_commit: 0123456789abcdef0123456789abcdef01234567
+    language: go
+    task_prompt: 修复测试任务
+    scope:
+      allowed_paths: [note.txt]
+      prohibited_paths: [.git]
+    verification:
+      command:
+        argv: ["true"]
+        cwd: .
+    runtime:
+      docker_image: alpine:latest
+execution_contract:
+  attempts_per_task: 1
+  agent_workspace: disposable_clone
+  reset_between_attempts: true
+  network_during_agent_run: denied
+`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentConfigPath, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	localConfig := "version: 1\npaths:\n" +
+		"  manifest: " + manifestPath + "\n" +
+		"  agent_config: " + agentConfigPath + "\n" +
+		"  private_dir: " + filepath.Join(assets, "private") + "\n" +
+		"  results_dir: " + filepath.Join(assets, "results") + "\n" +
+		"  workspaces_dir: " + filepath.Join(assets, "workspaces") + "\n" +
+		"  state_dir: " + filepath.Join(assets, "state") + "\n" +
+		"execution:\n  prepare_timeout: 1ms\n"
+	if err := os.WriteFile(localConfigPath, []byte(localConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	command := Command{Stdout: &stdout, Stderr: &stderr}
+	exit := command.Run(context.Background(), []string{"benchmark", "run", "--prepare-only", "--local-config", localConfigPath})
+	if exit != ExitFailed {
+		t.Fatalf("exit=%d want=%d stdout=%q stderr=%q", exit, ExitFailed, stdout.String(), stderr.String())
+	}
+	var report struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &report); err != nil || report.Outcome != "environment_invalid" {
+		t.Fatalf("report=%q outcome=%q err=%v", stdout.String(), report.Outcome, err)
+	}
+}
+
 func TestResolveRequiresAuditableCLIArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
