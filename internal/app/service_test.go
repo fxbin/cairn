@@ -15,6 +15,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/buildinfo"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -25,6 +26,50 @@ import (
 	"github.com/fxbin/cairn/internal/tools"
 	_ "modernc.org/sqlite"
 )
+
+// injectInvalidBuildIdentity 注入必然非法的 plain 构建事实，并在测试结束时恢复全局值。
+func injectInvalidBuildIdentity(t *testing.T) {
+	t.Helper()
+	originalFlavor, originalVersion, originalDigest := buildinfo.Flavor, buildinfo.ToolchainVersion, buildinfo.InstrumentationDigest
+	originalRevision, originalDirty := buildinfo.Revision, buildinfo.Dirty
+	t.Cleanup(func() {
+		buildinfo.Flavor, buildinfo.ToolchainVersion, buildinfo.InstrumentationDigest = originalFlavor, originalVersion, originalDigest
+		buildinfo.Revision, buildinfo.Dirty = originalRevision, originalDirty
+	})
+	buildinfo.Flavor, buildinfo.ToolchainVersion, buildinfo.InstrumentationDigest = "plain", "unexpected", "sha256:unexpected"
+}
+
+// assertStateDirEmpty 断言入口失败发生在 Boot 创建日志、锁或制品目录之前。
+func assertStateDirEmpty(t *testing.T, stateDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("state directory must remain empty, entries=%v", entries)
+	}
+}
+
+// TestServiceRunRejectsInvalidBuildIdentityBeforePersistence 锁定非法编译期身份在
+// Boot 前失败关闭，不得构造 Provider 或留下日志、锁和制品目录。
+func TestServiceRunRejectsInvalidBuildIdentityBeforePersistence(t *testing.T) {
+	injectInvalidBuildIdentity(t)
+	providerCalled := false
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		providerCalled = true
+		return finalProvider{}, nil
+	}}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, err := service.Run(context.Background(), RunOptions{Task: "answer", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
+	if err == nil || !strings.Contains(err.Error(), "invalid current build identity") {
+		t.Fatalf("run error = %v", err)
+	}
+	if providerCalled {
+		t.Fatal("provider was constructed before build identity validation")
+	}
+	assertStateDirEmpty(t, stateDir)
+}
 
 // withTestProvider 为应用层测试配置补齐能力卡所需的模型与显式声明；
 // 测试替身模型名不在内建目录，必须显式声明才能通过装配期失败关闭。
@@ -543,6 +588,26 @@ func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
 		if event.Type == domain.EventOperationStarted && event.Seq > 6 && bytes.Contains(event.Payload, []byte(`"apply_patch"`)) {
 			t.Fatalf("reconciliation retried operation: %#v", event)
 		}
+	}
+}
+
+// TestProjectedRunOutcomeFailsClosedOnProjectionError 锁定执行成功后若事件无法
+// 投影为统一合同，调用方必须收到状态损坏错误而不是伪成功的 nil Result。
+func TestProjectedRunOutcomeFailsClosedOnProjectionError(t *testing.T) {
+	stateDir := t.TempDir()
+	const workspaceHash = "projection-error"
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	runID := domain.NewRunID()
+	outcome, err := projectedRunOutcome(journal, stateDir, workspaceHash, runID, "done", nil)
+	if err == nil || !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("projection error = %v", err)
+	}
+	if outcome.ID != runID || outcome.Response != "done" || outcome.Result != nil {
+		t.Fatalf("outcome = %#v", outcome)
 	}
 }
 

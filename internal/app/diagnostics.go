@@ -50,6 +50,8 @@ type DoctorReport struct {
 	ConfigFingerprint string                           `json:"config_fingerprint"`
 	BuildRevision     string                           `json:"build_revision,omitempty"`
 	Build             domain.BuildIdentity             `json:"build"`
+	BuildValid        bool                             `json:"build_valid"`
+	BuildError        string                           `json:"build_error,omitempty"`
 	WorkspaceHash     string                           `json:"workspace_hash"`
 	Policy            PolicyHealth                     `json:"policy"`
 	Resolution        []config.ResolutionEntry         `json:"resolution,omitempty"`
@@ -76,12 +78,11 @@ type PolicyHealth struct {
 
 // TelemetryHealth 如实报告遥测的真实接线状态。Status 是记忆体系的只读
 // 聚合快照（cairn memory telemetry）+ 召回聚合采集点状态：snapshot_available
-// 表示只读聚合与召回采集可用；disabled 表示该面未接线。OTLP 是构建形态维
-// 度的运行级导出状态（可选编译期探针）：unavailable 表示 plain 构建无观测
-// 探针；disabled 表示 otelc 构建且 OTEL_SDK_DISABLED=true 显式关闭；otlp 表
-// 示注入 SDK 按标准 OTel 环境变量运行。端点与认证只存在于环境，本投影永远
-// 不携带端点值。测试锁定该诚实合同——新增观测能力时必须同步更新本投影，
-// 不得提前宣称。
+// 表示只读聚合与召回采集可用；disabled 表示该面未接线。OTLP 是构建形态维度
+// 的运行级导出状态：unavailable 表示 plain 无探针；disabled 表示 SDK 全局
+// 关闭或 exporter 全部为 none；otlp 表示至少一个 OTLP exporter；enabled 表示
+// 仅非 OTLP exporter 启用；config_error 表示配置不受注入 SDK 支持。端点与认证
+// 只存在于环境，本投影永远不携带其值。
 type TelemetryHealth struct {
 	Status string `json:"status"`
 	OTLP   string `json:"otlp,omitempty"`
@@ -109,7 +110,12 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Telemetry:         TelemetryHealth{Status: "disabled", OTLP: buildinfo.TelemetryMode()},
 	}
 	report.BuildRevision = report.Build.Revision
-	_, report.Provider.APIKeyPresent = os.LookupEnv(configuration.Provider.APIKeyEnv)
+	if err := report.Build.Validate(); err != nil {
+		report.BuildError = err.Error()
+	} else {
+		report.BuildValid = true
+	}
+	report.Provider.APIKeyPresent = os.Getenv(configuration.Provider.APIKeyEnv) != ""
 	// 能力卡解析在 doctor 中保持只读：失败只记录错误并压低 ready，不中断
 	// 其余诊断；成功则进入 manifest 与报告供运行前解释。
 	card, cardErr := resolveProviderCard(configuration)
@@ -177,16 +183,16 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	return report, nil
 }
 
-// evaluateReadiness 汇总总体就绪判定：配置有效、能力卡可解析、Provider 前提
-// 在位、Docker 后端镜像可用、journal 完整或首次运行前尚不存在。
+// evaluateReadiness 汇总总体就绪判定：配置与构建身份有效、能力卡可解析、
+// Provider 前提在位、Docker 后端镜像可用、journal 完整或首次运行前尚不存在。
 func (report *DoctorReport) evaluateReadiness() {
 	sandboxReady := report.Sandbox.Backend != "docker" || report.Sandbox.ImageAvailable == "yes"
-	report.Ready = report.ConfigValid && report.ProviderCardError == "" && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
+	report.Ready = report.ConfigValid && report.BuildValid && report.ProviderCardError == "" && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
 }
 
-// buildIdentity 返回实际二进制的非敏感身份。当前版本没有构建标签或 otelc
-// flavor，因此固定为 plain；revision 缺失时保留空值、dirty 元数据缺失时标为
-// unknown，以如实表示构建信息不可得。
+// buildIdentity 返回实际二进制的非敏感身份。revision 缺失时保留空值、dirty
+// 元数据缺失时标为 unknown；编译期构建形态及工具链事实原样保留，非法 ldflags
+// 由 Validate 显式拒绝，禁止静默清洗后伪装成合法身份。
 func buildIdentity() domain.BuildIdentity {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		return buildIdentityFromSettings(info.Settings)
@@ -194,12 +200,12 @@ func buildIdentity() domain.BuildIdentity {
 	return buildIdentityFromSettings(nil)
 }
 
-// buildIdentityFromSettings 从 Go BuildInfo 中可公开的 VCS 设置与编译期固化
-// 的构建形态派生构建身份；缺失 dirty 设置必须保留 unknown，避免把不可知状态
-// 误报为干净工作树。观测工具链事实只来自 internal/buildinfo 的编译期注入，
-// 不从环境推导。
+// buildIdentityFromSettings 从 Go BuildInfo 或编译期注入中读取可公开的 VCS 设置
+// 与构建形态并派生身份；otelc 使用 -buildvcs=false，因此 revision/dirty 由构建
+// 脚本在模块改写前注入。Go BuildInfo 中存在合法值时优先采用，以保持 plain
+// 构建行为；非法注入值不被修正，由 Validate 失败关闭。
 func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdentity {
-	identity := domain.BuildIdentity{Dirty: "unknown", Flavor: buildinfo.Flavor, OtelcVersion: buildinfo.ToolchainVersion, InstrumentationDigest: buildinfo.InstrumentationDigest}
+	identity := domain.BuildIdentity{Revision: buildinfo.Revision, Dirty: buildinfo.Dirty, Flavor: buildinfo.Flavor, OtelcVersion: buildinfo.ToolchainVersion, InstrumentationDigest: buildinfo.InstrumentationDigest}
 	for _, setting := range settings {
 		switch setting.Key {
 		case "vcs.revision":
@@ -210,18 +216,18 @@ func buildIdentityFromSettings(settings []debug.BuildSetting) domain.BuildIdenti
 			}
 		}
 	}
-	if identity.Flavor != "otelc" {
-		identity.OtelcVersion, identity.InstrumentationDigest = "", ""
-	}
 	identity.Fingerprint = identity.ComputeFingerprint()
 	return identity
 }
 
-// buildIdentityPtr 为 run_created payload 返回独立的构建身份副本；每个 Run 都冻结
-// 创建时实际二进制的事实，不依赖 inspect 时所在的二进制。
-func buildIdentityPtr() *domain.BuildIdentity {
+// currentBuildIdentity 返回已校验的当前构建身份；运行入口必须在创建 journal、
+// 锁或制品前调用，确保非法编译期注入失败关闭且不留下持久化痕迹。
+func currentBuildIdentity() (*domain.BuildIdentity, error) {
 	identity := buildIdentity()
-	return &identity
+	if err := identity.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid current build identity: %w", err)
+	}
+	return &identity, nil
 }
 
 // buildIdentityFingerprint 是构建身份摘要的既有调用面：公式已收敛到领域方法，

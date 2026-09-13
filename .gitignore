@@ -18,7 +18,11 @@
 /dist/
 /cairn
 /cairn-otelc
-.otelc-build/
+/.otelc-build/
+/.otelc-build.lock/
+.cairn-otelc-*.bin
+.cairn-otelc-bin.*
+.cairn-otelc-launcher.*
 *.test
 *.out
 coverage.out

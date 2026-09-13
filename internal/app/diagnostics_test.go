@@ -62,6 +62,21 @@ func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	}
 }
 
+// TestDoctorTreatsEmptyAPIKeyAsAbsent 锁定空字符串环境变量不满足密钥前提。
+func TestDoctorTreatsEmptyAPIKeyAsAbsent(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Provider.APIKeyEnv = "CAIRN_DOCTOR_EMPTY_KEY"
+	t.Setenv(configuration.Provider.APIKeyEnv, "")
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	report, err := service.Doctor(context.Background(), t.TempDir(), t.TempDir(), configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Provider.APIKeyPresent || report.Ready {
+		t.Fatalf("empty key must be absent and not ready: %+v", report)
+	}
+}
+
 // TestBuildIdentityIsPlainAndDeterministic 锁定当前二进制身份只报告真实的 plain
 // flavor，并让同一份构建事实得到可复算的非敏感摘要。
 func TestBuildIdentityIsPlainAndDeterministic(t *testing.T) {

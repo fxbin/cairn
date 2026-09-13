@@ -32,6 +32,9 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if input.RunID == "" || input.WorkspaceHash == "" {
 		return Result{}, errors.New("run ID and workspace hash are required")
 	}
+	if err := validateScriptedCalls(calls); err != nil {
+		return Result{}, err
+	}
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
 		return Result{}, err
@@ -55,7 +58,7 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if projection.PendingApproval != nil {
 		return loop.resumeScriptedApproval(ctx, &projection, input, events, approval, calls)
 	}
-	proposed := proposedToolCallIDs(events)
+	proposed := activeScriptedToolCallIDs(events)
 	for _, call := range calls {
 		if !proposed[call.ID] {
 			continue
@@ -389,11 +392,12 @@ func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain
 	return Result{RunID: input.RunID}, errors.New(reason)
 }
 
-// healScriptedProposal 修复中断恢复窗口：已提议并终态、但结果事件缺失的调
-// 用，从终态事件载荷确定性重建 tool_result；未终态的提议无法安全续跑，失败
-// 关闭交由运行终止路径处置。
+// healScriptedProposal 修复中断恢复窗口：从后向前选择同一 call ID 的最新有效
+// 提议，避免 not_applied 后重试时误用旧 operation；已终态但结果事件缺失时，
+// 从该 operation 的终态载荷确定性重建 tool_result。
 func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, call ports.ToolCall) error {
-	for _, event := range events {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
 		if event.Type != domain.EventToolCallProposed || event.OperationID == nil {
 			continue
 		}
@@ -448,9 +452,9 @@ func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.R
 	return nil
 }
 
-// remainingScriptedCalls 返回计划中尚未提议过的调用，供审批续跑后继续执行。
+// remainingScriptedCalls 返回计划中尚无有效提议的调用，供审批续跑后继续执行。
 func remainingScriptedCalls(events []domain.Event, calls []ports.ToolCall) []ports.ToolCall {
-	proposed := proposedToolCallIDs(events)
+	proposed := activeScriptedToolCallIDs(events)
 	remaining := make([]ports.ToolCall, 0, len(calls))
 	for _, call := range calls {
 		if !proposed[call.ID] {
@@ -458,6 +462,50 @@ func remainingScriptedCalls(events []domain.Event, calls []ports.ToolCall) []por
 		}
 	}
 	return remaining
+}
+
+// validateScriptedCalls 确保计划调用标识非空且唯一，防止一次入口内重复执行
+// 同一确定性副作用。
+func validateScriptedCalls(calls []ports.ToolCall) error {
+	seen := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		if call.ID == "" {
+			return errors.New("scripted tool call ID is required")
+		}
+		if _, exists := seen[call.ID]; exists {
+			return fmt.Errorf("duplicate scripted tool call ID %q", call.ID)
+		}
+		seen[call.ID] = struct{}{}
+	}
+	return nil
+}
+
+// activeScriptedToolCallIDs 返回仍应视为已提议的脚本调用；人工对账明确
+// not_applied 的旧 operation 不具备副作用，允许同一确定性调用在新 operation
+// 下重新提议和执行，其他提议保持防重语义。
+func activeScriptedToolCallIDs(events []domain.Event) map[string]bool {
+	operationCalls := make(map[domain.OperationID]string)
+	active := make(map[string]bool)
+	for _, event := range events {
+		if event.Type == domain.EventToolCallProposed && event.OperationID != nil {
+			var payload toolCallPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
+				operationCalls[*event.OperationID] = payload.CallID
+				active[payload.CallID] = true
+			}
+			continue
+		}
+		if event.Type != domain.EventOperationReconciled || event.OperationID == nil {
+			continue
+		}
+		var payload struct {
+			Verdict string `json:"verdict"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Verdict == "not_applied" {
+			delete(active, operationCalls[*event.OperationID])
+		}
+	}
+	return active
 }
 
 // currentTurnOf 返回投影当前轮次；无轮次时返回零值供错误路径使用。

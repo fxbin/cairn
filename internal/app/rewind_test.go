@@ -80,6 +80,31 @@ func testContentHash(t *testing.T, content string) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+// TestRewindRejectsInvalidBuildIdentityBeforePersistence 锁定回退入口同样在 Boot
+// 前验证编译期身份，不得因目标 run 查询而创建任何状态文件。
+func TestRewindRejectsInvalidBuildIdentityBeforePersistence(t *testing.T) {
+	injectInvalidBuildIdentity(t)
+	providerCalled := false
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		providerCalled = true
+		return finalProvider{}, nil
+	}}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, err := service.Rewind(context.Background(), RewindOptions{
+		Workspace: workspace,
+		StateDir:  stateDir,
+		Config:    withTestProvider(config.Defaults()),
+		Runs:      []domain.RunID{domain.NewRunID()},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid current build identity") {
+		t.Fatalf("rewind error = %v", err)
+	}
+	if providerCalled {
+		t.Fatal("provider was constructed before build identity validation")
+	}
+	assertStateDirEmpty(t, stateDir)
+}
+
 // TestRewindRestoresFileFromBeforeArtifact 锁定回退主合同：update 反放经审批
 // 恢复 before 内容，回退 run 完成且走完整事件链。
 func TestRewindRestoresFileFromBeforeArtifact(t *testing.T) {
@@ -141,6 +166,117 @@ func TestRewindContinuesByIdempotentReentry(t *testing.T) {
 	}
 	if content, err := os.ReadFile(filepath.Join(workspace, path)); err != nil || string(content) != "original" {
 		t.Fatalf("note.txt=%q err=%v", content, err)
+	}
+}
+
+// countingFinalProvider 记录模型流调用次数；回退恢复路径必须始终保持为零。
+type countingFinalProvider struct {
+	calls int
+}
+
+func (provider *countingFinalProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(ports.ModelEvent) error) error {
+	provider.calls++
+	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "unexpected model call"}); err != nil {
+		return err
+	}
+	return emitTestCompletion(emit)
+}
+
+// TestRewindReconcileRespectsAppliedVerdict 锁定回退副作用悬挂后的恢复语义：
+// applied_success 跳过已生效调用，not_applied 则重新提议并在审批后执行；两条
+// 路径都不得进入模型循环。
+func TestRewindReconcileRespectsAppliedVerdict(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		verdict string
+	}{
+		{name: "applied_success skips execution", verdict: "applied_success"},
+		{name: "not_applied retries execution", verdict: "not_applied"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			workspace, stateDir := t.TempDir(), t.TempDir()
+			const path = "note.txt"
+			if err := os.WriteFile(filepath.Join(workspace, path), []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sourceRunID, _, configuration := runApprovedUpdateTask(t, workspace, stateDir, path, "original", "updated")
+			configuration.Policy.Write = "ask"
+			provider := &countingFinalProvider{}
+			service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+			_, rewindErr := service.Rewind(context.Background(), RewindOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: []domain.RunID{sourceRunID}})
+			var waiting *agent.WaitingApprovalError
+			if !errors.As(rewindErr, &waiting) {
+				t.Fatalf("rewind must pause before operation: %v", rewindErr)
+			}
+			_, workspaceHash, err := workspaceFor(workspace, configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal, err := openJournal(stateDir, workspaceHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := journal.Load(context.Background(), waiting.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection, err := domain.Replay(events)
+			if err != nil || projection.CurrentTurn == nil {
+				t.Fatalf("rewind projection=%+v err=%v", projection, err)
+			}
+			turnID := *projection.CurrentTurn
+			operationID := waiting.OperationID
+			if _, err := journal.Append(context.Background(), projection.LastSeq, domain.EventDraft{RunID: waiting.RunID, WorkspaceHash: workspaceHash, Type: domain.EventApprovalGranted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"fingerprint":"` + waiting.Fingerprint + `","actor":"test"}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := journal.Append(context.Background(), projection.LastSeq+1, domain.EventDraft{RunID: waiting.RunID, WorkspaceHash: workspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"` + waiting.Fingerprint + `"}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := journal.Append(context.Background(), projection.LastSeq+2, domain.EventDraft{RunID: waiting.RunID, WorkspaceHash: workspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","side_effect_class":"workspace","planned_path":"note.txt","planned_before":"` + testContentHash(t, "updated") + `","planned_after":"` + testContentHash(t, "original") + `"}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := journal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if testCase.verdict == "applied_success" {
+				if err := os.WriteFile(filepath.Join(workspace, path), []byte("original"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, reconcileErr := service.Reconcile(context.Background(), ReconcileOptions{RunID: waiting.RunID, OperationID: operationID, Verdict: testCase.verdict, Note: "test reconciliation", Workspace: workspace, StateDir: stateDir, Config: configuration})
+			if testCase.verdict == "not_applied" {
+				if !errors.As(reconcileErr, &waiting) {
+					t.Fatalf("not_applied must request approval for retry: %v", reconcileErr)
+				}
+				result, reconcileErr = service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "retry"}})
+			}
+			if reconcileErr != nil || result.Result == nil || result.Result.State != string(domain.RunCompleted) {
+				t.Fatalf("result=%#v err=%v", result, reconcileErr)
+			}
+			if provider.calls != 0 {
+				t.Fatalf("provider stream calls=%d, want 0", provider.calls)
+			}
+			if content, err := os.ReadFile(filepath.Join(workspace, path)); err != nil || string(content) != "original" {
+				t.Fatalf("note.txt=%q err=%v", content, err)
+			}
+			inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, waiting.RunID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposals := 0
+			for _, event := range inspected.Events {
+				if event.Type == domain.EventToolCallProposed {
+					proposals++
+				}
+			}
+			wantProposals := 1
+			if testCase.verdict == "not_applied" {
+				wantProposals = 2
+			}
+			if proposals != wantProposals {
+				t.Fatalf("tool proposals=%d, want %d", proposals, wantProposals)
+			}
+		})
 	}
 }
 

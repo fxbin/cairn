@@ -61,6 +61,7 @@ func validateUsage(usage *ports.Usage) error {
 // callModel 调用 Provider 并严格收集一个以 Done 结束的有效流式响应。
 func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (collectedResponse, error) {
 	var response collectedResponse
+	toolCallIDs := make(map[string]struct{})
 	done := false
 	err := loop.Provider.Stream(ctx, ports.ModelRequest{Model: loop.Model, Messages: messages, Tools: loop.Tools.Specs()}, func(event ports.ModelEvent) error {
 		if done {
@@ -73,6 +74,10 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 			if event.ToolCall == nil || event.ToolCall.ID == "" || event.ToolCall.Name == "" {
 				return errors.New("provider emitted invalid tool call")
 			}
+			if _, exists := toolCallIDs[event.ToolCall.ID]; exists {
+				return errors.New("provider emitted duplicate tool call ID")
+			}
+			toolCallIDs[event.ToolCall.ID] = struct{}{}
 			if !json.Valid(event.ToolCall.Arguments) {
 				return ports.ErrMalformedToolCallArguments
 			}

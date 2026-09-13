@@ -191,11 +191,11 @@ func (identity BuildIdentity) ComputeFingerprint() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// validateBuildIdentity 拒绝无法解释为当前二进制形态的新增 Run 身份；nil 是
+// Validate 拒绝无法解释为当前二进制形态或摘要不自洽的新增 Run 身份；nil 是
 // 旧 run 的合法兼容形式。Revision 可以为空、dirty 必须明确为
 // unknown/true/false；工具链事实只在 otelc flavor 下允许出现，且 otelc 必须
-// 同时携带版本与插桩摘要，防止半配置身份进入事件链。
-func validateBuildIdentity(identity *BuildIdentity) error {
+// 同时携带版本与插桩摘要。Fingerprint 必须由其余身份事实确定性复算得到。
+func (identity *BuildIdentity) Validate() error {
 	if identity == nil {
 		return nil
 	}
@@ -213,6 +213,19 @@ func validateBuildIdentity(identity *BuildIdentity) error {
 	}
 	if identity.Flavor == "otelc" && (identity.OtelcVersion == "" || identity.InstrumentationDigest == "") {
 		return errors.New("otelc build identity requires toolchain version and instrumentation digest")
+	}
+	if identity.Flavor == "otelc" {
+		const digestPrefix = "sha256:"
+		digest := identity.InstrumentationDigest
+		if len(digest) != len(digestPrefix)+sha256.Size*2 || digest[:len(digestPrefix)] != digestPrefix {
+			return errors.New("otelc instrumentation digest must be a sha256 digest")
+		}
+		if _, err := hex.DecodeString(digest[len(digestPrefix):]); err != nil {
+			return errors.New("otelc instrumentation digest must be a sha256 digest")
+		}
+	}
+	if expected := identity.ComputeFingerprint(); identity.Fingerprint != expected {
+		return fmt.Errorf("run build fingerprint does not match identity facts: got %q want %q", identity.Fingerprint, expected)
 	}
 	return nil
 }
@@ -305,7 +318,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode run_created payload: %w", err)
 		}
-		if err := validateBuildIdentity(payload.Build); err != nil {
+		if err := payload.Build.Validate(); err != nil {
 			return err
 		}
 		projection.ID = event.RunID

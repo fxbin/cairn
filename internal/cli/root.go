@@ -1627,6 +1627,11 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	fmt.Fprintf(command.Stdout, "config: %t (preset %s profile %s)\n", report.ConfigValid, report.Preset, report.Profile)
 	fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", report.ConfigFingerprint)
 	writeBuildIdentity(command.Stdout, "build", report.Build)
+	fmt.Fprintf(command.Stdout, "build valid: %t", report.BuildValid)
+	if report.BuildError != "" {
+		fmt.Fprintf(command.Stdout, " (%s)", report.BuildError)
+	}
+	fmt.Fprintln(command.Stdout)
 	fmt.Fprintf(command.Stdout, "workspace: %s\n", report.WorkspaceHash)
 	fmt.Fprintf(command.Stdout, "policy: write=%s exec=%s\n", report.Policy.Write, report.Policy.Exec)
 	fmt.Fprintf(command.Stdout, "provider: %s model %s key env %s present=%t\n", report.Provider.BaseURL, report.Provider.Model, report.Provider.APIKeyEnv, report.Provider.APIKeyPresent)

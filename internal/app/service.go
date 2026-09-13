@@ -129,6 +129,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
 	}
+	build, err := currentBuildIdentity()
+	if err != nil {
+		return RunResult{}, err
+	}
 	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
@@ -174,7 +178,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		domain.RunCreatedPayload
 		ConfigRef       artifact.Ref `json:"config_ref"`
 		PriorContextRef artifact.Ref `json:"prior_context_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr(), SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(priorContextRef)})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: derefRef(priorContextRef)})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -204,8 +208,8 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }
 
-// contractResultOrNil 在投影失败时返回 nil 而不是零值，避免把半成品合同
-// 误当有效结果；调用方仍以原始运行错误为首要上报事实。
+// contractResultOrNil 在投影失败时返回 nil 而不是零值，避免把半成品合同误当
+// 有效结果；projectedRunOutcome 仍会把投影失败作为状态损坏返回。
 func contractResultOrNil(result contract.Result, err error) *contract.Result {
 	if err != nil {
 		return nil
@@ -214,14 +218,16 @@ func contractResultOrNil(result contract.Result, err error) *contract.Result {
 }
 
 // projectedRunOutcome 从当前事件日志投影一次产品合同，并把它附加到 Run、
-// Resume、Reconcile 与 Abort 的统一返回值。执行错误永远优先返回；若运行
-// 已成功但投影本身失败，则保留成功事实并省略 Result，供 inspect/evidence
-// 继续诊断，避免把投影层故障伪装成执行失败。
+// Resume、Reconcile 与 Abort 的统一返回值。执行错误优先返回；执行成功但投影
+// 失败说明持久化状态无法形成有效产品合同，必须以 ErrStateCorrupt 失败关闭。
 func projectedRunOutcome(journal *sqlite.Journal, stateDir, workspaceHash string, runID domain.RunID, response string, runErr error) (RunResult, error) {
 	result, projectionErr := projectRunResult(context.Background(), journal, stateDir, workspaceHash, runID)
 	outcome := RunResult{ID: runID, Response: response, Result: contractResultOrNil(result, projectionErr)}
 	if runErr != nil {
 		return outcome, runErr
+	}
+	if projectionErr != nil {
+		return outcome, fmt.Errorf("%w: %v", ErrStateCorrupt, projectionErr)
 	}
 	return outcome, nil
 }
@@ -496,6 +502,13 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if options.OnEvent != nil {
 		options.OnEvent(resumed)
 	}
+	// 回退 run 对账后仍由脚本化执行器续跑，禁止落入模型 Loop 产生计划外操作。
+	if plan, isRewind, planErr := rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); planErr != nil {
+		return RunResult{ID: options.RunID}, planErr
+	} else if isRewind {
+		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
+	}
+
 	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err

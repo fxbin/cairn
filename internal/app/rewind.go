@@ -65,6 +65,10 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 	if len(options.Runs) == 0 {
 		return RunResult{}, errors.New("rewind requires at least one run")
 	}
+	build, err := currentBuildIdentity()
+	if err != nil {
+		return RunResult{}, err
+	}
 	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
@@ -114,7 +118,7 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 		domain.RunCreatedPayload
 		ConfigRef artifact.Ref `json:"config_ref"`
 		TaskRef   artifact.Ref `json:"task_ref"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: buildIdentityPtr()}, ConfigRef: configRef, TaskRef: planRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build}, ConfigRef: configRef, TaskRef: planRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -386,8 +390,9 @@ func shortHash(value string) string {
 	return value
 }
 
-// rewindPlanOfRun 解码指定 run 的回退计划制品；found 为假表示普通 run（无
-// task_ref），制品损坏或版本未知则返回错误。
+// rewindPlanOfRun 解码指定 run 的回退计划制品；found 为假表示普通 run。
+// task_ref 是通用字段，只有制品明确声明 workspace-rewind 才按回退处理；已
+// 识别的回退制品若版本或内容损坏则失败关闭。
 func rewindPlanOfRun(ctx context.Context, journal *sqlite.Journal, artifacts *artifact.Store, runID domain.RunID) (rewindPlanArtifact, bool, error) {
 	events, err := journal.Load(ctx, runID)
 	if err != nil {
@@ -407,21 +412,33 @@ func rewindPlanOfRun(ctx context.Context, journal *sqlite.Journal, artifacts *ar
 	}
 	content, err := artifacts.Open(*payload.TaskRef)
 	if err != nil {
-		return rewindPlanArtifact{}, false, fmt.Errorf("open rewind plan artifact: %w", err)
+		var previewMarker struct {
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal([]byte(payload.TaskRef.TruncatedPreview), &previewMarker) == nil && previewMarker.Kind == rewindPlanKind {
+			return rewindPlanArtifact{}, false, fmt.Errorf("open rewind plan artifact: %w", err)
+		}
+		return rewindPlanArtifact{}, false, nil
+	}
+	var marker struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(content, &marker) != nil || marker.Kind != rewindPlanKind {
+		return rewindPlanArtifact{}, false, nil
 	}
 	var plan rewindPlanArtifact
 	if err := json.Unmarshal(content, &plan); err != nil {
 		return rewindPlanArtifact{}, false, fmt.Errorf("decode rewind plan artifact: %w", err)
 	}
-	if plan.Kind != rewindPlanKind || plan.Version != rewindPlanVersion {
-		return rewindPlanArtifact{}, false, fmt.Errorf("unknown rewind plan artifact kind %q version %d", plan.Kind, plan.Version)
+	if plan.Version != rewindPlanVersion || len(plan.Runs) == 0 {
+		return rewindPlanArtifact{}, false, fmt.Errorf("invalid rewind plan artifact version %d or empty run list", plan.Version)
 	}
 	return plan, true, nil
 }
 
-// proposedRewindCallIDs 提取回退 run 事件中已执行到终态的调用标识：等待审
-// 批的提议不算已完成（其补丁尚未生效，推导模拟仍需覆盖该文件状态），审批
-// 续跑由执行器按事件驱动，不依赖该清单重复执行。
+// proposedRewindCallIDs 提取回退 run 中无需再次执行的调用标识：普通终态与
+// 对账确认已生效或已失败的操作均跳过；not_applied 明确表示副作用未发生，
+// 必须保留该调用供脚本化执行器重新执行。等待审批的提议也不算完成。
 func proposedRewindCallIDs(events []domain.Event) map[string]bool {
 	terminal := make(map[domain.OperationID]bool)
 	for _, event := range events {
@@ -429,8 +446,15 @@ func proposedRewindCallIDs(events []domain.Event) map[string]bool {
 			continue
 		}
 		switch event.Type {
-		case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled, domain.EventOperationReconciled:
+		case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled:
 			terminal[*event.OperationID] = true
+		case domain.EventOperationReconciled:
+			var payload struct {
+				Verdict string `json:"verdict"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Verdict != "not_applied" {
+				terminal[*event.OperationID] = true
+			}
 		}
 	}
 	done := make(map[string]bool)

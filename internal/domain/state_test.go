@@ -110,7 +110,13 @@ func TestRunFailedTransitionMatrix(t *testing.T) {
 // 后可供 inspect 使用，旧事件缺少这些字段时仍维持已有状态机兼容性。
 func TestReplayPreservesOptionalRunIdentityAndObservation(t *testing.T) {
 	chain := &eventChain{runID: RunID("run_identity")}
-	chain.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"identity","workspace":".","config_fingerprint":"sha256:config","build":{"revision":"abc","dirty":"true","flavor":"plain","fingerprint":"sha256:build"}}`)})
+	identity := BuildIdentity{Revision: "abc", Dirty: "true", Flavor: "plain"}
+	identity.Fingerprint = identity.ComputeFingerprint()
+	payload, err := json.Marshal(RunCreatedPayload{Task: "identity", Workspace: ".", ConfigFingerprint: "sha256:config", Build: &identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain.add(t, EventDraft{Type: EventRunCreated, Payload: payload})
 	chain.add(t, EventDraft{Type: EventRunStarted})
 	chain.add(t, EventDraft{Type: EventVerificationStarted, Payload: json.RawMessage(`{"workspace_observation":"sha256:observation"}`)})
 	projection := chain.replay(t)
