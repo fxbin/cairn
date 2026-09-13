@@ -405,13 +405,15 @@ func persistProbeEvidence(workspacePath, stateDir string, configuration config.C
 		return "", err
 	}
 	observations := provider.EvidenceObservations{
-		UsageStreamed:      provider.ObservationObservedFalse,
+		UsageStreamed:      provider.ObservationNotObserved,
 		StopReasonsState:   provider.StateNotObserved,
 		ToolRoundtrip:      result.ToolRoundtrip,
 		ModelRevisionState: provider.StateNotObserved,
 	}
 	if result.UsageStreamed {
 		observations.UsageStreamed = provider.ObservationObservedTrue
+	} else if result.Result != probeResultFail {
+		observations.UsageStreamed = provider.ObservationObservedFalse
 	}
 	if result.StopReason != "" {
 		observations.StopReasonsState = provider.StateObserved
