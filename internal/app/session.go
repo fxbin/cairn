@@ -29,6 +29,7 @@ func PriorContextCard(events []domain.Event) string {
 		return ""
 	}
 	var task, finalResponse, failureClass string
+	proposedPatches := make(map[domain.OperationID]string)
 	changedFiles := make(map[string]struct{})
 	state := "unknown"
 	verification := "未执行"
@@ -40,6 +41,9 @@ func PriorContextCard(events []domain.Event) string {
 				task = payload.Task
 			}
 		case domain.EventToolCallProposed:
+			if event.OperationID == nil || *event.OperationID == "" {
+				continue
+			}
 			var payload struct {
 				ToolName  string          `json:"tool_name"`
 				Arguments json.RawMessage `json:"arguments"`
@@ -51,7 +55,20 @@ func PriorContextCard(events []domain.Event) string {
 				Path string `json:"path"`
 			}
 			if json.Unmarshal(payload.Arguments, &patch) == nil && patch.Path != "" {
-				changedFiles[patch.Path] = struct{}{}
+				proposedPatches[*event.OperationID] = patch.Path
+			}
+		case domain.EventOperationSucceeded:
+			if event.OperationID == nil || *event.OperationID == "" {
+				continue
+			}
+			var payload struct {
+				ToolName string `json:"tool_name"`
+			}
+			if json.Unmarshal(event.Payload, &payload) != nil || payload.ToolName != "apply_patch" {
+				continue
+			}
+			if path := proposedPatches[*event.OperationID]; path != "" {
+				changedFiles[path] = struct{}{}
 			}
 		case domain.EventVerificationFinished:
 			var payload domain.VerificationFinishedPayload

@@ -22,12 +22,14 @@ func priorRunEvents(t *testing.T, runID domain.RunID, sessionID string) []domain
 	if err != nil {
 		t.Fatal(err)
 	}
+	operationID := domain.OperationID("op-patch")
 	return []domain.Event{
 		{RunID: runID, Seq: 1, Type: domain.EventRunCreated, Payload: created},
 		{RunID: runID, Seq: 2, Type: domain.EventRunStarted, Payload: json.RawMessage(`{"invocation":"i"}`)},
-		{RunID: runID, Seq: 3, Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"note.txt","mode":"create","content":"hi"}}`)},
-		{RunID: runID, Seq: 4, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"ok":true}`)},
-		{RunID: runID, Seq: 5, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"已创建并验证 note.txt"}`)},
+		{RunID: runID, Seq: 3, Type: domain.EventToolCallProposed, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"note.txt","mode":"create","content":"hi"}}`)},
+		{RunID: runID, Seq: 4, Type: domain.EventOperationSucceeded, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","result":{"ok":true}}`)},
+		{RunID: runID, Seq: 5, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"ok":true}`)},
+		{RunID: runID, Seq: 6, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"已创建并验证 note.txt"}`)},
 	}
 }
 
@@ -47,6 +49,36 @@ func TestPriorContextCardProjectsDeterministicCard(t *testing.T) {
 	card = PriorContextCard(failed)
 	if !strings.Contains(card, "失败（budget_turns）") {
 		t.Fatalf("失败终态应带失败分类:\n%s", card)
+	}
+}
+
+// TestPriorContextCardCountsOnlySucceededPatches 锁定文件变更只来自操作标识匹配且
+// 成功载荷明确为 apply_patch 的事实；提议及其他终结状态均不能推断变更。
+func TestPriorContextCardCountsOnlySucceededPatches(t *testing.T) {
+	patchID := domain.OperationID("op-patch")
+	otherID := domain.OperationID("op-other")
+	proposed := domain.Event{Type: domain.EventToolCallProposed, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"note.txt"}}`)}
+	tests := []struct {
+		name   string
+		events []domain.Event
+		want   bool
+	}{
+		{name: "成功", events: []domain.Event{proposed, {Type: domain.EventOperationSucceeded, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}, want: true},
+		{name: "仅提议", events: []domain.Event{proposed}},
+		{name: "失败", events: []domain.Event{proposed, {Type: domain.EventOperationFailed, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}},
+		{name: "取消", events: []domain.Event{proposed, {Type: domain.EventOperationCancelled, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}},
+		{name: "提议缺操作标识", events: []domain.Event{{Type: domain.EventToolCallProposed, Payload: proposed.Payload}, {Type: domain.EventOperationSucceeded, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}},
+		{name: "成功缺操作标识", events: []domain.Event{proposed, {Type: domain.EventOperationSucceeded, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}},
+		{name: "其他工具成功", events: []domain.Event{proposed, {Type: domain.EventOperationSucceeded, OperationID: &patchID, Payload: json.RawMessage(`{"tool_name":"read_file"}`)}}},
+		{name: "操作标识不匹配", events: []domain.Event{proposed, {Type: domain.EventOperationSucceeded, OperationID: &otherID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := strings.Contains(PriorContextCard(test.events), "变更文件: note.txt")
+			if got != test.want {
+				t.Fatalf("变更文件投影=%v，期望 %v", got, test.want)
+			}
+		})
 	}
 }
 
