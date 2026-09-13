@@ -94,6 +94,14 @@ type sessionHistoryLoadedMsg struct {
 	err   error
 }
 
+// sessionContinuationLoadedMsg 承载历史链尾解析结果；成功时只设置下一次
+// Run 的会话锚点，不恢复旧进程可回退列表。
+type sessionContinuationLoadedMsg struct {
+	continuation app.SessionContinuation
+	requestID    uint64
+	err          error
+}
+
 // sessionRunEntry 是会话链内的单个运行记录：运行标识与终态结论，供
 // /sessions 展示当前链。
 type sessionRunEntry struct {
@@ -139,16 +147,18 @@ type RunConsole struct {
 	sessionOutputTokens int64
 	// 会话链状态（ADR-0018）：首个任务生成会话标识开链，后续任务自动以
 	// 前一运行为前置续链；/new 断链后回到无前情状态。
-	sessionID      string
-	sessionPrev    domain.RunID
-	sessionRuns    []sessionRunEntry
-	lastTask       string
-	wizard         *ConfigWizard
-	waiting        *agent.WaitingApprovalError
-	approvalDetail []string
-	result         *app.RunResult
-	runErr         error
-	rewinding      *rewindState
+	sessionID           string
+	sessionPrev         domain.RunID
+	sessionRuns         []sessionRunEntry
+	sessionTailRequired bool
+	continuationRequest uint64
+	lastTask            string
+	wizard              *ConfigWizard
+	waiting             *agent.WaitingApprovalError
+	approvalDetail      []string
+	result              *app.RunResult
+	runErr              error
+	rewinding           *rewindState
 }
 
 // NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
@@ -211,6 +221,18 @@ func loadSessionHistoryCmd(console RunConsole) tea.Cmd {
 	}
 }
 
+// loadSessionContinuationCmd 异步验证历史运行的完整会话链与唯一终态链尾。
+func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestID uint64) tea.Cmd {
+	service := console.input.Service
+	ctx := console.ctx
+	workspace := console.input.Workspace
+	configuration := console.input.Config
+	return func() tea.Msg {
+		continuation, err := service.ResolveSessionContinuation(ctx, workspace, "", configuration, runID)
+		return sessionContinuationLoadedMsg{continuation: continuation, requestID: requestID, err: err}
+	}
+}
+
 // startRunCmd 发起一次运行：事件回调把已持久化事件写入通道，最终结果经
 // runFinishedMsg 回到事件循环。
 func startRunCmd(console RunConsole, task string) tea.Cmd {
@@ -221,7 +243,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := service.Run(runCtx, app.RunOptions{
 			Task: task, Workspace: console.input.Workspace, Config: console.input.Config, OnEvent: onEvent,
-			SessionID: console.sessionID, PrevRunID: console.sessionPrev,
+			SessionID: console.sessionID, PrevRunID: console.sessionPrev, RequireSessionTail: console.sessionTailRequired,
 		})
 		return runFinishedMsg{result: &result, err: err}
 	}
@@ -298,6 +320,22 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if loaded, isSessionHistory := msg.(sessionHistoryLoadedMsg); isSessionHistory {
 		console.showSessionHistory(loaded)
+		return console, nil
+	}
+	if loaded, isContinuation := msg.(sessionContinuationLoadedMsg); isContinuation {
+		if loaded.requestID != console.continuationRequest || console.mode != consoleInput {
+			return console, nil
+		}
+		if loaded.err != nil {
+			console.appendLine(errStyle.Render("历史会话续链失败: " + loaded.err.Error()))
+			return console, nil
+		}
+		console.sessionID = loaded.continuation.SessionID
+		console.sessionPrev = loaded.continuation.PrevRunID
+		console.sessionRuns = nil
+		console.sessionTailRequired = true
+		console.appendLine(okStyle.Render(fmt.Sprintf("已选择历史会话 %s 的链尾 %s；下一任务将携带其前情", console.sessionID, console.sessionPrev)))
+		console.appendLine(dimStyle.Render("历史运行保持只读，不进入 /rewind 或 /rewind-files 范围"))
 		return console, nil
 	}
 	if _, closed := msg.(wizardClosedMsg); closed {
@@ -393,6 +431,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if task == "" {
 				return console, nil
 			}
+			console.continuationRequest++
 			if handled, cmd := console.runCommand(task); handled {
 				console.taskField.Reset()
 				return console, cmd
@@ -1225,6 +1264,7 @@ var consoleCommands = []struct {
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链与工作区历史"},
+	{"/history", "从历史会话唯一链尾继续"},
 	{"/rewind", "回退会话对话链"},
 	{"/rewind-files", "回退工作区补丁（撤销所选任务起）"},
 	{"/cost", "本任务与会话累计 token"},
@@ -1334,7 +1374,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /history <run-id> 历史续链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1347,6 +1387,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 			console.sessionID = ""
 			console.sessionPrev = ""
 			console.sessionRuns = nil
+			console.sessionTailRequired = false
 			console.appendLine(dimStyle.Render("已断开会话链并清屏（新任务不带前情；完整历史在事件日志）"))
 			return true, nil
 		}
@@ -1368,6 +1409,14 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendActiveSession()
 		console.appendLine(dimStyle.Render("正在读取当前工作区持久化历史…"))
 		return true, loadSessionHistoryCmd(*console)
+	case "/history":
+		runID := domain.RunID(strings.TrimSpace(remainder))
+		if runID == "" {
+			console.appendLine(warnStyle.Render("用法: /history <run-id>（先用 /sessions 查看历史）"))
+			return true, nil
+		}
+		console.appendLine(dimStyle.Render("正在验证历史会话链尾…"))
+		return true, loadSessionContinuationCmd(*console, runID, console.continuationRequest)
 	case "/editor":
 		return true, console.openEditorCmd()
 	case "/rewind":
@@ -1391,6 +1440,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		entry := console.sessionRuns[index-1]
 		console.sessionPrev = entry.id
 		console.sessionRuns = console.sessionRuns[:index]
+		console.sessionTailRequired = false
 		console.appendLine(okStyle.Render(fmt.Sprintf("已回退对话到第 %d 个任务之后（%s）；下一任务从该点前情继续，工作区未变动", index, entry.summary)))
 		return true, nil
 	case "/rewind-files":

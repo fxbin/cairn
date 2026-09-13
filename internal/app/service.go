@@ -39,6 +39,8 @@ var (
 	ErrConfigDrift = errors.New("frozen config fingerprint does not match current configuration")
 	// ErrStateCorrupt 表示事件日志或制品引用无法通过完整性校验。
 	ErrStateCorrupt = errors.New("run state is corrupt")
+	// ErrSessionContinuation 表示所选历史运行不满足安全续链条件。
+	ErrSessionContinuation = errors.New("historical run is not a safe session continuation point")
 )
 
 // EventSink 接收已成功持久化、可供 CLI 流式输出的领域事件。
@@ -71,6 +73,9 @@ type RunOptions struct {
 	PrevRunID       domain.RunID
 	PriorContext    string
 	PriorContextRef *artifact.Ref
+	// RequireSessionTail 要求 PrevRunID 在创建事件前仍是其完整历史会话的
+	// 唯一终态链尾；历史选择器用它封闭“展示后状态已变化”的竞态。
+	RequireSessionTail bool
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -137,6 +142,13 @@ type RunHistoryItem struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
+// SessionContinuation 是历史会话选择器返回的下一次运行锚点；它只恢复会话
+// 标识和唯一终态链尾，不授予历史回退能力。
+type SessionContinuation struct {
+	SessionID string       `json:"session_id"`
+	PrevRunID domain.RunID `json:"prev_run_id"`
+}
+
 // Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
@@ -174,6 +186,18 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 			return RunResult{}, fmt.Errorf("%w: run %s is %s after an interrupted lifecycle; finish it with resume %s --abort-run --reason <text>", ErrActiveRun, active[0].ID, active[0].Phase(), active[0].ID)
 		}
 		return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
+	}
+	if err := validateSessionLink(ctx, boot.Journal, boot.WorkspaceHash, options); err != nil {
+		return RunResult{}, err
+	}
+	if options.RequireSessionTail {
+		continuation, err := resolveSessionContinuation(ctx, boot.Journal, boot.WorkspaceHash, options.PrevRunID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if options.SessionID != continuation.SessionID {
+			return RunResult{}, fmt.Errorf("%w: run %s belongs to session %s", ErrSessionContinuation, options.PrevRunID, continuation.SessionID)
+		}
 	}
 	frozenConfig, err := json.Marshal(options.Config)
 	if err != nil {
@@ -310,6 +334,25 @@ func (service Service) ListRuns(ctx context.Context, workspacePath, stateDir str
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	items, err := listRunHistory(ctx, journal, workspaceHash)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].CreatedAt.Equal(items[right].CreatedAt) {
+			return items[left].ID < items[right].ID
+		}
+		return items[left].CreatedAt.After(items[right].CreatedAt)
+	})
+	return items, nil
+}
+
+// listRunHistory 从已打开的日志完整回放当前工作区运行；调用方决定排序与
+// 生命周期。日志内容或跨工作区身份不一致时失败关闭。
+func listRunHistory(ctx context.Context, journal interface {
+	ports.Journal
+	ports.RunLister
+}, workspaceHash string) ([]RunHistoryItem, error) {
 	runIDs, err := journal.RunIDs(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -350,13 +393,158 @@ func (service Service) ListRuns(ctx context.Context, workspacePath, stateDir str
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	sort.Slice(items, func(left, right int) bool {
-		if items[left].CreatedAt.Equal(items[right].CreatedAt) {
-			return items[left].ID < items[right].ID
-		}
-		return items[left].CreatedAt.After(items[right].CreatedAt)
-	})
 	return items, nil
+}
+
+// validateSessionLink 校验所有新 Run 的会话边：前驱必须存在于当前工作区、
+// 已终结且会话标识一致；同一会话不得创建第二个根。显式回退仍可从合法的
+// 历史中间节点分叉，不受唯一链尾门禁约束。
+func validateSessionLink(ctx context.Context, journal interface {
+	ports.Journal
+	ports.RunLister
+}, workspaceHash string, options RunOptions) error {
+	if options.PrevRunID != "" {
+		events, err := journal.Load(ctx, options.PrevRunID)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("%w: prior run %s not found", ErrSessionContinuation, options.PrevRunID)
+		}
+		projection, err := domain.Replay(events)
+		if err != nil {
+			return fmt.Errorf("%w: replay prior run %s: %v", ErrStateCorrupt, options.PrevRunID, err)
+		}
+		if projection.WorkspaceHash != workspaceHash {
+			return fmt.Errorf("%w: prior run %s belongs to another workspace", ErrSessionContinuation, options.PrevRunID)
+		}
+		if !projection.Terminal() {
+			return fmt.Errorf("%w: prior run %s is not terminal", ErrSessionContinuation, options.PrevRunID)
+		}
+		if projection.SessionID == "" {
+			return fmt.Errorf("%w: prior run %s has no session identity", ErrSessionContinuation, options.PrevRunID)
+		}
+		if options.SessionID != "" && projection.SessionID != "" && options.SessionID != projection.SessionID {
+			return fmt.Errorf("%w: prior run %s belongs to session %s", ErrSessionContinuation, options.PrevRunID, projection.SessionID)
+		}
+		return nil
+	}
+	if options.SessionID == "" {
+		return nil
+	}
+	items, err := listRunHistory(ctx, journal, workspaceHash)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.SessionID == options.SessionID {
+			return fmt.Errorf("%w: session %s already has a root", ErrSessionContinuation, options.SessionID)
+		}
+	}
+	return nil
+}
+
+// ResolveSessionContinuation 只读验证指定历史运行是否为当前工作区某条完整
+// 会话链的唯一终态链尾。返回值仅供下一次 Run 续链，不恢复历史回退列表。
+func (service Service) ResolveSessionContinuation(ctx context.Context, workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (SessionContinuation, error) {
+	if runID == "" {
+		return SessionContinuation{}, fmt.Errorf("%w: run ID is required", ErrSessionContinuation)
+	}
+	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return SessionContinuation{}, err
+	}
+	journal, err := openReadOnlyJournalContext(ctx, stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SessionContinuation{}, fmt.Errorf("%w: run %s not found", ErrSessionContinuation, runID)
+		}
+		if ctx.Err() != nil {
+			return SessionContinuation{}, ctx.Err()
+		}
+		if sqlite.IsStateCorruptError(err) {
+			return SessionContinuation{}, fmt.Errorf("%w: open run journal: %w", ErrStateCorrupt, err)
+		}
+		return SessionContinuation{}, err
+	}
+	defer journal.Close()
+	return resolveSessionContinuation(ctx, journal, workspaceHash, runID)
+}
+
+// resolveSessionContinuation 在已打开日志上重建并验证会话链；整条会话必须
+// 连通、无环、无分叉且均已终结，所选运行必须是唯一链尾。
+func resolveSessionContinuation(ctx context.Context, journal interface {
+	ports.Journal
+	ports.RunLister
+}, workspaceHash string, runID domain.RunID) (SessionContinuation, error) {
+	items, err := listRunHistory(ctx, journal, workspaceHash)
+	if err != nil {
+		return SessionContinuation{}, err
+	}
+	byID := make(map[domain.RunID]RunHistoryItem, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	selected, exists := byID[runID]
+	if !exists {
+		return SessionContinuation{}, fmt.Errorf("%w: run %s not found", ErrSessionContinuation, runID)
+	}
+	if selected.SessionID == "" {
+		return SessionContinuation{}, fmt.Errorf("%w: run %s has no session identity", ErrSessionContinuation, runID)
+	}
+	members := make(map[domain.RunID]RunHistoryItem)
+	children := make(map[domain.RunID]int)
+	for _, item := range items {
+		if item.PrevRunID != "" {
+			parent, parentExists := byID[item.PrevRunID]
+			if parentExists && parent.SessionID != item.SessionID {
+				return SessionContinuation{}, fmt.Errorf("%w: run %s crosses session boundary from %s", ErrStateCorrupt, item.ID, item.PrevRunID)
+			}
+			children[item.PrevRunID]++
+		}
+		if item.SessionID != selected.SessionID {
+			continue
+		}
+		if item.State != domain.RunCompleted && item.State != domain.RunFailed && item.State != domain.RunCancelled {
+			return SessionContinuation{}, fmt.Errorf("%w: session %s contains non-terminal run %s", ErrSessionContinuation, selected.SessionID, item.ID)
+		}
+		members[item.ID] = item
+	}
+	for parent, count := range children {
+		if _, selectedMember := members[parent]; !selectedMember {
+			continue
+		}
+		if count > 1 {
+			return SessionContinuation{}, fmt.Errorf("%w: session %s forks after run %s", ErrSessionContinuation, selected.SessionID, parent)
+		}
+	}
+	for _, item := range members {
+		if item.PrevRunID == "" {
+			continue
+		}
+		if _, exists := members[item.PrevRunID]; !exists {
+			return SessionContinuation{}, fmt.Errorf("%w: session %s references missing run %s", ErrStateCorrupt, selected.SessionID, item.PrevRunID)
+		}
+	}
+	if children[runID] != 0 {
+		return SessionContinuation{}, fmt.Errorf("%w: run %s is not the session tail", ErrSessionContinuation, runID)
+	}
+	visited := make(map[domain.RunID]struct{}, len(members))
+	current := selected
+	for {
+		if _, duplicate := visited[current.ID]; duplicate {
+			return SessionContinuation{}, fmt.Errorf("%w: session %s contains a cycle", ErrSessionContinuation, selected.SessionID)
+		}
+		visited[current.ID] = struct{}{}
+		if current.PrevRunID == "" {
+			break
+		}
+		current = members[current.PrevRunID]
+	}
+	if len(visited) != len(members) {
+		return SessionContinuation{}, fmt.Errorf("%w: run %s is not the unique session tail", ErrSessionContinuation, runID)
+	}
+	return SessionContinuation{SessionID: selected.SessionID, PrevRunID: selected.ID}, nil
 }
 
 // Evidence 返回一次运行的统一证据视图（V1.5）：以 contract.Result 为唯一
