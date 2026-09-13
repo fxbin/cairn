@@ -224,6 +224,9 @@ func (store *EvidenceStore) Append(evidence *ProviderProbeEvidence) (string, err
 // Get 按指纹读回一条证据并校验内容指纹与请求指纹一致；内容寻址即完整性
 // 校验，不一致按不存在处理并失败关闭。
 func (store *EvidenceStore) Get(fingerprint string) (ProviderProbeEvidence, error) {
+	if !sha256DigestShape(fingerprint) {
+		return ProviderProbeEvidence{}, errors.New("evidence lookup requires a valid fingerprint")
+	}
 	encoded, err := os.ReadFile(filepath.Join(store.root, fingerprint+".json"))
 	if err != nil {
 		return ProviderProbeEvidence{}, fmt.Errorf("evidence %s is not on file: %w", fingerprint, err)
