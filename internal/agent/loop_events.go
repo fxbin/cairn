@@ -62,6 +62,8 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 					priorRef = &ref
 					if loaded, err := loop.loadPriorContext(priorRef); err == nil {
 						priorContext = loaded
+						loop.PriorContext = loaded
+						loop.PriorContextRef = priorRef
 					}
 				}
 			}
@@ -89,17 +91,7 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			}
 		}
 	}
-	messages := loop.contextMessages(task, checkpoint)
-	if priorContext != "" {
-		// 前情块插在系统提示与任务原文之间：背景先于指令，任务语义不被
-		// 前情改写（与压缩检查点的注入层级平行）。
-		contextBlock := ports.Message{Role: "user", Content: sessionContextBlock(priorContext)}
-		if len(messages) > 1 {
-			messages = append([]ports.Message{messages[0], contextBlock}, messages[1:]...)
-		} else {
-			messages = append([]ports.Message{contextBlock}, messages...)
-		}
-	}
+	messages := loop.contextMessages(task, priorContext, checkpoint)
 	for _, event := range events {
 		if event.Seq <= throughSeq {
 			continue
@@ -152,10 +144,13 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 	return messages
 }
 
+// sessionContextPrefix 标识会话前情消息，并用于压缩时精确提取而不重复注入。
+const sessionContextPrefix = "以下本会话前情供背景参考，由上一任务的事件投影生成：\n"
+
 // sessionContextBlock 把前情文本包装为标注来源的会话前情块；任务原文始
 // 终是独立的最新用户消息，前情只提供背景不改变任务语义。
 func sessionContextBlock(prior string) string {
-	return "以下本会话前情供背景参考，由上一任务的事件投影生成：\n" + prior
+	return sessionContextPrefix + prior
 }
 
 // loadPriorContext 从制品库读取前情卡文本；读取失败由调用方按缺省降级处

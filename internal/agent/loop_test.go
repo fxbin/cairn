@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -596,19 +597,27 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2,
 		ContextAutoCompact: true, ContextMaxPromptTokens: 1_500, ContextMaxSummaryBytes: 1_024,
 	}
-	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "inspect large file", WorkspaceHash: "workspace"})
+	priorContext := "上一任务已确认 large.txt 的读取边界"
+	result, err := loop.Run(ctx, RunInput{RunID: runID, Task: "inspect large file", WorkspaceHash: "workspace", PriorContext: priorContext})
 	if err != nil || result.Response != "large file inspected" {
 		t.Fatalf("run = %#v, %v", result, err)
 	}
 	if len(provider.requests) != 2 {
 		t.Fatalf("model requests = %d", len(provider.requests))
 	}
-	secondRequest := provider.requests[1].Messages
-	if len(secondRequest) != 3 || !strings.HasPrefix(secondRequest[2].Content, contextCheckpointPrefix) {
-		t.Fatalf("second request did not use a checkpoint: %#v", secondRequest)
+	firstRequest := provider.requests[0].Messages
+	if len(firstRequest) != 3 || firstRequest[0].Role != "system" || firstRequest[1].Content != sessionContextBlock(priorContext) || firstRequest[2].Content != "inspect large file" {
+		t.Fatalf("first request order or persistent context is invalid: %#v", firstRequest)
 	}
-	if strings.Contains(secondRequest[2].Content, marker) {
-		t.Fatalf("checkpoint copied raw tool body: %q", secondRequest[2].Content)
+	secondRequest := provider.requests[1].Messages
+	if len(secondRequest) != 4 || secondRequest[0].Role != "system" || secondRequest[1].Content != sessionContextBlock(priorContext) || secondRequest[2].Content != "inspect large file" || !strings.HasPrefix(secondRequest[3].Content, contextCheckpointPrefix) {
+		t.Fatalf("second request order or persistent context is invalid: %#v", secondRequest)
+	}
+	if strings.Contains(secondRequest[3].Content, marker) {
+		t.Fatalf("checkpoint copied raw tool body: %q", secondRequest[3].Content)
+	}
+	if strings.Contains(secondRequest[3].Content, "inspect large file") {
+		t.Fatalf("checkpoint must not repeat original task: %q", secondRequest[3].Content)
 	}
 	events, err := journal.Load(ctx, runID)
 	if err != nil {
@@ -643,7 +652,7 @@ func TestLoopCompactsLargeToolOutputBeforeFollowingModelRequest(t *testing.T) {
 		break
 	}
 	rebuilt := loop.messagesFromEvents(events, "fallback")
-	if len(rebuilt) != 3 || rebuilt[2].Content != secondRequest[2].Content {
+	if !reflect.DeepEqual(rebuilt, secondRequest) {
 		t.Fatalf("replayed context = %#v, want %#v", rebuilt, secondRequest)
 	}
 }
@@ -2463,5 +2472,61 @@ func TestMessagesFromEventsReplaysPriorContextFromArtifact(t *testing.T) {
 	messages = loop.messagesFromEvents(events, "再改一下")
 	if !strings.Contains(messages[1].Content, "显式携带优先") {
 		t.Fatalf("显式携带应优先于事件回放: %+v", messages[1])
+	}
+}
+
+// TestMessagesFromEventsColdReplayPriorContextWithCheckpoint 锁定冷 Loop 从创建事件
+// 恢复前情状态，并兼容既有检查点的顺序与单次注入语义。
+func TestMessagesFromEventsColdReplayPriorContextWithCheckpoint(t *testing.T) {
+	store, err := artifact.New(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorContext := "上一任务：已定位配置边界"
+	ref, err := store.Put([]byte(priorContext), "text/plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refJSON, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := "修复冷回放"
+	summary := "历史检查点：已读取配置文件"
+	events := []domain.Event{
+		{Seq: 1, Type: domain.EventRunCreated, Payload: mustJSON(domain.RunCreatedPayload{Task: task, PriorContextRef: refJSON})},
+		{Seq: 3, Type: domain.EventContextCompacted, Payload: mustJSON(domain.ContextCompactedPayload{ThroughSeq: 2, Summary: summary})},
+	}
+	loop := &Loop{Artifacts: store}
+	messages := loop.messagesFromEvents(events, "fallback")
+	if loop.PriorContext != priorContext || loop.PriorContextRef == nil || *loop.PriorContextRef != ref {
+		t.Fatalf("冷回放未保存解析后的前情状态: context=%q ref=%#v", loop.PriorContext, loop.PriorContextRef)
+	}
+	if len(messages) != 4 || messages[0].Role != "system" || messages[1].Content != sessionContextBlock(priorContext) || messages[2].Content != task || messages[3].Content != contextCheckpointPrefix+summary {
+		t.Fatalf("冷回放消息顺序错误: %#v", messages)
+	}
+	joined := ""
+	for _, message := range messages {
+		joined += message.Content
+	}
+	if strings.Count(joined, priorContext) != 1 || strings.Count(joined, task) != 1 || strings.Count(joined, summary) != 1 {
+		t.Fatalf("冷回放持久上下文发生重复: %#v", messages)
+	}
+}
+
+func TestSummarizeMessagesExcludesCheckpointPrefixedTask(t *testing.T) {
+	task := contextCheckpointPrefix + "这仍是原始任务"
+	messages := []ports.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: sessionContextBlock("前情")},
+		{Role: "user", Content: task},
+		{Role: "assistant", Content: "已完成历史步骤"},
+	}
+	summary := summarizeMessagesWithInventoryBudgetFrom(messages, 1024, 25, 3)
+	if strings.Contains(summary, task) {
+		t.Fatalf("摘要不应包含固定任务: %q", summary)
+	}
+	if !strings.Contains(summary, "已完成历史步骤") {
+		t.Fatalf("摘要应保留任务后的历史: %q", summary)
 	}
 }

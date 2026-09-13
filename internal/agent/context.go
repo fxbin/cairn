@@ -63,12 +63,17 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 	if projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
 		return nil, errors.New("context compaction requires a closed turn without pending work")
 	}
-	maximumSummaryBytes := loop.compactionSummaryLimit(input.Task)
+	priorContext := loop.PriorContext
+	maximumSummaryBytes := loop.compactionSummaryLimit(input.Task, priorContext)
 	if maximumSummaryBytes < 1 {
 		return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
 	}
-	summary := summarizeMessagesWithInventoryBudget(messages, maximumSummaryBytes, loop.contextInventoryBudgetPercent())
-	compacted := loop.contextMessages(input.Task, summary)
+	historyStart := 2
+	if priorContext != "" {
+		historyStart++
+	}
+	summary := summarizeMessagesWithInventoryBudgetFrom(messages, maximumSummaryBytes, loop.contextInventoryBudgetPercent(), historyStart)
+	compacted := loop.contextMessages(input.Task, priorContext, summary)
 	after := loop.estimatePromptTokens(compacted)
 	if after > loop.ContextMaxPromptTokens {
 		return nil, fmt.Errorf("context checkpoint requires %d tokens, exceeding configured limit %d", after, loop.ContextMaxPromptTokens)
@@ -172,9 +177,13 @@ func (loop *Loop) contextInventoryBudgetPercent() int {
 	return loop.ContextInventoryBudgetPercent
 }
 
-// contextMessages 重新注入固定提示、原始任务和一条替代旧历史的检查点消息。
-func (loop *Loop) contextMessages(task, summary string) []ports.Message {
-	messages := []ports.Message{{Role: "system", Content: loop.prompt()}, {Role: "user", Content: task}}
+// contextMessages 按系统提示、会话前情、原始任务、检查点的固定顺序构建持久上下文。
+func (loop *Loop) contextMessages(task, priorContext, summary string) []ports.Message {
+	messages := []ports.Message{{Role: "system", Content: loop.prompt()}}
+	if priorContext != "" {
+		messages = append(messages, ports.Message{Role: "user", Content: sessionContextBlock(priorContext)})
+	}
+	messages = append(messages, ports.Message{Role: "user", Content: task})
 	if summary != "" {
 		messages = append(messages, ports.Message{Role: "user", Content: contextCheckpointPrefix + summary})
 	}
@@ -182,9 +191,12 @@ func (loop *Loop) contextMessages(task, summary string) []ports.Message {
 }
 
 // compactionSummaryLimit 在静态工具定义和固定消息之后，为检查点预留字节空间。
-func (loop *Loop) compactionSummaryLimit(task string) int {
+func (loop *Loop) compactionSummaryLimit(task, priorContext string) int {
 	limitBytes := loop.ContextMaxPromptTokens * 3
 	persistent := loop.prompt() + task + contextCheckpointPrefix
+	if priorContext != "" {
+		persistent += sessionContextBlock(priorContext)
+	}
 	for _, spec := range loop.Tools.Specs() {
 		persistent += spec.Name + spec.Description + string(spec.Parameters)
 	}
@@ -224,8 +236,20 @@ func summarizeMessages(messages []ports.Message, maximumBytes int) string {
 // summarizeMessagesWithInventoryBudget 按显式比例切分探索清单与近期事实预算；
 // 比例由冻结配置进入运行时，越界值在配置装配前失败关闭。
 func summarizeMessagesWithInventoryBudget(messages []ports.Message, maximumBytes, inventoryBudgetPercent int) string {
+	return summarizeMessagesWithInventoryBudgetFrom(messages, maximumBytes, inventoryBudgetPercent, 2)
+}
+
+// summarizeMessagesWithInventoryBudgetFrom 从指定历史起点生成摘要，确保系统提示、
+// 会话前情与原始任务等固定消息不进入检查点；默认入口仍保持跳过前两条消息。
+func summarizeMessagesWithInventoryBudgetFrom(messages []ports.Message, maximumBytes, inventoryBudgetPercent, historyStart int) string {
 	if maximumBytes < 1 {
 		return ""
+	}
+	if historyStart < 0 {
+		historyStart = 0
+	}
+	if historyStart > len(messages) {
+		historyStart = len(messages)
 	}
 	// 清单预算按冻结比例分配，但不低于 512 字节（覆盖中文表头与常见路径）；
 	// 极小预算下清单优先于近期事实——丢失探索记忆的代价高于丢失最后一条
@@ -234,12 +258,12 @@ func summarizeMessagesWithInventoryBudget(messages []ports.Message, maximumBytes
 	if inventoryBudget < 512 {
 		inventoryBudget = min(512, maximumBytes)
 	}
-	inventory := explorationInventory(messages, inventoryBudget)
+	inventory := explorationInventory(messages[historyStart:], inventoryBudget)
 	factBudget := maximumBytes
 	if inventory != "" {
 		factBudget = maximumBytes - len(inventory)
 	}
-	facts := summarizeRecentFacts(messages, factBudget)
+	facts := summarizeRecentFactsFrom(messages, factBudget, historyStart)
 	if facts == "" && inventory == "" {
 		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
 	}
@@ -248,12 +272,17 @@ func summarizeMessagesWithInventoryBudget(messages []ports.Message, maximumBytes
 
 // summarizeRecentFacts 从尾部反向保留预算内的近期事实；先前检查点占用一半预算。
 func summarizeRecentFacts(messages []ports.Message, maximumBytes int) string {
+	return summarizeRecentFactsFrom(messages, maximumBytes, 2)
+}
+
+// summarizeRecentFactsFrom 从指定历史起点反向保留近期事实。
+func summarizeRecentFactsFrom(messages []ports.Message, maximumBytes, historyStart int) string {
 	if maximumBytes < 1 {
 		return ""
 	}
 	toolNames := make(map[string]string)
 	previousCheckpoint := ""
-	for _, message := range messages {
+	for _, message := range messages[historyStart:] {
 		for _, call := range message.ToolCalls {
 			toolNames[call.ID] = call.Name
 		}
@@ -271,7 +300,7 @@ func summarizeRecentFacts(messages []ports.Message, maximumBytes int) string {
 			used = len(preservedCheckpoint)
 		}
 	}
-	for index := len(messages) - 1; index >= 2; index-- {
+	for index := len(messages) - 1; index >= historyStart; index-- {
 		if messages[index].Role == "user" && strings.HasPrefix(messages[index].Content, contextCheckpointPrefix) {
 			continue
 		}
