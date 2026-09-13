@@ -247,8 +247,8 @@ func (store *EvidenceStore) Get(fingerprint string) (ProviderProbeEvidence, erro
 	if err != nil {
 		return ProviderProbeEvidence{}, fmt.Errorf("validate evidence %s: %w", fingerprint, err)
 	}
-	if recomputed != fingerprint {
-		return ProviderProbeEvidence{}, fmt.Errorf("evidence file %s carries mismatched content fingerprint %s", fingerprint, recomputed)
+	if evidence.EvidenceFingerprint != recomputed || recomputed != fingerprint {
+		return ProviderProbeEvidence{}, fmt.Errorf("evidence file %s carries inconsistent fingerprints", fingerprint)
 	}
 	return evidence, nil
 }

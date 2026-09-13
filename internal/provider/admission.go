@@ -199,8 +199,9 @@ func (store *DecisionStore) ListPartition(requestProfileFingerprint string) ([]P
 		if err != nil {
 			return nil, fmt.Errorf("validate admission decision %s: %w", entry.Name(), err)
 		}
-		if recomputed != entry.Name()[:len(entry.Name())-len(".json")] {
-			return nil, fmt.Errorf("decision file %s carries mismatched content fingerprint %s", entry.Name(), recomputed)
+		fileFingerprint := entry.Name()[:len(entry.Name())-len(".json")]
+		if decision.DecisionFingerprint != recomputed || recomputed != fileFingerprint {
+			return nil, fmt.Errorf("decision file %s carries inconsistent fingerprints", entry.Name())
 		}
 		if decision.Binding.RequestProfileFingerprint == requestProfileFingerprint {
 			partition = append(partition, decision)
