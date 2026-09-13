@@ -418,7 +418,7 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if _, closed := msg.(wizardClosedMsg); closed {
-		exitConsole := console.shutdownRequested || (console.wizard != nil && console.wizard.exitAfterCommit)
+		exitConsole := console.shutdownRequested
 		console.exitWizard()
 		if exitConsole {
 			return console, tea.Quit
