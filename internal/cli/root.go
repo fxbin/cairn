@@ -397,7 +397,7 @@ func (command Command) memory(ctx context.Context, arguments []string) int {
 // 为显式终态迁移；解释只读。不存在任何自动生成候选或晋升入口。
 func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, promote, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, evidence, promote, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -405,6 +405,8 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 		return command.memoryCandidateCreate(ctx, arguments[1:])
 	case "evaluate":
 		return command.memoryCandidateEvaluate(ctx, arguments[1:])
+	case "evidence":
+		return command.memoryCandidateEvidence(ctx, arguments[1:])
 	case "promote":
 		return command.memoryCandidatePromote(ctx, arguments[1:])
 	case "reject":
@@ -416,7 +418,7 @@ func (command Command) memoryCandidate(ctx context.Context, arguments []string) 
 	case "inspect":
 		return command.memoryCandidateInspect(ctx, arguments[1:])
 	default:
-		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, promote, reject, invalidate, expire, or inspect")
+		fmt.Fprintln(command.Stderr, "memory candidate requires create, evaluate, evidence, promote, reject, invalidate, expire, or inspect")
 		return ExitUsage
 	}
 }
@@ -641,6 +643,68 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		return ExitOK
 	}
 	return ExitFailed
+}
+
+// memoryCandidateEvidence 只读验证候选的真实双臂套件证据，并输出可机器复算的
+// 质量、token 成本、墙钟和重复探索摘要；只有已验证的 passed 结论返回成功。
+func (command Command) memoryCandidateEvidence(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("memory candidate evidence", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	candidateID := flags.String("candidate", "", "evolution candidate ID (required)")
+	evalSetPath := flags.String("eval-set", "", "frozen eval set JSON file (required)")
+	suiteStateRoot := flags.String("suite-state-dir", "", "state root hosting the evaluations directory (required)")
+	workspace := flags.String("workspace", "", "workspace the candidate was created against (default: current directory)")
+	stateDir := flags.String("state-dir", "", "candidate state directory")
+	configPath := flags.String("config", "", "configuration path used when the candidate was created")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	if err := flags.Parse(arguments); err != nil {
+		return ExitUsage
+	}
+	if *candidateID == "" || *evalSetPath == "" || *suiteStateRoot == "" || flags.NArg() != 0 {
+		fmt.Fprintln(command.Stderr, "memory candidate evidence requires --candidate, --eval-set and --suite-state-dir")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: *candidateID, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate evidence failed:", err)
+		return exitFor(err)
+	}
+	if inspected.Evaluation == nil {
+		fmt.Fprintln(command.Stderr, "memory candidate evidence failed: candidate has no evaluation")
+		return ExitFailed
+	}
+	evalSet, err := sandboxeval.LoadEvalSet(*evalSetPath)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "frozen eval set error:", err)
+		return ExitUsage
+	}
+	evidence, err := benchmark.VerifySandboxBenefitEvidence(*suiteStateRoot, *inspected.Evaluation, evalSet)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "memory candidate evidence failed:", err)
+		if errors.Is(err, benchmark.ErrSandboxEvidenceCorrupt) {
+			return ExitCorrupt
+		}
+		return ExitFailed
+	}
+	if *jsonOutput {
+		if err := writeJSONChecked(command.Stdout, evidence); err != nil {
+			fmt.Fprintln(command.Stderr, "memory candidate evidence output failed:", err)
+			return ExitFailed
+		}
+	} else {
+		fmt.Fprintf(command.Stdout, "evidence: verified=%t status=%s trigger=%s runs=%d/%d result=%s\n", evidence.Verified, evidence.Status, evidence.Trigger, evidence.CountedRuns, evidence.ExpectedRuns, evidence.SuiteResultDigest)
+		fmt.Fprintf(command.Stdout, "baseline: success=%d/%d input_tokens=%d output_tokens=%d cost_units=%d median_wall_ms=%d repeated_explorations=%d security_incidents=%d doctor_replay_broken=%d tool_pairing_breaks=%d\n", evidence.Baseline.Successes, evidence.Baseline.Runs, evidence.Baseline.InputTokens, evidence.Baseline.OutputTokens, evidence.Baseline.CostUnits, evidence.Baseline.MedianWallMS, evidence.Baseline.RepeatedExplorations, evidence.Baseline.SecurityIncidents, evidence.Baseline.DoctorReplayBroken, evidence.Baseline.ToolPairingBreaks)
+		fmt.Fprintf(command.Stdout, "variant: success=%d/%d input_tokens=%d output_tokens=%d cost_units=%d median_wall_ms=%d repeated_explorations=%d security_incidents=%d doctor_replay_broken=%d tool_pairing_breaks=%d\n", evidence.Variant.Successes, evidence.Variant.Runs, evidence.Variant.InputTokens, evidence.Variant.OutputTokens, evidence.Variant.CostUnits, evidence.Variant.MedianWallMS, evidence.Variant.RepeatedExplorations, evidence.Variant.SecurityIncidents, evidence.Variant.DoctorReplayBroken, evidence.Variant.ToolPairingBreaks)
+	}
+	if evidence.Status != sandboxeval.ConclusionPassed {
+		return ExitFailed
+	}
+	return ExitOK
 }
 
 // memoryCandidateReject 以封闭理由拒绝演化候选并落入冷却。
@@ -1796,6 +1860,7 @@ Usage:
   cairn memory candidate expire [--workspace <path>] [--state-dir <path>] [--config <path>] <candidate-id>
   cairn memory candidate inspect [--workspace <path>] [--state-dir <path>] [--config <path>] [--json] <candidate-id>
   cairn memory candidate evaluate --candidate <id> --local-config <yaml> --eval-set <json> --lease <json> --policy <json> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--dry-run] [--cairn-root <path>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn memory candidate evidence --candidate <id> --eval-set <json> --suite-state-dir <dir> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory candidate promote --candidate <id> --approver <label> --approval-nonce <sha256> --approval-fingerprint <sha256> --suite-state-dir <dir> --max-prompt-tokens <n> --max-summary-bytes <n> --inventory-percent <n> --reserve-percent <n> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion activate --version <id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn memory promotion rollback --reason insufficient_evidence|evaluation_failed|safety_violation|human_request [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
@@ -1830,6 +1895,18 @@ func (values *stringList) Set(value string) error {
 		return errors.New("task ID must not be empty")
 	}
 	*values = append(*values, value)
+	return nil
+}
+
+// writeJSONChecked 将值完整编码为一行 JSON，并把编码或写入失败返回调用方。
+func writeJSONChecked(writer io.Writer, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode JSON: %w", err)
+	}
+	if _, err := fmt.Fprintln(writer, string(encoded)); err != nil {
+		return fmt.Errorf("write JSON: %w", err)
+	}
 	return nil
 }
 
