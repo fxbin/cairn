@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/contract"
@@ -23,6 +25,9 @@ const admissionDecisionSchemaV1 = 1
 
 // admissionFingerprintPrefix 是准入决定内容指纹的版本化域前缀。
 const admissionFingerprintPrefix = "cairn-provider-admission-decision-v1"
+
+// maxAdmissionReasonBytes 限制准入理由的 UTF-8 字节数，避免权威记录被无界自由文本放大。
+const maxAdmissionReasonBytes = 1024
 
 // 决定与权威词表（闭合集合）。
 const (
@@ -83,8 +88,7 @@ func (decision ProviderAdmissionDecision) ComputeFingerprint() (string, error) {
 	return canonicaljson.Fingerprint(admissionFingerprintPrefix, view)
 }
 
-// Validate 复核决定的结构自洽：schema 版本、指纹形态、词表闭合与权威-链首
-// 约束（链首决定不得携带 supersedes，非链首必须携带）。
+// Validate 复核决定的结构自洽：schema 版本、全部指纹引用、理由边界、词表闭合与时间戳。
 func (decision ProviderAdmissionDecision) Validate() error {
 	if decision.SchemaVersion != admissionDecisionSchemaV1 {
 		return fmt.Errorf("admission decision schema_version %d is not supported", decision.SchemaVersion)
@@ -94,6 +98,28 @@ func (decision ProviderAdmissionDecision) Validate() error {
 	}
 	if !sha256DigestShape(decision.Binding.RequestProfileFingerprint) {
 		return errors.New("admission binding requires a request profile fingerprint")
+	}
+	if !sha256DigestShape(decision.Binding.ConfigFingerprint) {
+		return errors.New("admission binding requires a config fingerprint")
+	}
+	if decision.SupersedesDecisionFingerprint != "" && !sha256DigestShape(decision.SupersedesDecisionFingerprint) {
+		return errors.New("admission decision carries an invalid supersedes fingerprint")
+	}
+	if decision.DecisionFingerprint != "" && !sha256DigestShape(decision.DecisionFingerprint) {
+		return errors.New("admission decision carries an invalid decision fingerprint")
+	}
+	if !utf8.ValidString(decision.Reason) {
+		return errors.New("admission decision reason must be valid UTF-8")
+	}
+	trimmedReason := strings.TrimSpace(decision.Reason)
+	if trimmedReason == "" {
+		return errors.New("admission decision requires a reason")
+	}
+	if trimmedReason != decision.Reason {
+		return errors.New("admission decision reason must not carry surrounding whitespace")
+	}
+	if len(decision.Reason) > maxAdmissionReasonBytes {
+		return fmt.Errorf("admission decision reason exceeds %d bytes", maxAdmissionReasonBytes)
 	}
 	switch decision.Decision {
 	case DecisionAdmitted, DecisionRejected:
@@ -190,6 +216,9 @@ func (store *DecisionStore) ListPartition(requestProfileFingerprint string) ([]P
 		encoded, err := os.ReadFile(filepath.Join(store.root, entry.Name()))
 		if err != nil {
 			return nil, err
+		}
+		if !utf8.Valid(encoded) {
+			return nil, fmt.Errorf("decode admission decision %s: invalid UTF-8", entry.Name())
 		}
 		var decision ProviderAdmissionDecision
 		if err := json.Unmarshal(encoded, &decision); err != nil {
