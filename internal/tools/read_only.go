@@ -47,12 +47,12 @@ func (tool ListFiles) Spec() ports.ToolSpec {
 
 // Spec 返回 read_file 的受限 JSON 参数定义。
 func (tool ReadFile) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. The result includes sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1048576}}}`)}
+	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. offset is a zero-based byte offset (default 0); limit is a byte count (default up to 16384, capped by the workspace read limit), not a line count. Use search_text byte_offset, never its line number, as offset. The result includes sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Zero-based byte offset, not a line number."},"limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum number of bytes to read, not lines."}}}`)}
 }
 
 // Spec 返回 search_text 的受限 JSON 参数定义。
 func (tool SearchText) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
+	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace. Each match includes a one-based line number and a zero-based byte_offset for the start of that line; pass byte_offset to read_file.offset to inspect surrounding code.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
 }
 
 // listFilesArguments 是 list_files 的内部解码参数。
@@ -197,10 +197,12 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result 
 		}
 		expression = compiled
 	}
+	// match 同时提供展示行号与可直接用于读取的行首字节偏移。
 	type match struct {
-		Path    string `json:"path"`
-		Line    int    `json:"line"`
-		Preview string `json:"preview"`
+		Path       string `json:"path"`
+		Line       int    `json:"line"`
+		ByteOffset int    `json:"byte_offset"`
+		Preview    string `json:"preview"`
 	}
 	matches := make([]match, 0, arguments.MaxResults)
 	var scannedBytes int64
@@ -226,7 +228,10 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result 
 		if strings.IndexByte(string(content), 0) >= 0 || !utf8.Valid(content) {
 			return nil
 		}
+		byteOffset := 0
 		for index, line := range strings.Split(string(content), "\n") {
+			lineOffset := byteOffset
+			byteOffset += len(line) + len("\n")
 			found := strings.Contains(line, arguments.Query)
 			if expression != nil {
 				found = expression.MatchString(line)
@@ -242,7 +247,7 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result 
 			if len(preview) > 400 {
 				preview = preview[:400]
 			}
-			matches = append(matches, match{Path: relative, Line: index + 1, Preview: preview})
+			matches = append(matches, match{Path: relative, Line: index + 1, ByteOffset: lineOffset, Preview: preview})
 		}
 		return nil
 	})

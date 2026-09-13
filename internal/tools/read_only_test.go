@@ -220,3 +220,54 @@ func TestObservationWorkspaceIncludesToolIgnoredPathsAndTracksSymlinks(t *testin
 		t.Fatal("configured volatile path changed verification observation")
 	}
 }
+
+func TestSearchByteOffsetReadsMatchingLine(t *testing.T) {
+	for _, prefix := range []string{"", "中文前文\n", "first\r\n中文\r\n"} {
+		t.Run(fmt.Sprintf("prefix-%d", len(prefix)), func(t *testing.T) {
+			root := t.TempDir()
+			target := "needle 中文正文"
+			if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte(prefix+target+"\n尾部"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := NewWorkspace(root, nil, 4096, 100, 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := (SearchText{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"query":"needle"}`))
+			if !result.OK {
+				t.Fatalf("search: %#v", result)
+			}
+			var data struct {
+				Matches []struct {
+					Path       string `json:"path"`
+					Line       int    `json:"line"`
+					ByteOffset *int64 `json:"byte_offset"`
+				} `json:"matches"`
+			}
+			if err := json.Unmarshal(result.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data.Matches) != 1 || data.Matches[0].ByteOffset == nil {
+				t.Fatalf("missing byte offset: %s", result.Data)
+			}
+			match := data.Matches[0]
+			if *match.ByteOffset != int64(len(prefix)) || match.Line != strings.Count(prefix, "\n")+1 {
+				t.Fatalf("incorrect location: %#v", match)
+			}
+			args, err := json.Marshal(readFileArguments{Path: match.Path, Offset: *match.ByteOffset, Limit: int64(len(target))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := (ReadFile{Workspace: workspace}).Execute(context.Background(), args)
+			var file struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(read.Data, &file); err != nil {
+				t.Fatal(err)
+			}
+			if !read.OK || file.Content != target {
+				t.Fatalf("read target: %#v", read)
+			}
+		})
+	}
+}
