@@ -52,6 +52,30 @@ func TestPriorContextCardProjectsDeterministicCard(t *testing.T) {
 	}
 }
 
+// TestPriorContextCardSortsChangedFiles 锁定多个成功补丁按路径排序，确保同一
+// 事件链重复投影得到完全一致的前情卡字节。
+func TestPriorContextCardSortsChangedFiles(t *testing.T) {
+	zID := domain.OperationID("op-z")
+	mID := domain.OperationID("op-m")
+	aID := domain.OperationID("op-a")
+	events := []domain.Event{
+		{Type: domain.EventToolCallProposed, OperationID: &zID, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"z.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, OperationID: &zID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)},
+		{Type: domain.EventToolCallProposed, OperationID: &mID, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"m.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, OperationID: &mID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)},
+		{Type: domain.EventToolCallProposed, OperationID: &aID, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, OperationID: &aID, Payload: json.RawMessage(`{"tool_name":"apply_patch"}`)},
+	}
+	want := "任务: \n终态: 未知\n变更文件: a.txt、m.txt、z.txt\n验证: 未执行\n"
+	first := PriorContextCard(events)
+	if first != want {
+		t.Fatalf("前情卡不匹配:\n得到 %q\n期望 %q", first, want)
+	}
+	if second := PriorContextCard(events); second != first {
+		t.Fatalf("同一事件链重复投影字节不一致:\n首次 %q\n再次 %q", first, second)
+	}
+}
+
 // TestPriorContextCardCountsOnlySucceededPatches 锁定文件变更只来自操作标识匹配且
 // 成功载荷明确为 apply_patch 的事实；提议及其他终结状态均不能推断变更。
 func TestPriorContextCardCountsOnlySucceededPatches(t *testing.T) {

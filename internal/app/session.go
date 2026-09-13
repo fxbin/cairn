@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/artifact"
@@ -115,6 +116,7 @@ func PriorContextCard(events []domain.Event) string {
 		for path := range changedFiles {
 			files = append(files, path)
 		}
+		sort.Strings(files)
 		fmt.Fprintf(&builder, "变更文件: %s\n", strings.Join(files, "、"))
 	}
 	fmt.Fprintf(&builder, "验证: %s\n", verification)
