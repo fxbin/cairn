@@ -323,8 +323,8 @@ func writeCache(path string, catalog *Catalog) error {
 }
 
 // Lookup 按用户输入的模型名做跨 provider 模糊匹配：大小写与连字符归一
-// 后比对模型名、ID 与族名；返回零个或多个候选，由向导决定唯一命中直取
-// 还是让用户选择。
+// 后比对模型名、ID 与族名；精确、部分、宽松匹配的优先级保持不变，每层
+// 候选按 Provider、ID、Name 升序返回，避免目录输入顺序影响向导默认选择。
 func (catalog *Catalog) Lookup(query string) []ModelEntry {
 	normalized := normalizeModelName(query)
 	if normalized == "" {
@@ -344,9 +344,11 @@ func (catalog *Catalog) Lookup(query string) []ModelEntry {
 		}
 	}
 	if len(exact) > 0 {
+		sortModelEntries(exact)
 		return exact
 	}
 	if len(partial) > 0 {
+		sortModelEntries(partial)
 		return partial
 	}
 	// 点号变体兜底：gpt4.1 与 gpt-4.1 互查——两侧去掉点号与连字符后再比。
@@ -360,7 +362,22 @@ func (catalog *Catalog) Lookup(query string) []ModelEntry {
 			loose = append(loose, entry)
 		}
 	}
+	sortModelEntries(loose)
 	return loose
+}
+
+// sortModelEntries 按 provider、模型标识和展示名依次升序排列候选，保证
+// Lookup 的同级匹配结果不依赖目录 map 遍历或手工 Entries 输入顺序。
+func sortModelEntries(entries []ModelEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Provider != entries[j].Provider {
+			return entries[i].Provider < entries[j].Provider
+		}
+		if entries[i].ID != entries[j].ID {
+			return entries[i].ID < entries[j].ID
+		}
+		return entries[i].Name < entries[j].Name
+	})
 }
 
 // stripDotsAndDashes 移除点号与连字符，供最宽松一级的形态匹配。

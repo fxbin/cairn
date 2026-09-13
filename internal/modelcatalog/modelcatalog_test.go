@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +138,81 @@ func TestCacheWrapperRejectsForeignVersion(t *testing.T) {
 	}
 	if _, err := loadCache(path); err == nil {
 		t.Fatal("foreign schema version must be rejected")
+	}
+}
+
+// TestLookupStableAcrossEntryOrder 锁定每个匹配精度层级内的候选顺序：即使
+// Catalog.Entries 手工逆序，结果仍按 Provider、ID、Name 的 tie-break 排列。
+func TestLookupStableAcrossEntryOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		entries []ModelEntry
+		want    []ModelEntry
+	}{
+		{
+			name:  "exact",
+			query: "target",
+			entries: []ModelEntry{
+				{Provider: "b", ID: "target", Name: "Target"},
+				{Provider: "a", ID: "target", Name: "Zulu"},
+				{Provider: "a", ID: "target", Name: "Alpha"},
+				{Provider: "a", ID: "z", Name: "Target"},
+			},
+			want: []ModelEntry{
+				{Provider: "a", ID: "target", Name: "Alpha"},
+				{Provider: "a", ID: "target", Name: "Zulu"},
+				{Provider: "a", ID: "z", Name: "Target"},
+				{Provider: "b", ID: "target", Name: "Target"},
+			},
+		},
+		{
+			name:  "partial",
+			query: "needle",
+			entries: []ModelEntry{
+				{Provider: "b", ID: "z", Name: "Needle Z"},
+				{Provider: "a", ID: "b", Name: "Needle B"},
+				{Provider: "a", ID: "a", Name: "Needle Z"},
+				{Provider: "a", ID: "a", Name: "Needle A"},
+			},
+			want: []ModelEntry{
+				{Provider: "a", ID: "a", Name: "Needle A"},
+				{Provider: "a", ID: "a", Name: "Needle Z"},
+				{Provider: "a", ID: "b", Name: "Needle B"},
+				{Provider: "b", ID: "z", Name: "Needle Z"},
+			},
+		},
+		{
+			name:  "loose",
+			query: "gpt41",
+			entries: []ModelEntry{
+				{Provider: "b", ID: "z", Name: "GPT-4.1"},
+				{Provider: "a", ID: "b", Name: "GPT-4.1"},
+				{Provider: "a", ID: "a", Name: "GPT_4.1"},
+				{Provider: "a", ID: "a", Name: "GPT 4.1"},
+			},
+			want: []ModelEntry{
+				{Provider: "a", ID: "a", Name: "GPT 4.1"},
+				{Provider: "a", ID: "a", Name: "GPT_4.1"},
+				{Provider: "a", ID: "b", Name: "GPT-4.1"},
+				{Provider: "b", ID: "z", Name: "GPT-4.1"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			forward := (&Catalog{Entries: append([]ModelEntry(nil), test.entries...)}).Lookup(test.query)
+			reversedEntries := append([]ModelEntry(nil), test.entries...)
+			for left, right := 0, len(reversedEntries)-1; left < right; left, right = left+1, right-1 {
+				reversedEntries[left], reversedEntries[right] = reversedEntries[right], reversedEntries[left]
+			}
+			reversed := (&Catalog{Entries: reversedEntries}).Lookup(test.query)
+			if !reflect.DeepEqual(forward, test.want) {
+				t.Fatalf("forward lookup = %+v, want %+v", forward, test.want)
+			}
+			if !reflect.DeepEqual(reversed, test.want) {
+				t.Fatalf("reversed lookup = %+v, want %+v", reversed, test.want)
+			}
+		})
 	}
 }
