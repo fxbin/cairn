@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/fxbin/cairn/internal/domain"
@@ -49,6 +50,24 @@ func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.
 	defer journal.mu.Unlock()
 	events := journal.events[runID]
 	return append([]domain.Event(nil), events...), nil
+}
+
+// RunIDs 返回按标识符排序的运行集合，确保历史列表在不同日志实现间稳定。
+func (journal *Journal) RunIDs(ctx context.Context) ([]domain.RunID, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	runIDs := make([]domain.RunID, 0, len(journal.events))
+	for runID := range journal.events {
+		runIDs = append(runIDs, runID)
+	}
+	sort.Slice(runIDs, func(left, right int) bool { return runIDs[left] < runIDs[right] })
+	return runIDs, nil
 }
 
 // NonTerminalRuns 重放同一工作区中尚未终态的全部运行。

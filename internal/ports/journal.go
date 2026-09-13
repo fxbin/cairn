@@ -13,3 +13,8 @@ type Journal interface {
 	NonTerminalRuns(ctx context.Context, workspaceHash string) ([]domain.RunProjection, error)
 	Check(ctx context.Context) error
 }
+
+// RunLister 定义跨运行的只读标识枚举能力；结果按 RunID 升序排列并由调用方独占。
+type RunLister interface {
+	RunIDs(ctx context.Context) ([]domain.RunID, error)
+}

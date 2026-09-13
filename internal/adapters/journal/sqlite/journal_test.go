@@ -60,3 +60,37 @@ func TestJournalRejectsConflictingExpectedSequence(t *testing.T) {
 		t.Fatalf("expected conflict, got %v", err)
 	}
 }
+
+func TestRunIDsReturnsSortedRuns(t *testing.T) {
+	journal, err := Open(filepath.Join(t.TempDir(), "runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	ctx := context.Background()
+	for _, runID := range []domain.RunID{"run_z", "run_a"} {
+		if _, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: []byte(`{"task":"x","workspace":"."}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runIDs, err := journal.RunIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runIDs) != 2 || runIDs[0] != "run_a" || runIDs[1] != "run_z" {
+		t.Fatalf("run IDs = %v", runIDs)
+	}
+}
+
+func TestRunIDsHonorsCanceledContext(t *testing.T) {
+	journal, err := Open(filepath.Join(t.TempDir(), "runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := journal.RunIDs(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context, got %v", err)
+	}
+}
