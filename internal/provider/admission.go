@@ -91,7 +91,7 @@ func (decision ProviderAdmissionDecision) ComputeFingerprint() (string, error) {
 // Validate 复核决定的结构自洽：schema 版本、全部指纹引用、理由边界、词表闭合与时间戳。
 func (decision ProviderAdmissionDecision) Validate() error {
 	if decision.SchemaVersion != admissionDecisionSchemaV1 {
-		return fmt.Errorf("admission decision schema_version %d is not supported", decision.SchemaVersion)
+		return errors.New("admission decision schema version is not supported")
 	}
 	if !sha256DigestShape(decision.EvidenceFingerprint) {
 		return errors.New("admission decision requires an evidence fingerprint")
@@ -124,12 +124,12 @@ func (decision ProviderAdmissionDecision) Validate() error {
 	switch decision.Decision {
 	case DecisionAdmitted, DecisionRejected:
 	default:
-		return fmt.Errorf("admission decision %q is not in the closed vocabulary", decision.Decision)
+		return errors.New("admission decision is not in the closed vocabulary")
 	}
 	switch decision.Authority {
 	case AuthorityMaintainer, AuthorityInteractiveConfirm:
 	default:
-		return fmt.Errorf("admission authority %q is not in the closed vocabulary", decision.Authority)
+		return errors.New("admission authority is not in the closed vocabulary")
 	}
 	if decision.DecidedAt.IsZero() {
 		return errors.New("admission decision requires a timestamp")
@@ -208,22 +208,22 @@ func (store *DecisionStore) ListPartition(requestProfileFingerprint string) ([]P
 		}
 		encoded, err := os.ReadFile(filepath.Join(store.root, entry.Name()))
 		if err != nil {
-			return nil, err
+			return nil, newPersistedRecordError("read admission decision failed", err)
 		}
 		if !utf8.Valid(encoded) {
-			return nil, fmt.Errorf("decode admission decision %s: invalid UTF-8", entry.Name())
+			return nil, errors.New("decode admission decision failed: invalid UTF-8")
 		}
 		var decision ProviderAdmissionDecision
 		if err := json.Unmarshal(encoded, &decision); err != nil {
-			return nil, fmt.Errorf("decode admission decision %s: %w", entry.Name(), err)
+			return nil, newPersistedRecordError("decode admission decision failed", err)
 		}
 		recomputed, err := decision.ComputeFingerprint()
 		if err != nil {
-			return nil, fmt.Errorf("validate admission decision %s: %w", entry.Name(), err)
+			return nil, newPersistedRecordError("validate admission decision failed", err)
 		}
 		fileFingerprint := entry.Name()[:len(entry.Name())-len(".json")]
 		if decision.DecisionFingerprint != recomputed || recomputed != fileFingerprint {
-			return nil, fmt.Errorf("decision file %s carries inconsistent fingerprints", entry.Name())
+			return nil, errors.New("admission decision carries inconsistent fingerprints")
 		}
 		if decision.Binding.RequestProfileFingerprint == requestProfileFingerprint {
 			partition = append(partition, decision)
@@ -240,7 +240,7 @@ func ResolveChainHead(partition []ProviderAdmissionDecision) (*ProviderAdmission
 	referenced := make(map[string]bool, len(partition))
 	for _, decision := range partition {
 		if _, duplicated := byFingerprint[decision.DecisionFingerprint]; duplicated {
-			return nil, fmt.Errorf("admission partition carries duplicate decision %s", decision.DecisionFingerprint)
+			return nil, errors.New("admission partition carries a duplicate decision")
 		}
 		byFingerprint[decision.DecisionFingerprint] = decision
 	}
@@ -249,7 +249,7 @@ func ResolveChainHead(partition []ProviderAdmissionDecision) (*ProviderAdmission
 			continue
 		}
 		if _, ok := byFingerprint[decision.SupersedesDecisionFingerprint]; !ok {
-			return nil, fmt.Errorf("admission chain is broken: decision %s supersedes unknown decision", decision.DecisionFingerprint)
+			return nil, errors.New("admission chain supersedes an unknown decision")
 		}
 		referenced[decision.SupersedesDecisionFingerprint] = true
 	}
@@ -262,7 +262,7 @@ func ResolveChainHead(partition []ProviderAdmissionDecision) (*ProviderAdmission
 				break
 			}
 			if visited[next.DecisionFingerprint] {
-				return nil, fmt.Errorf("admission chain contains a cycle at %s", next.DecisionFingerprint)
+				return nil, errors.New("admission chain contains a cycle")
 			}
 			visited[next.DecisionFingerprint] = true
 			cursor = next

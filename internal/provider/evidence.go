@@ -125,10 +125,10 @@ func (evidence ProviderProbeEvidence) ComputeFingerprint() (string, error) {
 // 性；违反任何一条即失败关闭，防御被手工篡改或跨代混用的记录。
 func (evidence ProviderProbeEvidence) Validate() error {
 	if evidence.SchemaVersion != probeEvidenceSchemaV1 {
-		return fmt.Errorf("probe evidence schema_version %d is not supported", evidence.SchemaVersion)
+		return errors.New("probe evidence schema version is not supported")
 	}
 	if evidence.ProbeContractVersion != probeContractVersion {
-		return fmt.Errorf("probe contract version %d is not supported", evidence.ProbeContractVersion)
+		return errors.New("probe contract version is not supported")
 	}
 	if evidence.Selection.SchemaVersion != 1 || evidence.Selection.ProviderID == "" || evidence.Selection.ModelRef == "" {
 		return errors.New("probe evidence requires a resolved selection")
@@ -136,7 +136,7 @@ func (evidence ProviderProbeEvidence) Validate() error {
 	switch evidence.Observations.UsageStreamed {
 	case ObservationNotObserved, ObservationObservedTrue, ObservationObservedFalse:
 	default:
-		return fmt.Errorf("usage_streamed observation %q is not in the closed vocabulary", evidence.Observations.UsageStreamed)
+		return errors.New("usage_streamed observation is not in the closed vocabulary")
 	}
 	switch evidence.Observations.StopReasonsState {
 	case StateNotObserved:
@@ -148,12 +148,12 @@ func (evidence ProviderProbeEvidence) Validate() error {
 			return errors.New("stop reasons must be present when observed")
 		}
 	default:
-		return fmt.Errorf("stop_reasons_state %q is not in the closed vocabulary", evidence.Observations.StopReasonsState)
+		return errors.New("stop_reasons_state is not in the closed vocabulary")
 	}
 	switch evidence.Observations.ToolRoundtrip {
 	case RoundtripNotObserved, RoundtripSkipped, RoundtripOK, RoundtripNotInvoked, RoundtripFailed, RoundtripSecondLegFailed:
 	default:
-		return fmt.Errorf("tool_roundtrip %q is not in the closed vocabulary", evidence.Observations.ToolRoundtrip)
+		return errors.New("tool_roundtrip is not in the closed vocabulary")
 	}
 	switch evidence.Observations.ModelRevisionState {
 	case StateNotObserved:
@@ -165,12 +165,12 @@ func (evidence ProviderProbeEvidence) Validate() error {
 			return errors.New("model revision must be present when observed")
 		}
 	default:
-		return fmt.Errorf("model_revision_state %q is not in the closed vocabulary", evidence.Observations.ModelRevisionState)
+		return errors.New("model_revision_state is not in the closed vocabulary")
 	}
 	switch evidence.Outcome {
 	case EvidenceOutcomeCompleted, EvidenceOutcomeFailed:
 	default:
-		return fmt.Errorf("probe outcome %q is not in the closed vocabulary", evidence.Outcome)
+		return errors.New("probe outcome is not in the closed vocabulary")
 	}
 	if evidence.Outcome == EvidenceOutcomeCompleted && evidence.ErrorClass != "" {
 		return errors.New("completed probes must not carry an error class")
@@ -229,18 +229,18 @@ func (store *EvidenceStore) Get(fingerprint string) (ProviderProbeEvidence, erro
 	}
 	encoded, err := os.ReadFile(filepath.Join(store.root, fingerprint+".json"))
 	if err != nil {
-		return ProviderProbeEvidence{}, fmt.Errorf("evidence %s is not on file: %w", fingerprint, err)
+		return ProviderProbeEvidence{}, newPersistedRecordError("read evidence failed", err)
 	}
 	var evidence ProviderProbeEvidence
 	if err := json.Unmarshal(encoded, &evidence); err != nil {
-		return ProviderProbeEvidence{}, fmt.Errorf("decode evidence %s: %w", fingerprint, err)
+		return ProviderProbeEvidence{}, newPersistedRecordError("decode evidence failed", err)
 	}
 	recomputed, err := evidence.ComputeFingerprint()
 	if err != nil {
-		return ProviderProbeEvidence{}, fmt.Errorf("validate evidence %s: %w", fingerprint, err)
+		return ProviderProbeEvidence{}, newPersistedRecordError("validate evidence failed", err)
 	}
 	if evidence.EvidenceFingerprint != recomputed || recomputed != fingerprint {
-		return ProviderProbeEvidence{}, fmt.Errorf("evidence file %s carries inconsistent fingerprints", fingerprint)
+		return ProviderProbeEvidence{}, errors.New("evidence carries inconsistent fingerprints")
 	}
 	return evidence, nil
 }
