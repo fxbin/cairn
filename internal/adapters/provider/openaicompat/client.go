@@ -144,7 +144,7 @@ func (client Client) checkStreamContract(usageSeen bool, stopReason string) erro
 	return &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("undeclared finish reason %q", stopReason)}
 }
 
-// ProviderError 保留提供方失败分类、HTTP 状态、重试信息与原始原因。
+// ProviderError 保留提供方失败分类、HTTP 状态、重试信息与安全的底层原因。
 type ProviderError struct {
 	Kind       string
 	StatusCode int
@@ -264,8 +264,7 @@ func (client Client) streamOnce(ctx context.Context, endpoint string, body []byt
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		preview, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
-		return false, &ProviderError{Kind: statusKind(response.StatusCode), StatusCode: response.StatusCode, Retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500, RetryAfter: retryAfter(response.Header.Get("Retry-After"), time.Now()), Cause: fmt.Errorf("%s", strings.TrimSpace(string(preview)))}
+		return false, &ProviderError{Kind: statusKind(response.StatusCode), StatusCode: response.StatusCode, Retryable: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500, RetryAfter: retryAfter(response.Header.Get("Retry-After"), time.Now()), Cause: errors.New("HTTP request rejected")}
 	}
 	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
 		return false, &ProviderError{Kind: "invalid_response", StatusCode: response.StatusCode, Cause: fmt.Errorf("expected text/event-stream, got %q", response.Header.Get("Content-Type"))}
