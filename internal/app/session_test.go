@@ -18,7 +18,7 @@ import (
 // priorRunEvents 构造一个带写变更与验证的完整前置运行事件序列。
 func priorRunEvents(t *testing.T, runID domain.RunID, sessionID string) []domain.Event {
 	t.Helper()
-	created, err := json.Marshal(domain.RunCreatedPayload{Task: "创建 note.txt", SessionID: sessionID})
+	created, err := json.Marshal(domain.RunCreatedPayload{Task: "创建 note.txt，API_KEY=abcdefghijklmnop", SessionID: sessionID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +132,11 @@ func TestResolveSessionContextContinuesChain(t *testing.T) {
 		t.Fatal("前情卡文本与制品引用应成对返回")
 	}
 	stored, err := store.Open(*ref)
-	if err != nil || !strings.Contains(string(stored), "创建 note.txt") {
-		t.Fatalf("前情卡制品应可读回: err=%v", err)
+	if err != nil {
+		t.Fatalf("前情卡制品应可读回: %v", err)
+	}
+	if priorContext != string(stored) || strings.Contains(priorContext, "abcdefghijklmnop") {
+		t.Fatalf("首次前情必须使用脱敏后的耐久制品: context=%q stored=%q", priorContext, stored)
 	}
 }
 
@@ -154,18 +157,23 @@ func TestResolveSessionContextPersistsExplicitTextAndRestoresReference(t *testin
 		t.Fatal(err)
 	}
 	service := Service{}
-	_, text, ref, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContext: "已验证的显式前情", PriorContextRef: &artifact.Ref{SHA256: "sha256:stale"}})
+	secret := "API_KEY=abcdefghijklmnop"
+	_, text, ref, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContext: secret, PriorContextRef: &artifact.Ref{SHA256: "sha256:stale"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref == nil || text != "已验证的显式前情" || ref.SHA256 == "sha256:stale" {
-		t.Fatalf("显式文本未生成规范引用: text=%q ref=%#v", text, ref)
+	if ref == nil || text == secret || strings.Contains(text, "abcdefghijklmnop") || ref.SHA256 == "sha256:stale" {
+		t.Fatalf("显式文本未生成脱敏规范引用: text=%q ref=%#v", text, ref)
+	}
+	stored, err := store.Open(*ref)
+	if err != nil || text != string(stored) {
+		t.Fatalf("首次返回必须等于耐久制品: text=%q stored=%q err=%v", text, stored, err)
 	}
 	_, restored, restoredRef, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContextRef: ref})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if restored != text || restoredRef == nil || *restoredRef != *ref {
-		t.Fatalf("仅引用未恢复原文: text=%q ref=%#v", restored, restoredRef)
+		t.Fatalf("仅引用未恢复规范文本: text=%q ref=%#v", restored, restoredRef)
 	}
 }

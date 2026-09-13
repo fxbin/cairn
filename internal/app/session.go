@@ -158,6 +158,11 @@ func (service Service) resolveSessionContext(ctx context.Context, journal ports.
 			return "", "", nil, fmt.Errorf("store explicit prior context: %w", err)
 		}
 		priorContextRef = &ref
+		content, err := artifacts.Open(ref)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("open stored explicit prior context: %w", err)
+		}
+		priorContext = string(content)
 	} else if priorContextRef != nil {
 		if artifacts == nil {
 			return "", "", nil, errors.New("artifact store unavailable for prior context")
@@ -194,7 +199,11 @@ func (service Service) resolveSessionContext(ctx context.Context, journal ports.
 		if err != nil {
 			return "", "", nil, fmt.Errorf("store prior context card: %w", err)
 		}
-		priorContext = card
+		content, err := artifacts.Open(ref)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("open stored prior context card: %w", err)
+		}
+		priorContext = string(content)
 		priorContextRef = &ref
 	}
 	return sessionID, priorContext, priorContextRef, nil
