@@ -267,7 +267,7 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	return results, nil
 }
 
-// Check 同时执行 SQLite 快速完整性检查和所有事件哈希链校验。
+// Check 同时执行 SQLite 快速完整性检查和所有运行的完整事件回放校验。
 func (journal *Journal) Check(ctx context.Context) error {
 	var result string
 	if err := journal.db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
@@ -297,7 +297,7 @@ func (journal *Journal) Check(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := domain.VerifyChain(events); err != nil {
+		if _, err := domain.Replay(events); err != nil {
 			return fmt.Errorf("check run %s: %w", runID, err)
 		}
 	}

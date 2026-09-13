@@ -137,6 +137,45 @@ func TestReplayPreservesOptionalRunIdentityAndObservation(t *testing.T) {
 	invalid.replayReject(t, "build dirty status")
 }
 
+// TestReplayProjectsSessionChainAndEventTimes 锁定会话关系与首末事件时间由
+// reducer 统一投影；旧事件缺少会话字段时保持空值兼容。
+func TestReplayProjectsSessionChainAndEventTimes(t *testing.T) {
+	chain := &eventChain{runID: RunID("run_session")}
+	createdAt := time.Unix(10, 0)
+	updatedAt := time.Unix(20, 0)
+	payload, err := json.Marshal(RunCreatedPayload{Task: "continue", Workspace: ".", SessionID: "session-1", PrevRunID: RunID("run_previous")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain.add(t, EventDraft{Type: EventRunCreated, OccurredAt: createdAt, Payload: payload})
+	chain.add(t, EventDraft{Type: EventRunStarted, OccurredAt: updatedAt})
+	projection := chain.replay(t)
+	if projection.SessionID != "session-1" || projection.PrevRunID != "run_previous" {
+		t.Fatalf("session projection = %+v", projection)
+	}
+	if !projection.CreatedAt.Equal(createdAt) || !projection.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("projection times = created %s updated %s", projection.CreatedAt, projection.UpdatedAt)
+	}
+
+	legacy := newEventChain(t).replay(t)
+	if legacy.SessionID != "" || legacy.PrevRunID != "" || legacy.CreatedAt.IsZero() || legacy.UpdatedAt.IsZero() {
+		t.Fatalf("legacy projection = %+v", legacy)
+	}
+}
+
+// TestReplayRejectsMixedWorkspaceHashes 锁定单条 Run 的全部事件必须属于同一
+// workspace，即使攻击者重算了后续事件哈希也不能形成合法投影。
+func TestReplayRejectsMixedWorkspaceHashes(t *testing.T) {
+	chain := &eventChain{runID: RunID("run_mixed_workspace")}
+	chain.add(t, EventDraft{Type: EventRunCreated, Payload: json.RawMessage(`{"task":"mixed","workspace":"."}`)})
+	second, err := NewEvent(EventDraft{RunID: chain.runID, WorkspaceHash: "other-workspace", Type: EventRunStarted, OccurredAt: time.Unix(2, 0)}, 2, chain.events[0].EventHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain.events = append(chain.events, second)
+	chain.replayReject(t, "event workspace hash")
+}
+
 // TestRunCancelledRequiresCancellingState 锁定 run_cancelled 只能从 cancelling 进入。
 func TestRunCancelledRequiresCancellingState(t *testing.T) {
 	chain := newEventChain(t)
@@ -309,7 +348,7 @@ func TestApplyAcceptsTelemetryEventsWithoutStateChange(t *testing.T) {
 	if projection.State != RunRunning {
 		t.Fatalf("telemetry events must not change run state, got %s", projection.State)
 	}
-	unknown := Event{Seq: projection.LastSeq + 1, RunID: chain.runID, Type: EventType("nonexistent_event"), Payload: json.RawMessage(`{}`)}
+	unknown := Event{Seq: projection.LastSeq + 1, RunID: chain.runID, WorkspaceHash: "workspace", Type: EventType("nonexistent_event"), Payload: json.RawMessage(`{}`)}
 	if err := projection.Apply(unknown); err == nil || !strings.Contains(err.Error(), "unhandled event type") {
 		t.Fatalf("apply unknown type err = %v", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/domain"
@@ -92,5 +93,24 @@ func TestRunIDsHonorsCanceledContext(t *testing.T) {
 	cancel()
 	if _, err := journal.RunIDs(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled context, got %v", err)
+	}
+}
+
+func TestCheckRejectsReplayInvalidRun(t *testing.T) {
+	journal, err := Open(filepath.Join(t.TempDir(), "runs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	ctx := context.Background()
+	runID := domain.RunID("run_mixed_workspace")
+	if _, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: []byte(`{"task":"x","workspace":"."}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: "other-workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Check(ctx); err == nil || !strings.Contains(err.Error(), "event workspace hash") {
+		t.Fatalf("expected replay integrity error, got %v", err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,5 +84,20 @@ func TestRunIDsHonorsCancellationWhileWaitingForLock(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("RunIDs did not return after lock release")
+	}
+}
+
+func TestCheckRejectsReplayInvalidRun(t *testing.T) {
+	journal := New()
+	ctx := context.Background()
+	runID := domain.RunID("run_mixed_workspace")
+	if _, err := journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"x","workspace":"."}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: "other-workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Check(ctx); err == nil || !strings.Contains(err.Error(), "event workspace hash") {
+		t.Fatalf("expected replay integrity error, got %v", err)
 	}
 }

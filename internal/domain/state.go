@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // RunState 表示一次 Agent 运行在回放状态机中的生命周期阶段。
@@ -28,6 +29,10 @@ type RunProjection struct {
 	WorkspaceHash           string
 	ConfigFingerprint       string         `json:"config_fingerprint,omitempty"`
 	Build                   *BuildIdentity `json:"build,omitempty"`
+	SessionID               string
+	PrevRunID               RunID
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 	WorkspaceObservation    string
 	State                   RunState
 	LastSeq                 uint64
@@ -309,6 +314,9 @@ func (projection *RunProjection) Apply(event Event) error {
 	if projection.ID != "" && event.RunID != projection.ID {
 		return fmt.Errorf("event run id %q does not match projection run id %q", event.RunID, projection.ID)
 	}
+	if projection.ID != "" && event.WorkspaceHash != projection.WorkspaceHash {
+		return fmt.Errorf("event workspace hash %q does not match projection workspace hash %q", event.WorkspaceHash, projection.WorkspaceHash)
+	}
 	switch event.Type {
 	case EventRunCreated:
 		if projection.ID != "" || event.Seq != 1 {
@@ -326,6 +334,9 @@ func (projection *RunProjection) Apply(event Event) error {
 		projection.Workspace = payload.Workspace
 		projection.WorkspaceHash = event.WorkspaceHash
 		projection.ConfigFingerprint = payload.ConfigFingerprint
+		projection.SessionID = payload.SessionID
+		projection.PrevRunID = payload.PrevRunID
+		projection.CreatedAt = event.OccurredAt
 		if payload.Build != nil {
 			build := *payload.Build
 			projection.Build = &build
@@ -631,6 +642,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		return fmt.Errorf("unhandled event type %q", event.Type)
 	}
 	projection.LastSeq = event.Seq
+	projection.UpdatedAt = event.OccurredAt
 	return nil
 }
 

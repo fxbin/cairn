@@ -90,7 +90,7 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	return runs, nil
 }
 
-// Check 验证内存日志中每条运行的事件哈希链。
+// Check 对内存日志中的每条运行执行完整事件回放校验。
 func (journal *Journal) Check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -98,7 +98,7 @@ func (journal *Journal) Check(ctx context.Context) error {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	for runID, events := range journal.events {
-		if err := domain.VerifyChain(events); err != nil {
+		if _, err := domain.Replay(events); err != nil {
 			return fmt.Errorf("check run %s: %w", runID, err)
 		}
 	}
