@@ -626,20 +626,40 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		return ExitFailed
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, outcome)
-		return ExitOK
-	}
-	if outcome.DryRun {
+		projection := struct {
+			DryRun        bool                   `json:"dry_run"`
+			EvaluationID  string                 `json:"evaluation_id,omitempty"`
+			CandidateID   string                 `json:"candidate_id,omitempty"`
+			Conclusion    sandboxeval.Conclusion `json:"conclusion"`
+			ResultDigest  string                 `json:"result_digest,omitempty"`
+			RunsCompleted int                    `json:"runs_completed"`
+			StopReason    string                 `json:"stop_reason,omitempty"`
+			StopDetail    string                 `json:"stop_detail,omitempty"`
+		}{
+			DryRun:        outcome.DryRun,
+			EvaluationID:  outcome.Evaluation.ID,
+			CandidateID:   outcome.Evaluation.CandidateID,
+			Conclusion:    outcome.Conclusion,
+			ResultDigest:  outcome.ResultDigest,
+			RunsCompleted: outcome.RunsCompleted,
+			StopReason:    outcome.StopReason,
+			StopDetail:    outcome.StopDetail,
+		}
+		if err := writeJSONChecked(command.Stdout, projection); err != nil {
+			fmt.Fprintln(command.Stderr, "memory candidate evaluate output failed:", err)
+			return ExitFailed
+		}
+	} else if outcome.DryRun {
 		fmt.Fprintln(command.Stdout, "evaluate dry-run: prescreen passed; no transaction opened, no model called")
-		return ExitOK
-	}
-	conclusion := outcome.Conclusion
-	if outcome.StopDetail != "" {
-		fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s stop_detail=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.StopDetail, outcome.RunsCompleted, outcome.ResultDigest)
 	} else {
-		fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
+		conclusion := outcome.Conclusion
+		if outcome.StopDetail != "" {
+			fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s stop_detail=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.StopDetail, outcome.RunsCompleted, outcome.ResultDigest)
+		} else {
+			fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
+		}
 	}
-	if conclusion.Status == sandboxeval.ConclusionPassed {
+	if outcome.DryRun || outcome.Conclusion.Status == sandboxeval.ConclusionPassed {
 		return ExitOK
 	}
 	return ExitFailed
