@@ -87,6 +87,13 @@ type runFinishedMsg struct {
 	err    error
 }
 
+// sessionHistoryLoadedMsg 承载当前工作区的只读持久化历史；消息只驱动展示，
+// 不修改当前进程的会话续链或回退范围。
+type sessionHistoryLoadedMsg struct {
+	items []app.RunHistoryItem
+	err   error
+}
+
 // sessionRunEntry 是会话链内的单个运行记录：运行标识与终态结论，供
 // /sessions 展示当前链。
 type sessionRunEntry struct {
@@ -192,6 +199,18 @@ func waitForEvent(events <-chan domain.Event) tea.Cmd {
 	}
 }
 
+// loadSessionHistoryCmd 异步读取当前工作区历史，避免 SQLite 查询阻塞界面事件循环。
+func loadSessionHistoryCmd(console RunConsole) tea.Cmd {
+	service := console.input.Service
+	ctx := console.ctx
+	workspace := console.input.Workspace
+	configuration := console.input.Config
+	return func() tea.Msg {
+		items, err := service.ListRuns(ctx, workspace, "", configuration)
+		return sessionHistoryLoadedMsg{items: items, err: err}
+	}
+}
+
 // startRunCmd 发起一次运行：事件回调把已持久化事件写入通道，最终结果经
 // runFinishedMsg 回到事件循环。
 func startRunCmd(console RunConsole, task string) tea.Cmd {
@@ -275,6 +294,10 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				console.appendLine(dimStyle.Render("已从外部编辑器回填任务输入"))
 			}
 		}
+		return console, nil
+	}
+	if loaded, isSessionHistory := msg.(sessionHistoryLoadedMsg); isSessionHistory {
+		console.showSessionHistory(loaded)
 		return console, nil
 	}
 	if _, closed := msg.(wizardClosedMsg); closed {
@@ -1201,7 +1224,7 @@ var consoleCommands = []struct {
 	{"/model", "模型配置向导（提交后热生效）"},
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
-	{"/sessions", "当前会话链"},
+	{"/sessions", "当前会话链与工作区历史"},
 	{"/rewind", "回退会话对话链"},
 	{"/rewind-files", "回退工作区补丁（撤销所选任务起）"},
 	{"/cost", "本任务与会话累计 token"},
@@ -1261,9 +1284,49 @@ func commonPrefix(left, right string) string {
 	return left[:limit]
 }
 
-// runCommand 处理输入态的斜杠命令：纯界面层操作（帮助、清屏、状态、成
-// 本与退出），不触发任何后端能力；返回 handled=false 表示输入不是命令，
-// 按普通任务处理。
+// appendActiveSession 展示仅存在于当前进程的活跃链；该链仍是 /rewind 与
+// /rewind-files 的唯一可操作范围。
+func (console *RunConsole) appendActiveSession() {
+	lines := []string{itemStyle.Render("当前进程会话链")}
+	if console.sessionID == "" {
+		lines = append(lines, dimStyle.Render("  无活跃会话（提交首个任务自动开链）"))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	lines = append(lines, dimStyle.Render(fmt.Sprintf("  会话 %s · 已链 %d 个任务", console.sessionID, len(console.sessionRuns))))
+	for index, entry := range console.sessionRuns {
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d. %s · %s", index+1, entry.id, entry.verdict)))
+	}
+	console.appendLine(strings.Join(lines, "\n"))
+}
+
+// showSessionHistory 展示应用层完整回放后的当前工作区历史；历史记录保持只读，
+// 不写回 sessionID、sessionPrev 或 sessionRuns，因而不会扩大续链或回退范围。
+func (console *RunConsole) showSessionHistory(loaded sessionHistoryLoadedMsg) {
+	lines := []string{itemStyle.Render("当前工作区持久化历史（只读）")}
+	if loaded.err != nil {
+		lines = append(lines, errStyle.Render("  读取失败: "+loaded.err.Error()))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	if len(loaded.items) == 0 {
+		lines = append(lines, dimStyle.Render("  暂无历史运行"))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	for index, item := range loaded.items {
+		session := item.SessionID
+		if session == "" {
+			session = "未分组"
+		}
+		task := firstLineClip(item.Task, 48)
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d. %s · %s · 会话 %s · %s", index+1, item.ID, item.Phase, session, task)))
+	}
+	console.appendLine(strings.Join(lines, "\n"))
+}
+
+// runCommand 处理输入态的斜杠命令：大部分为纯界面操作，/sessions 异步调用
+// 只读应用层历史能力；返回 handled=false 表示输入不是命令，按普通任务处理。
 func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	if !strings.HasPrefix(task, "/") {
 		return false, nil
@@ -1302,14 +1365,9 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
 		return true, wizard.Init()
 	case "/sessions":
-		if console.sessionID == "" {
-			console.appendLine(dimStyle.Render("当前无活跃会话（提交首个任务自动开链）"))
-			return true, nil
-		}
-		console.appendLine(itemStyle.Render(fmt.Sprintf("会话 %s · 已链 %d 个任务", console.sessionID, len(console.sessionRuns))))
-		for index, entry := range console.sessionRuns {
-			console.appendLine(dimStyle.Render(fmt.Sprintf("  %d. %s · %s", index+1, entry.id, entry.verdict)))
-		}
+		console.appendActiveSession()
+		console.appendLine(dimStyle.Render("正在读取当前工作区持久化历史…"))
+		return true, loadSessionHistoryCmd(*console)
 	case "/editor":
 		return true, console.openEditorCmd()
 	case "/rewind":
