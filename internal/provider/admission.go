@@ -167,8 +167,8 @@ func OpenDecisionStore(stateDir, workspaceHash string) (*DecisionStore, error) {
 		return nil, errors.New("decision store requires a state dir and workspace hash")
 	}
 	root := filepath.Join(stateDir, "workspaces", workspaceHash, "provider", decisionDirName)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
+	if err := openContentAddressedStore(root); err != nil {
+		return nil, fmt.Errorf("open decision store: %w", err)
 	}
 	return &DecisionStore{root: root}, nil
 }
@@ -182,20 +182,13 @@ func (store *DecisionStore) Append(decision *ProviderAdmissionDecision) (string,
 	decision.DecisionFingerprint = fingerprint
 	encoded, err := json.Marshal(decision)
 	if err != nil {
+		return "", fmt.Errorf("encode decision %s: %w", fingerprint, err)
+	}
+	content := append(encoded, '\n')
+	if err := appendContentAddressed(store.root, fingerprint+".json", content, "decision", fingerprint); err != nil {
 		return "", err
 	}
-	path := filepath.Join(store.root, fingerprint+".json")
-	if existing, err := os.ReadFile(path); err == nil {
-		if string(existing) != string(append(encoded, '\n')) {
-			return "", fmt.Errorf("decision %s already exists with different content", fingerprint)
-		}
-		return fingerprint, nil
-	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, append(encoded, '\n'), 0o600); err != nil {
-		return "", err
-	}
-	return fingerprint, os.Rename(temporary, path)
+	return fingerprint, nil
 }
 
 // ListPartition 返回绑定到指定 request_profile_fingerprint 的全部分区决定。

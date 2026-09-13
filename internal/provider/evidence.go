@@ -182,8 +182,7 @@ func (evidence ProviderProbeEvidence) Validate() error {
 }
 
 // EvidenceStore 是探测证据的内容寻址存储：append-only、原子写，文件名即
-// 记录指纹。它不做并发互斥（同一工作区的写入串行性由 CLI 单实例使用保证），
-// 读取始终校验内容指纹与文件名一致。
+// 记录指纹。并发发布使用 no-replace 语义，读取始终校验内容指纹与文件名一致。
 type EvidenceStore struct {
 	root string
 }
@@ -197,13 +196,13 @@ func OpenEvidenceStore(stateDir, workspaceHash string) (*EvidenceStore, error) {
 		return nil, errors.New("evidence store requires a state dir and workspace hash")
 	}
 	root := filepath.Join(stateDir, "workspaces", workspaceHash, "provider", evidenceDirName)
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, err
+	if err := openContentAddressedStore(root); err != nil {
+		return nil, fmt.Errorf("open evidence store: %w", err)
 	}
 	return &EvidenceStore{root: root}, nil
 }
 
-// Append 校验并落盘一条证据：内容指纹回填后以临时文件 + 原子重命名写入
+// Append 校验并落盘一条证据：内容指纹回填后以同目录唯一临时文件发布
 // （0600）；同指纹文件已存在时校验内容一致即幂等返回，永不覆盖或删除。
 func (store *EvidenceStore) Append(evidence *ProviderProbeEvidence) (string, error) {
 	fingerprint, err := evidence.ComputeFingerprint()
@@ -213,20 +212,10 @@ func (store *EvidenceStore) Append(evidence *ProviderProbeEvidence) (string, err
 	evidence.EvidenceFingerprint = fingerprint
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encode evidence %s: %w", fingerprint, err)
 	}
-	path := filepath.Join(store.root, fingerprint+".json")
-	if existing, err := os.ReadFile(path); err == nil {
-		if string(existing) != string(append(encoded, '\n')) {
-			return "", fmt.Errorf("evidence %s already exists with different content", fingerprint)
-		}
-		return fingerprint, nil
-	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, append(encoded, '\n'), 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(temporary, path); err != nil {
+	content := append(encoded, '\n')
+	if err := appendContentAddressed(store.root, fingerprint+".json", content, "evidence", fingerprint); err != nil {
 		return "", err
 	}
 	return fingerprint, nil
