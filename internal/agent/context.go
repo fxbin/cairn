@@ -16,7 +16,7 @@ import (
 // contextBytesPerEstimatedToken 统一请求估算与摘要空间换算的字节口径。
 const contextBytesPerEstimatedToken = 2
 
-const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v2"
+const contextCompactionStrategy = "deterministic_journal_checkpoint_v3"
 
 // contextCheckpointPrefix 声明检查点的使用纪律：优先基于清单内已有发现推进，
 // 不重复探索。措辞本身就是行为合同——v1 的"需要细节时请重新读取工作区"曾被
@@ -66,25 +66,43 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 	if projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
 		return nil, errors.New("context compaction requires a closed turn without pending work")
 	}
-	priorContext := loop.PriorContext
-	maximumSummaryBytes := loop.compactionSummaryLimit(input.Task, priorContext)
-	if maximumSummaryBytes < 1 {
-		return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
+	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("load events for context compaction: %w", err)
 	}
+	// 检查点只能引用当前投影已观察到的事实；旧摘要不是新的摘要输入。
+	boundedEvents := make([]domain.Event, 0, len(events))
+	rawEvents := make([]domain.Event, 0, len(events))
+	for _, event := range events {
+		if event.Seq > projection.LastSeq {
+			continue
+		}
+		boundedEvents = append(boundedEvents, event)
+		if event.Type != domain.EventContextCompacted {
+			rawEvents = append(rawEvents, event)
+		}
+	}
+	history, err := loop.rebuildMessagesFromEvents(rawEvents, input.Task, true)
+	if err != nil {
+		return nil, fmt.Errorf("rebuild context compaction history: %w", err)
+	}
+	priorContext := loop.PriorContext
 	historyStart := 2
 	if priorContext != "" {
 		historyStart++
 	}
-	summary := summarizeMessagesWithInventoryBudgetFrom(messages, maximumSummaryBytes, loop.contextInventoryBudgetPercent(), historyStart)
-	compacted := loop.contextMessages(input.Task, priorContext, summary)
+	task := history[historyStart-1].Content
+	maximumSummaryBytes := loop.compactionSummaryLimit(task, priorContext)
+	if maximumSummaryBytes < 1 {
+		return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
+	}
+	summary := summarizeMessagesWithInventoryBudgetFrom(history, maximumSummaryBytes, loop.contextInventoryBudgetPercent(), historyStart)
+	compacted := loop.contextMessages(task, priorContext, summary)
 	after := loop.estimatePromptTokens(compacted)
 	if after > loop.ContextMaxPromptTokens {
 		return nil, fmt.Errorf("context checkpoint requires %d tokens, exceeding configured limit %d", after, loop.ContextMaxPromptTokens)
 	}
-	evidence, err := loop.compactionEvidence(ctx, *projection, input)
-	if err != nil {
-		return nil, err
-	}
+	evidence := compactionEvidenceFromEvents(boundedEvents)
 	payload := domain.ContextCompactedPayload{
 		ThroughSeq:               projection.LastSeq,
 		Summary:                  summary,
@@ -111,22 +129,17 @@ type compactionEvidence struct {
 	lastProviderPromptTokens int64
 }
 
-// compactionEvidence 方法从已持久化事件派生压缩证据：上一检查点切点之后的全部
-// turn_opened 即被本次检查点替代的轮次；反向最近一次未估算的
-// model_response_finished 提供实际输入计数，缺失时保持零值（字段省略）。
-func (loop *Loop) compactionEvidence(ctx context.Context, projection domain.RunProjection, input RunInput) (compactionEvidence, error) {
+// compactionEvidenceFromEvents 从截至当前投影的完整事件派生增量压缩证据；
+// 保留旧检查点切点以避免重复计算被替代轮次，最近真实输入计数缺失时保持零值。
+func compactionEvidenceFromEvents(events []domain.Event) compactionEvidence {
 	var evidence compactionEvidence
-	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
-	if err != nil {
-		return evidence, fmt.Errorf("load events for compaction evidence: %w", err)
-	}
 	_, previousThrough := latestContextCheckpoint(events)
 	evidence.compactedTurnIDs = make([]string, 0, 4)
 	for _, event := range events {
 		if event.Type != domain.EventTurnOpened || event.TurnID == nil {
 			continue
 		}
-		if event.Seq <= previousThrough || event.Seq > projection.LastSeq {
+		if event.Seq <= previousThrough {
 			continue
 		}
 		evidence.compactedTurnIDs = append(evidence.compactedTurnIDs, string(*event.TurnID))
@@ -148,7 +161,7 @@ func (loop *Loop) compactionEvidence(ctx context.Context, projection domain.RunP
 			break
 		}
 	}
-	return evidence, nil
+	return evidence
 }
 
 // contextCompactionThreshold 按配置比例在模型名义上下文上限前保留余量，吸收

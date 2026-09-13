@@ -42,6 +42,12 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 // messagesFromEvents 将已持久化事实重建为下一次模型请求所需的对话上下文；
 // 创建事件声明的前情引用必须可解析且可完整读取，否则失败关闭。
 func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string) ([]ports.Message, error) {
+	return loop.rebuildMessagesFromEvents(events, fallbackTask, false)
+}
+
+// rebuildMessagesFromEvents 共用持久化消息投影；压缩重建额外保留纯文本响应，
+// 防止最终说明遭验证失败后丢失决策。普通恢复沿用不重复注入最终说明的行为。
+func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask string, includeTextOnlyResponses bool) ([]ports.Message, error) {
 	task := fallbackTask
 	priorContext := loop.PriorContext
 	priorRef := loop.PriorContextRef
@@ -111,7 +117,7 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 			}
 		case domain.EventModelResponseFinished:
 			var payload modelResponsePayload
-			if json.Unmarshal(event.Payload, &payload) != nil || len(payload.ToolCalls) == 0 {
+			if json.Unmarshal(event.Payload, &payload) != nil || len(payload.ToolCalls) == 0 && !includeTextOnlyResponses {
 				continue
 			}
 			complete := true
