@@ -1205,3 +1205,175 @@ func TestEnforceAdmissionGateVersions(t *testing.T) {
 		t.Fatalf("admitted head with matching evidence must pass: %v", err)
 	}
 }
+
+func TestServiceListRunsWithoutJournalReturnsEmptyWithoutCreatingState(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	items, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %#v", items)
+	}
+	assertStateDirEmpty(t, stateDir)
+}
+
+func TestServiceListRunsProjectsSessionsAndSortsCurrentWorkspace(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, otherWorkspace, stateDir := t.TempDir(), t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tieTime := time.Date(2026, time.September, 13, 8, 0, 0, 0, time.UTC)
+	newerTime := tieTime.Add(time.Hour)
+	appendCreated := func(runID domain.RunID, occurredAt time.Time, task, sessionID string, prevRunID domain.RunID) {
+		t.Helper()
+		_, appendErr := journal.Append(context.Background(), 0, domain.EventDraft{
+			RunID:         runID,
+			WorkspaceHash: workspaceHash,
+			OccurredAt:    occurredAt,
+			Type:          domain.EventRunCreated,
+			Payload: encode(domain.RunCreatedPayload{
+				Task:      task,
+				Workspace: workspace,
+				SessionID: sessionID,
+				PrevRunID: prevRunID,
+			}),
+		})
+		if appendErr != nil {
+			t.Fatal(appendErr)
+		}
+	}
+	runA, runB, runNew := domain.RunID("run-a"), domain.RunID("run-b"), domain.RunID("run-new")
+	appendCreated(runB, tieTime, "second tie", "session-tie", runA)
+	appendCreated(runA, tieTime, "first tie", "session-tie", "")
+	appendCreated(runNew, newerTime, "newest", "session-new", "")
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runA, WorkspaceHash: workspaceHash, OccurredAt: tieTime.Add(time.Minute), Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, otherHash, err := workspaceFor(otherWorkspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherJournal, err := openJournal(stateDir, otherHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := otherJournal.Append(context.Background(), 0, domain.EventDraft{RunID: domain.RunID("run-other"), WorkspaceHash: otherHash, OccurredAt: newerTime.Add(time.Hour), Type: domain.EventRunCreated, Payload: encode(domain.RunCreatedPayload{Task: "other", Workspace: otherWorkspace})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := otherJournal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %#v", items)
+	}
+	if got, want := []domain.RunID{items[0].ID, items[1].ID, items[2].ID}, []domain.RunID{runNew, runA, runB}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("run order = %v, want %v", got, want)
+	}
+	if items[1].SessionID != "session-tie" || items[1].PrevRunID != "" || items[1].Task != "first tie" || items[1].State != domain.RunRunning || items[1].Phase != "running" {
+		t.Fatalf("run-a summary = %#v", items[1])
+	}
+	if !items[1].CreatedAt.Equal(tieTime) || !items[1].UpdatedAt.Equal(tieTime.Add(time.Minute)) {
+		t.Fatalf("run-a times = created %s updated %s", items[1].CreatedAt, items[1].UpdatedAt)
+	}
+	if items[2].PrevRunID != runA {
+		t.Fatalf("run-b prev = %q", items[2].PrevRunID)
+	}
+}
+
+func TestServiceListRunsFailsClosedForForeignWorkspaceEvent(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
+		RunID:         domain.RunID("run-foreign"),
+		WorkspaceHash: "sha256:foreign",
+		Type:          domain.EventRunCreated,
+		Payload:       encode(domain.RunCreatedPayload{Task: "foreign", Workspace: workspace}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+}
+
+func TestServiceListRunsHonorsCancelledContextWithoutCreatingState(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (Service{}).ListRuns(ctx, workspace, stateDir, config.Defaults()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+	assertStateDirEmpty(t, stateDir)
+}
+
+func TestServiceListRunsFailsClosedForInvalidTransition(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.RunID("run-invalid-transition")
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(domain.RunCreatedPayload{Task: "invalid", Workspace: workspace})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCompleted, Payload: encode(domain.RunCompletedPayload{FinalResponse: "impossible"})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+}
+
+func TestServiceListRunsClassifiesInvalidDatabaseAsCorrupt(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "runs.db"), []byte("not sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+}

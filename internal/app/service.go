@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -121,6 +122,19 @@ type InspectResult struct {
 	Summary    RunSummary            `json:"summary"`
 	Manifest   *contract.RunManifest `json:"manifest,omitempty"`
 	Events     []domain.Event        `json:"events,omitempty"`
+}
+
+// RunHistoryItem 是会话选择器使用的只读运行摘要，不暴露工作区路径、审批
+// 指纹或操作细节；时间与会话关系均来自事件回放。
+type RunHistoryItem struct {
+	ID        domain.RunID    `json:"run_id"`
+	SessionID string          `json:"session_id,omitempty"`
+	PrevRunID domain.RunID    `json:"prev_run_id,omitempty"`
+	Task      string          `json:"task"`
+	State     domain.RunState `json:"state"`
+	Phase     string          `json:"phase"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
@@ -267,6 +281,82 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 		result.Events = events
 	}
 	return result, nil
+}
+
+// ListRuns 只读列出当前工作区的历史运行；每条记录均经过完整事件回放，按
+// 创建时间降序、同时间 RunID 升序返回。首次使用尚无日志时返回空列表。
+func (service Service) ListRuns(ctx context.Context, workspacePath, stateDir string, configuration config.Config) ([]RunHistoryItem, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return nil, err
+	}
+	journal, err := openReadOnlyJournalContext(ctx, stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []RunHistoryItem{}, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if sqlite.IsStateCorruptError(err) {
+			return nil, fmt.Errorf("%w: open run journal: %w", ErrStateCorrupt, err)
+		}
+		return nil, err
+	}
+	defer journal.Close()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	runIDs, err := journal.RunIDs(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if sqlite.IsStateCorruptError(err) {
+			return nil, fmt.Errorf("%w: list runs: %w", ErrStateCorrupt, err)
+		}
+		return nil, err
+	}
+	items := make([]RunHistoryItem, 0, len(runIDs))
+	for _, runID := range runIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		events, loadErr := journal.Load(ctx, runID)
+		if loadErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if sqlite.IsStateCorruptError(loadErr) {
+				return nil, fmt.Errorf("%w: load run %s: %w", ErrStateCorrupt, runID, loadErr)
+			}
+			return nil, loadErr
+		}
+		if len(events) == 0 {
+			return nil, fmt.Errorf("%w: run %s has no events", ErrStateCorrupt, runID)
+		}
+		projection, replayErr := domain.Replay(events)
+		if replayErr != nil {
+			return nil, fmt.Errorf("%w: replay run %s: %v", ErrStateCorrupt, runID, replayErr)
+		}
+		if projection.WorkspaceHash != workspaceHash {
+			return nil, fmt.Errorf("%w: run %s belongs to workspace %s", ErrStateCorrupt, runID, projection.WorkspaceHash)
+		}
+		items = append(items, RunHistoryItem{ID: projection.ID, SessionID: projection.SessionID, PrevRunID: projection.PrevRunID, Task: projection.Task, State: projection.State, Phase: projection.Phase(), CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].CreatedAt.Equal(items[right].CreatedAt) {
+			return items[left].ID < items[right].ID
+		}
+		return items[left].CreatedAt.After(items[right].CreatedAt)
+	})
+	return items, nil
 }
 
 // Evidence 返回一次运行的统一证据视图（V1.5）：以 contract.Result 为唯一
@@ -825,6 +915,16 @@ func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error
 	}
 	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
 	return sqlite.OpenReadOnly(filepath.Join(directory, "runs.db"))
+}
+
+// openReadOnlyJournalContext 在调用方上下文约束下打开指定工作区的不可写
+// SQLite 事件日志，供需要在连接探测阶段响应取消的只读用例使用。
+func openReadOnlyJournalContext(ctx context.Context, stateDir, workspaceHash string) (*sqlite.Journal, error) {
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
+	return sqlite.OpenReadOnlyContext(ctx, filepath.Join(directory, "runs.db"))
 }
 
 // acquireWorkspaceLock 为指定工作区获取进程级排他锁。

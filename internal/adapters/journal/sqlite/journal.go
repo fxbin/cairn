@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	modernsqlite "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/fxbin/cairn/internal/domain"
 )
@@ -47,9 +48,18 @@ func Open(path string) (*Journal, error) {
 	return journal, nil
 }
 
-// OpenReadOnly 打开既有日志但不创建目录、不迁移也不修复 SQLite 状态，
-// 以保证 doctor 等诊断命令不能把缺失或损坏的状态变成新的事实来源。
+// OpenReadOnly 打开既有日志但不创建目录、不迁移也不修复 SQLite 状态；
+// 兼容既有调用方，打开阶段使用后台上下文。
 func OpenReadOnly(path string) (*Journal, error) {
+	return OpenReadOnlyContext(context.Background(), path)
+}
+
+// OpenReadOnlyContext 在调用方上下文约束下打开既有日志，不创建目录、不迁移
+// 也不修复 SQLite 状态，保证只读查询可在连接探测阶段响应取消。
+func OpenReadOnlyContext(ctx context.Context, path string) (*Journal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("journal path is required")
 	}
@@ -67,7 +77,7 @@ func OpenReadOnly(path string) (*Journal, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := db.PingContext(context.Background()); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping read-only SQLite journal: %w", err)
 	}
@@ -76,6 +86,21 @@ func OpenReadOnly(path string) (*Journal, error) {
 
 // Close 关闭 SQLite 连接并释放相关资源。
 func (journal *Journal) Close() error { return journal.db.Close() }
+
+// IsStateCorruptError 判断 SQLite 错误是否表明日志内容或 schema 已不可读取；
+// 权限、资源耗尽、锁竞争和其他环境 I/O 错误不归入状态损坏。
+func IsStateCorruptError(err error) bool {
+	var sqliteErr *modernsqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xff {
+	case sqlite3.SQLITE_ERROR, sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_SCHEMA, sqlite3.SQLITE_NOTADB:
+		return true
+	default:
+		return false
+	}
+}
 
 // migrate 配置 SQLite 的耐久性选项并以校验和保护 V1 schema 迁移。
 func (journal *Journal) migrate(ctx context.Context) error {
