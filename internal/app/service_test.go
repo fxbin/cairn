@@ -1359,6 +1359,76 @@ func TestServiceListRunsFailsClosedForInvalidTransition(t *testing.T) {
 	}
 }
 
+func TestServiceListRunsClassifiesInvalidPersistedEventAsCorrupt(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.RunID("run-invalid-time")
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(domain.RunCreatedPayload{Task: "invalid time", Workspace: workspace})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(stateDir, "workspaces", workspaceHash, "runs.db")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE events SET occurred_at = ? WHERE run_id = ?", "not-a-time", runID); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+}
+
+func TestServiceListRunsClassifiesInvalidPersistedEventTypeAsCorrupt(t *testing.T) {
+	configuration := config.Defaults()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := domain.RunID("run-invalid-sequence")
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(domain.RunCreatedPayload{Task: "invalid sequence", Workspace: workspace})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(stateDir, "workspaces", workspaceHash, "runs.db")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE events SET seq = ? WHERE run_id = ?", "not-a-sequence", runID); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("ListRuns error = %v", err)
+	}
+}
+
 func TestServiceListRunsClassifiesInvalidDatabaseAsCorrupt(t *testing.T) {
 	configuration := config.Defaults()
 	workspace, stateDir := t.TempDir(), t.TempDir()

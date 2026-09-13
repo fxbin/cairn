@@ -21,6 +21,9 @@ import (
 // ErrConflict 表示追加时观察到的日志头序号与调用方预期不一致。
 var ErrConflict = errors.New("journal conflict")
 
+// ErrPersistedContent 表示 SQLite 行可读取，但其中的持久化事件字段无法解码。
+var ErrPersistedContent = errors.New("invalid persisted journal content")
+
 // Journal 将追加式领域事件持久化在单连接 SQLite 数据库中。
 type Journal struct {
 	db *sql.DB
@@ -87,9 +90,12 @@ func OpenReadOnlyContext(ctx context.Context, path string) (*Journal, error) {
 // Close 关闭 SQLite 连接并释放相关资源。
 func (journal *Journal) Close() error { return journal.db.Close() }
 
-// IsStateCorruptError 判断 SQLite 错误是否表明日志内容或 schema 已不可读取；
+// IsStateCorruptError 判断错误是否表明日志内容或 schema 已不可读取；SQLite
 // 权限、资源耗尽、锁竞争和其他环境 I/O 错误不归入状态损坏。
 func IsStateCorruptError(err error) bool {
+	if errors.Is(err, ErrPersistedContent) {
+		return true
+	}
 	var sqliteErr *modernsqlite.Error
 	if !errors.As(err, &sqliteErr) {
 		return false
@@ -237,12 +243,12 @@ func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.
 		var turnID, operationID, attemptID sql.NullString
 		var payload []byte
 		if err := rows.Scan(&event.SchemaVersion, &event.EventID, &event.RunID, &event.WorkspaceHash, &event.Seq, &occurredAt, &event.Type, &turnID, &operationID, &attemptID, &payload, &event.PrevHash, &event.EventHash); err != nil {
-			return nil, fmt.Errorf("scan journal event: %w", err)
+			return nil, fmt.Errorf("%w: scan journal event: %v", ErrPersistedContent, err)
 		}
 		var err error
 		event.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
 		if err != nil {
-			return nil, fmt.Errorf("parse journal event time: %w", err)
+			return nil, fmt.Errorf("%w: parse journal event time: %v", ErrPersistedContent, err)
 		}
 		event.Payload = append(event.Payload[:0], payload...)
 		event.TurnID = optionalTurnID(turnID)
