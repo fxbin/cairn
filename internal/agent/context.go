@@ -13,6 +13,9 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
+// contextBytesPerEstimatedToken 统一请求估算与摘要空间换算的字节口径。
+const contextBytesPerEstimatedToken = 2
+
 const contextCompactionStrategy = "deterministic_tool_output_checkpoint_v2"
 
 // contextCheckpointPrefix 声明检查点的使用纪律：优先基于清单内已有发现推进，
@@ -192,15 +195,9 @@ func (loop *Loop) contextMessages(task, priorContext, summary string) []ports.Me
 
 // compactionSummaryLimit 在静态工具定义和固定消息之后，为检查点预留字节空间。
 func (loop *Loop) compactionSummaryLimit(task, priorContext string) int {
-	limitBytes := loop.ContextMaxPromptTokens * 3
-	persistent := loop.prompt() + task + contextCheckpointPrefix
-	if priorContext != "" {
-		persistent += sessionContextBlock(priorContext)
-	}
-	for _, spec := range loop.Tools.Specs() {
-		persistent += spec.Name + spec.Description + string(spec.Parameters)
-	}
-	remaining := limitBytes - len(persistent)
+	// 非空占位符让估算包含检查点角色和前缀；额外保留该字节作为舍入余量。
+	persistent := loop.contextMessages(task, priorContext, " ")
+	remaining := (loop.ContextMaxPromptTokens - loop.estimatePromptTokens(persistent)) * contextBytesPerEstimatedToken
 	if remaining < 1 {
 		return 0
 	}
@@ -223,7 +220,7 @@ func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 	for _, spec := range loop.Tools.Specs() {
 		bytes += len(spec.Name) + len(spec.Description) + len(spec.Parameters)
 	}
-	return (bytes + 1) / 2
+	return (bytes + contextBytesPerEstimatedToken - 1) / contextBytesPerEstimatedToken
 }
 
 // summarizeMessages 优先保留探索清单、最近的工具结果、模型决策和验证反馈，
@@ -339,6 +336,9 @@ func explorationInventory(messages []ports.Message, maximumBytes int) string {
 		return ""
 	}
 	header := "已检查对象（勿重复探索）：\n"
+	if maximumBytes < len(header) {
+		return ""
+	}
 	seen := make(map[string]bool)
 	lines := make([]string, 0, 16)
 	used := len(header)
@@ -478,5 +478,5 @@ func estimateResponseTokens(response collectedResponse) int {
 	for _, call := range response.ToolCalls {
 		total += len(call.ID) + len(call.Name) + len(call.Arguments)
 	}
-	return (total + 1) / 2
+	return (total + contextBytesPerEstimatedToken - 1) / contextBytesPerEstimatedToken
 }
