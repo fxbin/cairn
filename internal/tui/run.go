@@ -83,6 +83,13 @@ type consoleEventMsg struct {
 // 出向导模式并按提交结果决定是否热重载。
 type wizardClosedMsg struct{}
 
+// wizardRelayMsg 把嵌入向导异步命令的结果绑定到创建它的实例世代；主界面
+// 仅向当前实例转发匹配世代的消息，避免旧目录或提交结果污染重开的向导。
+type wizardRelayMsg struct {
+	generation uint64
+	message    tea.Msg
+}
+
 // consoleShutdownMsg 表示调用方已请求进程级收束；运行中必须先等待服务写入
 // 终态，空闲或审批等待时可直接退出。
 type consoleShutdownMsg struct{}
@@ -169,6 +176,7 @@ type RunConsole struct {
 	continuationRequest uint64
 	lastTask            string
 	wizard              *ConfigWizard
+	wizardGeneration    uint64
 	waiting             *agent.WaitingApprovalError
 	approvalDetail      []string
 	result              *app.RunResult
@@ -399,6 +407,15 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.appendLine(okStyle.Render(fmt.Sprintf("已选择历史会话 %s 的链尾 %s；下一任务将携带其前情", console.sessionID, console.sessionPrev)))
 		console.appendLine(dimStyle.Render("历史运行保持只读，不进入 /rewind 或 /rewind-files 范围"))
 		return console, nil
+	}
+	if relayed, ok := msg.(wizardRelayMsg); ok {
+		if relayed.generation != console.wizardGeneration || console.mode != consoleModelWizard || console.wizard == nil {
+			return console, nil
+		}
+		msg = relayed.message
+		if _, quit := msg.(tea.QuitMsg); quit {
+			msg = wizardClosedMsg{}
+		}
 	}
 	if _, closed := msg.(wizardClosedMsg); closed {
 		exitConsole := console.shutdownRequested || (console.wizard != nil && console.wizard.exitAfterCommit)
@@ -774,18 +791,25 @@ func (console RunConsole) relayWizardMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd == nil {
 		return console, nil
 	}
-	return console, relayWizardCmd(cmd)
+	return console, relayWizardCmd(cmd, console.wizardGeneration)
 }
 
-// relayWizardCmd 包装向导命令：执行结果为退出消息时翻译成向导关闭消息，
-// 其余消息原样透传。
-func relayWizardCmd(cmd tea.Cmd) tea.Cmd {
+// relayWizardCmd 递归包装嵌入向导命令及 Batch 子命令，使所有异步结果携带
+// 创建它们的向导实例世代；nil 结果保持 nil，由 Bubble Tea 忽略。
+func relayWizardCmd(cmd tea.Cmd, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		message := cmd()
-		if _, quit := message.(tea.QuitMsg); quit {
-			return wizardClosedMsg{}
+		if message == nil {
+			return nil
 		}
-		return message
+		if batch, ok := message.(tea.BatchMsg); ok {
+			wrapped := make(tea.BatchMsg, 0, len(batch))
+			for _, child := range batch {
+				wrapped = append(wrapped, relayWizardCmd(child, generation))
+			}
+			return wrapped
+		}
+		return wizardRelayMsg{generation: generation, message: message}
 	}
 }
 
@@ -1540,11 +1564,12 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(itemStyle.Render(fmt.Sprintf("模型 %s · 端点 %s", console.input.Config.Provider.Model, console.input.Config.Provider.BaseURL)))
 		console.appendLine(dimStyle.Render(fmt.Sprintf("轮次预算 %s · 工作区 %s", turns, console.statusWorkspace())))
 	case "/model":
+		console.wizardGeneration++
 		wizard := NewConfigWizard(console.rootCtx, console.nextSetupInput())
 		console.wizard = &wizard
 		console.mode = consoleModelWizard
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
-		return true, wizard.Init()
+		return true, relayWizardCmd(wizard.Init(), console.wizardGeneration)
 	case "/sessions":
 		console.appendActiveSession()
 		console.appendLine(dimStyle.Render("正在读取当前工作区持久化历史…"))
