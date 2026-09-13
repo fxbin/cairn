@@ -56,9 +56,9 @@ const (
 	envStatusMissing = "未设置（提交时跳过实测探测）"
 )
 
-// probeNotice 是确认页对付费探测的前置告知：提交会经 SetupService 发起一次
-// 极小请求，密钥缺失时自动跳过。
-const probeNotice = "提交时将执行一次极小付费探测（数十 token；密钥未设置则跳过），并原子写入配置。"
+// probeNotice 是确认页对付费探测的前置告知：提交会经 SetupService 执行两程
+// 极小请求以完成工具调用闭环，瞬态失败可能自动重试，密钥缺失时自动跳过。
+const probeNotice = "提交时将执行两程极小付费探测（合计数十 token，瞬态失败可能自动重试；密钥未设置则跳过），验证工具调用与 usage 后原子写入配置。"
 
 // providerCustomSummary 是固定置顶的 custom 项说明：custom 是静态注册表的
 // 显式端点成员，选择它时端点与密钥变量名保持向导默认值由用户手改。

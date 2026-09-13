@@ -26,6 +26,12 @@ import (
 // setupProbeRequestTimeout 是向导零期望探测的单次请求与总超时。
 const setupProbeRequestTimeout = 60 * time.Second
 
+// setupProbeToolResult 是 Setup 两程能力探测回喂给模型的固定、无副作用结果。
+const setupProbeToolResult = `{"value":7}`
+
+// errSetupCapabilityUnsupported 表示端点完整响应但未展示生产所需能力。
+var errSetupCapabilityUnsupported = errors.New("provider capability probe reported unsupported behavior")
+
 // catalogNamePreviewLimit 是多候选注记最多展示的候选名数量；其余以总数概括。
 const catalogNamePreviewLimit = 3
 
@@ -81,7 +87,8 @@ type ProbeObservations struct {
 type SetupService struct {
 	// CatalogLoader 装载模型元数据目录；返回错误时向导降级为安全默认。
 	CatalogLoader func(options modelcatalog.Options) (*modelcatalog.Catalog, error)
-	// EndpointProber 以零期望模式观测 usage 流式与停止原因。
+	// EndpointProber 以零期望模式验证流式 usage 与完整工具调用回路；成功
+	// 返回意味着两项生产硬能力均已实测成立。
 	EndpointProber func(ctx context.Context, baseURL, model, apiKeyEnv string) (*ProbeObservations, error)
 }
 
@@ -90,38 +97,88 @@ func NewSetupService() *SetupService {
 	return &SetupService{CatalogLoader: modelcatalog.Load, EndpointProber: probeEndpointBehavior}
 }
 
-// probeEndpointBehavior 以零期望 Requirements 向端点发一条极小探测请求，
-// 观测 usage 流式与停止原因的真实行为；不做任何合同判定，只收集事实。
+// probeEndpointBehavior 用固定无副作用工具执行两程探测：第一程必须请求工具，
+// 第二程回喂固定结果后必须给出最终文本；每一程都必须携带流式 usage。
+// 完整响应给出的明确能力否定以 errSetupCapabilityUnsupported 包装返回；传输、
+// 认证与协议错误保持原错误。Run 对两类错误均失败关闭，不生成未经验证的声明。
 func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKeyEnv string) (*ProbeObservations, error) {
 	client := openaicompat.Client{
 		BaseURL: baseURL, APIKey: os.Getenv(apiKeyEnv),
 		HTTPClient:   &http.Client{Timeout: setupProbeRequestTimeout},
 		Requirements: openaicompat.Requirements{RequireUsage: false},
 	}
-	observations := &ProbeObservations{}
+	request := ports.ModelRequest{
+		Model:    model,
+		Messages: []ports.Message{{Role: "user", Content: "Call the contract_probe tool once with value set to 7, then reply with the single word: ok."}},
+		Tools: []ports.ToolSpec{{
+			Name:        "contract_probe",
+			Description: "No-op probe tool used by Cairn to verify the function-call round trip.",
+			Parameters:  []byte(`{"type":"object","properties":{"value":{"type":"integer"}},"required":["value"]}`),
+		}},
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, setupProbeRequestTimeout)
 	defer cancel()
-	err := client.Stream(requestCtx, ports.ModelRequest{Model: model, Messages: []ports.Message{{Role: "user", Content: "Reply with the single word: ok."}}},
-		func(event ports.ModelEvent) error {
-			switch event.Kind {
-			case ports.UsageEvent:
-				observations.UsageStreamed = true
-			case ports.Done:
-				observations.StopReason = event.StopReason
+
+	var toolCalls []ports.ToolCall
+	firstUsageSeen := false
+	err := client.Stream(requestCtx, request, func(event ports.ModelEvent) error {
+		switch event.Kind {
+		case ports.ToolCallEvent:
+			if event.ToolCall != nil {
+				toolCalls = append(toolCalls, *event.ToolCall)
 			}
-			return nil
-		})
+		case ports.UsageEvent:
+			firstUsageSeen = true
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return observations, nil
+	if len(toolCalls) == 0 {
+		return nil, fmt.Errorf("%w: first leg did not invoke the probe tool", errSetupCapabilityUnsupported)
+	}
+
+	secondMessages := append(append([]ports.Message(nil), request.Messages...), ports.Message{Role: "assistant", ToolCalls: toolCalls})
+	for _, call := range toolCalls {
+		secondMessages = append(secondMessages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: setupProbeToolResult})
+	}
+	secondRequest := request
+	secondRequest.Messages = secondMessages
+	secondTextSeen := false
+	secondToolCalls := 0
+	secondUsageSeen := false
+	stopReason := ""
+	err = client.Stream(requestCtx, secondRequest, func(event ports.ModelEvent) error {
+		switch event.Kind {
+		case ports.TextDelta:
+			secondTextSeen = true
+		case ports.ToolCallEvent:
+			secondToolCalls++
+		case ports.UsageEvent:
+			secondUsageSeen = true
+		case ports.Done:
+			stopReason = event.StopReason
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !secondTextSeen || secondToolCalls != 0 || stopReason == "" || stopReason == contract.StopReasonToolCalls {
+		return nil, fmt.Errorf("%w: second leg did not produce a complete final answer", errSetupCapabilityUnsupported)
+	}
+	if !firstUsageSeen || !secondUsageSeen {
+		return nil, fmt.Errorf("%w: each completed stream must carry a usage event", errSetupCapabilityUnsupported)
+	}
+	return &ProbeObservations{UsageStreamed: true, StopReason: stopReason}, nil
 }
 
 // Run 执行向导主流程：输入校验 → 目录预填 → 可选实测探测 → 硬性能力校验
 // → 生成最小 YAML → 落盘 → 回读自证。默认不覆盖既有配置；输入显式允许覆
 // 盖时旧文件先原子改名为 config.yaml.bak，再以临时文件与原子重命名写入新
-// 配置。任何失败都不留下半成品文件；工具调用与流式 usage 是生产配置的硬
-// 性要求，目录或实测给出任一否定即终止且不落盘。
+// 配置。能力声明表达生产路径的硬性要求：无密钥时允许生成待后续复核的配置；
+// 有密钥时真实执行两程工具回路，完整响应给出的任一能力否定都失败关闭。
 func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupOutcome, error) {
 	if input.BaseURL == "" || input.Model == "" || input.APIKeyEnv == "" {
 		return nil, errors.New("base_url、模型名与密钥环境变量名均不可为空")
@@ -150,7 +207,7 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	if catalog, err := service.CatalogLoader(options); err == nil {
 		candidates := catalog.Lookup(input.Model)
 		if len(candidates) == 0 {
-			outcome.Notes = append(outcome.Notes, "目录未命中该模型，使用安全默认能力声明（上下文/输出上限跳过预算对照）")
+			outcome.Notes = append(outcome.Notes, "目录未命中该模型，写入 Cairn 生产所需能力声明（尚未由目录确认，上下文/输出上限跳过预算对照）")
 		} else {
 			if len(candidates) > 1 {
 				// 同名模型常被多家网关转售，命中数可能很大；只展示前几个名字
@@ -175,17 +232,23 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 				entry.Name, entry.ContextTokens, entry.OutputTokens, entry.InputUSDPerMillion, entry.OutputUSDPerMillion))
 		}
 	} else {
-		outcome.Notes = append(outcome.Notes, fmt.Sprintf("目录不可用（%v），使用安全默认能力声明", err))
+		outcome.Notes = append(outcome.Notes, fmt.Sprintf("目录不可用（%v），写入 Cairn 生产所需能力声明（尚未由目录确认）", err))
+	}
+	if !capability.ToolCalls || !capability.StreamingUsage {
+		return nil, errors.New("该模型/端点缺少工具调用或流式 usage 能力，不满足 Cairn 生产配置的硬性要求；向导终止且未写入配置文件")
 	}
 
-	// 实测探测：密钥已在环境时以零期望模式核对 usage 流式与 stop reason。
+	// 实测探测：密钥已在环境时验证完整工具回路、usage 流式与 stop reason。
 	if os.Getenv(input.APIKeyEnv) != "" {
 		observations, probeErr := service.EndpointProber(ctx, input.BaseURL, input.Model, input.APIKeyEnv)
+		if probeErr == nil && (observations == nil || !observations.UsageStreamed) {
+			probeErr = fmt.Errorf("%w: completed probe did not confirm streaming usage", errSetupCapabilityUnsupported)
+		}
 		if probeErr != nil {
-			outcome.Notes = append(outcome.Notes, fmt.Sprintf("探测失败（配置仍按预填生成）——可稍后以 cairn provider probe 复核: %v", probeErr))
+			return nil, fmt.Errorf("完整能力探测未通过，不能声明工具调用与流式 usage 能力；向导终止且未写入配置文件: %w", probeErr)
 		} else {
 			outcome.ProbeRan = true
-			outcome.Notes = append(outcome.Notes, "usage 流式: 实测支持")
+			outcome.Notes = append(outcome.Notes, "工具调用与流式 usage: 两程实测支持")
 			if observations.StopReason != "" && !containsString(capability.StopReasons, observations.StopReason) {
 				capability.StopReasons = append(capability.StopReasons, observations.StopReason)
 				outcome.Notes = append(outcome.Notes, fmt.Sprintf("停止原因: 实测 %q 不在协议标准集，已并入声明", observations.StopReason))
@@ -194,10 +257,7 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 			}
 		}
 	} else {
-		outcome.Notes = append(outcome.Notes, "密钥未设置，跳过实测探测——可 export 变量或重跑向导粘贴密钥后以 cairn provider probe 复核")
-	}
-	if !capability.ToolCalls || !capability.StreamingUsage {
-		return nil, errors.New("该模型/端点缺少工具调用或流式 usage 能力，不满足 Cairn 生产配置的硬性要求；向导终止且未写入任何文件")
+		outcome.Notes = append(outcome.Notes, "密钥未设置，配置仅声明 Cairn 生产所需能力，尚未实测确认——请设置变量后运行 cairn provider probe --probe-tools")
 	}
 
 	configPath := config.DefaultPath(input.Workspace)
