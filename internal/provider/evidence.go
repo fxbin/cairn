@@ -232,7 +232,7 @@ func (store *EvidenceStore) Get(fingerprint string) (ProviderProbeEvidence, erro
 		return ProviderProbeEvidence{}, newPersistedRecordError("read evidence failed", err)
 	}
 	var evidence ProviderProbeEvidence
-	if err := json.Unmarshal(encoded, &evidence); err != nil {
+	if err := decodeStrictPersistedJSON(encoded, &evidence); err != nil {
 		return ProviderProbeEvidence{}, newPersistedRecordError("decode evidence failed", err)
 	}
 	recomputed, err := evidence.ComputeFingerprint()

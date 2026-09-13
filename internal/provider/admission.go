@@ -210,11 +210,8 @@ func (store *DecisionStore) ListPartition(requestProfileFingerprint string) ([]P
 		if err != nil {
 			return nil, newPersistedRecordError("read admission decision failed", err)
 		}
-		if !utf8.Valid(encoded) {
-			return nil, errors.New("decode admission decision failed: invalid UTF-8")
-		}
 		var decision ProviderAdmissionDecision
-		if err := json.Unmarshal(encoded, &decision); err != nil {
+		if err := decodeStrictPersistedJSON(encoded, &decision); err != nil {
 			return nil, newPersistedRecordError("decode admission decision failed", err)
 		}
 		recomputed, err := decision.ComputeFingerprint()
