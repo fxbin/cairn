@@ -117,13 +117,16 @@ type rewindState struct {
 	applied int
 }
 
-// RunConsole 是单任务运行闭环的 bubbletea 模型。
+// RunConsole 是单任务运行闭环的 bubbletea 模型。rootCtx 覆盖控制台生命周
+// 期，operationCtx 仅覆盖当前 Run、Resume 或 Rewind，避免单次取消污染后续操作。
 type RunConsole struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	input    RunConsoleInput
-	events   chan domain.Event
-	stopWait bool
+	rootCtx         context.Context
+	rootCancel      context.CancelFunc
+	operationCtx    context.Context
+	operationCancel context.CancelFunc
+	input           RunConsoleInput
+	events          chan domain.Event
+	stopWait        bool
 
 	mode       consoleMode
 	taskField  textarea.Model
@@ -161,13 +164,13 @@ type RunConsole struct {
 	rewinding           *rewindState
 }
 
-// NewRunConsole 构造运行主界面模型：ctx 承载取消语义（界面 Ctrl+C 在运行
-// 中触发取消，Run 由 Loop 持久化取消终态后返回）。
+// NewRunConsole 构造运行主界面模型：根 context 承载控制台生命周期；每次
+// Run、Resume 或 Rewind 另建可取消 context，运行中 Ctrl+C 不影响后续操作。
 func NewRunConsole(ctx context.Context, runInput RunConsoleInput) RunConsole {
-	runCtx, cancel := context.WithCancel(ctx)
+	rootCtx, rootCancel := context.WithCancel(ctx)
 	console := RunConsole{
-		ctx:        runCtx,
-		cancel:     cancel,
+		rootCtx:    rootCtx,
+		rootCancel: rootCancel,
 		input:      runInput,
 		events:     make(chan domain.Event, consoleEventBuffer),
 		mode:       consoleInput,
@@ -212,7 +215,7 @@ func waitForEvent(events <-chan domain.Event) tea.Cmd {
 // loadSessionHistoryCmd 异步读取当前工作区历史，避免 SQLite 查询阻塞界面事件循环。
 func loadSessionHistoryCmd(console RunConsole) tea.Cmd {
 	service := console.input.Service
-	ctx := console.ctx
+	ctx := console.rootCtx
 	workspace := console.input.Workspace
 	configuration := console.input.Config
 	return func() tea.Msg {
@@ -224,7 +227,7 @@ func loadSessionHistoryCmd(console RunConsole) tea.Cmd {
 // loadSessionContinuationCmd 异步验证历史运行的完整会话链与唯一终态链尾。
 func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestID uint64) tea.Cmd {
 	service := console.input.Service
-	ctx := console.ctx
+	ctx := console.rootCtx
 	workspace := console.input.Workspace
 	configuration := console.input.Config
 	return func() tea.Msg {
@@ -237,7 +240,7 @@ func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestI
 // runFinishedMsg 回到事件循环。
 func startRunCmd(console RunConsole, task string) tea.Cmd {
 	service := console.input.Service
-	runCtx := console.ctx
+	runCtx := console.operationContext()
 	events := console.events
 	onEvent := func(event domain.Event) { events <- event }
 	return func() tea.Msg {
@@ -254,7 +257,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 // 回退语义呈现。
 func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 	service := console.input.Service
-	runCtx := console.ctx
+	runCtx := console.operationContext()
 	events := console.events
 	waiting := console.waiting
 	rewinding := console.rewinding
@@ -276,7 +279,7 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 // 与审批复用运行通道，最终结果按回退语义收束。
 func rewindFilesCmd(console RunConsole, runs []domain.RunID) tea.Cmd {
 	service := console.input.Service
-	runCtx := console.ctx
+	runCtx := console.operationContext()
 	events := console.events
 	onEvent := func(event domain.Event) { events <- event }
 	return func() tea.Msg {
@@ -416,7 +419,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case consoleInput:
 		switch message.String() {
 		case "ctrl+c":
-			console.cancel()
+			console.rootCancel()
 			return console, tea.Quit
 		case "tab":
 			current := strings.TrimSpace(console.taskField.Value())
@@ -446,6 +449,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				task = expanded
 			}
 			console.mode = consoleRunning
+			console.beginOperation()
 			console.lastTask = task
 			carryingPrior := false
 			if console.sessionID == "" {
@@ -468,7 +472,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch message.String() {
 		case "ctrl+c", "esc":
 			console.appendLine(warnStyle.Render("⏸ 已请求取消，等待运行持久化终态…"))
-			console.cancel()
+			console.cancelOperation()
 			return console, nil
 		case "enter":
 			if !console.queuing {
@@ -491,10 +495,12 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case consoleApproval:
 		switch message.String() {
 		case "enter":
+			console.beginOperation()
 			console.mode = consoleRunning
 			console.appendLine(okStyle.Render("▶ 已批准，继续运行"))
 			return console, resolveApprovalCmd(console, true)
 		case "esc", "d":
+			console.beginOperation()
 			console.mode = consoleRunning
 			console.appendLine(warnStyle.Render("▶ 已拒绝，运行将按拒绝终态收束"))
 			return console, resolveApprovalCmd(console, false)
@@ -507,7 +513,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case consoleDone:
 		switch message.String() {
 		case "ctrl+c":
-			console.cancel()
+			console.rootCancel()
 			return console, tea.Quit
 		case "enter":
 			console.mode = consoleInput
@@ -534,6 +540,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 // 结果页；其余错误如实展示。
 func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea.Cmd) {
 	var waiting *agent.WaitingApprovalError
+	console.finishOperation()
 	if errors.As(finished.err, &waiting) {
 		console.mode = consoleApproval
 		console.waiting = waiting
@@ -561,6 +568,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 // 入审批模式；终态展示回退结论。回退 run 不进入会话对话链，对话前情不变。
 func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.Model, tea.Cmd) {
 	var waiting *agent.WaitingApprovalError
+	console.finishOperation()
 	if errors.As(finished.err, &waiting) {
 		console.mode = consoleApproval
 		console.waiting = waiting
@@ -588,6 +596,38 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 		console.appendLine(dimStyle.Render("回退 run " + string(console.result.ID) + "（cairn inspect 查证）"))
 	}
 	return console, nil
+}
+
+// beginOperation 为一次 Run、Resume 或 Rewind 创建独立取消域；调用方必须
+// 在启动异步命令前调用，已有操作会先释放，避免遗留 context 泄漏。
+func (console *RunConsole) beginOperation() {
+	console.finishOperation()
+	console.operationCtx, console.operationCancel = context.WithCancel(console.rootCtx)
+}
+
+// operationContext 返回当前操作 context；未建立操作时返回根 context，供
+// 异常状态失败关闭而不制造脱离控制台生命周期的后台工作。
+func (console RunConsole) operationContext() context.Context {
+	if console.operationCtx != nil {
+		return console.operationCtx
+	}
+	return console.rootCtx
+}
+
+// cancelOperation 只取消当前运行操作，不终止控制台及历史、向导等后续能力。
+func (console RunConsole) cancelOperation() {
+	if console.operationCancel != nil {
+		console.operationCancel()
+	}
+}
+
+// finishOperation 释放当前操作 context，并清除引用以便下一轮建立全新取消域。
+func (console *RunConsole) finishOperation() {
+	if console.operationCancel != nil {
+		console.operationCancel()
+	}
+	console.operationCtx = nil
+	console.operationCancel = nil
 }
 
 // resetRun 清空上一轮运行的展示与统计，保留输入态历史行由滚动缓冲自然
@@ -731,7 +771,7 @@ func (console RunConsole) loadApprovalDetail(waiting *agent.WaitingApprovalError
 			workspace = current
 		}
 	}
-	inspected, err := console.input.Service.Inspect(console.ctx, workspace, "", console.input.Config, waiting.RunID, true)
+	inspected, err := console.input.Service.Inspect(console.rootCtx, workspace, "", console.input.Config, waiting.RunID, true)
 	if err != nil {
 		return []string{dimStyle.Render("（参数预览不可用: " + err.Error() + "）")}
 	}
@@ -779,7 +819,7 @@ func (console RunConsole) patchApprovalDiff() ([]string, error) {
 	if console.waiting == nil {
 		return nil, errors.New("当前无待审批操作")
 	}
-	inspected, err := console.input.Service.Inspect(console.ctx, workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, console.waiting.RunID, true)
+	inspected, err := console.input.Service.Inspect(console.rootCtx, workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, console.waiting.RunID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1401,7 +1441,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(itemStyle.Render(fmt.Sprintf("模型 %s · 端点 %s", console.input.Config.Provider.Model, console.input.Config.Provider.BaseURL)))
 		console.appendLine(dimStyle.Render(fmt.Sprintf("轮次预算 %s · 工作区 %s", turns, console.statusWorkspace())))
 	case "/model":
-		wizard := NewConfigWizard(console.ctx, console.nextSetupInput())
+		wizard := NewConfigWizard(console.rootCtx, console.nextSetupInput())
 		console.wizard = &wizard
 		console.mode = consoleModelWizard
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
@@ -1467,6 +1507,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 			runs = append(runs, entry.id)
 		}
 		console.mode = consoleRunning
+		console.beginOperation()
 		console.rewinding = &rewindState{}
 		console.appendLine(okStyle.Render(fmt.Sprintf("▶ 工作区回退中：撤销第 %d 个任务起的 %d 个任务的补丁（Ctrl+C 取消；逐项经策略判定并在必要时审批；整批非原子）", index, len(runs))))
 		return true, rewindFilesCmd(*console, runs)
@@ -1477,7 +1518,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))
 	case "/quit", "/exit":
-		console.cancel()
+		console.rootCancel()
 		return true, tea.Quit
 	default:
 		console.appendLine(warnStyle.Render("未知命令 " + name + "（/help 查看清单）" + remainder))
