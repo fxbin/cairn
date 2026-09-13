@@ -9,6 +9,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,10 @@ const probeNotice = "提交时将执行两程极小付费探测（合计数十 t
 // 显式端点成员，选择它时端点与密钥变量名保持向导默认值由用户手改。
 const providerCustomSummary = "任意 OpenAI 兼容端点（手动输入 base_url）"
 
+// credentialCommitGate 序列化同一进程内配置向导的凭据快照、提交与补偿窗
+// 口；通道闸门允许等待方响应提交 context 取消，避免阻塞 Bubble Tea 事件循环。
+var credentialCommitGate = make(chan struct{}, 1)
+
 // maxProviderChoices 是 provider 步同屏展示的目录条目上限；搜索词过滤后的
 // 超额条目不进入列表，用户始终可用更精确的搜索词或选 custom 手输。
 const maxProviderChoices = 10
@@ -79,6 +84,18 @@ type catalogLoadedMsg struct {
 type commitFinishedMsg struct {
 	outcome *app.SetupOutcome
 	err     error
+}
+
+// credentialSnapshot 保存一次向导提交前的凭据文件与环境变量状态；内容仅在
+// 提交命令闭包中用于失败补偿，不进入界面模型、错误或持久化输出。
+type credentialSnapshot struct {
+	path       string
+	file       []byte
+	fileMode   os.FileMode
+	fileExists bool
+	envName    string
+	envValue   string
+	envExists  bool
 }
 
 // ConfigWizard 是模型配置向导的 bubbletea 模型：持有待补齐的 SetupInput 与
@@ -110,8 +127,10 @@ type ConfigWizard struct {
 	catalogErr     error
 	catalogLoading bool
 
-	outcome   *app.SetupOutcome
-	commitErr error
+	outcome         *app.SetupOutcome
+	commitErr       error
+	commitCancel    context.CancelFunc
+	exitAfterCommit bool
 }
 
 // defaultBaseURL 与 defaultAPIKeyEnv 是向导输入框的显式默认值：与 init 问
@@ -205,21 +224,151 @@ func loadCatalogCmd(catalogURL, cacheDir string) tea.Cmd {
 	}
 }
 
+// credentialCommit 在异步提交开始时取得串行闸门并返回本次补偿和释放动作；
+// 快路径可在确认页先写入凭据，但仍由命令在 Setup 结束后释放闸门。
+type credentialCommit struct {
+	begin func() (rollback func() error, finish func(), err error)
+}
+
 // commitCmd 异步执行 SetupService 提交：目录预填、可选实测探测、落盘与回读
-// 自证一体完成；结果经 commitFinishedMsg 回到事件循环。
-func commitCmd(service *app.SetupService, ctx context.Context, input app.SetupInput) tea.Cmd {
+// 自证一体完成；失败时先补偿本次凭据文件与环境修改，再返回非敏感结果。
+func commitCmd(service *app.SetupService, ctx context.Context, input app.SetupInput, credential credentialCommit) tea.Cmd {
 	return func() tea.Msg {
+		rollback, finish, err := credential.begin()
+		if err != nil {
+			return commitFinishedMsg{err: err}
+		}
+		defer finish()
 		outcome, err := service.Run(ctx, input)
+		if err != nil && rollback != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				err = fmt.Errorf("%w；恢复提交前凭据状态失败: %v", err, rollbackErr)
+			}
+		}
 		return commitFinishedMsg{outcome: outcome, err: err}
 	}
 }
 
-// Update 处理向导的全部按键与异步消息：Ctrl+C 任意时刻退出；Enter 推进、
-// Esc 后退；提交步不可后退，终态步 Enter 退出。
+// snapshotCredential 捕获凭据文件的存在性、字节与权限，以及环境变量“未设
+// 置/已设置为空/已设置非空”三态；读取失败时不允许开始修改。
+func snapshotCredential(path, envName string) (credentialSnapshot, error) {
+	snapshot := credentialSnapshot{path: path, envName: envName}
+	snapshot.envValue, snapshot.envExists = os.LookupEnv(envName)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return snapshot, nil
+		}
+		return credentialSnapshot{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return credentialSnapshot{}, err
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return credentialSnapshot{}, err
+	}
+	snapshot.file = content
+	snapshot.fileMode = info.Mode().Perm()
+	snapshot.fileExists = true
+	return snapshot, nil
+}
+
+// restoreCredential 精确恢复提交前的凭据文件与环境三态；既有文件通过同目
+// 录临时文件同步并原子替换，原先不存在的文件则删除并同步目录。
+func restoreCredential(snapshot credentialSnapshot) error {
+	var restoreErr error
+	if snapshot.fileExists {
+		restoreErr = restoreCredentialFile(snapshot)
+	} else if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+		restoreErr = err
+	} else if err == nil {
+		restoreErr = syncDirectory(filepath.Dir(snapshot.path))
+	}
+	var envErr error
+	if snapshot.envExists {
+		envErr = os.Setenv(snapshot.envName, snapshot.envValue)
+	} else {
+		envErr = os.Unsetenv(snapshot.envName)
+	}
+	if restoreErr != nil && envErr != nil {
+		return fmt.Errorf("恢复凭据文件失败: %v；恢复环境变量失败: %w", restoreErr, envErr)
+	}
+	if restoreErr != nil {
+		return fmt.Errorf("恢复凭据文件失败: %w", restoreErr)
+	}
+	if envErr != nil {
+		return fmt.Errorf("恢复环境变量失败: %w", envErr)
+	}
+	return nil
+}
+
+// restoreCredentialFile 以同目录临时文件恢复既有凭据内容和权限，并同步文件
+// 与目录，避免失败补偿再次留下半写文件。
+func restoreCredentialFile(snapshot credentialSnapshot) (err error) {
+	directory := filepath.Dir(snapshot.path)
+	temporary, err := os.CreateTemp(directory, ".keys-restore-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if temporary != nil {
+			if closeErr := temporary.Close(); err == nil && closeErr != nil {
+				err = closeErr
+			}
+		}
+		if temporaryPath != "" {
+			if removeErr := os.Remove(temporaryPath); err == nil && removeErr != nil && !os.IsNotExist(removeErr) {
+				err = removeErr
+			}
+		}
+	}()
+	if err = temporary.Chmod(snapshot.fileMode); err != nil {
+		return err
+	}
+	if _, err = temporary.Write(snapshot.file); err != nil {
+		return err
+	}
+	if err = temporary.Sync(); err != nil {
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	temporary = nil
+	if err = os.Rename(temporaryPath, snapshot.path); err != nil {
+		return err
+	}
+	temporaryPath = ""
+	return syncDirectory(directory)
+}
+
+// syncDirectory 持久化凭据文件创建、替换或删除产生的目录项变化。
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+// Update 处理向导的全部按键与异步消息：Ctrl+C 在提交前后退出，提交期间须
+// 等待成功或失败补偿完成；Enter 推进、Esc 后退。
 func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if message, ok := msg.(tea.KeyMsg); ok {
 		switch message.String() {
 		case "ctrl+c":
+			if wizard.step == stepCommitting {
+				wizard.exitAfterCommit = true
+				if wizard.commitCancel != nil {
+					wizard.commitCancel()
+				}
+				return wizard, nil
+			}
 			return wizard, tea.Quit
 		}
 	}
@@ -238,6 +387,13 @@ func (wizard ConfigWizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.step = stepDone
 		wizard.outcome = finished.outcome
 		wizard.commitErr = finished.err
+		if wizard.commitCancel != nil {
+			wizard.commitCancel()
+		}
+		wizard.commitCancel = nil
+		if wizard.exitAfterCommit || wizard.ctx.Err() != nil {
+			return wizard, tea.Quit
+		}
 		return wizard, nil
 	}
 	switch wizard.step {
@@ -559,28 +715,82 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wizard.input.Model = strings.TrimSpace(wizard.modelInput.Value())
 		wizard.input.APIKeyEnv = strings.TrimSpace(wizard.apiKeyEnvInput.Value())
 		wizard.input.OverwriteExisting = true
-		if secret := strings.TrimSpace(wizard.apiKeySecretInput.Value()); secret != "" {
+		secret := wizard.apiKeySecretInput.Value()
+		commitCtx, commitCancel := context.WithCancel(wizard.ctx)
+		release := func() { <-credentialCommitGate }
+		prepareCredential := func() (func() error, error) {
 			secretPath, err := keysPath(wizard.input)
 			if err != nil {
-				wizard.step = stepDone
-				wizard.commitErr = fmt.Errorf("解析凭据文件路径失败（配置未提交）: %w", err)
-				return wizard, nil
+				return nil, fmt.Errorf("解析凭据文件路径失败（配置未提交）: %w", err)
 			}
+			snapshot, err := snapshotCredential(secretPath, wizard.input.APIKeyEnv)
+			if err != nil {
+				return nil, fmt.Errorf("读取提交前凭据状态失败（配置未提交）: %w", err)
+			}
+			rollback := func() error { return restoreCredential(snapshot) }
 			if err := credential.UpsertEnvFile(secretPath, wizard.input.APIKeyEnv, secret); err != nil {
-				wizard.step = stepDone
-				wizard.commitErr = fmt.Errorf("写入本机凭据文件失败（配置未提交）: %w", err)
-				return wizard, nil
+				if rollbackErr := rollback(); rollbackErr != nil {
+					err = fmt.Errorf("%w；恢复提交前凭据状态失败: %v", err, rollbackErr)
+				}
+				return nil, fmt.Errorf("写入本机凭据文件失败（配置未提交）: %w", err)
 			}
 			if os.Getenv(wizard.input.APIKeyEnv) == "" {
 				if err := os.Setenv(wizard.input.APIKeyEnv, secret); err != nil {
-					wizard.step = stepDone
-					wizard.commitErr = fmt.Errorf("注入进程环境失败（配置未提交）: %w", err)
-					return wizard, nil
+					if rollbackErr := rollback(); rollbackErr != nil {
+						err = fmt.Errorf("%w；恢复提交前凭据状态失败: %v", err, rollbackErr)
+					}
+					return nil, fmt.Errorf("注入进程环境失败（配置未提交）: %w", err)
 				}
 			}
+			return rollback, nil
 		}
+		acquire := func() error {
+			select {
+			case credentialCommitGate <- struct{}{}:
+				return nil
+			case <-commitCtx.Done():
+				return commitCtx.Err()
+			}
+		}
+		var transaction credentialCommit
+		if secret != "" {
+			select {
+			case credentialCommitGate <- struct{}{}:
+				rollback, err := prepareCredential()
+				if err != nil {
+					release()
+					commitCancel()
+					wizard.step = stepDone
+					wizard.commitErr = err
+					return wizard, nil
+				}
+				transaction.begin = func() (func() error, func(), error) {
+					return rollback, release, nil
+				}
+			default:
+				transaction.begin = func() (func() error, func(), error) {
+					if err := acquire(); err != nil {
+						return nil, func() {}, err
+					}
+					rollback, err := prepareCredential()
+					if err != nil {
+						release()
+						return nil, func() {}, err
+					}
+					return rollback, release, nil
+				}
+			}
+		} else {
+			transaction.begin = func() (func() error, func(), error) {
+				if err := acquire(); err != nil {
+					return nil, func() {}, err
+				}
+				return nil, release, nil
+			}
+		}
+		wizard.commitCancel = commitCancel
 		wizard.step = stepCommitting
-		return wizard, commitCmd(wizard.service, wizard.ctx, wizard.input)
+		return wizard, commitCmd(wizard.service, commitCtx, wizard.input, transaction)
 	case "esc":
 		wizard.step = stepAPIKeySecret
 		return wizard, wizard.apiKeySecretInput.Focus()

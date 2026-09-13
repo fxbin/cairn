@@ -401,13 +401,21 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return console, nil
 	}
 	if _, closed := msg.(wizardClosedMsg); closed {
+		exitConsole := console.shutdownRequested || (console.wizard != nil && console.wizard.exitAfterCommit)
 		console.exitWizard()
+		if exitConsole {
+			return console, tea.Quit
+		}
 		return console, nil
 	}
 	if _, shuttingDown := msg.(consoleShutdownMsg); shuttingDown {
 		console.shutdownRequested = true
 		console.cancelOperation()
 		if console.mode == consoleRunning {
+			return console, nil
+		}
+		if console.mode == consoleModelWizard && console.wizard != nil && console.wizard.step == stepCommitting {
+			console.rootCancel()
 			return console, nil
 		}
 		console.rootCancel()
@@ -417,7 +425,12 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case consoleEventMsg, runFinishedMsg, rewindFinishedMsg:
 		default:
-			return console.relayWizardMsg(msg)
+			model, cmd := console.relayWizardMsg(msg)
+			updated := model.(RunConsole)
+			if updated.shutdownRequested && updated.wizard != nil && updated.wizard.step != stepCommitting {
+				return updated, tea.Quit
+			}
+			return updated, cmd
 		}
 	}
 	switch typed := msg.(type) {
