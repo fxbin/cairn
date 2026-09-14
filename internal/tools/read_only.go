@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -23,6 +24,9 @@ const (
 	defaultReadLimit   = 16 * 1024
 	maximumReadLines   = 2000
 )
+
+// maximumReadPreviewBytes 限制展示预览，正文仅在 data.content 完整保留。
+const maximumReadPreviewBytes = 512
 
 // ListFiles 是列出工作区文件的只读工具。
 type ListFiles struct{ Workspace Workspace }
@@ -196,7 +200,22 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 		TotalBytes int64  `json:"total_bytes"`
 		Offset     int64  `json:"offset"`
 		Limit      int64  `json:"limit"`
-	}{Path: relative, Content: string(selected), TotalBytes: int64(len(content)), Offset: offset, Limit: limit}, string(selected), int64(len(content)), "sha256:"+hex.EncodeToString(digest[:]), end < int64(len(content)))
+	}{Path: relative, Content: string(selected), TotalBytes: int64(len(content)), Offset: offset, Limit: limit}, readFilePreview(selected), int64(len(content)), "sha256:"+hex.EncodeToString(digest[:]), end < int64(len(content)))
+}
+
+// readFilePreview 在完整脱敏后截取 UTF-8 预览，避免重复传输正文或先截断
+// 凭据后留下无法匹配的秘密片段；预览截断不改变 data 的范围或完整性标记。
+func readFilePreview(content []byte) string {
+	preview := strings.ToValidUTF8(string(artifact.Redact(content)), "\uFFFD")
+	if len(preview) <= maximumReadPreviewBytes {
+		return preview
+	}
+	const marker = "...[preview-truncated]"
+	end := maximumReadPreviewBytes - len(marker)
+	for end > 0 && !utf8.RuneStart(preview[end]) {
+		end--
+	}
+	return preview[:end] + marker
 }
 
 // readLineRange 将一基行范围转换为原始字节区间，保留换行并将超出末尾的起点收敛到 EOF。

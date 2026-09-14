@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestReadOnlyToolsRespectWorkspaceAndReturnStableData(t *testing.T) {
@@ -391,5 +392,68 @@ func TestReadFileByteCompatibilityAndTinyLineCap(t *testing.T) {
 	read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt","start_line":1,"line_count":1}`))
 	if read.OK || read.Code != "invalid" {
 		t.Fatalf("UTF8 cannot fit: %#v", read)
+	}
+}
+
+func TestReadFilePreviewDoesNotDuplicateContent(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Repeat("中文代码行\n", 500) + "DATA_TAIL_MUST_REMAIN"
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 32*1024, 100, 64*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range []json.RawMessage{
+		json.RawMessage(`{"path":"sample.txt","limit":16000}`),
+		json.RawMessage(`{"path":"sample.txt","start_line":1,"line_count":1000}`),
+	} {
+		result := (ReadFile{Workspace: workspace}).Execute(context.Background(), args)
+		if !result.OK || result.Truncated {
+			t.Fatalf("unexpected read status: %s", result.Code)
+		}
+		var data struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(result.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Content != content {
+			t.Fatal("bounded preview changed the actual file content")
+		}
+		if len(result.Preview) > 512 {
+			t.Fatalf("preview duplicates %d bytes of content", len(result.Preview))
+		}
+		if !utf8.ValidString(result.Preview) || !strings.Contains(result.Preview, "preview-truncated") {
+			t.Fatal("invalid or unmarked preview truncation")
+		}
+		encoded, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > len(result.Data)+1024 {
+			t.Fatal("serialized result duplicates its full body")
+		}
+	}
+}
+
+func TestReadFilePreviewRedactsBeforeTruncating(t *testing.T) {
+	root := t.TempDir()
+	secret := "sk-abcdefghijklmnopqrstuvwxyz12345678901234567890"
+	content := strings.Repeat("x", 480) + "\napi_key=" + secret + strings.Repeat("y", 1000)
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 4096, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt"}`))
+	if !result.OK {
+		t.Fatal(result.Code)
+	}
+	if strings.Contains(result.Preview, "sk-abcdef") || len(result.Preview) > 512 {
+		t.Fatal("preview exposed a secret fragment or exceeded its bound")
 	}
 }
