@@ -41,7 +41,7 @@ func checkpointReadLocation(raw json.RawMessage) string {
 		return ""
 	}
 	offset, limit, total := *data.Offset, *data.Limit, *data.TotalBytes
-	if offset < 0 || limit < 1 || total < offset {
+	if offset < 0 || limit < 0 || total < offset || limit == 0 && offset != total {
 		return ""
 	}
 	end := offset + min(limit, total-offset)

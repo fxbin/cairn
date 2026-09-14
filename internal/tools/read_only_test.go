@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -254,7 +255,8 @@ func TestSearchByteOffsetReadsMatchingLine(t *testing.T) {
 			if *match.ByteOffset != int64(len(prefix)) || match.Line != strings.Count(prefix, "\n")+1 {
 				t.Fatalf("incorrect location: %#v", match)
 			}
-			args, err := json.Marshal(readFileArguments{Path: match.Path, Offset: *match.ByteOffset, Limit: int64(len(target))})
+			limit := int64(len(target))
+			args, err := json.Marshal(readFileArguments{Path: match.Path, Offset: match.ByteOffset, Limit: &limit})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -269,5 +271,125 @@ func TestSearchByteOffsetReadsMatchingLine(t *testing.T) {
 				t.Fatalf("read target: %#v", read)
 			}
 		})
+	}
+}
+
+func TestReadFileLineRanges(t *testing.T) {
+	content := "首行\r\nneedle 中文\r\n最后一行"
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 4096, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	search := (SearchText{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"query":"needle"}`))
+	var matches struct {
+		Matches []struct {
+			Line int `json:"line"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(search.Data, &matches); err != nil {
+		t.Fatal(err)
+	}
+	if !search.OK || len(matches.Matches) != 1 {
+		t.Fatalf("search: %#v", search)
+	}
+	for _, test := range []struct {
+		name         string
+		start, count int
+		want         string
+		offset       int
+		cap          int64
+	}{
+		{"search line", matches.Matches[0].Line, 1, "needle 中文\r\n", len("首行\r\n"), 4096},
+		{"first through last", 1, 10, content, 0, 4096},
+		{"last without newline", 3, 1, "最后一行", len("首行\r\nneedle 中文\r\n"), 4096},
+		{"EOF", 4, 1, "", len(content), 4096},
+		{"past EOF", 100, 1, "", len(content), 4096},
+		{"UTF8 cap", 2, 1, "needle 中", len("首行\r\n"), 11},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bounded := workspace
+			bounded.MaxReadBytes = test.cap
+			read := (ReadFile{Workspace: bounded}).Execute(context.Background(), json.RawMessage(fmt.Sprintf(`{"path":"sample.txt","start_line":%d,"line_count":%d}`, test.start, test.count)))
+			if !read.OK {
+				t.Fatalf("read: %#v", read)
+			}
+			var file struct {
+				Content    string `json:"content"`
+				Offset     int    `json:"offset"`
+				Limit      int    `json:"limit"`
+				TotalBytes int    `json:"total_bytes"`
+			}
+			if err := json.Unmarshal(read.Data, &file); err != nil {
+				t.Fatal(err)
+			}
+			if file.Content != test.want || file.Offset != test.offset || file.Limit != len(test.want) || file.TotalBytes != len(content) {
+				t.Fatalf("range: %s", read.Data)
+			}
+			if read.SHA256 != fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))) {
+				t.Fatalf("hash: %s", read.SHA256)
+			}
+			if read.Truncated != (test.offset+len(test.want) < len(content)) {
+				t.Fatalf("truncated: %#v", read)
+			}
+		})
+	}
+	for _, content := range []string{"", "one\n"} {
+		if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt","start_line":2,"line_count":1}`))
+		if !read.OK || read.Truncated || read.Preview != "" {
+			t.Fatalf("empty EOF: %#v", read)
+		}
+	}
+}
+
+func TestReadFileRejectsInvalidLineArguments(t *testing.T) {
+	workspace, err := NewWorkspace(t.TempDir(), nil, 4096, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range []string{
+		`"start_line":1`, `"line_count":1`, `"start_line":0,"line_count":1`,
+		`"start_line":-1,"line_count":1`, `"start_line":1,"line_count":0`,
+		`"start_line":1,"line_count":-1`, `"start_line":1,"line_count":2001`,
+		`"start_line":1,"line_count":1,"offset":0`, `"start_line":1,"line_count":1,"limit":0`,
+	} {
+		read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt",`+fields+`}`))
+		if read.OK || read.Code != "invalid" {
+			t.Fatalf("%s: %#v", fields, read)
+		}
+	}
+}
+
+func TestReadFileByteCompatibilityAndTinyLineCap(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("中文\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 4096, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range []string{`"offset":0,"limit":0`, `"offset":0,"limit":7`} {
+		read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt",`+fields+`}`))
+		if !read.OK || read.Preview != "中文\n" {
+			t.Fatalf("legacy default: %#v", read)
+		}
+	}
+	for _, fields := range []string{`"offset":-1`, `"limit":-1`, `"limit":4097`, `"offset":8`} {
+		read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt",`+fields+`}`))
+		if read.OK || read.Code != "invalid" {
+			t.Fatalf("legacy rejection: %#v", read)
+		}
+	}
+	workspace.MaxReadBytes = 2
+	read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"sample.txt","start_line":1,"line_count":1}`))
+	if read.OK || read.Code != "invalid" {
+		t.Fatalf("UTF8 cannot fit: %#v", read)
 	}
 }

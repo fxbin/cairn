@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,6 +21,7 @@ const (
 	defaultListResults = 100
 	maximumListResults = 2000
 	defaultReadLimit   = 16 * 1024
+	maximumReadLines   = 2000
 )
 
 // ListFiles 是列出工作区文件的只读工具。
@@ -47,12 +49,12 @@ func (tool ListFiles) Spec() ports.ToolSpec {
 
 // Spec 返回 read_file 的受限 JSON 参数定义。
 func (tool ReadFile) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. offset is a zero-based byte offset (default 0); limit is a byte count (default up to 16384, capped by the workspace read limit), not a line count. Use search_text byte_offset, never its line number, as offset. The result includes sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Zero-based byte offset, not a line number."},"limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum number of bytes to read, not lines."}}}`)}
+	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. Prefer start_line (one-based, from search_text.line) with line_count for local code inspection; provide both and do not mix them with offset or limit. Line reads preserve original newlines, are capped by the workspace byte limit without splitting UTF-8 characters, and return actual byte offset and byte limit. For byte mode, offset is zero-based (default 0, use search_text.byte_offset); limit is a byte count (default up to 16384, capped by the workspace read limit), not a line count. The result includes the complete file sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Zero-based byte offset, not a line number; byte mode only."},"limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum number of bytes to read, not lines; byte mode only."},"start_line":{"type":"integer","minimum":1,"description":"One-based first line, from search_text.line; requires line_count and excludes offset/limit."},"line_count":{"type":"integer","minimum":1,"maximum":2000,"description":"Maximum lines to read; requires start_line and excludes offset/limit."}}}`)}
 }
 
 // Spec 返回 search_text 的受限 JSON 参数定义。
 func (tool SearchText) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace. Each match includes a one-based line number and a zero-based byte_offset for the start of that line; pass byte_offset to read_file.offset to inspect surrounding code.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
+	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace. Each match includes a one-based line number and a zero-based byte_offset for the start of that line; prefer line as read_file.start_line together with line_count to inspect local code. For byte-mode reads, pass byte_offset to read_file.offset.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
 }
 
 // listFilesArguments 是 list_files 的内部解码参数。
@@ -64,9 +66,11 @@ type listFilesArguments struct {
 
 // readFileArguments 是 read_file 的内部解码参数。
 type readFileArguments struct {
-	Path   string `json:"path"`
-	Offset int64  `json:"offset"`
-	Limit  int64  `json:"limit"`
+	Path      string `json:"path"`
+	Offset    *int64 `json:"offset,omitempty"`
+	Limit     *int64 `json:"limit,omitempty"`
+	StartLine *int64 `json:"start_line,omitempty"`
+	LineCount *int64 `json:"line_count,omitempty"`
 }
 
 // searchTextArguments 是 search_text 的内部解码参数。
@@ -123,17 +127,31 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if tool.Workspace.MaxReadBytes < defaultLimit {
 		defaultLimit = tool.Workspace.MaxReadBytes
 	}
-	arguments := readFileArguments{Limit: defaultLimit}
+	arguments := readFileArguments{}
 	if err := decodeArguments(raw, &arguments); err != nil {
 		return Failure("invalid", err.Error())
 	}
-	if arguments.Path == "" || arguments.Offset < 0 {
+	offset, limit := int64(0), defaultLimit
+	if arguments.Offset != nil {
+		offset = *arguments.Offset
+	}
+	if arguments.Limit != nil && *arguments.Limit != 0 {
+		limit = *arguments.Limit
+	}
+	if arguments.Path == "" || offset < 0 {
 		return Failure("invalid", "path is required and offset cannot be negative")
 	}
-	if arguments.Limit == 0 {
-		arguments.Limit = defaultLimit
+	lineMode := arguments.StartLine != nil || arguments.LineCount != nil
+	if lineMode {
+		if arguments.StartLine == nil || arguments.LineCount == nil || arguments.Offset != nil || arguments.Limit != nil {
+			return Failure("invalid", "start_line and line_count must be paired and cannot be mixed with offset or limit")
+		}
+		if *arguments.StartLine < 1 || *arguments.LineCount < 1 || *arguments.LineCount > maximumReadLines {
+			return Failure("invalid", fmt.Sprintf("start_line must be positive and line_count must be between 1 and %d", maximumReadLines))
+		}
+		limit = tool.Workspace.MaxReadBytes
 	}
-	if arguments.Limit < 1 || arguments.Limit > tool.Workspace.MaxReadBytes {
+	if limit < 1 || limit > tool.Workspace.MaxReadBytes {
 		return Failure("invalid", fmt.Sprintf("limit must be between 1 and %d", tool.Workspace.MaxReadBytes))
 	}
 	filePath, relative, err := tool.Workspace.Resolve(arguments.Path)
@@ -154,21 +172,54 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 		return Failure("unsupported_binary", "read_file only supports UTF-8 text")
 	}
 	digest := sha256.Sum256(content)
-	if arguments.Offset > int64(len(content)) {
+	if offset > int64(len(content)) {
 		return Failure("invalid", "offset exceeds file length")
 	}
-	end := arguments.Offset + arguments.Limit
-	if end > int64(len(content)) {
-		end = int64(len(content))
+	end := offset + min(limit, int64(len(content))-offset)
+	if lineMode {
+		offset, end = readLineRange(content, *arguments.StartLine, *arguments.LineCount)
+		if end-offset > limit {
+			end = offset + limit
+			for end > offset && !utf8.RuneStart(content[end]) {
+				end--
+			}
+			if end == offset {
+				return Failure("invalid", "workspace read limit cannot fit the first UTF-8 character")
+			}
+		}
+		limit = end - offset
 	}
-	selected := content[arguments.Offset:end]
+	selected := content[offset:end]
 	return Success(struct {
 		Path       string `json:"path"`
 		Content    string `json:"content"`
 		TotalBytes int64  `json:"total_bytes"`
 		Offset     int64  `json:"offset"`
 		Limit      int64  `json:"limit"`
-	}{Path: relative, Content: string(selected), TotalBytes: int64(len(content)), Offset: arguments.Offset, Limit: arguments.Limit}, string(selected), int64(len(content)), "sha256:"+hex.EncodeToString(digest[:]), end < int64(len(content)))
+	}{Path: relative, Content: string(selected), TotalBytes: int64(len(content)), Offset: offset, Limit: limit}, string(selected), int64(len(content)), "sha256:"+hex.EncodeToString(digest[:]), end < int64(len(content)))
+}
+
+// readLineRange 将一基行范围转换为原始字节区间，保留换行并将超出末尾的起点收敛到 EOF。
+func readLineRange(content []byte, startLine, lineCount int64) (int64, int64) {
+	offset := 0
+	for line := int64(1); line < startLine && offset < len(content); line++ {
+		next := bytes.IndexByte(content[offset:], '\n')
+		if next < 0 {
+			offset = len(content)
+			break
+		}
+		offset += next + 1
+	}
+	end := offset
+	for line := int64(0); line < lineCount && end < len(content); line++ {
+		next := bytes.IndexByte(content[end:], '\n')
+		if next < 0 {
+			end = len(content)
+			break
+		}
+		end += next + 1
+	}
+	return int64(offset), int64(end)
 }
 
 // Execute 在扫描文件数、扫描字节数和匹配数上限内搜索文本或正则表达式。

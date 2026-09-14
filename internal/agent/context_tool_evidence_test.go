@@ -98,6 +98,7 @@ func TestCheckpointReadLocationByteBoundaries(t *testing.T) {
 	}{
 		{0, 10, 3, "byte_range=[0,3)"},
 		{3, 10, 3, "byte_range=[3,3)"},
+		{3, 0, 3, "byte_range=[3,3)"},
 		{9223372036854775806, 9223372036854775807, 9223372036854775807, "byte_range=[9223372036854775806,9223372036854775807)"},
 	} {
 		raw := json.RawMessage(fmt.Sprintf(`{"path":"sample.txt","offset":%d,"limit":%d,"total_bytes":%d}`, item.offset, item.limit, item.total))
