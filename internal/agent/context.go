@@ -16,7 +16,7 @@ import (
 // contextBytesPerEstimatedToken 统一请求估算与摘要空间换算的字节口径。
 const contextBytesPerEstimatedToken = 2
 
-const contextCompactionStrategy = "deterministic_journal_checkpoint_v3"
+const contextCompactionStrategy = "deterministic_journal_checkpoint_v4"
 
 // contextCheckpointPrefix 声明检查点的使用纪律：优先基于清单内已有发现推进，
 // 不重复探索。措辞本身就是行为合同——v1 的"需要细节时请重新读取工作区"曾被
@@ -413,7 +413,7 @@ func summarizeMessage(message ports.Message, toolNames map[string]string) string
 		if name == "" {
 			name = "unknown_tool"
 		}
-		return fmt.Sprintf("工具 %s（调用 %s）：%s", name, message.ToolCallID, summarizeToolResult(message.Content))
+		return fmt.Sprintf("工具 %s（调用 %s）：%s", name, message.ToolCallID, summarizeToolResult(name, message.Content))
 	case "assistant":
 		parts := make([]string, 0, len(message.ToolCalls)+1)
 		if text := strings.TrimSpace(message.Content); text != "" {
@@ -436,20 +436,27 @@ func summarizeMessage(message ports.Message, toolNames map[string]string) string
 	}
 }
 
-// summarizeToolResult 只保留工具结果的状态、预览、大小和摘要，刻意丢弃 data 原文。
-func summarizeToolResult(content string) string {
+// summarizeToolResult 保留状态、定位、预览和摘要；data 只经工具专用白名单投影，
+// 不复制原文，且完整脱敏必须先于任何预览截断。
+func summarizeToolResult(name, content string) string {
 	var result struct {
-		OK        bool   `json:"ok"`
-		Code      string `json:"code"`
-		Preview   string `json:"preview"`
-		Truncated bool   `json:"truncated"`
-		Bytes     int64  `json:"bytes"`
-		SHA256    string `json:"sha256"`
+		OK        bool            `json:"ok"`
+		Code      string          `json:"code"`
+		Preview   string          `json:"preview"`
+		Truncated bool            `json:"truncated"`
+		Bytes     int64           `json:"bytes"`
+		SHA256    string          `json:"sha256"`
+		Data      json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(artifact.RedactJSON([]byte(content)), &result); err != nil {
 		return "返回了无法解析的结构化结果：" + clipText(string(artifact.Redact([]byte(content))), 320)
 	}
 	parts := []string{fmt.Sprintf("ok=%t", result.OK), "code=" + result.Code}
+	if result.OK {
+		if evidence := checkpointToolEvidence(name, result.Data); evidence != "" {
+			parts = append(parts, evidence)
+		}
+	}
 	if result.Preview != "" {
 		parts = append(parts, "preview="+clipText(result.Preview, 480))
 	}

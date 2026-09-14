@@ -80,6 +80,9 @@ func TestRepeatedCompactionRebuildsFlatJournalHistory(t *testing.T) {
 				t.Fatalf("checkpoint %d contains excluded content", count)
 			}
 		}
+		if !strings.Contains(checkpoint.Summary, "byte_range=") {
+			t.Fatalf("checkpoint %d lost read location", count)
+		}
 		if len(checkpoint.Summary) > loop.ContextMaxSummaryBytes {
 			t.Fatalf("checkpoint %d exceeds budget", count)
 		}
