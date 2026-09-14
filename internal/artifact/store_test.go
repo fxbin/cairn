@@ -232,3 +232,24 @@ func TestOpenVerifiesContentHash(t *testing.T) {
 		t.Fatal("缺失制品应返回错误")
 	}
 }
+
+func TestRedactJSONPreservesExactNumbers(t *testing.T) {
+	input := []byte(`{"byte_offset":9007199254740993,"total_bytes":9223372036854775807,"ratio":0.1234567890123456789,"exponent":1e400,"api_key":"private-value"}`)
+	redacted := RedactJSON(input)
+	var value struct {
+		Offset   json.Number `json:"byte_offset"`
+		Total    json.Number `json:"total_bytes"`
+		Ratio    json.Number `json:"ratio"`
+		Exponent json.Number `json:"exponent"`
+		Key      string      `json:"api_key"`
+	}
+	if err := json.Unmarshal(redacted, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Offset.String() != "9007199254740993" || value.Total.String() != "9223372036854775807" || value.Ratio.String() != "0.1234567890123456789" || value.Exponent.String() != "1e400" || value.Key != "[REDACTED]" {
+		t.Fatalf("numbers or redaction changed: %s", redacted)
+	}
+	if trailing := RedactJSON([]byte(`{"number":1} trailing`)); !strings.Contains(string(trailing), "trailing") {
+		t.Fatalf("accepted trailing content: %s", trailing)
+	}
+}

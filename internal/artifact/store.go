@@ -121,10 +121,15 @@ func Redact(content []byte) []byte {
 	return []byte(clean)
 }
 
-// RedactJSON 优先保留有效 JSON 结构并清除凭据式键的值，再执行文本脱敏。
+// RedactJSON 保留有效 JSON 结构和数字精度，再递归清除凭据式键及字符串内容。
 func RedactJSON(content []byte) []byte {
+	if !json.Valid(content) {
+		return Redact(content)
+	}
 	var value any
-	if err := json.Unmarshal(content, &value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
 		return Redact(content)
 	}
 	scrubJSON(&value, "")
