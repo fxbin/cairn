@@ -92,6 +92,14 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 		historyStart++
 	}
 	task := history[historyStart-1].Content
+	// 固定提示超过预留阈值但仍在硬上限内时，没有历史可供压缩，不能添加
+	// 空检查点反而放大请求；真实超限仍失败关闭。
+	if len(history) == historyStart {
+		if loop.estimatePromptTokens(history) > loop.ContextMaxPromptTokens {
+			return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
+		}
+		return history, nil
+	}
 	maximumSummaryBytes := loop.compactionSummaryLimit(task, priorContext)
 	if maximumSummaryBytes < 1 {
 		return nil, fmt.Errorf("context limit %d cannot fit the persistent prompt and tool definitions", loop.ContextMaxPromptTokens)
@@ -99,6 +107,9 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 	summary := summarizeMessagesWithInventoryBudgetFrom(history, maximumSummaryBytes, loop.contextInventoryBudgetPercent(), historyStart)
 	compacted := loop.contextMessages(task, priorContext, summary)
 	after := loop.estimatePromptTokens(compacted)
+	if after >= before && before <= loop.ContextMaxPromptTokens {
+		return messages, nil
+	}
 	if after > loop.ContextMaxPromptTokens {
 		return nil, fmt.Errorf("context checkpoint requires %d tokens, exceeding configured limit %d", after, loop.ContextMaxPromptTokens)
 	}
