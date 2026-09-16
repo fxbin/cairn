@@ -33,3 +33,7 @@ coverage.out
 .zcode/
 *.swp
 *.tmp
+
+# 本地工具运行产物。
+/.pi/
+/.video_agent/
