@@ -879,6 +879,22 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		}
 		return nil
 	}
+	repairs, err := agent.PendingUnstartedOperationRepairs(events)
+	if err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	for _, repair := range repairs {
+		if repair.Result.Code != "approval_denied" {
+			continue
+		}
+		turnID, operationID := repair.TurnID, repair.OperationID
+		if err := appendEvent(domain.EventOperationFailed, &turnID, &operationID, struct {
+			ToolName string       `json:"tool_name"`
+			Result   tools.Result `json:"result"`
+		}{ToolName: repair.ToolName, Result: repair.Result}); err != nil {
+			return RunResult{ID: options.RunID}, err
+		}
+	}
 	if pending := projection.PendingApproval; pending != nil {
 		if projection.CurrentTurn == nil {
 			return RunResult{}, errors.New("pending approval has no open turn")

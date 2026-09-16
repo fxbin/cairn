@@ -890,18 +890,18 @@ func cancellationTerminalCause(request runCancelRequestedPayload) error {
 	return errors.New("run cancellation requested a failed terminal")
 }
 
-// unstartedOperationRepair 描述一个已作出拒绝或授权决定、但尚未开始执行且
+// UnstartedOperationRepair 描述一个已作出拒绝或授权决定、但尚未开始执行且
 // 没有终态的操作；恢复只能补写失败事实，禁止自动重放潜在副作用。
-type unstartedOperationRepair struct {
-	operationID domain.OperationID
-	turnID      domain.TurnID
-	toolName    string
-	result      tools.Result
+type UnstartedOperationRepair struct {
+	OperationID domain.OperationID
+	TurnID      domain.TurnID
+	ToolName    string
+	Result      tools.Result
 }
 
-// pendingUnstartedOperationRepairs 从事件流重建操作生命周期，找出审批或策略
+// PendingUnstartedOperationRepairs 从事件流重建操作生命周期，找出审批或策略
 // 已经给出确定结论、但 operation_started 尚未落盘的中断窗口。
-func pendingUnstartedOperationRepairs(events []domain.Event) ([]unstartedOperationRepair, error) {
+func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperationRepair, error) {
 	type operationRecord struct {
 		turnID     domain.TurnID
 		toolName   string
@@ -995,7 +995,7 @@ func pendingUnstartedOperationRepairs(events []domain.Event) ([]unstartedOperati
 			}
 		}
 	}
-	repairs := make([]unstartedOperationRepair, 0)
+	repairs := make([]UnstartedOperationRepair, 0)
 	for _, operationID := range order {
 		record := records[operationID]
 		if record.started || record.terminal {
@@ -1009,11 +1009,11 @@ func pendingUnstartedOperationRepairs(events []domain.Event) ([]unstartedOperati
 		if result == nil {
 			continue
 		}
-		repairs = append(repairs, unstartedOperationRepair{
-			operationID: operationID,
-			turnID:      record.turnID,
-			toolName:    record.toolName,
-			result:      *result,
+		repairs = append(repairs, UnstartedOperationRepair{
+			OperationID: operationID,
+			TurnID:      record.turnID,
+			ToolName:    record.toolName,
+			Result:      *result,
 		})
 	}
 	return repairs, nil
@@ -1022,7 +1022,7 @@ func pendingUnstartedOperationRepairs(events []domain.Event) ([]unstartedOperati
 // repairUnstartedOperationTerminals 为确定性中断窗口补写失败终态；它不执行工具，
 // 后续恢复器再根据提议类型补齐模型结果或验证收束事件。
 func (loop *Loop) repairUnstartedOperationTerminals(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (bool, error) {
-	repairs, err := pendingUnstartedOperationRepairs(events)
+	repairs, err := PendingUnstartedOperationRepairs(events)
 	if err != nil {
 		return false, err
 	}
@@ -1032,15 +1032,15 @@ func (loop *Loop) repairUnstartedOperationTerminals(ctx context.Context, project
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	for _, repair := range repairs {
-		operationID := repair.operationID
-		turnID := repair.turnID
+		operationID := repair.OperationID
+		turnID := repair.TurnID
 		if err := loop.append(commitContext, projection, domain.EventDraft{
 			RunID:         input.RunID,
 			WorkspaceHash: input.WorkspaceHash,
 			Type:          domain.EventOperationFailed,
 			TurnID:        &turnID,
 			OperationID:   &operationID,
-			Payload:       mustJSON(operationPayload{ToolName: repair.toolName, Result: repair.result}),
+			Payload:       mustJSON(operationPayload{ToolName: repair.ToolName, Result: repair.Result}),
 		}); err != nil {
 			return false, fmt.Errorf("repair unstarted operation %s: %w", operationID, err)
 		}

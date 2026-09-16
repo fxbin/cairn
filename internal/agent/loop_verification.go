@@ -739,7 +739,7 @@ func verificationTerminalResult(event domain.Event) (tools.Result, bool, error) 
 
 // hasRecoverableTerminalGap 报告取消处理前必须优先补齐的既有终态证据。
 func hasRecoverableTerminalGap(events []domain.Event) bool {
-	repairs, err := pendingUnstartedOperationRepairs(events)
+	repairs, err := PendingUnstartedOperationRepairs(events)
 	if err != nil || len(repairs) != 0 {
 		return true
 	}
