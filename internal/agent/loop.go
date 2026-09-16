@@ -97,6 +97,20 @@ func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input Ru
 	if replayErr != nil {
 		return errors.Join(err, fmt.Errorf("replay run while persisting cancellation: %w", replayErr))
 	}
+	verificationRepaired, repairErr := loop.cancelAuthorizedVerificationBeforeStart(ctx, &projection, input, events)
+	if repairErr != nil {
+		return errors.Join(err, repairErr)
+	}
+	if verificationRepaired {
+		events, loadErr = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if loadErr != nil {
+			return errors.Join(err, fmt.Errorf("reload run after cancelling unstarted verification: %w", loadErr))
+		}
+		projection, replayErr = domain.Replay(events)
+		if replayErr != nil {
+			return errors.Join(err, fmt.Errorf("replay run after cancelling unstarted verification: %w", replayErr))
+		}
+	}
 	if hasRecoverableTerminalGap(events) {
 		return err
 	}

@@ -756,11 +756,14 @@ func (loop *Loop) repairMissingCancellationTerminal(ctx context.Context, project
 	if projection.State != domain.RunRunning {
 		return Result{}, false, nil
 	}
-	turnID, found := openTurnOperationCancellation(events, projection.CurrentTurn)
+	turnID, cause, found, err := openTurnOperationCancellation(events, projection.CurrentTurn)
+	if err != nil {
+		return Result{RunID: input.RunID}, true, err
+	}
 	if !found {
 		return Result{}, false, nil
 	}
-	request := runCancelRequestedPayload{Cause: "user_interrupt", ExpectedTerminal: "cancelled"}
+	request := runCancelRequestedPayload{Cause: cause, ExpectedTerminal: "cancelled"}
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{
@@ -812,22 +815,31 @@ func latestRunCancellationRequest(events []domain.Event) (runCancelRequestedPayl
 	return runCancelRequestedPayload{}, false, nil
 }
 
-// openTurnOperationCancellation 检查当前开放轮次是否已有操作取消终态；该事实
-// 表示副作用执行已经结束，恢复只能收束运行，不能继续消费模型工具调用。
-func openTurnOperationCancellation(events []domain.Event, currentTurn *domain.TurnID) (domain.TurnID, bool) {
+// openTurnOperationCancellation 检查当前开放轮次是否已有操作取消终态，或
+// 未启动验证因 user_interrupt 失败关闭的结构化证据；恢复只能据此收束运行。
+func openTurnOperationCancellation(events []domain.Event, currentTurn *domain.TurnID) (domain.TurnID, string, bool, error) {
 	if currentTurn == nil {
-		return "", false
+		return "", "", false, nil
 	}
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
 		if event.TurnID == nil || *event.TurnID != *currentTurn {
 			continue
 		}
-		if event.Type == domain.EventOperationCancelled {
-			return *currentTurn, true
+		switch event.Type {
+		case domain.EventOperationCancelled:
+			return *currentTurn, "user_interrupt", true, nil
+		case domain.EventOperationFailed:
+			cause, found, err := verificationCancellationCause(event)
+			if err != nil {
+				return "", "", false, err
+			}
+			if found {
+				return *currentTurn, cause, true, nil
+			}
 		}
 	}
-	return "", false
+	return "", "", false, nil
 }
 
 // finishPersistedCancellation 根据已持久化请求关闭审批与当前轮次，并补写唯一
@@ -890,8 +902,8 @@ func cancellationTerminalCause(request runCancelRequestedPayload) error {
 	return errors.New("run cancellation requested a failed terminal")
 }
 
-// UnstartedOperationRepair 描述一个已作出拒绝或授权决定、但尚未开始执行且
-// 没有终态的操作；恢复只能补写失败事实，禁止自动重放潜在副作用。
+// UnstartedOperationRepair 描述一个已作出拒绝决定，或普通工具已获授权但
+// 尚未开始执行且没有终态的操作；验证命令的授权恢复由冻结验证流程负责。
 type UnstartedOperationRepair struct {
 	OperationID domain.OperationID
 	TurnID      domain.TurnID
@@ -903,12 +915,13 @@ type UnstartedOperationRepair struct {
 // 已经给出确定结论、但 operation_started 尚未落盘的中断窗口。
 func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperationRepair, error) {
 	type operationRecord struct {
-		turnID     domain.TurnID
-		toolName   string
-		started    bool
-		terminal   bool
-		authorized bool
-		failure    *tools.Result
+		turnID       domain.TurnID
+		toolName     string
+		started      bool
+		terminal     bool
+		authorized   bool
+		verification bool
+		failure      *tools.Result
 	}
 	records := make(map[domain.OperationID]*operationRecord)
 	order := make([]domain.OperationID, 0)
@@ -932,7 +945,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 			if event.TurnID == nil {
 				return nil, fmt.Errorf("verification proposal %s has no turn", operationID)
 			}
-			records[operationID] = &operationRecord{turnID: *event.TurnID, toolName: "exec_command"}
+			records[operationID] = &operationRecord{turnID: *event.TurnID, toolName: "exec_command", verification: true}
 			order = append(order, operationID)
 		case domain.EventPolicyDecided:
 			record, found := records[operationID]
@@ -1003,7 +1016,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 			continue
 		}
 		result := record.failure
-		if result == nil && record.authorized {
+		if result == nil && record.authorized && !record.verification {
 			failure := tools.Failure("operation_not_started", "operation authorization was persisted, but execution did not start; automatic replay is prohibited")
 			result = &failure
 		}

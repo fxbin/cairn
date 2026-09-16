@@ -429,10 +429,16 @@ func latestIncompleteVerification(events []domain.Event) (incompleteVerification
 
 // verificationOperationRecord 关联冻结命令提议与其既有操作终态。
 type verificationOperationRecord struct {
-	proposal     verificationProposalPayload
-	terminal     domain.Event
-	hasResult    bool
-	policyDenied bool
+	operationID         domain.OperationID
+	proposal            verificationProposalPayload
+	terminal            domain.Event
+	approvalFingerprint string
+	policyFingerprint   string
+	hasResult           bool
+	authorized          bool
+	policyAuthorized    bool
+	started             bool
+	policyDenied        bool
 }
 
 // verificationOperations 返回未完成验证中按 command_index 排列的命令记录。
@@ -457,7 +463,7 @@ func verificationOperations(events []domain.Event, verification incompleteVerifi
 			if payload.CommandIndex < 0 {
 				return nil, errors.New("verification command index must not be negative")
 			}
-			copyRecord := &verificationOperationRecord{proposal: payload}
+			copyRecord := &verificationOperationRecord{operationID: operationID, proposal: payload}
 			records[operationID] = copyRecord
 			if payload.CommandIndex > maxIndex {
 				maxIndex = payload.CommandIndex
@@ -471,7 +477,31 @@ func verificationOperations(events []domain.Event, verification incompleteVerifi
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return nil, fmt.Errorf("decode verification policy decision: %w", err)
 			}
-			record.policyDenied = payload.Effect == string(policy.Deny)
+			record.policyFingerprint = payload.Fingerprint
+			switch payload.Effect {
+			case string(policy.Allow):
+				record.authorized = true
+				record.policyAuthorized = true
+			case string(policy.Deny):
+				record.policyDenied = true
+			}
+		case domain.EventApprovalGranted:
+			record, found := records[operationID]
+			if !found {
+				continue
+			}
+			var payload struct {
+				Fingerprint string `json:"fingerprint"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return nil, fmt.Errorf("decode verification approval grant: %w", err)
+			}
+			record.approvalFingerprint = payload.Fingerprint
+			record.authorized = true
+		case domain.EventOperationStarted:
+			if record, found := records[operationID]; found {
+				record.started = true
+			}
 		case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled, domain.EventOperationReconciled:
 			if record, found := records[operationID]; found {
 				record.terminal = event
@@ -560,12 +590,73 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	}
 	latest := operations[len(operations)-1]
 	if !latest.hasResult {
-		return false, nil
+		if latest.started || !latest.authorized {
+			return false, nil
+		}
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if latest.proposal.CommandIndex >= len(commands) {
+			return false, errors.New("verification command index exceeds frozen plan")
+		}
+		command := commands[latest.proposal.CommandIndex]
+		observation, err := loop.verificationObservation()
+		if err != nil {
+			return false, fmt.Errorf("observe workspace before resuming verification: %w", err)
+		}
+		planSHA := ""
+		if planRef != nil {
+			planSHA = planRef.SHA256
+		}
+		decision, err := loop.Gate.DecideVerificationWithObservation(command.Arguments, planSHA, latest.proposal.CommandIndex, loop.ConfigFingerprint, observation)
+		if err != nil {
+			return false, err
+		}
+		decision = freshApprovalDecision(*projection, decision)
+		if !verificationAuthorizationMatches(latest, decision) {
+			reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
+			result := tools.Failure("approval_stale", reason)
+			feedback := "Verification approval expired after workspace drift. Re-inspect the workspace and decide whether to repair or rerun verification."
+			if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		if !latest.policyAuthorized {
+			if latest.approvalFingerprint == "" {
+				return false, errors.New("approved verification command has no persisted approval fingerprint")
+			}
+			decision := policy.Decision{
+				Effect:      policy.Allow,
+				RuleID:      "approved_once",
+				Fingerprint: latest.approvalFingerprint,
+			}
+			if err := loop.append(ctx, projection, policyDecisionDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
+				return false, err
+			}
+		}
+		runErr := loop.executeVerificationCommand(ctx, projection, input, verification.turnID, latest.operationID, command, observation)
+		var failure *VerificationFailureError
+		if errors.As(runErr, &failure) {
+			return true, nil
+		}
+		if runErr != nil {
+			return true, runErr
+		}
+		runErr = loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, latest.proposal.CommandIndex+1)
+		if errors.As(runErr, &failure) {
+			return true, nil
+		}
+		return true, runErr
 	}
 	if latest.proposal.CommandIndex >= len(commands) {
 		return false, errors.New("verification command index exceeds frozen plan")
 	}
 	result, succeeded, err := verificationTerminalResult(latest.terminal)
+	if err != nil {
+		return false, err
+	}
+	_, cancelled, err := verificationCancellationCause(latest.terminal)
 	if err != nil {
 		return false, err
 	}
@@ -609,6 +700,9 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	}); err != nil {
 		return false, &verificationPersistenceError{cause: err}
 	}
+	if cancelled {
+		return true, nil
+	}
 	if result.Code == "approval_denied" || latest.policyDenied {
 		return true, nil
 	}
@@ -627,6 +721,99 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		}{Text: feedback}),
 	}); err != nil {
 		return false, &verificationPersistenceError{cause: err}
+	}
+	return true, nil
+}
+
+// verificationAuthorizationMatches 判断恢复时重算的策略结论是否仍与持久化授权
+// 完全一致；人工审批必须仍是同一 ask 指纹，直接授权必须仍是同一 allow 指纹。
+func verificationAuthorizationMatches(record verificationOperationRecord, decision policy.Decision) bool {
+	if record.approvalFingerprint != "" {
+		return decision.Effect == policy.Ask && decision.Fingerprint == record.approvalFingerprint
+	}
+	return record.policyAuthorized &&
+		record.policyFingerprint != "" &&
+		decision.Effect == policy.Allow &&
+		decision.Fingerprint == record.policyFingerprint
+}
+
+// finishUnstartedVerification 将未进入 operation_started 的验证命令闭合为失败，
+// 并同步关闭验证覆盖层；可选反馈仅用于需要模型重新决策的非取消场景。
+func (loop *Loop) finishUnstartedVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, verificationID string, result tools.Result, feedback string) error {
+	commitContext, cancel := loop.commitContext(ctx)
+	defer cancel()
+	if err := loop.append(commitContext, projection, domain.EventDraft{
+		RunID:         input.RunID,
+		WorkspaceHash: input.WorkspaceHash,
+		Type:          domain.EventOperationFailed,
+		TurnID:        &turnID,
+		OperationID:   &operationID,
+		Payload:       mustJSON(operationPayload{ToolName: "exec_command", Result: result}),
+	}); err != nil {
+		return &verificationPersistenceError{cause: err}
+	}
+	if err := loop.append(commitContext, projection, domain.EventDraft{
+		RunID:         input.RunID,
+		WorkspaceHash: input.WorkspaceHash,
+		Type:          domain.EventVerificationFinished,
+		TurnID:        &turnID,
+		Payload: mustJSON(domain.VerificationFinishedPayload{
+			VerificationID:    verificationID,
+			OK:                false,
+			ResultFingerprint: stableToolResultFingerprint(result),
+		}),
+	}); err != nil {
+		return &verificationPersistenceError{cause: err}
+	}
+	if feedback == "" {
+		return nil
+	}
+	if err := loop.append(commitContext, projection, domain.EventDraft{
+		RunID:         input.RunID,
+		WorkspaceHash: input.WorkspaceHash,
+		Type:          domain.EventVerificationFeedbackAppended,
+		TurnID:        &turnID,
+		OperationID:   &operationID,
+		Payload: mustJSON(struct {
+			Text string `json:"text"`
+		}{Text: feedback}),
+	}); err != nil {
+		return &verificationPersistenceError{cause: err}
+	}
+	return nil
+}
+
+// cancelAuthorizedVerificationBeforeStart 在运行取消兜底中关闭已授权但尚未启动
+// 的验证命令，防止下次恢复把取消前的授权空窗重新解释为可执行操作。
+func (loop *Loop) cancelAuthorizedVerificationBeforeStart(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (bool, error) {
+	verification, found, err := latestIncompleteVerification(events)
+	if err != nil {
+		return false, err
+	}
+	if !found || projection.CurrentTurn == nil || *projection.CurrentTurn != verification.turnID {
+		return false, nil
+	}
+	operations, err := verificationOperations(events, verification)
+	if err != nil {
+		return false, err
+	}
+	if len(operations) == 0 {
+		return false, nil
+	}
+	latest := operations[len(operations)-1]
+	if latest.hasResult || latest.started || !latest.authorized {
+		return false, nil
+	}
+	verificationID := verification.verificationID
+	if verificationID == "" {
+		verificationID = latest.proposal.VerificationID
+	}
+	result := tools.Failure("user_interrupt", "verification command was cancelled before execution because the run was stopping")
+	result.Data = mustJSON(struct {
+		StopCause string `json:"stop_cause"`
+	}{StopCause: "user_interrupt"})
+	if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, ""); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -709,6 +896,13 @@ func (loop *Loop) repairMissingVerificationFeedback(ctx context.Context, project
 	if err != nil {
 		return false, err
 	}
+	_, cancelled, err := verificationCancellationCause(latest.terminal)
+	if err != nil {
+		return false, err
+	}
+	if cancelled {
+		return false, nil
+	}
 	if succeeded || result.Code == "approval_denied" || latest.policyDenied {
 		return false, nil
 	}
@@ -774,6 +968,40 @@ func verificationTerminalResult(event domain.Event) (tools.Result, bool, error) 
 	return result, event.Type == domain.EventOperationSucceeded && result.OK, nil
 }
 
+// verificationCancellationCause 从未启动验证的失败终态中提取结构化取消原因；
+// 仅 user_interrupt 可接管运行终态，普通验证失败不能由文本或失败码推断为取消。
+func verificationCancellationCause(event domain.Event) (string, bool, error) {
+	if event.Type != domain.EventOperationFailed {
+		return "", false, nil
+	}
+	var payload struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return "", false, fmt.Errorf("decode verification cancellation operation: %w", err)
+	}
+	if len(payload.Result) == 0 || string(payload.Result) == "null" {
+		return "", false, nil
+	}
+	var result tools.Result
+	if err := json.Unmarshal(payload.Result, &result); err != nil {
+		return "", false, fmt.Errorf("decode verification cancellation result: %w", err)
+	}
+	if len(result.Data) == 0 || string(result.Data) == "null" {
+		return "", false, nil
+	}
+	var data struct {
+		StopCause string `json:"stop_cause"`
+	}
+	if err := json.Unmarshal(result.Data, &data); err != nil {
+		return "", false, fmt.Errorf("decode verification cancellation data: %w", err)
+	}
+	if data.StopCause != "user_interrupt" {
+		return "", false, nil
+	}
+	return data.StopCause, true, nil
+}
+
 // hasRecoverableTerminalGap 报告取消处理前必须优先补齐的既有终态证据。
 func hasRecoverableTerminalGap(events []domain.Event) bool {
 	repairs, err := PendingUnstartedOperationRepairs(events)
@@ -817,6 +1045,9 @@ func hasRecoverableTerminalGap(events []domain.Event) bool {
 		return true
 	}
 	for _, operation := range operations {
+		if operation.authorized && !operation.started && !operation.hasResult {
+			return true
+		}
 		if operation.hasResult && operation.terminal.Type != domain.EventOperationCancelled {
 			return true
 		}
