@@ -288,7 +288,7 @@ func TestResumeRestoresMalformedToolArgumentsFeedback(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "resume malformed arguments")
 	for offset, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
 	} {
@@ -330,7 +330,7 @@ func TestResumeFailsOnMalformedToolArgumentsAfterCorrectionWasUsed(t *testing.T)
 	appendInitialRunningEvents(t, journal, runID, "resume second malformed arguments")
 	for offset, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
 	} {
@@ -369,11 +369,11 @@ func TestMessagesFromEventsPlacesMalformedToolArgumentsFeedbackInHistoricalOrder
 	appendInitialRunningEvents(t, journal, runID, "ordered feedback")
 	for offset, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &firstTurnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &firstTurnID, AttemptID: &firstAttemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &firstTurnID, AttemptID: &firstAttemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestFailed, TurnID: &firstTurnID, AttemptID: &firstAttemptID, Payload: mustJSON(modelRequestFailedPayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: true})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &firstTurnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &secondTurnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &secondTurnID, AttemptID: &secondAttemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &secondTurnID, AttemptID: &secondAttemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &secondTurnID, AttemptID: &secondAttemptID, Payload: mustJSON(modelResponsePayload{Text: "after repair", ToolCalls: []ports.ToolCall{call}})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(struct {
@@ -1138,7 +1138,7 @@ func TestResumeClosesInterruptedModelAttemptBeforeNewCall(t *testing.T) {
 	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"recover","workspace":"/workspace"}`)})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted})
 	appendEvent(2, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID})
-	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID})
+	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)})
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
 	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
@@ -1218,7 +1218,7 @@ func TestResumeProposesPersistedToolCallsBeforeRequestingAnotherModelResponse(t 
 	call := ports.ToolCall{ID: "read-after-crash", Name: "read_file", Arguments: json.RawMessage(`{"path":"answer.txt"}`)}
 	for expected, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: "read it", ToolCalls: []ports.ToolCall{call}})},
 	} {
 		if _, err := journal.Append(context.Background(), uint64(expected+2), draft); err != nil {
@@ -1258,7 +1258,7 @@ func TestResumeCompletesPersistedFinalModelResponseWithoutAnotherRequest(t *test
 	appendInitialRunningEvents(t, journal, runID, "recover final response")
 	for expected, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: "durable final"})},
 	} {
 		if _, err := journal.Append(context.Background(), uint64(expected+2), draft); err != nil {
@@ -1297,7 +1297,7 @@ func TestResumeClosesInterruptedReadBeforeStartingAnotherModelRequest(t *testing
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted})
 	appendEvent(2, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID})
 	attemptID := domain.NewAttemptID()
-	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID})
+	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)})
 	appendEvent(4, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{ToolCalls: []ports.ToolCall{{ID: "read-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"missing.txt"}`)}}})})
 	appendEvent(5, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: "read-1", ToolName: "read_file", Arguments: json.RawMessage(`{"path":"missing.txt"}`)})})
 	appendEvent(6, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow"}`)})

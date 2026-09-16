@@ -799,7 +799,7 @@ func validatePayloadV1(eventType EventType, raw json.RawMessage, object map[stri
 		if *payload.ThroughSeq == 0 || strings.TrimSpace(*payload.Summary) == "" || *payload.EstimatedUnitsBefore < 1 || *payload.EstimatedUnitsAfter < 1 || *payload.EstimatedUnitsAfter > *payload.EstimatedUnitsBefore {
 			return fmt.Errorf("%s checkpoint values are invalid", eventType)
 		}
-		if !oneOf(*payload.Strategy, "deterministic_tool_output_checkpoint_v1", "deterministic_tool_output_checkpoint_v2") {
+		if !oneOf(*payload.Strategy, "deterministic_journal_checkpoint_v4") {
 			return fmt.Errorf("%s has invalid strategy %q", eventType, *payload.Strategy)
 		}
 		if payload.SummaryVersion != nil && (*payload.SummaryVersion < 0 || *payload.SummaryVersion > ContextSummaryVersion) {

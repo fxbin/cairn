@@ -79,7 +79,7 @@ func buildSandboxSetup(t *testing.T, mutate func(*sandboxeval.EvalSet)) sandboxS
 	t.Setenv(sandboxeval.SandboxProviderKeyEnv, sandboxProviderKey)
 	source, baseline := localGitRepository(t)
 	pack := sandboxThreeTaskPack(testPack(source, baseline))
-	baselineConfig := config.Defaults()
+	baselineConfig := benchmarkTestConfig()
 	baselineConfig.Provider.APIKeyEnv = sandboxeval.SandboxProviderKeyEnv
 	baselineConfig.Provider.BaseURL = "https://provider.test/v4"
 	baselineConfig.Provider.Model = "test-model"
@@ -243,7 +243,7 @@ func TestRecoveredSandboxRunRecordsPreserveClosedRunIdentity(t *testing.T) {
 		Arm: string(step.Arm), TaskID: step.TaskID, AttemptIndex: step.Try,
 		StartedAt: now, FinishedAt: now.Add(time.Second), Counted: true,
 		ReplayConsistent: true, DoctorOK: true, InputTokens: 1, OutputTokens: 1,
-		WallTimeMS: 1, LeakScan: sandboxeval.LeakScanReport{Outcome: sandboxeval.LeakClean},
+		WallTimeMS: 1, Success: true, LeakScan: sandboxeval.LeakScanReport{Outcome: sandboxeval.LeakClean},
 	}
 	if err := writeJSON(filepath.Join(runsDirectory, sandboxRecordFileName(step)), record); err != nil {
 		t.Fatal(err)
@@ -274,7 +274,7 @@ func TestLoadPersistedSuiteResultRecomputesConclusion(t *testing.T) {
 	result := SandboxSuiteResult{
 		SchemaVersion: sandboxRecordSchemaV2, EvaluationID: evaluationID,
 		CandidateID: options.CandidateID, StartedAt: now, FinishedAt: now.Add(time.Second),
-		Status: sandboxeval.ConclusionInconclusive, Trigger: "incomplete_suite", Records: []SandboxRunRecord{},
+		Status: sandboxeval.ConclusionInconclusive, Trigger: "incomplete_suite", StopReason: "context_cancelled", Records: []SandboxRunRecord{},
 	}
 	path := filepath.Join(directory, "suite-result.json")
 	if err := writeJSON(path, result); err != nil {

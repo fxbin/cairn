@@ -20,9 +20,13 @@ import (
 
 // withTestProvider 为 CLI 测试配置补齐能力卡所需的模型与显式声明。
 func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.BaseURL == "" {
+		configuration.Provider.BaseURL = "https://provider.test/v1"
+	}
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"
 	}
+	configuration.Provider.Admission = config.ProviderAdmissionOptional
 	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	return configuration
 }
@@ -477,6 +481,9 @@ func TestCandidateEvaluateFailsClosedForUnknownCandidate(t *testing.T) {
 	}
 	content += "execution:\n  prepare_timeout: 1m\n"
 	if err := os.WriteFile(localConfigPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assets, "agent.yaml"), []byte("version: 2\nprovider:\n  id: custom\n  admission: optional\n  base_url: https://provider.test/v1\n  model: test-model\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	frozenFiles := map[string]string{

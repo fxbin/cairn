@@ -367,15 +367,15 @@ func TestContextCompactedEvidenceFieldsValidateAndLegacyReplays(t *testing.T) {
 		chain.add(t, EventDraft{Type: EventContextCompacted, Payload: json.RawMessage(payload)})
 		return chain
 	}
-	legacyPayload := `{"through_seq":4,"summary":"旧检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2"}`
+	legacyPayload := `{"through_seq":4,"summary":"旧检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_journal_checkpoint_v4"}`
 	if projection := build(legacyPayload).replay(t); projection.LastContextCompactSeq != 5 || projection.ContextCompactedThrough != 4 {
 		t.Fatalf("legacy compaction must replay unchanged: %+v", projection)
 	}
-	fullPayload := `{"through_seq":4,"summary":"检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2","summary_version":1,"trigger":"prompt_estimate_over_threshold","units_source":"estimate_bytes_div2","last_provider_prompt_tokens":4321,"compacted_turn_ids":["turn-a"],"retained_turn_ids":[]}`
+	fullPayload := `{"through_seq":4,"summary":"检查点","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_journal_checkpoint_v4","summary_version":1,"trigger":"prompt_estimate_over_threshold","units_source":"estimate_bytes_div2","last_provider_prompt_tokens":4321,"compacted_turn_ids":["turn-a"],"retained_turn_ids":[]}`
 	if projection := build(fullPayload).replay(t); projection.LastContextCompactSeq != 5 || projection.ContextCompactedThrough != 4 {
 		t.Fatalf("full evidence compaction projection = %+v", projection)
 	}
-	base := `"through_seq":4,"summary":"s","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_tool_output_checkpoint_v2"`
+	base := `"through_seq":4,"summary":"s","estimated_units_before":100,"estimated_units_after":20,"strategy":"deterministic_journal_checkpoint_v4"`
 	if projection := build("{" + base + `,"summary_version":0}`).replay(t); projection.LastContextCompactSeq != 5 {
 		t.Fatalf("explicit summary_version 0 must replay like a legacy event: %+v", projection)
 	}

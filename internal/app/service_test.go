@@ -187,8 +187,12 @@ func TestServiceRejectsInvalidDockerSandboxBeforeProviderOrDoctorStateAccess(t *
 	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: domain.NewRunID(), Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
 		t.Fatalf("resume error = %v", err)
 	}
-	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err == nil || !strings.Contains(err.Error(), "sandbox.docker_image") {
+	doctorReport, err := service.Doctor(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
 		t.Fatalf("doctor error = %v", err)
+	}
+	if doctorReport.ConfigValid || doctorReport.Ready {
+		t.Fatalf("invalid docker sandbox must be reported as not ready: %+v", doctorReport)
 	}
 }
 

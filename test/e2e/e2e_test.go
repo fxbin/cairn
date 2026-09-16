@@ -21,13 +21,80 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+
+	"fmt"
+	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // withTestProvider 为测试配置补齐能力卡所需的模型与显式声明。
+
+// encode 将任意值序列化为事件载荷，供手工事件夹具构造 JSON 原文。
+func encode(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
+// putTestFrozenRunConfig 写入符合当前冻结合同的配置制品，供手工事件夹具引用。
+func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) artifact.Ref {
+	t.Helper()
+	fingerprint := configuration.Fingerprint()
+	commands := make([]agent.VerificationCommand, 0, len(configuration.Verification.Commands))
+	for index, command := range configuration.Verification.Commands {
+		arguments, err := json.Marshal(tools.ExecArguments{Argv: command.Argv, CWD: command.CWD, TimeoutMS: 120000, MaxOutputBytes: 256 * 1024, Env: command.Env})
+		if err != nil {
+			t.Fatal(err)
+		}
+		commands = append(commands, agent.VerificationCommand{ID: fmt.Sprintf("verification-%d", index+1), Arguments: arguments})
+	}
+	verificationFingerprint, err := agent.FingerprintVerificationCommands(commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := contract.NewFrozenRunConfig(fingerprint, contract.FrozenConfigProjection{
+		ConfigVersion: configuration.Version,
+		Preset:        configuration.Preset,
+		Profile:       configuration.Profile,
+		Provider: contract.FrozenProviderProjection{
+			Kind: contract.ProviderKindOpenAICompatible, BaseURL: configuration.Provider.BaseURL,
+			Model: configuration.Provider.Model, ID: contract.ProviderIDCustom, Admission: configuration.Provider.Admission,
+		},
+		Policy: contract.PolicyIdentity{
+			Write: configuration.Policy.Write, Exec: configuration.Policy.Exec,
+			ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...),
+		},
+		Verification: contract.FrozenVerificationProjection{Commands: len(commands), Fingerprint: verificationFingerprint},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozenJSON, err := json.Marshal(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := artifact.New(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := artifacts.Put(frozenJSON, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reference
+}
+
 func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.BaseURL == "" {
+		configuration.Provider.BaseURL = "https://provider.test/v1"
+	}
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"
 	}
+	configuration.Provider.Admission = config.ProviderAdmissionOptional
 	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	return configuration
 }
@@ -189,7 +256,13 @@ func TestFixtureReconcileDanglingPatchWithoutRetryingIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"recover","workspace":"` + workspace + `","config_fingerprint":"` + configuration.Fingerprint() + `"}`)})
+	configRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
+	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
+		Task              string       `json:"task"`
+		Workspace         string       `json:"workspace"`
+		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigFingerprint string       `json:"config_fingerprint"`
+	}{Task: "recover", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted})
 	appendEvent(2, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventTurnOpened, TurnID: &turnID})
 	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"patch","tool_name":"apply_patch","arguments":{"path":"target.txt","mode":"create","content":"x"}}`)})

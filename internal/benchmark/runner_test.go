@@ -21,6 +21,16 @@ import (
 	"github.com/fxbin/cairn/internal/tools"
 )
 
+// benchmarkTestConfig 返回满足 v2 Provider 合同的基准测试基线配置，
+// 仅补齐 base_url/model 与准入声明，其余沿用安全默认值。
+func benchmarkTestConfig() config.Config {
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://provider.test/v1"
+	configuration.Provider.Model = "test-model"
+	configuration.Provider.Admission = config.ProviderAdmissionOptional
+	return configuration
+}
+
 func TestClassifyFailurePreservesLoopGuardReason(t *testing.T) {
 	classification := contract.ClassifyError(&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
 	if classification != "loop_guard_periodic_turn_cycle" {
@@ -38,7 +48,7 @@ func TestRunnerPrepareOnlyCreatesDisposableCloneAndResult(t *testing.T) {
 	report, err := qualificationRunner(source).withNow(now).Run(context.Background(), RunOptions{
 		Pack:           pack,
 		Attempts:       1,
-		Configuration:  config.Defaults(),
+		Configuration:  benchmarkTestConfig(),
 		ResultsRoot:    filepath.Join(output, "results"),
 		WorkspacesRoot: filepath.Join(output, "workspaces"),
 		StateRoot:      filepath.Join(output, "state"),
@@ -74,7 +84,7 @@ func TestRunnerQualificationFailureProducesEnvironmentInvalidWithoutAgentAttempt
 		return errors.New("checkout transport unavailable")
 	}
 	report, err := runner.Run(context.Background(), RunOptions{
-		Pack: pack, Attempts: 2, Configuration: config.Defaults(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t), PrepareOnly: true,
+		Pack: pack, Attempts: 2, Configuration: benchmarkTestConfig(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t), PrepareOnly: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,9 +109,7 @@ func TestRunnerEnvironmentInvalidSkipsProviderCredentialRequirement(t *testing.T
 	output := t.TempDir()
 	runner := qualificationRunner(source)
 	runner.CloneAtBaseline = func(_ context.Context, _ Task, _ string, _ string) error { return errors.New("offline") }
-	configuration := config.Defaults()
-	configuration.Provider.BaseURL = ""
-	configuration.Provider.Model = ""
+	configuration := benchmarkTestConfig()
 	configuration.Provider.APIKeyEnv = "UNSET_BENCHMARK_KEY"
 	report, err := runner.Run(context.Background(), RunOptions{
 		Pack: pack, Configuration: configuration, ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
@@ -125,7 +133,7 @@ func TestRunnerQualificationAndAgentAttemptsUseIndependentWorkspaces(t *testing.
 		return cloneAtBaseline(ctx, task, workspace, proxy)
 	}
 	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := benchmarkTestConfig()
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
@@ -161,7 +169,7 @@ func TestRunnerFormalPreparationFailureInvalidatesSuiteBeforeProvider(t *testing
 		providerCalls++
 		return terminalProvider{}, nil
 	}}
-	configuration := config.Defaults()
+	configuration := benchmarkTestConfig()
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"
@@ -191,7 +199,7 @@ func TestQualificationFailureUsesOnlyRedactedStableError(t *testing.T) {
 		return errors.New("git https://private.example/repo?token=credential-value failed")
 	}
 	report, err := runner.Run(context.Background(), RunOptions{
-		Pack: pack, PrepareOnly: true, Configuration: config.Defaults(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
+		Pack: pack, PrepareOnly: true, Configuration: benchmarkTestConfig(), ResultsRoot: filepath.Join(output, "results"), WorkspacesRoot: filepath.Join(output, "workspaces"), StateRoot: filepath.Join(output, "state"), PrivateRoot: filepath.Join(output, "private"), CairnRoot: repositoryRoot(t),
 	})
 	if err != nil || len(report.Qualifications) != 1 {
 		t.Fatalf("report=%#v err=%v", report, err)
@@ -346,7 +354,7 @@ func TestConfigurationForTaskUsesOnlyDeclaredVolatilePaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("before"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	base := config.Defaults()
+	base := benchmarkTestConfig()
 	base.Provider.BaseURL = "https://provider.test/v1"
 	base.Provider.Model = "test-model"
 	base.Policy.Write, base.Policy.Exec = "allow", "allow"
@@ -512,7 +520,7 @@ func TestAttemptResultEmbedsUnifiedContract(t *testing.T) {
 	output := t.TempDir()
 	runner := qualificationRunner(source)
 	runner.Service = app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return terminalProvider{}, nil }}
-	configuration := config.Defaults()
+	configuration := benchmarkTestConfig()
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "test-model"
 	configuration.Provider.APIKeyEnv = "CAIRN_BENCHMARK_TEST_KEY"

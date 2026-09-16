@@ -2,9 +2,6 @@
 package app
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -267,8 +264,10 @@ func (boot *Boot) Manifest() CapabilityManifest {
 // Boot.Manifest 与 doctor 共用本函数，保证两个视图不矛盾。
 // 未解析（nil）时 manifest 省略卡字段，避免把零值卡误读为空卡合同。
 func buildCapabilityManifest(configuration config.Config, tools []ToolCapability, verification []agent.VerificationCommand, card *contract.ProviderCapabilityCard) CapabilityManifest {
-	commands, _ := json.Marshal(verification)
-	digest := sha256.Sum256(commands)
+	fingerprint, err := agent.FingerprintVerificationCommands(verification)
+	if err != nil {
+		fingerprint = ""
+	}
 	return CapabilityManifest{
 		Preset:            configuration.Preset,
 		Profile:           configuration.Profile,
@@ -279,7 +278,7 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 		Policy:            PolicyView{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec, ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...)},
 		Budget:            BudgetView{MaxTurns: configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls, MaxInputTokens: configuration.Budget.MaxInputTokens, MaxOutputTokens: configuration.Budget.MaxOutputTokens, MaxWallTime: configuration.Budget.MaxWallTime, MaxCostUSD: configuration.Budget.MaxCostUSD},
 		Tools:             tools,
-		Verification:      VerificationView{Commands: len(verification), Fingerprint: "sha256:" + hex.EncodeToString(digest[:])},
+		Verification:      VerificationView{Commands: len(verification), Fingerprint: fingerprint},
 		ConfigFingerprint: configuration.Fingerprint(),
 	}
 }

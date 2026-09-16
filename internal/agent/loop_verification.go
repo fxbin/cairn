@@ -297,12 +297,38 @@ func (loop *Loop) verificationCommands(verificationID string, planRef *artifact.
 // fingerprintVerificationCommands 为验证命令序列计算稳定摘要，用于在无制品
 // 存储时检测恢复配置漂移，并校验制品内计划未被替换。
 func fingerprintVerificationCommands(commands []VerificationCommand) (string, error) {
-	encoded, err := json.Marshal(commands)
+	canonical := make([]VerificationCommand, 0, len(commands))
+	for index, command := range commands {
+		decoded, err := canonicalJSON(command.Arguments)
+		if err != nil {
+			return "", fmt.Errorf("canonicalize verification command %d arguments: %w", index, err)
+		}
+		canonical = append(canonical, VerificationCommand{ID: command.ID, Arguments: decoded})
+	}
+	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return "", fmt.Errorf("encode verification commands: %w", err)
 	}
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+// FingerprintVerificationCommands 返回冻结验证命令序列的规范化稳定摘要，
+// 供应用层能力清单与事件侧指纹比对共用同一算法。
+func FingerprintVerificationCommands(commands []VerificationCommand) (string, error) {
+	return fingerprintVerificationCommands(commands)
+}
+
+// canonicalJSON 将 JSON 值重编码为键排序且数字字面量不变的规范化形式，
+// 与脱敏制品的重编码规则在字节层面保持可比。
+func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 // validateVerificationCommands 拒绝无法安全重放的冻结命令。

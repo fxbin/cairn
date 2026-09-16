@@ -130,7 +130,7 @@ func TestReplayAcceptsContextCheckpointOnlyAtClosedTurnBoundary(t *testing.T) {
 	runID := RunID("run_test")
 	created, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunCreated, OccurredAt: time.Unix(1, 0), Payload: json.RawMessage(`{"task":"test","workspace":"."}`)}, 1, GenesisHash)
 	started, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventRunStarted, OccurredAt: time.Unix(2, 0)}, 2, created.EventHash)
-	checkpoint, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventContextCompacted, OccurredAt: time.Unix(3, 0), Payload: json.RawMessage(`{"through_seq":2,"summary":"tool read_file succeeded","estimated_units_before":120,"estimated_units_after":40,"strategy":"deterministic_tool_output_checkpoint_v1"}`)}, 3, started.EventHash)
+	checkpoint, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventContextCompacted, OccurredAt: time.Unix(3, 0), Payload: json.RawMessage(`{"through_seq":2,"summary":"tool read_file succeeded","estimated_units_before":120,"estimated_units_after":40,"strategy":"deterministic_journal_checkpoint_v4"}`)}, 3, started.EventHash)
 	projection, err := Replay([]Event{created, started, checkpoint})
 	if err != nil {
 		t.Fatalf("replay checkpoint: %v", err)
@@ -140,7 +140,7 @@ func TestReplayAcceptsContextCheckpointOnlyAtClosedTurnBoundary(t *testing.T) {
 	}
 	turnID := TurnID("turn_test")
 	opened, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventTurnOpened, TurnID: &turnID, OccurredAt: time.Unix(4, 0)}, 4, checkpoint.EventHash)
-	invalid, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventContextCompacted, OccurredAt: time.Unix(5, 0), Payload: json.RawMessage(`{"through_seq":4,"summary":"invalid","estimated_units_before":120,"estimated_units_after":40,"strategy":"deterministic_tool_output_checkpoint_v1"}`)}, 5, opened.EventHash)
+	invalid, _ := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: EventContextCompacted, OccurredAt: time.Unix(5, 0), Payload: json.RawMessage(`{"through_seq":4,"summary":"invalid","estimated_units_before":120,"estimated_units_after":40,"strategy":"deterministic_journal_checkpoint_v4"}`)}, 5, opened.EventHash)
 	if _, err := Replay([]Event{created, started, checkpoint, opened, invalid}); err == nil || !strings.Contains(err.Error(), "context_compacted") {
 		t.Fatalf("open-turn checkpoint was accepted: %v", err)
 	}

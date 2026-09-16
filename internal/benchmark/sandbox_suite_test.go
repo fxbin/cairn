@@ -23,7 +23,7 @@ func variantFixture() memory.CompactionParamsVariant {
 // baseConfigFixture 返回一份合法基线配置：无 provider 能力声明的配置仍应通
 // 过整体校验（能力卡由运行装配层把关）。
 func baseConfigFixture() config.Config {
-	base := config.Defaults()
+	base := benchmarkTestConfig()
 	base.Provider.BaseURL = "https://provider.test/v1"
 	base.Provider.Model = "test-model"
 	base.Context.MaxPromptTokens = 48_000

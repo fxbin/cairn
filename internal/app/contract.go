@@ -2,11 +2,11 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -24,11 +24,10 @@ func marshalFrozenRunConfig(configuration config.Config, configFingerprint strin
 	if err != nil {
 		return nil, fmt.Errorf("build frozen verification commands: %w", err)
 	}
-	encodedCommands, err := json.Marshal(commands)
+	commandsFingerprint, err := agent.FingerprintVerificationCommands(commands)
 	if err != nil {
-		return nil, fmt.Errorf("encode frozen verification commands: %w", err)
+		return nil, fmt.Errorf("fingerprint frozen verification commands: %w", err)
 	}
-	verificationDigest := sha256.Sum256(encodedCommands)
 	profile := configuration.Profile
 	if profile == "" {
 		profile = config.ProfileDefault
@@ -63,7 +62,7 @@ func marshalFrozenRunConfig(configuration config.Config, configFingerprint strin
 			ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...),
 		},
 		Verification: contract.FrozenVerificationProjection{
-			Commands: len(commands), Fingerprint: fmt.Sprintf("sha256:%x", verificationDigest),
+			Commands: len(commands), Fingerprint: commandsFingerprint,
 		},
 	})
 	if err != nil {

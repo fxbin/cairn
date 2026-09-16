@@ -22,6 +22,7 @@ func withTestProvider(configuration config.Config) config.Config {
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"
 	}
+	configuration.Provider.Admission = config.ProviderAdmissionOptional
 	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	return configuration
 }
