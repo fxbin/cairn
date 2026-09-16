@@ -48,6 +48,25 @@ type Command struct {
 	Stderr  io.Writer
 }
 
+// jsonOutputTracker 为仍使用包级 JSON helper 的子命令保存首个输出错误，
+// 由顶级 Run 统一映射为 stderr 诊断与失败退出码。
+type jsonOutputTracker struct {
+	writer io.Writer
+	err    error
+}
+
+// Write 将内容原样写入底层 stdout；JSON helper 负责登记失败。
+func (tracker *jsonOutputTracker) Write(content []byte) (int, error) {
+	return tracker.writer.Write(content)
+}
+
+// record 保存首个 JSON 输出错误，避免后续失败覆盖根因。
+func (tracker *jsonOutputTracker) record(err error) {
+	if tracker.err == nil {
+		tracker.err = err
+	}
+}
+
 // Run 使用默认 Command 执行一组 CLI 参数并返回进程退出码。
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return Command{Stdout: stdout, Stderr: stderr}.Run(ctx, args)
@@ -61,6 +80,18 @@ func (command Command) Run(ctx context.Context, args []string) int {
 	if command.Stderr == nil {
 		command.Stderr = os.Stderr
 	}
+	tracker := &jsonOutputTracker{writer: command.Stdout}
+	command.Stdout = tracker
+	exitCode := command.dispatch(ctx, args)
+	if tracker.err != nil {
+		fmt.Fprintln(command.Stderr, "json output failed:", tracker.err)
+		return ExitFailed
+	}
+	return exitCode
+}
+
+// dispatch 分派顶级命令；输出错误由 Run 在统一出口处理。
+func (command Command) dispatch(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		return command.bareCommand(ctx)
 	}
@@ -357,8 +388,7 @@ func (command Command) benchmarkFreezeEvalSet(ctx context.Context, arguments []s
 		return ExitFailed
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, report)
-		return ExitOK
+		return command.writeJSONOutput("benchmark freeze-eval-set", report)
 	}
 	fmt.Fprintf(command.Stdout, "frozen: eval_set=%s fingerprint=%s\ncredential policy=%s fingerprint=%s\n", report.EvalSetPath, report.EvalSetFingerprint, report.CredentialPolicyPath, report.CredentialPolicyFingerprint)
 	return ExitOK
@@ -492,8 +522,7 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, candidate)
-		return ExitOK
+		return command.writeJSONOutput("memory candidate create", candidate)
 	}
 	fmt.Fprintf(command.Stdout, "candidate: %s status=%s target=%s variant=%s source=%s/%s\n", candidate.ID, candidate.Status, candidate.TargetKind, candidate.VariantFingerprint, candidate.Source.DerivedID, candidate.Source.ConsolidationID)
 	return ExitOK
@@ -854,8 +883,7 @@ func (command Command) memoryCandidateInspect(ctx context.Context, arguments []s
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, inspected)
-		return ExitOK
+		return command.writeJSONOutput("memory candidate inspect", inspected)
 	}
 	candidate := inspected.Candidate
 	fmt.Fprintf(command.Stdout, "candidate: %s status=%s target=%s\n", candidate.ID, candidate.Status, candidate.TargetKind)
@@ -927,8 +955,7 @@ func (command Command) memoryConsolidate(ctx context.Context, arguments []string
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, results)
-		return ExitOK
+		return command.writeJSONOutput("memory consolidate", results)
 	}
 	if len(results) == 0 {
 		fmt.Fprintln(command.Stdout, "consolidation: no derivable candidates from current inputs")
@@ -1035,10 +1062,12 @@ func (command Command) memoryExplain(ctx context.Context, arguments []string) in
 		return ExitUsage
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		if code := command.writeJSONOutput("memory explain", struct {
 			Type   string                `json:"type"`
 			Ledger memory.EvidenceLedger `json:"ledger"`
-		}{Type: "memory_explain", Ledger: ledger})
+		}{Type: "memory_explain", Ledger: ledger}); code != ExitOK {
+			return code
+		}
 	} else {
 		fmt.Fprintf(command.Stdout, "memory explain: strategy=%s status=%s candidates=%d conflicts=%d\n", ledger.Plan.Strategy, ledger.Status, len(ledger.Entries), len(ledger.Conflicts))
 	}
@@ -1099,11 +1128,10 @@ func (command Command) memoryCapture(ctx context.Context, arguments []string) in
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory capture", struct {
 			Type      string `json:"type"`
 			Candidate any    `json:"candidate"`
 		}{Type: "memory_capture", Candidate: candidate})
-		return ExitOK
 	}
 	fmt.Fprintf(command.Stdout, "memory candidate: %s kind=%s outcome=%s status=%s expires=%s\n", candidate.ID, candidate.Kind, candidate.Outcome, candidate.Status, candidate.ExpiresAt.UTC().Format(time.RFC3339Nano))
 	return ExitOK
@@ -1136,11 +1164,10 @@ func (command Command) memoryRecall(ctx context.Context, arguments []string) int
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory recall", struct {
 			Type       string `json:"type"`
 			Candidates any    `json:"candidates"`
 		}{Type: "memory_recall", Candidates: candidates})
-		return ExitOK
 	}
 	for _, candidate := range candidates {
 		fmt.Fprintf(command.Stdout, "memory candidate: %s outcome=%s status=%s created=%s expires=%s\n", candidate.ID, candidate.Outcome, candidate.Status, candidate.CreatedAt.UTC().Format(time.RFC3339Nano), candidate.ExpiresAt.UTC().Format(time.RFC3339Nano))
@@ -1185,8 +1212,7 @@ func (command Command) memoryInspectDerived(ctx context.Context, arguments []str
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, inspected)
-		return ExitOK
+		return command.writeJSONOutput("memory inspect", inspected)
 	}
 	candidate := inspected.Candidate
 	fmt.Fprintf(command.Stdout, "derived: %s kind=%s status=%s current=%t eligible=%t\n", candidate.ID, candidate.Kind, candidate.Status, inspected.Current, inspected.Eligible)
@@ -1232,11 +1258,10 @@ func (command Command) memoryInspect(ctx context.Context, arguments []string) in
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory inspect", struct {
 			Type   string `json:"type"`
 			Memory any    `json:"memory"`
 		}{Type: "memory_inspect", Memory: result})
-		return ExitOK
 	}
 	candidate := result.Candidate
 	fmt.Fprintf(command.Stdout, "memory candidate: %s kind=%s outcome=%s failure=%s trusted_verification=%t status=%s\n", candidate.ID, candidate.Kind, candidate.Outcome, candidate.FailureClass, candidate.TrustedVerification, candidate.Status)
@@ -1273,11 +1298,10 @@ func (command Command) memoryRevoke(ctx context.Context, arguments []string) int
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory revoke", struct {
 			Type      string `json:"type"`
 			Candidate any    `json:"candidate"`
 		}{Type: "memory_revoke", Candidate: candidate})
-		return ExitOK
 	}
 	fmt.Fprintf(command.Stdout, "memory candidate: %s status=%s\n", candidate.ID, candidate.Status)
 	return ExitOK
@@ -1333,9 +1357,10 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "trial activation error:", err)
 		return ExitFailed
 	}
+	var outputErr error
 	onEvent := func(event domain.Event) {
-		if *jsonOutput {
-			writeJSON(command.Stdout, struct {
+		if *jsonOutput && outputErr == nil {
+			outputErr = writeJSONChecked(command.Stdout, struct {
 				Type  string       `json:"type"`
 				Event domain.Event `json:"event"`
 			}{Type: "event", Event: event})
@@ -1352,12 +1377,16 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 			return ExitUsage
 		}
 		result, err := command.Service.Reconcile(ctx, app.ReconcileOptions{RunID: domain.RunID(flags.Arg(0)), OperationID: domain.OperationID(parts[0]), Verdict: parts[1], Note: *note, Evidence: *evidence, Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
+		if outputErr != nil {
+			fmt.Fprintln(command.Stderr, "reconcile output failed:", outputErr)
+			return ExitFailed
+		}
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "reconcile failed:", err)
 			return exitFor(err)
 		}
 		if *jsonOutput {
-			writeJSON(command.Stdout, struct {
+			return command.writeJSONOutput("reconcile", struct {
 				Type     string                `json:"type"`
 				RunID    domain.RunID          `json:"run_id"`
 				Response string                `json:"response"`
@@ -1370,16 +1399,22 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	}
 	if *abortRun {
 		result, err := command.Service.Abort(ctx, app.AbortOptions{RunID: domain.RunID(flags.Arg(0)), Reason: *reason, Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
+		if outputErr != nil {
+			fmt.Fprintln(command.Stderr, "abort output failed:", outputErr)
+			return ExitFailed
+		}
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "abort failed:", err)
 			return exitFor(err)
 		}
 		if *jsonOutput {
-			writeJSON(command.Stdout, struct {
+			if code := command.writeJSONOutput("abort", struct {
 				Type     string                `json:"type"`
 				RunID    domain.RunID          `json:"run_id"`
 				Manifest *contract.RunManifest `json:"manifest,omitempty"`
-			}{Type: "aborted", RunID: result.ID, Manifest: manifestOf(result)})
+			}{Type: "aborted", RunID: result.ID, Manifest: manifestOf(result)}); code != ExitOK {
+				return code
+			}
 		}
 		return ExitFailed
 	}
@@ -1390,12 +1425,16 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		approved = false
 	}
 	result, err := command.Service.Resume(ctx, app.ResumeOptions{RunID: domain.RunID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: fingerprint, Approve: approved, Reason: *reason}, OnEvent: onEvent})
+	if outputErr != nil {
+		fmt.Fprintln(command.Stderr, "resume output failed:", outputErr)
+		return ExitFailed
+	}
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "resume failed:", err)
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("resume", struct {
 			Type     string                `json:"type"`
 			RunID    domain.RunID          `json:"run_id"`
 			Response string                `json:"response"`
@@ -1495,21 +1534,26 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "trial activation error:", err)
 		return ExitFailed
 	}
+	var outputErr error
 	onEvent := func(event domain.Event) {
-		if *jsonOutput {
-			writeJSON(command.Stdout, struct {
+		if *jsonOutput && outputErr == nil {
+			outputErr = writeJSONChecked(command.Stdout, struct {
 				Type  string       `json:"type"`
 				Event domain.Event `json:"event"`
 			}{Type: "event", Event: event})
 		}
 	}
 	result, err := command.Service.Run(ctx, app.RunOptions{Task: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
+	if outputErr != nil {
+		fmt.Fprintln(command.Stderr, "run output failed:", outputErr)
+		return ExitFailed
+	}
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "run failed:", err)
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("run", struct {
 			Type     string                `json:"type"`
 			RunID    domain.RunID          `json:"run_id"`
 			Response string                `json:"response"`
@@ -1588,7 +1632,7 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, result)
+		return command.writeJSONOutput("inspect", result)
 	} else {
 		fmt.Fprintf(command.Stdout, "run: %s\nstate: %s\nlast sequence: %d\n", result.Projection.ID, result.Projection.Phase(), result.Projection.LastSeq)
 		summary := result.Summary
@@ -1657,8 +1701,7 @@ func (command Command) evidence(ctx context.Context, arguments []string) int {
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, result)
-		return ExitOK
+		return command.writeJSONOutput("evidence", result)
 	}
 	fmt.Fprintf(command.Stdout, "run: %s\n", result.Manifest.RunID)
 	if result.Manifest.Provider.Card != nil {
@@ -1710,8 +1753,7 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 		return ExitCorrupt
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, report)
-		return ExitOK
+		return command.writeJSONOutput("doctor", report)
 	}
 	fmt.Fprintf(command.Stdout, "ready: %t\n", report.Ready)
 	fmt.Fprintf(command.Stdout, "config: %t (preset %s profile %s)\n", report.ConfigValid, report.Preset, report.Profile)
@@ -1731,6 +1773,11 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	} else {
 		fmt.Fprintf(command.Stdout, "provider card: unresolved (%s)\n", report.ProviderCardError)
 	}
+	fmt.Fprintf(command.Stdout, "admission: mode=%s admitted=%t", report.Admission.Mode, report.Admission.Admitted)
+	if report.Admission.Error != "" {
+		fmt.Fprintf(command.Stdout, " (%s)", report.Admission.Error)
+	}
+	fmt.Fprintln(command.Stdout)
 	if report.Sandbox.Backend == "docker" {
 		fmt.Fprintf(command.Stdout, "sandbox: docker image %s available=%s\n", report.Sandbox.DockerImage, report.Sandbox.ImageAvailable)
 	} else {
@@ -1936,13 +1983,25 @@ func writeJSONChecked(writer io.Writer, value any) error {
 	return nil
 }
 
-// writeJSON 将值编码为一行 JSON；编码失败时不向 stdout 泄露部分数据。
+// writeJSON 为未迁移的同包子命令保留兼容入口，并把失败登记到顶级输出追踪器。
 func writeJSON(writer io.Writer, value any) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
+	if tracker, ok := writer.(*jsonOutputTracker); ok && tracker.err != nil {
 		return
 	}
-	_, _ = fmt.Fprintln(writer, string(encoded))
+	if err := writeJSONChecked(writer, value); err != nil {
+		if tracker, ok := writer.(*jsonOutputTracker); ok {
+			tracker.record(err)
+		}
+	}
+}
+
+// writeJSONOutput 将 JSON 输出失败统一写入 stderr，并映射为公开失败退出码。
+func (command Command) writeJSONOutput(label string, value any) int {
+	if err := writeJSONChecked(command.Stdout, value); err != nil {
+		fmt.Fprintf(command.Stderr, "%s output failed: %v\n", label, err)
+		return ExitFailed
+	}
+	return ExitOK
 }
 
 // memoryPromotion 分派版本域的固定动作：activate 显式进入 sandbox，rollback
@@ -2110,8 +2169,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, promoted)
-		return ExitOK
+		return command.writeJSONOutput("memory candidate promote", promoted)
 	}
 	fmt.Fprintf(command.Stdout, "promotion decision recorded: %s version=%d target=%s activation=inactive approver=%s\n", promoted.ID, promoted.Version, promoted.TargetKind, promoted.Approver)
 	return ExitOK
@@ -2226,11 +2284,10 @@ func (command Command) memoryPromotionActivate(ctx context.Context, arguments []
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory promotion activate", struct {
 			Promotion  memory.Promotion  `json:"promotion"`
 			Activation memory.Activation `json:"activation"`
 		}{Promotion: promotion, Activation: activation})
-		return ExitOK
 	}
 	fmt.Fprintf(command.Stdout, "sandbox activated: %s version=%d previous=%s\n", promotion.ID, promotion.Version, activation.PreviousPromotionID)
 	return ExitOK
@@ -2267,11 +2324,10 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory promotion rollback", struct {
 			Promotion  memory.Promotion  `json:"promotion"`
 			Activation memory.Activation `json:"activation"`
 		}{Promotion: promotion, Activation: activation})
-		return ExitOK
 	}
 	target := "baseline"
 	if activation.PromotionID != "" {
@@ -2307,11 +2363,10 @@ func (command Command) memoryPromotionList(ctx context.Context, arguments []stri
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory promotion list", struct {
 			Promotions []memory.Promotion `json:"promotions"`
 			Activation *memory.Activation `json:"activation,omitempty"`
 		}{Promotions: promotions, Activation: activationPointer(activation, found)})
-		return ExitOK
 	}
 	for _, promotion := range promotions {
 		fmt.Fprintf(command.Stdout, "version %d: %s status=%s candidate=%s trigger=%s\n", promotion.Version, promotion.ID, promotion.Status, promotion.CandidateID, promotion.ConclusionTrigger)
@@ -2359,11 +2414,10 @@ func (command Command) memoryTelemetry(ctx context.Context, arguments []string) 
 		return exitFor(err)
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, struct {
+		return command.writeJSONOutput("memory telemetry", struct {
 			Type     string                          `json:"type"`
 			Snapshot *memorysqlite.TelemetrySnapshot `json:"snapshot"`
 		}{Type: "memory_telemetry", Snapshot: snapshot})
-		return ExitOK
 	}
 	fmt.Fprintf(command.Stdout, "memory: candidates=%d active=%d revoked=%d superseded=%d\n",
 		snapshot.Memory.CandidatesTotal, snapshot.Memory.CandidatesActive, snapshot.Memory.CandidatesRevoked, snapshot.Memory.CandidatesSuperseded)
