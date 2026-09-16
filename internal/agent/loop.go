@@ -84,21 +84,30 @@ func (loop *Loop) Run(ctx context.Context, input RunInput) (Result, error) {
 }
 
 // persistCancellationIfInterrupted 在错误为用户取消且 run 仍处 running 时补写
-// 持久化取消序列；取消序列本身被中断（run 已处 cancelling）时留给 Abort 处置。
+// 持久化取消序列；已处 cancelling 的断点由 Resume 按既有请求确定性收束。
 func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input RunInput, err error) error {
 	if !errors.Is(err, context.Canceled) || ctx.Err() == nil {
 		return err
 	}
 	events, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if loadErr != nil {
-		return err
+		return errors.Join(err, fmt.Errorf("load run while persisting cancellation: %w", loadErr))
 	}
 	projection, replayErr := domain.Replay(events)
-	if replayErr != nil || projection.State != domain.RunRunning {
+	if replayErr != nil {
+		return errors.Join(err, fmt.Errorf("replay run while persisting cancellation: %w", replayErr))
+	}
+	if hasRecoverableTerminalGap(events) {
+		return err
+	}
+	if projection.State != domain.RunRunning {
 		return err
 	}
 	if _, cancelErr := loop.persistCancellation(context.WithoutCancel(ctx), &projection, input, projection.CurrentTurn); cancelErr != nil {
-		return err
+		if cancelErr == context.Canceled {
+			return err
+		}
+		return errors.Join(err, cancelErr)
 	}
 	return context.Canceled
 }
@@ -167,24 +176,20 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			}
 			if errors.Is(err, errSensitiveToolArguments) {
 				failure := modelRequestFailedPayload{Error: errSensitiveToolArguments.Error(), ErrorClass: "sensitive_tool_arguments"}
+				cause := fmt.Errorf("model request: %w", errSensitiveToolArguments)
 				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(failure)}); appendErr != nil {
-					return Result{}, appendErr
+					return Result{RunID: input.RunID}, errors.Join(cause, appendErr)
 				}
-				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
-					return Result{}, appendErr
-				}
-				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); appendErr != nil {
-					return Result{}, appendErr
-				}
-				return Result{}, fmt.Errorf("model request: %w", errSensitiveToolArguments)
+				return loop.persistRunFailure(ctx, &projection, input, &turnID, runFailurePayload{Error: failure.Error, ErrorClass: failure.ErrorClass}, cause)
 			}
 			if errors.Is(err, ports.ErrMalformedToolCallArguments) {
+				cause := fmt.Errorf("model request: %w", ports.ErrMalformedToolCallArguments)
 				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(struct {
 					Error      string `json:"error"`
 					ErrorClass string `json:"error_class"`
 					Retryable  bool   `json:"retryable"`
 				}{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass, Retryable: malformedToolArgumentFailures == 0})}); appendErr != nil {
-					return Result{}, appendErr
+					return Result{RunID: input.RunID}, errors.Join(cause, appendErr)
 				}
 				if malformedToolArgumentFailures == 0 {
 					malformedToolArgumentFailures++
@@ -195,16 +200,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 					}
 					continue
 				}
-				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
-					return Result{}, appendErr
-				}
-				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-					Error      string `json:"error"`
-					ErrorClass string `json:"error_class"`
-				}{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass})}); appendErr != nil {
-					return Result{}, appendErr
-				}
-				return Result{}, fmt.Errorf("model request: %w", ports.ErrMalformedToolCallArguments)
+				return loop.persistRunFailure(ctx, &projection, input, &turnID, runFailurePayload{Error: ports.ErrMalformedToolCallArguments.Error(), ErrorClass: malformedToolArgumentsErrorClass}, cause)
 			}
 			// 提供方失败按分类分叉：瞬态失败只关闭当前轮次、保持 run 非终态，
 			// 已完成的对话与工具上下文留给 resume 续跑；永久失败才终态化 run。
@@ -214,19 +210,17 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				errorClass, retryable = classified.ErrorClass(), classified.IsRetryable()
 			}
 			failure := modelRequestFailedPayload{Error: err.Error(), ErrorClass: errorClass, Retryable: retryable}
+			cause := fmt.Errorf("model request: %w", err)
 			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestFailed, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(failure)}); appendErr != nil {
-				return Result{}, appendErr
-			}
-			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
-				return Result{}, appendErr
+				return Result{RunID: input.RunID}, errors.Join(cause, appendErr)
 			}
 			if retryable {
-				return Result{RunID: input.RunID}, fmt.Errorf("model request: %w", err)
+				if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); appendErr != nil {
+					return Result{RunID: input.RunID}, errors.Join(cause, appendErr)
+				}
+				return Result{RunID: input.RunID}, cause
 			}
-			if appendErr := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); appendErr != nil {
-				return Result{}, appendErr
-			}
-			return Result{}, fmt.Errorf("model request: %w", err)
+			return loop.persistRunFailure(ctx, &projection, input, &turnID, runFailurePayload{Error: failure.Error, ErrorClass: failure.ErrorClass}, cause)
 		}
 		// 提供方未回报 usage 时以字节估算兜底并显式标记：token 与成本上限
 		// 在不合规端点上仍近似生效，且估算随事件持久化、resume 重建预算时
@@ -250,6 +244,10 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				return Result{}, err
 			}
 			if err := loop.runVerification(ctx, &projection, input, turnID); err != nil {
+				var persistence *verificationPersistenceError
+				if errors.As(err, &persistence) {
+					return Result{RunID: input.RunID}, err
+				}
 				if errors.Is(err, ErrWaitingReconcile) {
 					return Result{RunID: input.RunID}, err
 				}
@@ -277,11 +275,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 					}
 					continue
 				}
-				_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
-				_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-					Error string `json:"error"`
-				}{Error: err.Error()})})
-				return Result{RunID: input.RunID}, err
+				return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 			}
 			if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "final"})}); err != nil {
 				return Result{}, err
@@ -296,6 +290,10 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		for _, call := range response.ToolCalls {
 			toolResult, err := loop.executeTool(ctx, &projection, input, turnID, call)
 			if err != nil {
+				var persistence *toolResultPersistenceError
+				if errors.As(err, &persistence) {
+					return Result{RunID: input.RunID}, err
+				}
 				if errors.Is(err, ErrWaitingReconcile) {
 					return Result{RunID: input.RunID}, err
 				}
@@ -314,17 +312,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				if errors.As(err, &waiting) {
 					return Result{RunID: input.RunID}, waiting
 				}
-				var denied *PolicyDeniedError
-				if errors.As(err, &denied) {
-					_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})})
-					_ = loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-						Error string `json:"error"`
-					}{Error: denied.Error()})})
-				}
-				if !errors.As(err, &denied) {
-					return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
-				}
-				return Result{RunID: input.RunID}, err
+				return loop.failCurrentTurn(ctx, &projection, input, turnID, err)
 			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)

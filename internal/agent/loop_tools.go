@@ -35,6 +35,28 @@ type operationPayload struct {
 	ResultStorageError string        `json:"result_storage_error,omitempty"`
 }
 
+// toolResultPersistenceError 表示操作终态已经持久化，但模型可见的 Tool Result
+// 尚未写入；调用方必须保留运行现场，交由 Resume 从终态证据确定性补齐。
+type toolResultPersistenceError struct {
+	operationID domain.OperationID
+	cause       error
+}
+
+// Error 返回不包含工具原始输出的稳定恢复提示。
+func (err *toolResultPersistenceError) Error() string {
+	return fmt.Sprintf("persist tool result for operation %s: %v", err.operationID, err.cause)
+}
+
+// Unwrap 暴露底层存储错误，便于调用方保留原始失败分类。
+func (err *toolResultPersistenceError) Unwrap() error {
+	return err.cause
+}
+
+// Is 让尚未适配专用错误的执行入口停在可恢复边界，而不是终态化运行。
+func (err *toolResultPersistenceError) Is(target error) bool {
+	return target == ErrWaitingReconcile
+}
+
 // resumeDecision 为已提议操作重建策略判定，并保留验证计划的独立审批边界。
 // verificationObservation 是调用方刚计算的 verifier 视图观察值（仅验证提议使用），
 // 复用它避免同一无变更窗口内的重复全树扫描。
@@ -127,7 +149,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}
 		// 策略拒绝不会执行副作用，但模型仍应得到可审计的失败结果，以便在剩余轮次中
 		// 修正参数或改用允许的方案；人工审批拒绝与验证计划拒绝仍保持终态语义。
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
+		if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
 			return tools.Result{}, err
 		}
 		if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
@@ -164,16 +186,34 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return tools.Result{}, err
 	}
+	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
+		return tools.Result{}, err
+	}
 	if cancelled {
 		return result, ctx.Err()
-	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
-		return tools.Result{}, err
 	}
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// appendToolResult 使用不受调用方取消影响的提交上下文写入模型可见结果；若
+// Journal 写入失败，返回专用可恢复错误，禁止上层关闭 Turn 或终态化 Run。
+func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, result tools.Result) error {
+	commitContext, cancel := loop.commitContext(ctx)
+	defer cancel()
+	if err := loop.append(commitContext, projection, domain.EventDraft{
+		RunID:         input.RunID,
+		WorkspaceHash: input.WorkspaceHash,
+		Type:          domain.EventToolResultAppended,
+		TurnID:        &turnID,
+		OperationID:   &operationID,
+		Payload:       mustJSON(result),
+	}); err != nil {
+		return &toolResultPersistenceError{operationID: operationID, cause: err}
+	}
+	return nil
 }
 
 // mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。

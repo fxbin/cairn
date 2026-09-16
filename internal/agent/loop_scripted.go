@@ -43,6 +43,54 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if err != nil {
 		return Result{}, err
 	}
+	operationRepaired, err := loop.repairUnstartedOperationTerminals(ctx, &projection, input, events)
+	if err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	if operationRepaired {
+		events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if err != nil {
+			return Result{}, fmt.Errorf("reload scripted run after repairing unstarted operations: %w", err)
+		}
+		projection, err = domain.Replay(events)
+		if err != nil {
+			return Result{}, fmt.Errorf("replay scripted run after repairing unstarted operations: %w", err)
+		}
+	}
+	repaired, err := loop.repairMissingToolResults(ctx, &projection, input, events)
+	if err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	if repaired {
+		events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if err != nil {
+			return Result{}, fmt.Errorf("reload scripted run after repairing tool results: %w", err)
+		}
+		projection, err = domain.Replay(events)
+		if err != nil {
+			return Result{}, fmt.Errorf("replay scripted run after repairing tool results: %w", err)
+		}
+	}
+	verificationRepaired, err := loop.repairIncompleteVerification(ctx, &projection, input, events)
+	if err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	if verificationRepaired {
+		events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if err != nil {
+			return Result{}, fmt.Errorf("reload scripted run after repairing verification: %w", err)
+		}
+		projection, err = domain.Replay(events)
+		if err != nil {
+			return Result{}, fmt.Errorf("replay scripted run after repairing verification: %w", err)
+		}
+	}
+	if result, handled, cancellationErr := loop.repairMissingCancellationTerminal(ctx, &projection, input, events); handled {
+		return result, cancellationErr
+	}
+	if result, handled, terminalErr := loop.repairMissingRunTerminal(ctx, &projection, input, events); handled {
+		return result, terminalErr
+	}
 	if ctx.Err() != nil {
 		return loop.persistCancellation(ctx, &projection, input, projection.CurrentTurn)
 	}
@@ -101,6 +149,10 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 // 不伪造模型修复轮次。
 func (loop *Loop) finishScriptedRun(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) (Result, error) {
 	if err := loop.runVerification(ctx, projection, input, turnID); err != nil {
+		var persistence *verificationPersistenceError
+		if errors.As(err, &persistence) {
+			return Result{RunID: input.RunID}, err
+		}
 		if errors.Is(err, ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
@@ -142,6 +194,10 @@ func (loop *Loop) completeScriptedRun(ctx context.Context, projection *domain.Ru
 
 // handleScriptedToolError 将执行期错误转换为与模型循环同型的终止路径。
 func (loop *Loop) handleScriptedToolError(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, err error) (Result, error) {
+	var persistence *toolResultPersistenceError
+	if errors.As(err, &persistence) {
+		return Result{RunID: input.RunID}, err
+	}
 	if errors.Is(err, ErrWaitingReconcile) {
 		return Result{RunID: input.RunID}, err
 	}
@@ -183,7 +239,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		call = ports.ToolCall{ID: string(pending.OperationID), Name: "exec_command", Arguments: verification.Arguments}
 	}
 	if !approval.Approve {
-		return loop.denyScriptedApproval(ctx, projection, input, turnID, pending, call, verificationProposal, approval.Reason)
+		return loop.denyScriptedApproval(ctx, projection, input, turnID, pending, call, verification, verificationProposal, approval.Reason)
 	}
 	// 审批判定与其后执行的观察值共享同一次 verifier 扫描（工作区已加锁）。
 	if verificationProposal {
@@ -196,7 +252,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 			return Result{}, err
 		}
 		if decision.Effect != policy.Ask || decision.Fingerprint != pending.Fingerprint {
-			return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, true)
+			return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, verification, true)
 		}
 		return loop.grantScriptedVerification(ctx, projection, input, turnID, pending, verification, observation)
 	}
@@ -205,7 +261,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		return Result{}, err
 	}
 	if decision.Effect != policy.Ask || decision.Fingerprint != pending.Fingerprint {
-		return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, false)
+		return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, verification, false)
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
 		var budget *BudgetExceededError
@@ -258,11 +314,11 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(payload)}); err != nil {
 		return Result{}, err
 	}
+	if err := loop.appendToolResult(ctx, projection, input, turnID, pending.OperationID, result); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
 	if cancelled {
 		return loop.persistCancellation(ctx, projection, input, &turnID)
-	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(result)}); err != nil {
-		return Result{}, err
 	}
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 		var guard *LoopGuardExceededError
@@ -284,8 +340,17 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 // grantScriptedVerification 批准并执行挂起的验证命令，随后收束剩余验证并
 // 完成脚本化运行。
 func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, verification verificationProposalPayload, observation string) (Result, error) {
-	if verification.CommandIndex < 0 || verification.CommandIndex >= len(loop.Verification) {
-		return Result{}, errors.New("verification command index does not match frozen configuration")
+	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return Result{}, fmt.Errorf("load scripted verification plan evidence: %w", err)
+	}
+	commandsFingerprint, err := persistedVerificationCommandsFingerprint(events, turnID, verification.VerificationID)
+	if err != nil {
+		return Result{}, err
+	}
+	command, err := loop.verificationCommand(verification.VerificationID, verification.PlanRef, commandsFingerprint, verification.CommandIndex)
+	if err != nil {
+		return Result{}, err
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalGranted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
@@ -299,7 +364,11 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 	}{Effect: "allow", Rule: "approved_once", Fingerprint: pending.Fingerprint})}); err != nil {
 		return Result{}, err
 	}
-	if err := loop.executeVerificationCommand(ctx, projection, input, turnID, pending.OperationID, loop.Verification[verification.CommandIndex], observation); err != nil {
+	if err := loop.executeVerificationCommand(ctx, projection, input, turnID, pending.OperationID, command, observation); err != nil {
+		var persistence *verificationPersistenceError
+		if errors.As(err, &persistence) {
+			return Result{RunID: input.RunID}, err
+		}
 		if errors.Is(err, ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
@@ -312,7 +381,11 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 		}
 		return loop.failCurrentTurn(ctx, projection, input, turnID, err)
 	}
-	if err := loop.runVerificationCommands(ctx, projection, input, turnID, verification.VerificationID, verification.PlanRef, verification.CommandIndex+1); err != nil {
+	if err := loop.runVerificationCommands(ctx, projection, input, turnID, verification.VerificationID, verification.PlanRef, commandsFingerprint, verification.CommandIndex+1); err != nil {
+		var persistence *verificationPersistenceError
+		if errors.As(err, &persistence) {
+			return Result{RunID: input.RunID}, err
+		}
 		if errors.Is(err, ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
@@ -334,40 +407,39 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 
 // denyScriptedApproval 将用户拒绝持久化为可审计的审批与操作失败事件并终
 // 态化运行；拒绝意味着回退中止，工作区停在拒绝点。
-func (loop *Loop) denyScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verificationProposal bool, reason string) (Result, error) {
+func (loop *Loop) denyScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, reason string) (Result, error) {
+	denied := &PolicyDeniedError{Summary: reason}
+	result := tools.Failure("approval_denied", reason)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
+		Actor       string `json:"actor"`
 		Reason      string `json:"reason"`
-	}{Fingerprint: pending.Fingerprint, Reason: reason})}); err != nil {
+	}{Fingerprint: pending.Fingerprint, Actor: "user", Reason: reason})}); err != nil {
 		return Result{}, err
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: tools.Failure("approval_denied", reason)})}); err != nil {
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 		return Result{}, err
 	}
 	if verificationProposal {
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: false})}); err != nil {
-			return Result{}, err
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: verification.VerificationID, OK: false})}); err != nil {
+			return Result{RunID: input.RunID}, &verificationPersistenceError{cause: err}
 		}
+	} else if err := loop.appendToolResult(ctx, projection, input, turnID, pending.OperationID, result); err != nil {
+		return Result{RunID: input.RunID}, err
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
-		return Result{}, err
-	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-		Error string `json:"error"`
-	}{Error: "approval denied"})}); err != nil {
-		return Result{}, err
-	}
-	return Result{RunID: input.RunID}, &PolicyDeniedError{Summary: reason}
+	return loop.persistRunFailure(ctx, projection, input, &turnID, runFailurePayload{Error: "approval denied", Reason: reason}, denied)
 }
 
 // expireScriptedApproval 将过期或不匹配的审批转换为可审计拒绝：命令、策略
 // 或工作区观察已变化，原审批不再描述当前事实，脚本化计划就地终止。
-func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verificationProposal bool) (Result, error) {
+func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool) (Result, error) {
 	const reason = "approval expired because the command, policy, or workspace observation changed; re-decision required"
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
+		Actor       string `json:"actor"`
 		Reason      string `json:"reason"`
-	}{Fingerprint: pending.Fingerprint, Reason: reason})}); err != nil {
+		StopCause   string `json:"stop_cause"`
+	}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: reason, StopCause: "approval_stale"})}); err != nil {
 		return Result{}, err
 	}
 	result := tools.Failure("approval_stale", reason)
@@ -375,21 +447,14 @@ func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain
 		return Result{}, err
 	}
 	if verificationProposal {
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{OK: false})}); err != nil {
-			return Result{}, err
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: verification.VerificationID, OK: false})}); err != nil {
+			return Result{RunID: input.RunID}, &verificationPersistenceError{cause: err}
 		}
-	} else if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(result)}); err != nil {
-		return Result{}, err
+	} else if err := loop.appendToolResult(ctx, projection, input, turnID, pending.OperationID, result); err != nil {
+		return Result{RunID: input.RunID}, err
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
-		return Result{}, err
-	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(struct {
-		Error string `json:"error"`
-	}{Error: reason})}); err != nil {
-		return Result{}, err
-	}
-	return Result{RunID: input.RunID}, errors.New(reason)
+	cause := errors.New(reason)
+	return loop.persistRunFailure(ctx, projection, input, &turnID, runFailurePayload{Error: reason, Reason: reason}, cause)
 }
 
 // healScriptedProposal 修复中断恢复窗口：从后向前选择同一 call ID 的最新有效
@@ -425,17 +490,9 @@ func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.R
 		if appended {
 			return nil
 		}
-		var terminalPayload operationPayload
-		if err := json.Unmarshal(terminal.Payload, &terminalPayload); err != nil {
-			return fmt.Errorf("decode terminal payload for scripted call %s: %w", call.ID, err)
-		}
-		encoded, err := json.Marshal(terminalPayload.Result)
+		result, err := toolResultFromOperationTerminal(terminal)
 		if err != nil {
-			return fmt.Errorf("encode terminal result for scripted call %s: %w", call.ID, err)
-		}
-		var result tools.Result
-		if err := json.Unmarshal(encoded, &result); err != nil {
-			return fmt.Errorf("decode terminal result for scripted call %s: %w", call.ID, err)
+			return fmt.Errorf("rebuild terminal result for scripted call %s: %w", call.ID, err)
 		}
 		turnID := domain.TurnID("")
 		if event.TurnID != nil {
