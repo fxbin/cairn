@@ -77,6 +77,18 @@ func TestDoctorTreatsEmptyAPIKeyAsAbsent(t *testing.T) {
 	}
 }
 
+// TestDoctorReportsInvalidConfigWithoutFingerprint 锁定 doctor 对非法 v2 配置
+// 只返回失败关闭的诊断报告，不派生 Provider 身份或配置指纹，也不发生 panic。
+func TestDoctorReportsInvalidConfigWithoutFingerprint(t *testing.T) {
+	report, err := (Service{}).Doctor(context.Background(), t.TempDir(), t.TempDir(), config.Defaults())
+	if err != nil {
+		t.Fatalf("invalid config must remain a report-level failure: %v", err)
+	}
+	if report.ConfigValid || report.ConfigFingerprint != "" || report.Ready {
+		t.Fatalf("invalid config report = %+v", report)
+	}
+}
+
 // TestBuildIdentityIsPlainAndDeterministic 锁定当前二进制身份只报告真实的 plain
 // flavor，并让同一份构建事实得到可复算的非敏感摘要。
 func TestBuildIdentityIsPlainAndDeterministic(t *testing.T) {

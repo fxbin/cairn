@@ -8,7 +8,13 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/domain"
+)
+
+const (
+	fixtureConfigFingerprint       = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	fixtureVerificationFingerprint = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 )
 
 // manifestFixtureEvents 构造一次完整运行的最小事件集：run_created 携带身份，
@@ -23,8 +29,8 @@ func manifestFixtureEvents(t *testing.T) []domain.Event {
 	}{}
 	created.Task = "fix the failing test"
 	created.Workspace = "/private/workspace/root"
-	created.ConfigFingerprint = "sha256:config"
-	created.Build = &domain.BuildIdentity{Revision: "abc123", Dirty: "false", Flavor: "plain", Fingerprint: "sha256:build"}
+	created.ConfigFingerprint = fixtureConfigFingerprint
+	created.Build = &domain.BuildIdentity{Revision: "abc123", Dirty: "false", Flavor: "plain", Fingerprint: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
 	createdPayload, err := json.Marshal(created)
 	if err != nil {
 		t.Fatal(err)
@@ -33,13 +39,59 @@ func manifestFixtureEvents(t *testing.T) []domain.Event {
 		{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 1, Type: domain.EventRunCreated, Payload: createdPayload, OccurredAt: time.Unix(1000, 0)},
 		{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 2, Type: domain.EventRunStarted, Payload: json.RawMessage(`{"invocation":"invoke-1"}`), OccurredAt: time.Unix(1001, 0)},
 		{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 3, Type: domain.EventModelRequestStarted, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"test-model"}`), OccurredAt: time.Unix(1002, 0)},
-		{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 4, Type: domain.EventVerificationStarted, Payload: json.RawMessage(`{"commands_fingerprint":"sha256:verify"}`), OccurredAt: time.Unix(1003, 0)},
+		{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 4, Type: domain.EventVerificationStarted, Payload: json.RawMessage(`{"commands_fingerprint":"` + fixtureVerificationFingerprint + `"}`), OccurredAt: time.Unix(1003, 0)},
 	}
 }
 
-// frozenFixtureConfig 模拟 run_created 冻结配置制品的非敏感内容；键名与
-// config.Config 的默认 JSON 编码（Go 字段名）保持一致。
-const frozenFixtureConfig = `{"Version":1,"Preset":"coding","Profile":"default","Provider":{"BaseURL":"https://example.invalid/v1","Model":"test-model"},"Policy":{"Write":"ask","Exec":"ask","ProtectedPaths":[".env"]},"Verification":{"Commands":[{"Argv":["true"]}]}}`
+// frozenFixtureProjection 返回当前 v2 冻结配置合同的最小合法投影。
+func frozenFixtureProjection() FrozenConfigProjection {
+	return FrozenConfigProjection{
+		ConfigVersion: frozenAgentConfigVersionV2,
+		Preset:        "coding",
+		Profile:       "default",
+		Provider: FrozenProviderProjection{
+			Kind: ProviderKindOpenAICompatible, BaseURL: "https://example.invalid/v1",
+			Model: "test-model", ID: ProviderIDCustom, Admission: "optional",
+		},
+		Policy:       PolicyIdentity{Write: "ask", Exec: "ask", ProtectedPaths: []string{".env"}},
+		Verification: FrozenVerificationProjection{Commands: 1, Fingerprint: fixtureVerificationFingerprint},
+	}
+}
+
+// frozenFixtureConfig 通过生产构造器生成与事件指纹绑定的合法冻结配置。
+func frozenFixtureConfig(t *testing.T, mutate func(*FrozenConfigProjection)) json.RawMessage {
+	t.Helper()
+	projection := frozenFixtureProjection()
+	if mutate != nil {
+		mutate(&projection)
+	}
+	frozen, err := NewFrozenRunConfig(fixtureConfigFingerprint, projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// uncheckedFrozenFixture 只为负向测试构造摘要自洽但语义非法的冻结制品。
+func uncheckedFrozenFixture(t *testing.T, projection FrozenConfigProjection) json.RawMessage {
+	t.Helper()
+	fingerprint, err := canonicaljson.Fingerprint(frozenRunConfigProjectionPrefix, projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(FrozenRunConfig{
+		SchemaVersion: frozenRunConfigSchemaV1, ConfigFingerprint: fixtureConfigFingerprint,
+		ProjectionFingerprint: fingerprint, Projection: projection,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
 
 func TestFreeformTaskSpecDigestIsStableAndHidesPrompt(t *testing.T) {
 	first := FreeformTaskSpec("修复本地测试任务")
@@ -58,14 +110,14 @@ func TestFreeformTaskSpecDigestIsStableAndHidesPrompt(t *testing.T) {
 
 func TestManifestFromRunProjectsIdentityAcrossSources(t *testing.T) {
 	events := manifestFixtureEvents(t)
-	manifest, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), json.RawMessage(frozenFixtureConfig))
+	manifest, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), frozenFixtureConfig(t, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.RunID != "run-1" || manifest.WorkspaceHash != "sha256:ws" {
+	if manifest.SchemaVersion != manifestSchemaV2 || manifest.RunID != "run-1" || manifest.WorkspaceHash != "sha256:ws" {
 		t.Fatalf("manifest=%#v", manifest)
 	}
-	if manifest.ConfigFingerprint != "sha256:config" || manifest.Build.Revision != "abc123" || manifest.Build.Fingerprint != "sha256:build" {
+	if manifest.ConfigFingerprint != fixtureConfigFingerprint || manifest.Build.Revision != "abc123" || manifest.Build.Fingerprint == "" {
 		t.Fatalf("frozen identity=%#v", manifest)
 	}
 	if manifest.Provider.Kind != ProviderKindOpenAICompatible || manifest.Provider.BaseURL != "https://example.invalid/v1" || manifest.Provider.Model != "test-model" {
@@ -74,21 +126,17 @@ func TestManifestFromRunProjectsIdentityAcrossSources(t *testing.T) {
 	if manifest.Preset != "coding" || manifest.Profile != "default" || manifest.Policy.Write != "ask" || manifest.Policy.Exec != "ask" || len(manifest.Policy.ProtectedPaths) != 1 {
 		t.Fatalf("config view=%#v", manifest)
 	}
-	if manifest.Verification.Commands != 1 || manifest.Verification.Fingerprint != "sha256:verify" {
+	if manifest.Verification.Commands != 1 || manifest.Verification.Fingerprint != fixtureVerificationFingerprint {
 		t.Fatalf("verification=%#v", manifest.Verification)
 	}
 }
 
-func TestManifestFromRunToleratesLegacyRuns(t *testing.T) {
+func TestManifestFromRunRejectsLegacyRuns(t *testing.T) {
 	legacy := []domain.Event{
 		{RunID: "run-legacy", WorkspaceHash: "sha256:old", Seq: 1, Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"old","workspace":"/old"}`), OccurredAt: time.Unix(1, 0)},
 	}
-	manifest, err := ManifestFromRun(legacy, FreeformTaskSpec("old"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.ConfigFingerprint != "" || manifest.Build.Fingerprint != "" || manifest.Provider.Kind != "" || manifest.Preset != "" || manifest.Verification.Fingerprint != "" {
-		t.Fatalf("legacy manifest must leave unknown fields empty: %#v", manifest)
+	if _, err := ManifestFromRun(legacy, FreeformTaskSpec("old"), nil); err == nil {
+		t.Fatal("legacy run without frozen config must fail closed")
 	}
 }
 
@@ -108,7 +156,7 @@ func TestResultFromRunProjectsCompletedTrustedOutcome(t *testing.T) {
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
 	)
 	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 6, LastMutationSeq: 3}
-	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix the failing test"), json.RawMessage(frozenFixtureConfig))
+	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix the failing test"), frozenFixtureConfig(t, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +180,8 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunFailed, Payload: json.RawMessage(`{"error":"turns budget exhausted","budget_dimension":"turns"}`), OccurredAt: time.Unix(1005, 0)},
 	)
 	projection := domain.RunProjection{ID: "run-1", State: domain.RunFailed}
-	result, err := ResultFromRun(budgetFailed, projection, FreeformTaskSpec("fix the failing test"), nil)
+	frozenConfig := frozenFixtureConfig(t, nil)
+	result, err := ResultFromRun(budgetFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +191,7 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	guardFailed := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunFailed, Payload: json.RawMessage(`{"error":"loop guard","error_class":"loop_guard_repeated_operation_failure"}`), OccurredAt: time.Unix(1005, 0)},
 	)
-	guardResult, err := ResultFromRun(guardFailed, projection, FreeformTaskSpec("fix the failing test"), nil)
+	guardResult, err := ResultFromRun(guardFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +204,7 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	cancelled := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`), OccurredAt: time.Unix(1005, 0)},
 	)
-	cancelledResult, err := ResultFromRun(cancelled, domain.RunProjection{ID: "run-1", State: domain.RunCancelled}, FreeformTaskSpec("fix the failing test"), nil)
+	cancelledResult, err := ResultFromRun(cancelled, domain.RunProjection{ID: "run-1", State: domain.RunCancelled}, FreeformTaskSpec("fix the failing test"), frozenConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,38 +246,34 @@ func TestCompletionTrustedRequiresFreshVerification(t *testing.T) {
 	}
 }
 
-// TestManifestReplaysProviderCardFromConfigOnly 锁定卡回放三态：显式声明产出
-// config 卡（与 Boot 同一解析函数）、声明非法时保持 nil、无声明时保持 nil
-// （能力卡只由显式配置产出，编译期无模型目录）。
+// TestManifestReplaysProviderCardFromConfigOnly 锁定卡回放三态：合法显式声明
+// 产出 config 卡，非法声明失败关闭，无声明的未知模型保持 nil。
 func TestManifestReplaysProviderCardFromConfigOnly(t *testing.T) {
 	events := manifestFixtureEvents(t)
-	declared := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"test-model","Capability":{"ToolCalls":true,"StreamingUsage":true,"ContextWindowTokens":131072}`, 1)
-	manifest, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), json.RawMessage(declared))
+	declared := frozenFixtureConfig(t, func(projection *FrozenConfigProjection) {
+		projection.Provider.Capability = &FrozenProviderCapabilityProjection{ToolCalls: true, StreamingUsage: true, ContextWindowTokens: 131072}
+	})
+	manifest, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), declared)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.Provider.Card == nil || manifest.Provider.Card.Source != ProviderCardSourceConfig || manifest.Provider.Card.ContextWindowTokens != 131072 {
 		t.Fatalf("declared card = %#v", manifest.Provider.Card)
 	}
-	// 声明非法（streaming_usage 缺省为假）时保持 nil，不伪造卡。
-	broken := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"test-model","Capability":{"ToolCalls":true}`, 1)
-	brokenEvents := make([]domain.Event, len(events))
-	copy(brokenEvents, events)
-	brokenEvents[2].Payload = json.RawMessage(`{"provider":"openai_compatible","model":"test-model"}`)
-	manifest, err = ManifestFromRun(brokenEvents, FreeformTaskSpec("fix the failing test"), json.RawMessage(broken))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Provider.Card != nil {
-		t.Fatalf("broken declaration must not produce a card: %#v", manifest.Provider.Card)
+	// 声明非法（streaming_usage 为假）时拒绝整个冻结合同。
+	brokenProjection := frozenFixtureProjection()
+	brokenProjection.Provider.Capability = &FrozenProviderCapabilityProjection{ToolCalls: true}
+	if _, err := ManifestFromRun(events, FreeformTaskSpec("fix the failing test"), uncheckedFrozenFixture(t, brokenProjection)); err == nil {
+		t.Fatal("broken declaration must fail closed")
 	}
 	// 未知模型无声明：nil。
-	unknown := strings.Replace(frozenFixtureConfig, `"Model":"test-model"`, `"Model":"mystery"`, 1)
 	unknownEvents := make([]domain.Event, len(events))
 	copy(unknownEvents, events)
 	unknownEvents[2].Payload = json.RawMessage(`{"provider":"openai_compatible","model":"mystery"}`)
-	_ = unknownEvents
-	manifest, err = ManifestFromRun(unknownEvents, FreeformTaskSpec("fix the failing test"), json.RawMessage(unknown))
+	unknown := frozenFixtureConfig(t, func(projection *FrozenConfigProjection) {
+		projection.Provider.Model = "mystery"
+	})
+	manifest, err = ManifestFromRun(unknownEvents, FreeformTaskSpec("fix the failing test"), unknown)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,17 +282,11 @@ func TestManifestReplaysProviderCardFromConfigOnly(t *testing.T) {
 	}
 }
 
-// frozenFixtureConfigV2 模拟 version 2 冻结配置制品：Provider 携带 ID 与
-// Admission，供 schema v2 投影测试消费。
-const frozenFixtureConfigV2 = `{"Version":2,"Preset":"coding","Profile":"default","Provider":{"BaseURL":"https://example.invalid/v1","Model":"test-model","ID":"","Admission":"optional"},"Policy":{"Write":"ask","Exec":"ask","ProtectedPaths":[".env"]},"Verification":{"Commands":[{"Argv":["true"]}]}}`
-
-// TestManifestProjectsVersion2Selection 锁定 schema v2 投影：冻结配置为
-// version 2 时 manifest 升为 v2 并派生 ProviderSelection（provider_id 缺省
-// 归一 custom、model_ref 派生、endpoint_digest 规范化摘要）；version 1 的
-// 既有投影保持 v1 且永不补造 Selection。
+// TestManifestProjectsVersion2Selection 锁定固定 schema v2 与
+// ProviderSelection 身份投影。
 func TestManifestProjectsVersion2Selection(t *testing.T) {
 	events := manifestFixtureEvents(t)
-	manifest, err := ManifestFromRun(events, FreeformTaskSpec("v2 run"), json.RawMessage(frozenFixtureConfigV2))
+	manifest, err := ManifestFromRun(events, FreeformTaskSpec("v2 run"), frozenFixtureConfig(t, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,25 +306,24 @@ func TestManifestProjectsVersion2Selection(t *testing.T) {
 	if !strings.HasPrefix(selection.EndpointDigest, "sha256:") {
 		t.Fatalf("endpoint digest = %q", selection.EndpointDigest)
 	}
-	legacy, err := ManifestFromRun(events, FreeformTaskSpec("v1 run"), json.RawMessage(frozenFixtureConfig))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacy.SchemaVersion != manifestSchemaV1 || legacy.Provider.Selection != nil {
-		t.Fatalf("version 1 projection must stay v1 without a fabricated selection: %+v", legacy.Provider)
-	}
 }
 
-// TestManifestSelectionFallsBackToNilOnInvalidFacts 锁定防御路径：version 2
-// 冻结视图的基地址不合法或模型缺席时 Selection 保持 nil，不伪造身份。
-func TestManifestSelectionFallsBackToNilOnInvalidFacts(t *testing.T) {
+// TestManifestRejectsLegacyConfigAndInvalidFacts 锁定旧 Config JSON、v1 投影
+// 与非法 Provider 身份都失败关闭。
+func TestManifestRejectsLegacyConfigAndInvalidFacts(t *testing.T) {
 	events := manifestFixtureEvents(t)
-	broken := `{"Version":2,"Provider":{"BaseURL":"not-a-url","Model":"m","Admission":"optional"}}`
-	manifest, err := ManifestFromRun(events, FreeformTaskSpec("broken"), json.RawMessage(broken))
-	if err != nil {
-		t.Fatal(err)
+	legacy := json.RawMessage(`{"Version":2,"Provider":{"BaseURL":"https://example.invalid/v1","Model":"test-model"}}`)
+	if _, err := ManifestFromRun(events, FreeformTaskSpec("legacy"), legacy); err == nil {
+		t.Fatal("direct Config JSON must fail closed")
 	}
-	if manifest.Provider.Selection != nil {
-		t.Fatal("invalid facts must not fabricate a selection")
+	versionOne := frozenFixtureProjection()
+	versionOne.ConfigVersion = 1
+	if _, err := ManifestFromRun(events, FreeformTaskSpec("v1"), uncheckedFrozenFixture(t, versionOne)); err == nil {
+		t.Fatal("v1 frozen projection must fail closed")
+	}
+	broken := frozenFixtureProjection()
+	broken.Provider.BaseURL = "not-a-url"
+	if _, err := ManifestFromRun(events, FreeformTaskSpec("broken"), uncheckedFrozenFixture(t, broken)); err == nil {
+		t.Fatal("invalid provider identity must fail closed")
 	}
 }

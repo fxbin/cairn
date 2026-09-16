@@ -72,6 +72,12 @@ func RunOfflinePrescreen(evalSet sandboxeval.EvalSet, baselineConfig, variantCon
 	addIssue := func(format string, args ...any) {
 		report.Issues = append(report.Issues, fmt.Sprintf(format, args...))
 	}
+	if err := config.Validate(baselineConfig); err != nil {
+		return report, fmt.Errorf("baseline config invalid: %w", err)
+	}
+	if err := config.Validate(variantConfig); err != nil {
+		return report, fmt.Errorf("variant config invalid: %w", err)
+	}
 	baselineFingerprint := baselineConfig.Fingerprint()
 	variantConfigFingerprint, err := VariantExpandedFingerprint(baselineFingerprint, variant)
 	if err != nil {

@@ -320,13 +320,17 @@ func TestSlashCommands(t *testing.T) {
 // TestModelCommandEmbedsWizard 锁定 /model 嵌入向导：进入向导模式、按键转
 // 发、退出命令翻译为关闭消息并热重载配置。
 func TestModelCommandEmbedsWizard(t *testing.T) {
-	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	current := config.Defaults()
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: current})
 	console.mode = consoleInput
 	console.taskField.SetValue("/model")
 	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	console = model.(RunConsole)
 	if console.mode != consoleModelWizard || console.wizard == nil {
 		t.Fatal("/model 应进入嵌入的配置向导")
+	}
+	if console.wizard.input.Admission != config.ProviderAdmissionRequired {
+		t.Fatalf("/model 应继承 required 准入语义，得到 %q", console.wizard.input.Admission)
 	}
 	console.wizard.catalog = &modelcatalog.Catalog{Providers: []modelcatalog.ProviderInfo{
 		{ID: "deepseek", Name: "DeepSeek", ModelCount: 3},
@@ -341,7 +345,9 @@ func TestModelCommandEmbedsWizard(t *testing.T) {
 	reloadCalled := false
 	console.input.ReloadConfig = func() (config.Config, error) {
 		reloadCalled = true
-		return config.Config{}, nil
+		reloaded := config.Defaults()
+		reloaded.Provider.Model = "reloaded-model"
+		return reloaded, nil
 	}
 	console.wizard.outcome = &app.SetupOutcome{ConfigPath: "x"}
 	model, _ = console.Update(wizardClosedMsg{})
@@ -351,6 +357,9 @@ func TestModelCommandEmbedsWizard(t *testing.T) {
 	}
 	if !reloadCalled {
 		t.Fatal("提交成功应触发热重载回调")
+	}
+	if console.input.Config.Version != config.CurrentVersion || console.input.Config.Provider.Admission != config.ProviderAdmissionRequired {
+		t.Fatalf("热重载后配置合同降级：version=%d admission=%q", console.input.Config.Version, console.input.Config.Provider.Admission)
 	}
 }
 

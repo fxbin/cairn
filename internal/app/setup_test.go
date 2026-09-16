@@ -63,6 +63,9 @@ func TestSetupRunPersistsValidatedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated config must load: %v", err)
 	}
+	if loaded.Version != 2 || loaded.Provider.ID != "custom" || loaded.Provider.Admission != config.ProviderAdmissionRequired {
+		t.Fatalf("generated provider identity = version %d, provider %+v", loaded.Version, loaded.Provider)
+	}
 	if loaded.Provider.Capability == nil || loaded.Provider.Capability.ContextWindowTokens != 128000 {
 		t.Fatalf("capability prefill missing: %+v", loaded.Provider.Capability)
 	}

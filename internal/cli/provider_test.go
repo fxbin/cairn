@@ -37,29 +37,35 @@ func TestProviderListOutputsRegistry(t *testing.T) {
 	}
 }
 
-// TestProviderConfigureGeneratesVersionedConfigs 锁定配置生成：默认 version 1；
-// 给出 --admission 生成 version 2 且 id 缺省归一 custom、文件可严格装载。
-func TestProviderConfigureGeneratesVersionedConfigs(t *testing.T) {
+// TestProviderConfigureGeneratesVersion2Configs 锁定配置生成：默认生成 v2
+// required；显式 optional 仍保持 v2，旧 --provider-id 参数不再受理。
+func TestProviderConfigureGeneratesVersion2Configs(t *testing.T) {
 	workspace := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
 	arguments := append([]string{"provider", "configure", "--base-url", "https://api.example.com/v1", "--model", "cfg-model", "--api-key-env", "AGENT_API_KEY", "--workspace", workspace}, offlineCatalogFlags()...)
 	if exit := command.Run(context.Background(), arguments); exit != ExitOK {
-		t.Fatalf("v1 exit = %d, stderr = %s", exit, stderr.String())
+		t.Fatalf("default exit = %d, stderr = %s", exit, stderr.String())
 	}
 	body, err := os.ReadFile(filepath.Join(workspace, ".agent", "config.yaml"))
-	if err != nil || !strings.Contains(string(body), "version: 1") {
-		t.Fatalf("v1 config missing: %v", err)
-	}
-	v2Workspace := t.TempDir()
-	stdout.Reset()
-	arguments = append([]string{"provider", "configure", "--base-url", "https://api.example.com/v1", "--model", "cfg-model", "--api-key-env", "AGENT_API_KEY", "--admission", "required", "--workspace", v2Workspace}, offlineCatalogFlags()...)
-	if exit := command.Run(context.Background(), arguments); exit != ExitOK {
-		t.Fatalf("v2 exit = %d, stderr = %s", exit, stderr.String())
-	}
-	body, err = os.ReadFile(filepath.Join(v2Workspace, ".agent", "config.yaml"))
 	if err != nil || !strings.Contains(string(body), "version: 2") || !strings.Contains(string(body), "admission: required") || !strings.Contains(string(body), "id: custom") {
-		t.Fatalf("v2 config missing identity fields: %v %s", err, string(body))
+		t.Fatalf("default v2 config missing identity fields: %v %s", err, string(body))
+	}
+	optionalWorkspace := t.TempDir()
+	stdout.Reset()
+	stderr.Reset()
+	arguments = append([]string{"provider", "configure", "--base-url", "https://api.example.com/v1", "--model", "cfg-model", "--api-key-env", "AGENT_API_KEY", "--admission", "optional", "--workspace", optionalWorkspace}, offlineCatalogFlags()...)
+	if exit := command.Run(context.Background(), arguments); exit != ExitOK {
+		t.Fatalf("optional exit = %d, stderr = %s", exit, stderr.String())
+	}
+	body, err = os.ReadFile(filepath.Join(optionalWorkspace, ".agent", "config.yaml"))
+	if err != nil || !strings.Contains(string(body), "version: 2") || !strings.Contains(string(body), "admission: optional") {
+		t.Fatalf("optional v2 config missing: %v %s", err, string(body))
+	}
+	stderr.Reset()
+	arguments = append([]string{"provider", "configure", "--base-url", "https://api.example.com/v1", "--model", "cfg-model", "--api-key-env", "AGENT_API_KEY", "--provider-id", "custom", "--workspace", t.TempDir()}, offlineCatalogFlags()...)
+	if exit := command.Run(context.Background(), arguments); exit != ExitUsage || !strings.Contains(stderr.String(), "flag provided but not defined") {
+		t.Fatalf("removed --provider-id must be rejected: exit=%d stderr=%q", exit, stderr.String())
 	}
 }
 

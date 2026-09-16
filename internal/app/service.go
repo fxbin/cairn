@@ -187,11 +187,11 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		}
 		return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
 	}
-	if err := validateSessionLink(ctx, boot.Journal, boot.WorkspaceHash, options); err != nil {
+	if err := validateSessionLink(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash, options); err != nil {
 		return RunResult{}, err
 	}
 	if options.RequireSessionTail {
-		continuation, err := resolveSessionContinuation(ctx, boot.Journal, boot.WorkspaceHash, options.PrevRunID)
+		continuation, err := resolveSessionContinuation(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash, options.PrevRunID)
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -403,7 +403,7 @@ func listRunHistory(ctx context.Context, journal interface {
 func validateSessionLink(ctx context.Context, journal interface {
 	ports.Journal
 	ports.RunLister
-}, workspaceHash string, options RunOptions) error {
+}, stateDir, workspaceHash string, options RunOptions) error {
 	if options.PrevRunID != "" {
 		events, err := journal.Load(ctx, options.PrevRunID)
 		if err != nil {
@@ -411,6 +411,9 @@ func validateSessionLink(ctx context.Context, journal interface {
 		}
 		if len(events) == 0 {
 			return fmt.Errorf("%w: prior run %s not found", ErrSessionContinuation, options.PrevRunID)
+		}
+		if err := checkSessionRunContract(events, stateDir, workspaceHash, options.PrevRunID); err != nil {
+			return err
 		}
 		projection, err := domain.Replay(events)
 		if err != nil {
@@ -428,6 +431,9 @@ func validateSessionLink(ctx context.Context, journal interface {
 		if options.SessionID != "" && projection.SessionID != "" && options.SessionID != projection.SessionID {
 			return fmt.Errorf("%w: prior run %s belongs to session %s", ErrSessionContinuation, options.PrevRunID, projection.SessionID)
 		}
+		if err := validateSessionAncestors(ctx, journal, stateDir, workspaceHash, projection); err != nil {
+			return err
+		}
 		return nil
 	}
 	if options.SessionID == "" {
@@ -441,6 +447,47 @@ func validateSessionLink(ctx context.Context, journal interface {
 		if item.SessionID == options.SessionID {
 			return fmt.Errorf("%w: session %s already has a root", ErrSessionContinuation, options.SessionID)
 		}
+	}
+	return nil
+}
+
+// validateSessionAncestors 沿直接前驱的 PrevRunID 回溯完整祖先链；每个祖先
+// 都必须属于同一工作区和会话、处于终态，并通过当前 v2 冻结合同校验。该校验
+// 与唯一链尾约束分离，使显式回退仍可分叉，但不能从含旧合同的历史继续运行。
+func validateSessionAncestors(ctx context.Context, journal ports.Journal, stateDir, workspaceHash string, direct domain.RunProjection) error {
+	visited := map[domain.RunID]struct{}{direct.ID: {}}
+	for ancestorID := direct.PrevRunID; ancestorID != ""; {
+		if _, duplicate := visited[ancestorID]; duplicate {
+			return fmt.Errorf("%w: session %s contains a cycle at run %s", ErrStateCorrupt, direct.SessionID, ancestorID)
+		}
+		visited[ancestorID] = struct{}{}
+		events, err := journal.Load(ctx, ancestorID)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("%w: load session ancestor %s: %v", ErrStateCorrupt, ancestorID, err)
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("%w: session %s references missing run %s", ErrStateCorrupt, direct.SessionID, ancestorID)
+		}
+		if err := checkSessionRunContract(events, stateDir, workspaceHash, ancestorID); err != nil {
+			return err
+		}
+		projection, err := domain.Replay(events)
+		if err != nil {
+			return fmt.Errorf("%w: replay session ancestor %s: %v", ErrStateCorrupt, ancestorID, err)
+		}
+		if projection.WorkspaceHash != workspaceHash {
+			return fmt.Errorf("%w: session ancestor %s belongs to another workspace", ErrStateCorrupt, ancestorID)
+		}
+		if projection.SessionID != direct.SessionID {
+			return fmt.Errorf("%w: run %s crosses session boundary from %s", ErrStateCorrupt, direct.ID, ancestorID)
+		}
+		if !projection.Terminal() {
+			return fmt.Errorf("%w: session %s contains non-terminal ancestor %s", ErrStateCorrupt, direct.SessionID, ancestorID)
+		}
+		ancestorID = projection.PrevRunID
 	}
 	return nil
 }
@@ -469,15 +516,16 @@ func (service Service) ResolveSessionContinuation(ctx context.Context, workspace
 		return SessionContinuation{}, err
 	}
 	defer journal.Close()
-	return resolveSessionContinuation(ctx, journal, workspaceHash, runID)
+	return resolveSessionContinuation(ctx, journal, stateDir, workspaceHash, runID)
 }
 
 // resolveSessionContinuation 在已打开日志上重建并验证会话链；整条会话必须
-// 连通、无环、无分叉且均已终结，所选运行必须是唯一链尾。
+// 使用当前 v2 冻结合同、连通、无环、无分叉且均已终结，所选运行必须是
+// 唯一链尾。
 func resolveSessionContinuation(ctx context.Context, journal interface {
 	ports.Journal
 	ports.RunLister
-}, workspaceHash string, runID domain.RunID) (SessionContinuation, error) {
+}, stateDir, workspaceHash string, runID domain.RunID) (SessionContinuation, error) {
 	items, err := listRunHistory(ctx, journal, workspaceHash)
 	if err != nil {
 		return SessionContinuation{}, err
@@ -510,6 +558,15 @@ func resolveSessionContinuation(ctx context.Context, journal interface {
 			return SessionContinuation{}, fmt.Errorf("%w: session %s contains non-terminal run %s", ErrSessionContinuation, selected.SessionID, item.ID)
 		}
 		members[item.ID] = item
+	}
+	for memberID := range members {
+		events, err := journal.Load(ctx, memberID)
+		if err != nil {
+			return SessionContinuation{}, fmt.Errorf("%w: load session run %s: %v", ErrStateCorrupt, memberID, err)
+		}
+		if err := checkSessionRunContract(events, stateDir, workspaceHash, memberID); err != nil {
+			return SessionContinuation{}, err
+		}
 	}
 	for parent, count := range children {
 		if _, selectedMember := members[parent]; !selectedMember {
@@ -546,6 +603,19 @@ func resolveSessionContinuation(ctx context.Context, journal interface {
 		return SessionContinuation{}, fmt.Errorf("%w: run %s is not the unique session tail", ErrSessionContinuation, runID)
 	}
 	return SessionContinuation{SessionID: selected.SessionID, PrevRunID: selected.ID}, nil
+}
+
+// checkSessionRunContract 在历史运行进入会话链或前情投影前校验全部制品引用
+// 与当前 v2 冻结合同；旧 Config JSON、缺失 config_ref 或被篡改制品均按状态
+// 损坏失败关闭。
+func checkSessionRunContract(events []domain.Event, stateDir, workspaceHash string, runID domain.RunID) error {
+	if err := checkRunArtifactReferences(events, stateDir, workspaceHash); err != nil {
+		return fmt.Errorf("%w: validate session run %s artifacts: %v", ErrStateCorrupt, runID, err)
+	}
+	if err := checkFrozenRunContract(events, stateDir, workspaceHash); err != nil {
+		return fmt.Errorf("%w: validate session run %s frozen config: %v", ErrStateCorrupt, runID, err)
+	}
+	return nil
 }
 
 // Evidence 返回一次运行的统一证据视图（V1.5）：以 contract.Result 为唯一
@@ -589,11 +659,7 @@ func (service Service) Evidence(ctx context.Context, workspacePath, stateDir str
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
-	legacyCapability, err := legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
-	}
-	boot, err := service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
+	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -615,11 +681,18 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	if err := checkFrozenRunContract(events, options.StateDir, boot.WorkspaceHash); err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=<verdict>", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
+	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
+		return RunResult{ID: options.RunID}, err
+	}
 	// 回退 run（task_ref 承载计划制品）不进入模型续跑：按同一计划重推导反放
-	// 调用后交给脚本化执行器收束，普通 run 行为不变。
+	// 调用后交给脚本化执行器收束；普通与回退 run 都必须先通过当前 required
+	// 准入门。
 	if plan, isRewind, planErr := rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); planErr != nil {
 		return RunResult{ID: options.RunID}, planErr
 	} else if isRewind {
@@ -652,11 +725,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if options.Verdict == "abort_run" {
 		boot, err = assembleRecoveryBoot(options.Workspace, options.StateDir, options.Config)
 	} else {
-		var legacyCapability bool
-		legacyCapability, err = legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
-		if err == nil {
-			boot, err = service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
-		}
+		boot, err = service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	}
 	if err != nil {
 		return RunResult{}, err
@@ -676,6 +745,9 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	if err := checkFrozenRunContract(events, options.StateDir, boot.WorkspaceHash); err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
 	if projection.State != domain.RunRunning || projection.PendingOperation == nil || projection.PendingOperation.ID != options.OperationID {
 		return RunResult{}, ErrWaitingReconcile
 	}
@@ -693,10 +765,22 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if projection.PendingOperation.SideEffectClass == "process" && strings.TrimSpace(options.Evidence) == "" {
 		return RunResult{}, errors.New("process reconciliation requires evidence")
 	}
+	var rewindPlan rewindPlanArtifact
+	var isRewind bool
+	if options.Verdict != "abort_run" {
+		if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
+			return RunResult{ID: options.RunID}, err
+		}
+		var planErr error
+		rewindPlan, isRewind, planErr = rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID)
+		if planErr != nil {
+			return RunResult{ID: options.RunID}, planErr
+		}
+	}
 	if projection.PendingOperation.ToolName == "apply_patch" && projection.PendingOperation.PlannedPath != "" {
 		observation, err := patchObservation(boot.Workspace, projection.PendingOperation.PlannedPath)
 		if err != nil {
-			return RunResult{}, err
+			return RunResult{ID: options.RunID}, err
 		}
 		switch options.Verdict {
 		case "applied_success":
@@ -787,10 +871,8 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		options.OnEvent(resumed)
 	}
 	// 回退 run 对账后仍由脚本化执行器续跑，禁止落入模型 Loop 产生计划外操作。
-	if plan, isRewind, planErr := rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); planErr != nil {
-		return RunResult{ID: options.RunID}, planErr
-	} else if isRewind {
-		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
+	if isRewind {
+		return service.driveRewindRun(ctx, boot, options.RunID, rewindPlan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
 	}
 
 	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
@@ -837,6 +919,9 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		return RunResult{ID: options.RunID}, err
 	}
 	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	if err := checkFrozenRunContract(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.PendingOperation != nil {
@@ -1147,6 +1232,9 @@ func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, state
 		if err := checkRunArtifactReferences(events, stateDir, workspaceHash); err != nil {
 			return err
 		}
+		if err := checkFrozenRunContract(events, stateDir, workspaceHash); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1189,6 +1277,16 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 		}
 	}
 	return nil
+}
+
+// checkFrozenRunContract 在恢复入口产生任何新事件或执行前，严格校验
+// run_created 引用的冻结配置属于当前合同，并与运行配置指纹交叉绑定。
+func checkFrozenRunContract(events []domain.Event, stateDir, workspaceHash string) error {
+	frozenConfig, err := readFrozenRunConfig(events, stateDir, workspaceHash)
+	if err != nil {
+		return err
+	}
+	return contract.ValidateFrozenRunConfig(events, frozenConfig)
 }
 
 // manifestArtifactRoot 返回指定工作区制品库的根目录；与 openArtifactStore
@@ -1306,54 +1404,6 @@ func requireMatchingConfig(events []domain.Event, configuration config.Config) e
 	return nil
 }
 
-// legacyProviderCapabilityResume 只识别一类可逆兼容情形：当前配置与已冻结
-// 配置都没有 provider.capability，且冻结制品通过完整性校验。能力卡是在这类
-// 历史 Run 创建之后才引入的合同，Resume/Reconcile 可在不伪造新卡的前提下按
-// 原语义收尾；新 Run、未知制品、篡改制品或任何显式能力配置都绝不走此路径。
-func legacyProviderCapabilityResume(workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (bool, error) {
-	if configuration.Provider.Capability != nil {
-		return false, nil
-	}
-	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
-	if err != nil {
-		return false, err
-	}
-	journal, err := openReadOnlyJournal(stateDir, workspaceHash)
-	if err != nil {
-		return false, nil
-	}
-	defer journal.Close()
-	events, err := journal.Load(context.Background(), runID)
-	if err != nil || len(events) == 0 {
-		return false, nil
-	}
-	frozenConfig, err := readFrozenRunConfig(events, stateDir, workspaceHash)
-	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	if len(frozenConfig) == 0 {
-		return false, nil
-	}
-	var envelope struct {
-		SchemaVersion *int `json:"schema_version"`
-	}
-	if err := json.Unmarshal(frozenConfig, &envelope); err != nil {
-		return false, fmt.Errorf("%w: decode frozen provider capability: %v", ErrStateCorrupt, err)
-	}
-	if envelope.SchemaVersion != nil {
-		return false, nil
-	}
-	var frozen struct {
-		Provider struct {
-			Capability *json.RawMessage `json:"Capability"`
-		} `json:"Provider"`
-	}
-	if err := json.Unmarshal(frozenConfig, &frozen); err != nil {
-		return false, fmt.Errorf("%w: decode frozen provider capability: %v", ErrStateCorrupt, err)
-	}
-	return frozen.Provider.Capability == nil, nil
-}
-
 // patchObservation 返回目标文件当前摘要或 absent，用于人工 patch 对账。
 func patchObservation(workspace tools.Workspace, relativePath string) (string, error) {
 	path, _, err := workspace.Resolve(relativePath)
@@ -1430,14 +1480,10 @@ func expiredWallBudgetContext(ctx context.Context) (context.Context, context.Can
 	return context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
 }
 
-// checkAdmissionGate 以只读方式计算版本化 Provider 准入状态；即使 optional
+// checkAdmissionGate 以只读方式计算 Provider 准入状态；即使 optional
 // 不拦截，也验证现有 admitted 决定及其证据，供 Run 与 Doctor 共享同一事实。
 func checkAdmissionGate(stateDir, workspaceHash string, configuration config.Config) (AdmissionHealth, error) {
-	status := AdmissionHealth{Mode: "disabled"}
-	if configuration.Version != 2 {
-		return status, nil
-	}
-	status.Mode = configuration.Provider.Admission
+	status := AdmissionHealth{Mode: configuration.Provider.Admission}
 	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
 		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL},
 		Capability:    config.ProviderCapabilityDeclaration(configuration),
@@ -1491,12 +1537,12 @@ func admissionErrorSummary(err error) string {
 	}
 }
 
-// enforceAdmissionGate 执行版本 2 配置的准入门（D4 优先级链的最后一环）：
-// version 1 配置无准入语义直接通过；optional 只展示检查结果而不拦截；
-// required 要求唯一 admitted 链头、在档证据与解析身份一致。
+// enforceAdmissionGate 执行 Provider 准入门（D4 优先级链的最后一环）：
+// optional 只展示检查结果而不拦截；required 要求唯一 admitted 链头、
+// 在档证据与解析身份一致。
 func enforceAdmissionGate(stateDir, workspaceHash string, configuration config.Config) error {
 	status, err := checkAdmissionGate(stateDir, workspaceHash, configuration)
-	if configuration.Version != 2 || configuration.Provider.Admission == config.ProviderAdmissionOptional {
+	if configuration.Provider.Admission == config.ProviderAdmissionOptional {
 		return nil
 	}
 	if err != nil {

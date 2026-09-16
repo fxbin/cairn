@@ -101,11 +101,11 @@ type TelemetryHealth struct {
 // 诊断报告；所有探测均为只读（环境变量只查存在性、Docker 只做本地镜像查询）。
 // 新工作区没有 journal 时不报错，journal_state=absent 并继续给出 ready 判定。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
+	validationErr := config.Validate(configuration)
 	report := DoctorReport{
-		ConfigValid:       config.Validate(configuration) == nil,
+		ConfigValid:       validationErr == nil,
 		Preset:            configuration.Preset,
 		Profile:           configuration.Profile,
-		ConfigFingerprint: configuration.Fingerprint(),
 		Build:             buildIdentity(),
 		WorkspaceHash:     "",
 		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
@@ -125,6 +125,10 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	} else {
 		report.BuildValid = true
 	}
+	if validationErr != nil {
+		return report, nil
+	}
+	report.ConfigFingerprint = configuration.Fingerprint()
 	report.Provider.APIKeyPresent = os.Getenv(configuration.Provider.APIKeyEnv) != ""
 	// 能力卡解析在 doctor 中保持只读：失败只记录错误并压低 ready，不中断
 	// 其余诊断；成功则进入 manifest 与报告供运行前解释。
@@ -144,9 +148,6 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	report.Admission, _ = checkAdmissionGate(stateDir, hash, configuration)
 	if _, err := execToolFor(workspace, configuration); err != nil {
 		return report, err
-	}
-	if configuration.Sandbox.Backend == "docker" {
-		report.Sandbox.ImageAvailable = probeDockerImage(configuration.Sandbox.DockerImage)
 	}
 	capabilities := toolCapabilities(workspace, configuration.Preset)
 	report.Tools = make([]string, 0, len(capabilities))
@@ -169,7 +170,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 			if !errors.Is(memoryErr, fs.ErrNotExist) {
 				return report, fmt.Errorf("%w: %v", ErrStateCorrupt, memoryErr)
 			}
-			report.evaluateReadiness()
+			report.probeSandboxAndEvaluateReadiness(configuration)
 			return report, nil
 		}
 		return report, err
@@ -190,8 +191,17 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	}
 	report.MemoryState, report.MemoryOK = memoryState, memoryOK
 	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState), OTLP: buildinfo.TelemetryMode()}
-	report.evaluateReadiness()
+	report.probeSandboxAndEvaluateReadiness(configuration)
 	return report, nil
+}
+
+// probeSandboxAndEvaluateReadiness 在本地日志、制品与记忆完整性检查通过后执行
+// Docker 只读探测，并据此汇总最终就绪状态。
+func (report *DoctorReport) probeSandboxAndEvaluateReadiness(configuration config.Config) {
+	if configuration.Sandbox.Backend == "docker" {
+		report.Sandbox.ImageAvailable = probeDockerImage(configuration.Sandbox.DockerImage)
+	}
+	report.evaluateReadiness()
 }
 
 // evaluateReadiness 汇总总体就绪判定：配置与构建身份有效、能力卡可解析、

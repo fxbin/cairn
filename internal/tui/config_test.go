@@ -188,16 +188,16 @@ func TestEnvPresentReflectsProcessEnv(t *testing.T) {
 func TestConfirmLinesCarriesNonSecretSummary(t *testing.T) {
 	lines := confirmLines(" https://api.example.com ", " glm-5.3 ", " ZHIPU_API_KEY ", app.SetupInput{})
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"https://api.example.com", "glm-5.3", "ZHIPU_API_KEY", "version:      1"} {
+	for _, want := range []string{"https://api.example.com", "glm-5.3", "ZHIPU_API_KEY", "version:      2（required）"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("确认摘要缺少 %q:\n%s", want, joined)
 		}
 	}
 	t.Setenv("CAIRN_TUI_TEST_KEY", "secret-value")
-	v2Lines := confirmLines("u", "m", "CAIRN_TUI_TEST_KEY", app.SetupInput{ConfigVersion: 2, Admission: "required"})
+	v2Lines := confirmLines("u", "m", "CAIRN_TUI_TEST_KEY", app.SetupInput{Admission: "optional"})
 	joinedV2 := strings.Join(v2Lines, "\n")
-	if !strings.Contains(joinedV2, "2（required）") {
-		t.Fatalf("version 2 摘要应展示准入语义:\n%s", joinedV2)
+	if !strings.Contains(joinedV2, "2（optional）") {
+		t.Fatalf("version 2 摘要应展示显式准入语义:\n%s", joinedV2)
 	}
 	if strings.Contains(joinedV2, "secret-value") {
 		t.Fatal("确认摘要不得回显密钥值")

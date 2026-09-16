@@ -1087,9 +1087,9 @@ func (wizard ConfigWizard) viewConfirm() string {
 
 // confirmLines 组装确认页摘要行：全部内容非敏感。
 func confirmLines(baseURL, model, apiKeyEnv string, input app.SetupInput) []string {
-	version := "1"
-	if input.ConfigVersion == 2 {
-		version = "2（" + input.Admission + "）"
+	admission := input.Admission
+	if admission == "" {
+		admission = config.ProviderAdmissionRequired
 	}
 	envTail := envStatusMissing
 	if envPresent(strings.TrimSpace(apiKeyEnv)) {
@@ -1100,7 +1100,7 @@ func confirmLines(baseURL, model, apiKeyEnv string, input app.SetupInput) []stri
 		fmt.Sprintf("  base_url:     %s", strings.TrimSpace(baseURL)),
 		fmt.Sprintf("  model:        %s", strings.TrimSpace(model)),
 		fmt.Sprintf("  api_key_env:  %s（%s）", strings.TrimSpace(apiKeyEnv), envTail),
-		fmt.Sprintf("  version:      %s", version),
+		fmt.Sprintf("  version:      2（%s）", admission),
 	}
 }
 

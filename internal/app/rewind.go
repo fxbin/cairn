@@ -92,19 +92,32 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 			if driftErr := requireMatchingConfig(events, options.Config); driftErr != nil {
 				return RunResult{ID: active[0].ID}, driftErr
 			}
+			if referenceErr := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); referenceErr != nil {
+				return RunResult{ID: active[0].ID}, fmt.Errorf("%w: %v", ErrStateCorrupt, referenceErr)
+			}
+			if contractErr := checkFrozenRunContract(events, options.StateDir, boot.WorkspaceHash); contractErr != nil {
+				return RunResult{ID: active[0].ID}, fmt.Errorf("%w: %v", ErrStateCorrupt, contractErr)
+			}
+			if admissionErr := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); admissionErr != nil {
+				return RunResult{ID: active[0].ID}, admissionErr
+			}
 			return service.driveRewindRun(ctx, boot, active[0].ID, plan.Runs, options)
 		}
 		return RunResult{}, activeRunError(active[0])
+	}
+	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
+		return RunResult{}, err
 	}
 	calls, err := service.rewindToolCalls(ctx, boot, options.Runs, nil)
 	if err != nil {
 		return RunResult{}, err
 	}
-	frozenConfig, err := json.Marshal(options.Config)
+	configFingerprint := options.Config.Fingerprint()
+	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)
 	if err != nil {
-		return RunResult{}, fmt.Errorf("encode frozen run config: %w", err)
+		return RunResult{}, fmt.Errorf("build frozen run config: %w", err)
 	}
-	configRef, err := boot.Artifacts.Put(artifact.RedactJSON(frozenConfig), "application/json")
+	configRef, err := boot.Artifacts.Put(frozenConfig, "application/json")
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
@@ -118,7 +131,7 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 		domain.RunCreatedPayload
 		ConfigRef artifact.Ref `json:"config_ref"`
 		TaskRef   artifact.Ref `json:"task_ref"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build}, ConfigRef: configRef, TaskRef: planRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build}, ConfigRef: configRef, TaskRef: planRef})})
 	if err != nil {
 		return RunResult{}, err
 	}

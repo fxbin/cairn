@@ -279,7 +279,7 @@ func TestTaskPromptExcludesReferenceOracle(t *testing.T) {
 
 func TestConfigurationForTaskRequiresDockerAndUnattendedPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\npreset: coding\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\npreset: coding\nprovider:\n  id: custom\n  admission: optional\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: K\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	base, err := config.Load(path, config.Overrides{})
@@ -347,6 +347,8 @@ func TestConfigurationForTaskUsesOnlyDeclaredVolatilePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := config.Defaults()
+	base.Provider.BaseURL = "https://provider.test/v1"
+	base.Provider.Model = "test-model"
 	base.Policy.Write, base.Policy.Exec = "allow", "allow"
 	task := testPack("https://example.invalid/repository.git", "0123456789").Tasks[0]
 	task.Verification.VolatilePaths = []string{"backend/.pytest_cache"}

@@ -10,9 +10,19 @@ import (
 	"testing"
 )
 
+const validProviderYAML = "  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: K\n"
+
+// validDefaults 返回可通过当前 v2 Provider 必填字段校验的默认配置。
+func validDefaults() Config {
+	configuration := Defaults()
+	configuration.Provider.BaseURL = "https://provider.test/v1"
+	configuration.Provider.Model = "test-model"
+	return configuration
+}
+
 func TestLoadAppliesFlagOverridesAfterConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nprovider:\n  base_url: http://config.test/v1\n  model: config-model\n  api_key_env: CONFIG_KEY\n  request_timeout: 3s\nworkspace:\n  max_read_bytes: 5\n  max_search_files: 6\n  max_search_bytes: 7\nbudget:\n  max_turns: 8\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nprovider:\n  base_url: http://config.test/v1\n  model: config-model\n  api_key_env: CONFIG_KEY\n  request_timeout: 3s\nworkspace:\n  max_read_bytes: 5\n  max_search_files: 6\n  max_search_bytes: 7\nbudget:\n  max_turns: 8\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config, err := Load(path, Overrides{Model: "flag-model", MaxTurns: 9})
@@ -25,7 +35,7 @@ func TestLoadAppliesFlagOverridesAfterConfig(t *testing.T) {
 }
 
 func TestValidateRejectsSecretLikeEnvironmentAllowlistEntries(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, "AGENT_API_KEY")
 	if err := Validate(configuration); err == nil {
 		t.Fatal("secret-like environment variable was accepted")
@@ -34,7 +44,8 @@ func TestValidateRejectsSecretLikeEnvironmentAllowlistEntries(t *testing.T) {
 
 // TestValidateRejectsCredentialBearingBaseURL 锁定 BaseURL 的无凭据合同：
 // userinfo、query 与 fragment 都可能内嵌密钥，必须在配置层失败关闭，
-// 防止凭据进入冻结配置制品与诊断输出；普通绝对 URL 与空值仍然放行。
+// 防止凭据进入冻结配置制品与诊断输出；普通绝对 URL 放行，空值按 v2
+// 必填合同拒绝。
 func TestValidateRejectsCredentialBearingBaseURL(t *testing.T) {
 	rejects := []string{
 		"https://user:secret@provider.test/v1",
@@ -43,24 +54,25 @@ func TestValidateRejectsCredentialBearingBaseURL(t *testing.T) {
 		"https://provider.test/v1#secret",
 	}
 	for _, baseURL := range rejects {
-		configuration := Defaults()
+		configuration := validDefaults()
 		configuration.Provider.BaseURL = baseURL
 		if err := Validate(configuration); err == nil {
 			t.Fatalf("credential-bearing base URL accepted: %s", baseURL)
 		}
 	}
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Provider.BaseURL = "https://provider.test/v1"
 	if err := Validate(configuration); err != nil {
 		t.Fatalf("plain base URL rejected: %v", err)
 	}
-	if err := Validate(Defaults()); err != nil {
-		t.Fatalf("empty base URL rejected: %v", err)
+	configuration.Provider.BaseURL = ""
+	if err := Validate(configuration); err == nil {
+		t.Fatal("empty base URL accepted")
 	}
 }
 
 func TestValidateRequiresVerificationEnvironmentToBeAllowlisted(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Verification.Commands = []VerificationCommand{{Argv: []string{"/usr/bin/true"}, Env: map[string]string{"UNAPPROVED": "1"}}}
 	if err := Validate(configuration); err == nil {
 		t.Fatal("verification environment bypassed policy allowlist")
@@ -69,7 +81,7 @@ func TestValidateRequiresVerificationEnvironmentToBeAllowlisted(t *testing.T) {
 
 func TestLoadUsesDocumentedEnvironmentAllowlistKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\npolicy:\n  write: ask\n  exec: ask\n  protected_paths: []\n  env_allowlist: [PATH, LANG]\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nprovider:\n"+validProviderYAML+"policy:\n  write: ask\n  exec: ask\n  protected_paths: []\n  env_allowlist: [PATH, LANG]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configuration, err := Load(path, Overrides{})
@@ -82,7 +94,7 @@ func TestLoadUsesDocumentedEnvironmentAllowlistKey(t *testing.T) {
 }
 
 func TestLoadAppliesExtendedBudgetOverrides(t *testing.T) {
-	configuration, err := Load("", Overrides{MaxToolCalls: 7, MaxInputTokens: 11, MaxOutputTokens: 13, MaxWallTime: "45s"})
+	configuration, err := Load("", Overrides{BaseURL: "https://provider.test/v1", Model: "test-model", MaxToolCalls: 7, MaxInputTokens: 11, MaxOutputTokens: 13, MaxWallTime: "45s"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +104,7 @@ func TestLoadAppliesExtendedBudgetOverrides(t *testing.T) {
 }
 
 func TestValidateRejectsInvalidWallBudget(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Budget.MaxWallTime = "not-a-duration"
 	if err := Validate(configuration); err == nil {
 		t.Fatal("invalid wall budget was accepted")
@@ -100,7 +112,7 @@ func TestValidateRejectsInvalidWallBudget(t *testing.T) {
 }
 
 func TestValidateRequiresExplicitPricingForCostBudget(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Budget.MaxCostUSD = 1
 	if err := Validate(configuration); err == nil {
 		t.Fatal("cost budget without pricing was accepted")
@@ -113,12 +125,12 @@ func TestValidateRequiresExplicitPricingForCostBudget(t *testing.T) {
 }
 
 func TestValidateRejectsInvalidOutputAndCancellationLimits(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	configuration.Output.MaxArtifactBytes = 0
 	if err := Validate(configuration); err == nil {
 		t.Fatal("zero artifact limit was accepted")
 	}
-	configuration = Defaults()
+	configuration = validDefaults()
 	configuration.Cancellation.TerminateGrace = "zero"
 	if err := Validate(configuration); err == nil {
 		t.Fatal("invalid termination grace was accepted")
@@ -126,7 +138,7 @@ func TestValidateRejectsInvalidOutputAndCancellationLimits(t *testing.T) {
 }
 
 func TestDefaultsEnableBoundedContextCompaction(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	if !configuration.Context.AutoCompact || configuration.Context.MaxPromptTokens < 1 || configuration.Context.MaxSummaryBytes < 1 {
 		t.Fatalf("context defaults = %#v", configuration.Context)
 	}
@@ -151,7 +163,7 @@ func TestDefaultsKeepAutomaticVerificationAfterPatchDisabled(t *testing.T) {
 }
 
 func TestValidateSandboxRequiresAnExplicitValidDockerConfiguration(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	if configuration.Sandbox.Backend != "host" || configuration.Sandbox.DockerImage != "" || configuration.Sandbox.MaxPIDs < 1 {
 		t.Fatalf("sandbox defaults = %#v", configuration.Sandbox)
 	}
@@ -179,7 +191,7 @@ func TestValidateSandboxRequiresAnExplicitValidDockerConfiguration(t *testing.T)
 }
 
 func TestFingerprintChangesWhenSandboxChanges(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	before := configuration.Fingerprint()
 	configuration.Sandbox.Backend = "docker"
 	configuration.Sandbox.DockerImage = "alpine:3.21"
@@ -191,7 +203,7 @@ func TestFingerprintChangesWhenSandboxChanges(t *testing.T) {
 // TestContextCompactionPercentagesValidateAndChangeFingerprint 锁定两个新增上下文
 // 百分比既是带界配置，也是恢复语义指纹的一部分。
 func TestContextCompactionPercentagesValidateAndChangeFingerprint(t *testing.T) {
-	base := Defaults()
+	base := validDefaults()
 	if base.Context.InventoryBudgetPercent != 25 || base.Context.ThresholdReservePercent != 20 {
 		t.Fatalf("context percentage defaults drifted: %#v", base.Context)
 	}
@@ -218,7 +230,7 @@ func TestContextCompactionPercentagesValidateAndChangeFingerprint(t *testing.T) 
 }
 
 func TestFingerprintChangesWhenAutomaticVerificationAfterPatchChanges(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	before := configuration.Fingerprint()
 	configuration.Verification.AutoAfterPatch = true
 	if before == configuration.Fingerprint() {
@@ -229,7 +241,7 @@ func TestFingerprintChangesWhenAutomaticVerificationAfterPatchChanges(t *testing
 // TestFingerprintIgnoresOperationalFields 锁定运维/展示类字段不参与指纹：
 // 调整它们不应令在途 run 的冻结配置漂移。
 func TestFingerprintIgnoresOperationalFields(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	before := configuration.Fingerprint()
 	configuration.Provider.RequestTimeout = "5m"
 	configuration.Output.MaxPreviewBytes = 999
@@ -243,18 +255,18 @@ func TestFingerprintIgnoresOperationalFields(t *testing.T) {
 // TestFingerprintChangesWhenAuthorizationSemanticsChange 锁定授权与执行语义
 // 字段仍参与指纹：模型、策略与工作区视图变化必须使旧审批绑定失效。
 func TestFingerprintChangesWhenAuthorizationSemanticsChange(t *testing.T) {
-	configuration := Defaults()
+	configuration := validDefaults()
 	before := configuration.Fingerprint()
 	configuration.Provider.Model = "other-model"
 	if before == configuration.Fingerprint() {
 		t.Fatal("provider model must participate in the fingerprint")
 	}
-	configuration = Defaults()
+	configuration = validDefaults()
 	configuration.Policy.Exec = "allow"
 	if before == configuration.Fingerprint() {
 		t.Fatal("policy exec must participate in the fingerprint")
 	}
-	configuration = Defaults()
+	configuration = validDefaults()
 	configuration.Workspace.Ignore = append(configuration.Workspace.Ignore, "build")
 	if before == configuration.Fingerprint() {
 		t.Fatal("workspace ignore view must participate in the fingerprint")
@@ -265,14 +277,14 @@ func TestFingerprintChangesWhenAuthorizationSemanticsChange(t *testing.T) {
 // 常见云与令牌变量被拒绝，普通配置变量不受影响。
 func TestValidateRejectsExpandedSecretLikeEnvironmentKeys(t *testing.T) {
 	for _, key := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "GITHUB_PAT", "DEPLOY_PRIVATE_KEY", "OPENAI_APIKEY", "DB_PASSWD"} {
-		configuration := Defaults()
+		configuration := validDefaults()
 		configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, key)
 		if err := Validate(configuration); err == nil || !strings.Contains(err.Error(), "secret-like") {
 			t.Fatalf("env_allow %q err = %v", key, err)
 		}
 	}
 	for _, key := range []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS", "HOME"} {
-		configuration := Defaults()
+		configuration := validDefaults()
 		configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, key)
 		if err := Validate(configuration); err != nil {
 			t.Fatalf("env_allow %q err = %v", key, err)
@@ -318,12 +330,12 @@ func TestExecutionProfilePrecedenceTable(t *testing.T) {
 		wantInput  int
 		wantSource string
 	}{
-		{"旧配置无 profile 保持默认", "version: 1\nprovider:\n  api_key_env: K\n", nil, Overrides{}, 40, 100, 500_000, "default"},
-		{"complex 预设生效", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", nil, Overrides{}, 80, 160, 1_400_000, "profile:complex"},
-		{"YAML 显式轮次覆盖预设", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\nbudget:\n  max_turns: 50\n", nil, Overrides{}, 50, 160, 1_400_000, "yaml"},
-		{"更高值必须显式出现", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\nbudget:\n  max_turns: 100\n", nil, Overrides{}, 100, 160, 1_400_000, "yaml"},
-		{"环境覆盖优先于 Profile", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{}, 60, 160, 1_400_000, "env"},
-		{"CLI 显式值最高优先", "version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n", map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{MaxTurns: 70}, 70, 160, 1_400_000, "cli"},
+		{"未配置 profile 保持默认", "version: 2\nprovider:\n" + validProviderYAML, nil, Overrides{}, 40, 100, 500_000, "default"},
+		{"complex 预设生效", "version: 2\nprofile: complex\nprovider:\n" + validProviderYAML, nil, Overrides{}, 80, 160, 1_400_000, "profile:complex"},
+		{"YAML 显式轮次覆盖预设", "version: 2\nprofile: complex\nprovider:\n" + validProviderYAML + "budget:\n  max_turns: 50\n", nil, Overrides{}, 50, 160, 1_400_000, "yaml"},
+		{"更高值必须显式出现", "version: 2\nprofile: complex\nprovider:\n" + validProviderYAML + "budget:\n  max_turns: 100\n", nil, Overrides{}, 100, 160, 1_400_000, "yaml"},
+		{"环境覆盖优先于 Profile", "version: 2\nprofile: complex\nprovider:\n" + validProviderYAML, map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{}, 60, 160, 1_400_000, "env"},
+		{"CLI 显式值最高优先", "version: 2\nprofile: complex\nprovider:\n" + validProviderYAML, map[string]string{"AGENT_MAX_TURNS": "60"}, Overrides{MaxTurns: 70}, 70, 160, 1_400_000, "cli"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -347,7 +359,7 @@ func TestExecutionProfilePrecedenceTable(t *testing.T) {
 // TestUnknownExecutionProfileRejected 锁定未知 Profile 启动失败关闭。
 func TestUnknownExecutionProfileRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nprofile: turbo\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nprofile: turbo\nprovider:\n"+validProviderYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "unknown execution profile") {
@@ -358,7 +370,7 @@ func TestUnknownExecutionProfileRejected(t *testing.T) {
 // TestProfileChangesFingerprint 锁定 Profile 语义进入配置指纹：恢复时 Profile
 // 漂移会被指纹校验拒绝。
 func TestProfileChangesFingerprint(t *testing.T) {
-	base := Defaults()
+	base := validDefaults()
 	if base.Profile != ProfileDefault {
 		t.Fatalf("default profile = %q", base.Profile)
 	}
@@ -381,7 +393,7 @@ func TestProfileChangesFingerprint(t *testing.T) {
 
 func TestProviderOverrideResolutionTracksEnvironmentAndCLI(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	content := "version: 1\nprovider:\n  base_url: http://yaml.test/v1\n  model: yaml-model\n  api_key_env: YAML_KEY\n"
+	content := "version: 2\nprovider:\n  base_url: http://yaml.test/v1\n  model: yaml-model\n  api_key_env: YAML_KEY\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +455,7 @@ func resolutionEntry(entries []ResolutionEntry, field string) (ResolutionEntry, 
 // 制品持久化的契约：Run 冻结的是 json.Marshal(config)，Resolution 必须在场。
 func TestResolutionMarshalsIntoFrozenPlan(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nprofile: complex\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nprofile: complex\nprovider:\n"+validProviderYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config, err := Load(path, Overrides{})
@@ -478,9 +490,9 @@ func TestPresetResolutionTracksDefaultAndYAMLDeclarations(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			contents := "version: 1\nprovider:\n  api_key_env: K\n"
+			contents := "version: 2\nprovider:\n" + validProviderYAML
 			if testCase.yamlPreset != "" {
-				contents = "version: 1\npreset: " + testCase.yamlPreset + "\nprovider:\n  api_key_env: K\n"
+				contents = "version: 2\npreset: " + testCase.yamlPreset + "\nprovider:\n" + validProviderYAML
 			}
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -501,7 +513,7 @@ func TestPresetResolutionTracksDefaultAndYAMLDeclarations(t *testing.T) {
 // TestWithPresetResolutionIsDiagnosticOnly 锁定 Resolution 更新只影响冻结配置的
 // 非敏感解释，不反向改变配置语义、指纹或调用者持有的配置切片。
 func TestWithPresetResolutionIsDiagnosticOnly(t *testing.T) {
-	base := Defaults()
+	base := validDefaults()
 	base.Resolution = []ResolutionEntry{{Field: "preset", Value: PresetCoding, Source: "default"}}
 	fingerprint := base.Fingerprint()
 	updated := WithPresetResolution(base, PresetBenchmark, "benchmark:runner")
@@ -521,7 +533,7 @@ func TestWithPresetResolutionIsDiagnosticOnly(t *testing.T) {
 // 语义：强制 deny/deny 并记录来源；携带验证命令时失败关闭。
 func TestPresetReadOnlyForcesDenyAndFailsVerification(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\npreset: read-only\nprovider:\n  api_key_env: K\npolicy:\n  write: allow\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\npreset: read-only\nprovider:\n"+validProviderYAML+"policy:\n  write: allow\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config, err := Load(path, Overrides{})
@@ -535,7 +547,7 @@ func TestPresetReadOnlyForcesDenyAndFailsVerification(t *testing.T) {
 		t.Fatalf("policy.write source = %q", source)
 	}
 	withVerify := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(withVerify, []byte("version: 1\npreset: read-only\nprovider:\n  api_key_env: K\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"), 0o600); err != nil {
+	if err := os.WriteFile(withVerify, []byte("version: 2\npreset: read-only\nprovider:\n"+validProviderYAML+"verification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(withVerify, Overrides{}); err == nil || !strings.Contains(err.Error(), "read-only preset") {
@@ -547,14 +559,14 @@ func TestPresetReadOnlyForcesDenyAndFailsVerification(t *testing.T) {
 // 关闭与 Preset 进入指纹（能力组合漂移在恢复时被拒绝）。
 func TestUnknownPresetFailsClosedAndFingerprintCoversPreset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\npreset: turbo\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\npreset: turbo\nprovider:\n"+validProviderYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "unknown preset") {
 		t.Fatalf("err = %v", err)
 	}
-	coding := Defaults()
-	readOnly := Defaults()
+	coding := validDefaults()
+	readOnly := validDefaults()
 	readOnly.Preset = PresetReadOnly
 	readOnly.Policy.Write = "deny"
 	readOnly.Policy.Exec = "deny"
@@ -571,7 +583,7 @@ func TestUnknownPresetFailsClosedAndFingerprintCoversPreset(t *testing.T) {
 // 关闭，声明进入配置指纹使在途 run 的能力合同不可漂移。
 func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	valid := "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: 131072\n    max_output_tokens: 8192\n    stop_reasons: [stop, length]\n"
+	valid := "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: 131072\n    max_output_tokens: 8192\n    stop_reasons: [stop, length]\n"
 	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +594,7 @@ func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
 	if capability := configuration.Provider.Capability; capability == nil || !capability.ToolCalls || !capability.StreamingUsage || capability.ContextWindowTokens != 131072 || capability.MaxOutputTokens != 8192 || len(capability.StopReasons) != 2 {
 		t.Fatalf("capability = %#v", capability)
 	}
-	if Defaults().Fingerprint() == configuration.Fingerprint() {
+	if validDefaults().Fingerprint() == configuration.Fingerprint() {
 		t.Fatal("provider capability declaration must participate in the fingerprint")
 	}
 	changed := configuration
@@ -591,10 +603,10 @@ func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
 		t.Fatal("capability limit changes must change the fingerprint")
 	}
 	for name, invalid := range map[string]string{
-		"capability without tool calls": "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    streaming_usage: true\n",
-		"capability without usage":      "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n",
-		"negative context window":       "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: -1\n",
-		"empty stop reason":             "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [\"\", stop]\n",
+		"capability without tool calls": "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    streaming_usage: true\n",
+		"capability without usage":      "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    tool_calls: true\n",
+		"negative context window":       "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    context_window_tokens: -1\n",
+		"empty stop reason":             "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [\"\", stop]\n",
 	} {
 		if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
 			t.Fatal(err)
@@ -611,7 +623,7 @@ func TestProviderCapabilityBlockValidatesAndChangesFingerprint(t *testing.T) {
 // 显式输出上限不得超过能力卡声明上限。
 func TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	valid := "version: 1\nprovider:\n  api_key_env: K\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    max_output_tokens: 8192\n  generation:\n    max_output_tokens: 4096\n    temperature_milli: 700\n    reasoning_effort: medium\n"
+	valid := "version: 2\nprovider:\n" + validProviderYAML + "  capability:\n    tool_calls: true\n    streaming_usage: true\n    max_output_tokens: 8192\n  generation:\n    max_output_tokens: 4096\n    temperature_milli: 700\n    reasoning_effort: medium\n"
 	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +650,7 @@ func TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint(t *testing.
 			t.Fatalf("resolution %s = %q, want %q", field, values[field], want)
 		}
 	}
-	baseline := "version: 1\nprovider:\n  api_key_env: K\n"
+	baseline := "version: 2\nprovider:\n" + validProviderYAML
 	base := filepath.Join(t.TempDir(), "baseline.yaml")
 	if err := os.WriteFile(base, []byte(baseline), 0o600); err != nil {
 		t.Fatal(err)
@@ -664,7 +676,7 @@ func TestProviderGenerationBlockResolvesRecordsAndChangesFingerprint(t *testing.
 // 记录 unsupported，两态合同不允许静默缺省。
 func TestProviderGenerationAbsentBlockKeepsFingerprintAndRecordsUnsupported(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1\nprovider:\n  api_key_env: K\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nprovider:\n"+validProviderYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configuration, err := Load(path, Overrides{})
@@ -675,6 +687,8 @@ func TestProviderGenerationAbsentBlockKeepsFingerprintAndRecordsUnsupported(t *t
 		t.Fatal("absent block must not materialize")
 	}
 	expected := Defaults()
+	expected.Provider.BaseURL = "https://provider.test/v1"
+	expected.Provider.Model = "test-model"
 	expected.Provider.APIKeyEnv = "K"
 	if configuration.Fingerprint() != expected.Fingerprint() {
 		t.Fatal("absent generation block must keep the fingerprint identical to the equivalent default config")
@@ -693,7 +707,7 @@ func TestProviderGenerationAbsentBlockKeepsFingerprintAndRecordsUnsupported(t *t
 // TestValidateRejectsInvalidGenerationValues 表驱动锁定非法生成参数的失败关闭：
 // Milli 越界、未知枚举、负上限与越能力卡上限都必须在 Load 拒绝。
 func TestValidateRejectsInvalidGenerationValues(t *testing.T) {
-	head := "version: 1\nprovider:\n  api_key_env: K\n"
+	head := "version: 2\nprovider:\n" + validProviderYAML
 	cases := map[string]string{
 		"negative temperature milli":     head + "  generation:\n    temperature_milli: -1\n",
 		"temperature above 2000 milli":   head + "  generation:\n    temperature_milli: 2001\n",
@@ -742,7 +756,7 @@ func TestValidateAPIKeyEnvOnlyRejectsNonPortableSyntax(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		body := "version: 1\nprovider:\n  base_url: http://key.test/v1\n  model: key-model\n  api_key_env: " + value + "\n"
+		body := "version: 2\nprovider:\n  base_url: http://key.test/v1\n  model: key-model\n  api_key_env: " + value + "\n"
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -782,25 +796,43 @@ func writeVersionConfig(t *testing.T, version int, providerBlock string) string 
 	return path
 }
 
-// TestValidateGatesVersion2IdentityFields 锁定 version 2 门控合同：version 1
-// 出现新身份字段即拒绝；version 2 下 admission 必显式 optional|required，
-// base_url 与 model 必填，provider.id 形状非法失败关闭。
-func TestValidateGatesVersion2IdentityFields(t *testing.T) {
+// TestValidateRequiresVersion2ProviderIdentity 锁定唯一配置合同：version 1
+// 无条件拒绝；version 2 缺省身份归一为 custom + required，非法显式值失败关闭。
+func TestValidateRequiresVersion2ProviderIdentity(t *testing.T) {
+	missingVersion := filepath.Join(t.TempDir(), ".agent", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(missingVersion), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(missingVersion, []byte("provider:\n"+validProviderYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(missingVersion, Overrides{}); err == nil || !strings.Contains(err.Error(), "config version is required") {
+		t.Fatalf("missing version must be rejected, got %v", err)
+	}
+
+	legacyPath := writeVersionConfig(t, 1, "")
+	if _, err := Load(legacyPath, Overrides{}); err == nil || !strings.Contains(err.Error(), "unsupported config version 1") {
+		t.Fatalf("version 1 must be rejected, got %v", err)
+	}
+	defaulted, err := Load(writeVersionConfig(t, 2, ""), Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Provider.ID != "custom" || defaulted.Provider.Admission != ProviderAdmissionRequired {
+		t.Fatalf("default provider identity = %+v", defaulted.Provider)
+	}
+
 	cases := []struct {
 		name    string
-		version int
 		block   string
 		wantErr string
 	}{
-		{"version1出现provider.id被拒绝", 1, "  id: custom\n", "provider.id"},
-		{"version1出现provider.admission被拒绝", 1, "  admission: optional\n", "provider.admission"},
-		{"version2缺admission被拒绝", 2, "", "provider.admission"},
-		{"version2非法admission被拒绝", 2, "  admission: maybe\n", "provider.admission"},
-		{"version2非法provider.id被拒绝", 2, "  id: Not_Kebab\n  admission: optional\n", "provider.id"},
+		{"非法admission被拒绝", "  admission: maybe\n", "provider.admission"},
+		{"非法provider.id被拒绝", "  id: Not_Kebab\n  admission: optional\n", "provider.id"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			path := writeVersionConfig(t, testCase.version, testCase.block)
+			path := writeVersionConfig(t, 2, testCase.block)
 			_, err := Load(path, Overrides{})
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("expected error naming %q, got %v", testCase.wantErr, err)
@@ -809,10 +841,9 @@ func TestValidateGatesVersion2IdentityFields(t *testing.T) {
 	}
 }
 
-// TestVersion2FingerprintDeterminismAndSeparation 锁定 v4 指纹合同：同一
-// version 2 配置两次解析指纹恒同；version 2 与 version 1 的指纹天然分离
-// （不同算法前缀）；admission 语义变化必然改变指纹，杜绝在途 run 静默漂移。
-func TestVersion2FingerprintDeterminismAndSeparation(t *testing.T) {
+// TestVersion2FingerprintDeterminismAndAdmission 锁定唯一指纹合同：同一配置
+// 两次解析指纹恒同；admission 语义变化必然改变指纹，杜绝在途 run 静默漂移。
+func TestVersion2FingerprintDeterminismAndAdmission(t *testing.T) {
 	path := writeVersionConfig(t, 2, "  admission: optional\n")
 	first, err := Load(path, Overrides{})
 	if err != nil {
@@ -832,14 +863,6 @@ func TestVersion2FingerprintDeterminismAndSeparation(t *testing.T) {
 	}
 	if first.Fingerprint() == strict.Fingerprint() {
 		t.Fatal("admission semantics change must change the v4 fingerprint")
-	}
-	legacyPath := writeVersionConfig(t, 1, "")
-	legacy, err := Load(legacyPath, Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Fingerprint() == legacy.Fingerprint() {
-		t.Fatal("version 2 and version 1 fingerprints must be disjoint")
 	}
 }
 
@@ -887,7 +910,7 @@ func TestResolveDefaultPathFallsBackToUserConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(userPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(userPath, []byte("version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(userPath, []byte("version: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := ResolveDefaultPath(workspace); got != userPath {
@@ -897,7 +920,7 @@ func TestResolveDefaultPathFallsBackToUserConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(DefaultPath(workspace)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(DefaultPath(workspace), []byte("version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(DefaultPath(workspace), []byte("version: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := ResolveDefaultPath(workspace); got != DefaultPath(workspace) {

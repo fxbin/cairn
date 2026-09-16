@@ -82,6 +82,9 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 	sort.Strings(taskIDs)
 	packFingerprint := options.Pack.Fingerprint()
 	baselineConfig := options.BaselineConfig
+	if err := config.Validate(baselineConfig); err != nil {
+		return report, fmt.Errorf("baseline config invalid: %w", err)
+	}
 	baselineFingerprint := baselineConfig.Fingerprint()
 	variantFingerprint, err := VariantExpandedFingerprint(baselineFingerprint, options.Variant)
 	if err != nil {

@@ -49,11 +49,9 @@ type SetupInput struct {
 	CatalogURL      string
 	CatalogCacheDir string
 	Workspace       string
-	// ConfigVersion 选择生成的配置版本：0 与 1 生成 version 1（历史行为）；
-	// 2 生成 version 2 身份配置，此时 ProviderID 与 Admission 必须显式合法。
-	ConfigVersion int
-	ProviderID    string
-	Admission     string
+	// Admission 选择 Provider 准入模式；空值使用安全默认 required，只有
+	// 调用方显式传入 optional 才生成非阻断配置。
+	Admission string
 	// OverwriteExisting 允许覆盖既有配置：覆盖前旧文件被原子改名为同目录
 	// 的 config.yaml.bak 备份，生成仍走原子写与回读自证。调用方必须先让
 	// 用户知情（向导确认页或 CLI 显式旗标），因为覆盖会把手调字段重置为
@@ -183,13 +181,11 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	if input.BaseURL == "" || input.Model == "" || input.APIKeyEnv == "" {
 		return nil, errors.New("base_url、模型名与密钥环境变量名均不可为空")
 	}
-	if input.ConfigVersion != 0 && input.ConfigVersion != 1 && input.ConfigVersion != 2 {
-		return nil, fmt.Errorf("unsupported config version %d", input.ConfigVersion)
+	if input.Admission == "" {
+		input.Admission = config.ProviderAdmissionRequired
 	}
-	if input.ConfigVersion == 2 {
-		if input.Admission != config.ProviderAdmissionOptional && input.Admission != config.ProviderAdmissionRequired {
-			return nil, fmt.Errorf("version 2 配置必须显式声明 admission（%s 或 %s）", config.ProviderAdmissionOptional, config.ProviderAdmissionRequired)
-		}
+	if input.Admission != config.ProviderAdmissionOptional && input.Admission != config.ProviderAdmissionRequired {
+		return nil, fmt.Errorf("admission 必须是 %s 或 %s", config.ProviderAdmissionOptional, config.ProviderAdmissionRequired)
 	}
 	outcome := &SetupOutcome{APIKeyEnv: input.APIKeyEnv}
 	capability := config.ProviderCapabilityConfig{
@@ -311,20 +307,14 @@ func RenderMinimalConfig(input SetupInput, capability config.ProviderCapabilityC
 	var builder strings.Builder
 	builder.WriteString("# Cairn 配置——由 cairn init/provider configure 生成；只写了 Provider 段，其余全部使用安全默认值。\n")
 	builder.WriteString("# 模型密钥只从环境变量读取，绝不写入本文件。\n")
-	if input.ConfigVersion == 2 {
-		builder.WriteString("version: 2\n\n")
-	} else {
-		builder.WriteString("version: 1\n\n")
-	}
+	fmt.Fprintf(&builder, "version: %d\n\n", config.CurrentVersion)
 	builder.WriteString("provider:\n")
-	if input.ConfigVersion == 2 {
-		providerID := input.ProviderID
-		if providerID == "" {
-			providerID = contract.ProviderIDCustom
-		}
-		fmt.Fprintf(&builder, "  id: %s\n", providerID)
-		fmt.Fprintf(&builder, "  admission: %s\n", input.Admission)
+	builder.WriteString("  id: " + contract.ProviderIDCustom + "\n")
+	admission := input.Admission
+	if admission == "" {
+		admission = config.ProviderAdmissionRequired
 	}
+	fmt.Fprintf(&builder, "  admission: %s\n", admission)
 	fmt.Fprintf(&builder, "  base_url: %s\n", input.BaseURL)
 	fmt.Fprintf(&builder, "  model: %s\n", input.Model)
 	fmt.Fprintf(&builder, "  api_key_env: %s\n", input.APIKeyEnv)

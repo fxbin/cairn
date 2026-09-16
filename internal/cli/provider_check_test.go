@@ -39,7 +39,7 @@ func writeProbeConfig(t *testing.T, baseURL string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "provider:\n  base_url: " + baseURL + "\n  model: probe-model\n  api_key_env: CAIRN_PROBE_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [stop, length, tool_calls]\n  generation:\n    temperature_milli: 600\n"
+	body := "version: 2\nprovider:\n  base_url: " + baseURL + "\n  model: probe-model\n  api_key_env: CAIRN_PROBE_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [stop, length, tool_calls]\n  generation:\n    temperature_milli: 600\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestCheckProviderRequiresDeclaredCapability(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := "provider:\n  base_url: https://provider.test/v1\n  model: probe-model\n  api_key_env: CAIRN_PROBE_KEY\n"
+	body := "version: 2\nprovider:\n  base_url: https://provider.test/v1\n  model: probe-model\n  api_key_env: CAIRN_PROBE_KEY\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -927,14 +926,17 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 		return abortInvalid(sandboxTriggerReplayDivergence, errors.New("deterministic replay diverges from the persisted projection"))
 	}
 	record.ReplayConsistent = true
-	frozen, marshalErr := json.Marshal(prepared.Configuration)
-	if marshalErr != nil {
-		return abortInvalid(sandboxTriggerContractProjectionFailed, marshalErr)
-	}
-	runResult, projectionErr := contract.ResultFromRun(inspected.Events, inspected.Projection, prepared.Result.Task, artifact.RedactJSON(frozen))
+	runResult, projectionErr := executor.Service.Evidence(
+		context.Background(),
+		prepared.Result.Workspace,
+		prepared.Result.StateDir,
+		prepared.Configuration,
+		result.ID,
+	)
 	if projectionErr != nil {
 		return abortInvalid(sandboxTriggerContractProjectionFailed, projectionErr)
 	}
+	runResult.Manifest.Task = prepared.Result.Task
 	pairingBreaks, pairingErr := domain.ToolCallPairingBreaks(inspected.Events)
 	if pairingErr != nil {
 		return abortInvalid(sandboxTriggerToolPairingExtraction, pairingErr)

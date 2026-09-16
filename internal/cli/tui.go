@@ -18,10 +18,9 @@ import (
 	"github.com/fxbin/cairn/internal/tui"
 )
 
-// tuiCommand 解析薄 TUI 旗标并启动模型配置向导：默认生成 version 1 配置，
-// 显式给出 --admission 时生成 version 2 身份配置（语义与 provider configure
-// 一致）。写入目标默认为用户级配置（一次配置、全部工作区可用，ADR-0016），
-// --local 切回工作区。非 TTY 环境失败关闭并指引用 provider configure。
+// tuiCommand 解析薄 TUI 旗标并启动模型配置向导：固定生成 v2 配置，
+// admission 默认 required，只有显式给出 optional 才生成非阻断配置。写入
+// 目标默认为用户级配置；--local 切回工作区。
 func (command Command) tuiCommand(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -46,14 +45,13 @@ func (command Command) tuiCommand(ctx context.Context, arguments []string) int {
 		CatalogURL:      *catalogURL,
 		CatalogCacheDir: *catalogCache,
 		ScopeUserConfig: !*local,
+		Admission:       *admission,
 	}
 	if *admission != "" {
 		if *admission != config.ProviderAdmissionOptional && *admission != config.ProviderAdmissionRequired {
 			fmt.Fprintln(command.Stderr, "admission must be optional or required")
 			return ExitUsage
 		}
-		input.ConfigVersion = 2
-		input.Admission = *admission
 	}
 	if err := tui.RunConfigWizard(ctx, input); err != nil {
 		fmt.Fprintln(command.Stderr, "tui failed:", err)

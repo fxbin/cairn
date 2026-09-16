@@ -39,7 +39,7 @@ func marshalFrozenRunConfig(configuration config.Config, configFingerprint strin
 	}
 	providerID := configuration.Provider.ID
 	admission := configuration.Provider.Admission
-	if configuration.Version == 2 && providerID == "" {
+	if providerID == "" {
 		providerID = contract.ProviderIDCustom
 	}
 	var capability *contract.FrozenProviderCapabilityProjection
@@ -77,9 +77,8 @@ func marshalFrozenRunConfig(configuration config.Config, configFingerprint strin
 }
 
 // readFrozenRunConfig 只读加载 run_created 引用的冻结配置制品，并校验内容
-// 摘要一致后返回其非敏感内容。没有 config_ref 的历史 Run 保持兼容地返回
-// nil；一旦存在引用，缺失、格式错误或内容篡改都必须失败关闭，不能把
-// 不完整的冻结配置伪装成合法的空投影。
+// 摘要一致后返回其非敏感内容。缺少引用时返回 nil，由当前合同读取器统一
+// 失败关闭；引用缺失、格式错误或内容篡改同样不能伪装成合法投影。
 func readFrozenRunConfig(events []domain.Event, stateDir, workspaceHash string) (json.RawMessage, error) {
 	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
 		return nil, nil

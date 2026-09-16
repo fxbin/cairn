@@ -1669,7 +1669,10 @@ func (console RunConsole) nextSetupInput() app.SetupInput {
 			workspace = current
 		}
 	}
-	input := app.SetupInput{Workspace: workspace, CatalogURL: "", CatalogCacheDir: ""}
+	input := app.SetupInput{
+		Workspace: workspace, CatalogURL: "", CatalogCacheDir: "",
+		Admission: console.input.Config.Provider.Admission,
+	}
 	if userPath, err := config.UserConfigPath(); err == nil {
 		if resolved := config.ResolveDefaultPath(workspace); resolved == userPath {
 			input.ScopeUserConfig = true

@@ -144,7 +144,8 @@ func stateText(state string) string {
 
 // resolveSessionContext 装配本次运行的会话链关系。显式前情总是重新写入
 // 内容寻址制品库并返回规范引用；仅有引用时必须完整读取校验。仅给出前置
-// 运行且没有显式前情时，从其事件投影前情卡并持久化。
+// 运行且没有显式前情时，从其事件投影前情卡并持久化。调用方必须先完成
+// 前置运行的制品引用与 v2 冻结合同校验。
 func (service Service) resolveSessionContext(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, options RunOptions) (string, string, *artifact.Ref, error) {
 	sessionID := options.SessionID
 	priorContext := options.PriorContext

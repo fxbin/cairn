@@ -24,6 +24,8 @@ func variantFixture() memory.CompactionParamsVariant {
 // 过整体校验（能力卡由运行装配层把关）。
 func baseConfigFixture() config.Config {
 	base := config.Defaults()
+	base.Provider.BaseURL = "https://provider.test/v1"
+	base.Provider.Model = "test-model"
 	base.Context.MaxPromptTokens = 48_000
 	base.Context.MaxSummaryBytes = 16_384
 	return base
@@ -136,6 +138,9 @@ func TestRunOfflinePrescreenCatchesFingerprintDrift(t *testing.T) {
 	}
 	if report.Passed() {
 		t.Fatal("fingerprint divergence must be reported")
+	}
+	if _, err := RunOfflinePrescreen(evalSet, config.Defaults(), base, variant); err == nil {
+		t.Fatal("invalid baseline config must fail before fingerprint derivation")
 	}
 
 }

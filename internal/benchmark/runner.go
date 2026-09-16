@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -369,8 +368,8 @@ func (runner Runner) qualifyAttempt(ctx context.Context, options RunOptions, rep
 
 // runPreparedAttempt 只在 prepareAgentAttempt 已完整成功后调用 Provider；它
 // 不再执行 clone、verifier、bootstrap 或镜像检查，从而使这些环境失败无法进入
-// Agent 计分结果。运行期身份与结果统一经 contract.ResultFromRun 投影，与普通
-// Run 共用同一产品合同构造器。
+// Agent 计分结果。运行期身份与结果统一经 Service.Evidence 从已落盘的
+// config_ref 投影，与普通 Run 共用同一事实源。
 func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAttempt, resultDirectory string) AttemptResult {
 	result := prepared.Result
 	agentStarted := runner.now()
@@ -381,14 +380,10 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 		inspected, inspectErr := runner.Service.Inspect(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID, true)
 		if inspectErr == nil {
 			completedVerified = inspected.Projection.State == domain.RunCompleted && inspected.Projection.VerificationSucceeded
-			if frozen, frozenErr := json.Marshal(prepared.Configuration); frozenErr == nil {
-				// 与普通 Run 的 config_ref 制品同构：投影输入同样经过结构化
-				// 脱敏，避免两路径在凭据式字段值上产生漂移或泄漏。
-				frozen = artifact.RedactJSON(frozen)
-				if runResult, contractErr := contract.ResultFromRun(inspected.Events, inspected.Projection, prepared.Result.Task, frozen); contractErr == nil {
-					result.Run = &runResult
-					result.Observations.CostUSD = float64(runResult.Metrics.InputTokens)*prepared.Configuration.Pricing.InputTokenUSD + float64(runResult.Metrics.OutputTokens)*prepared.Configuration.Pricing.OutputTokenUSD
-				}
+			if runResult, contractErr := runner.Service.Evidence(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID); contractErr == nil {
+				runResult.Manifest.Task = prepared.Result.Task
+				result.Run = &runResult
+				result.Observations.CostUSD = float64(runResult.Metrics.InputTokens)*prepared.Configuration.Pricing.InputTokenUSD + float64(runResult.Metrics.OutputTokens)*prepared.Configuration.Pricing.OutputTokenUSD
 			}
 			result.Observations = mergeObservations(result.Observations, observationsFromEvents(inspected.Events))
 		}
@@ -842,7 +837,7 @@ func validatePrepareProxy(value string) error {
 
 // observationsFromEvents 从持久化事件推导基准特有观测（首次 patch/验证轮次、
 // 重复探索与零 patch 耗尽轮次预算）；轮次与 token 总量属于核心合同，由
-// contract.ResultFromRun 统计，此处不重复计数。
+// contract.Result 统计，此处不重复计数。
 func observationsFromEvents(events []domain.Event) AttemptMetrics {
 	var observations AttemptMetrics
 	currentTurn := 0

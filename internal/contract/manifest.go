@@ -11,14 +11,13 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// manifestSchemaV1 是 version 1 配置对应的 RunManifest 产品合同版本。
-const manifestSchemaV1 = 1
-
-// manifestSchemaV2 是 version 2 配置对应的 RunManifest 产品合同版本：新增
-// ProviderSelection 身份投影。由发起 run 时的 Config.Version 决定，历史
-// （version 1）run 的投影永不自动补造 Selection；新 reader 支持 v1/v2，旧
-// reader 不保证消费 v2。
+// manifestSchemaV2 是当前 RunManifest 产品合同版本，包含 ProviderSelection
+// 身份投影。
 const manifestSchemaV2 = 2
+
+// frozenAgentConfigVersionV2 是冻结投影接受的 Agent 配置合同版本；它与
+// RunManifest schema 属于不同版本域，不能复用后者的常量。
+const frozenAgentConfigVersionV2 = 2
 
 // frozenRunConfigSchemaV1 是新冻结配置制品的外层合同版本。该制品不保存
 // APIKeyEnv 等凭据定位信息，只保存 manifest 所需的非敏感投影及其独立摘要。
@@ -58,7 +57,7 @@ type VerificationIdentity struct {
 
 // RunManifest 是定位一次 Run 所需的版本化、非敏感身份集合：任务、工作区、
 // 构建身份、配置指纹、Provider/模型、Preset/Profile/Policy 与验证计划。
-// 全部字段由事件与冻结配置制品投影；旧 Run 缺失的字段保持空值而非伪造。
+// 全部字段由事件与当前 v2 冻结配置制品投影。
 type RunManifest struct {
 	SchemaVersion     int                  `json:"schema_version"`
 	RunID             domain.RunID         `json:"run_id"`
@@ -139,7 +138,7 @@ func NewFrozenRunConfig(configFingerprint string, projection FrozenConfigProject
 	return frozen, nil
 }
 
-// frozenConfigView 是新旧冻结制品经严格解码后共享的 manifest 投影视图。
+// frozenConfigView 是冻结制品经严格解码后的 manifest 投影视图。
 type frozenConfigView struct {
 	Version                 int
 	Preset                  string
@@ -148,10 +147,9 @@ type frozenConfigView struct {
 	Policy                  PolicyIdentity
 	VerificationCommands    int
 	VerificationFingerprint string
-	StronglyBound           bool
 }
 
-// frozenProviderView 统一新旧冻结格式中的 Provider 投影。
+// frozenProviderView 统一冻结格式中的 Provider 投影。
 type frozenProviderView struct {
 	Kind       string
 	BaseURL    string
@@ -161,143 +159,11 @@ type frozenProviderView struct {
 	Capability *FrozenProviderCapabilityProjection
 }
 
-// legacyFrozenConfig 严格描述旧版直接 json.Marshal(config.Config) 的制品形状。
-// 这些制品没有独立投影指纹，保留只读兼容但不会冒充新格式的强绑定证明。
-type legacyFrozenConfig struct {
-	Version      int                      `json:"Version"`
-	Profile      string                   `json:"Profile"`
-	Preset       string                   `json:"Preset"`
-	Provider     legacyProviderConfig     `json:"Provider"`
-	Workspace    legacyWorkspaceConfig    `json:"Workspace"`
-	Policy       legacyPolicyConfig       `json:"Policy"`
-	Verification legacyVerificationConfig `json:"Verification"`
-	Budget       legacyBudgetConfig       `json:"Budget"`
-	Context      legacyContextConfig      `json:"Context"`
-	Pricing      legacyPricingConfig      `json:"Pricing"`
-	Output       legacyOutputConfig       `json:"Output"`
-	Cancellation legacyCancellationConfig `json:"Cancellation"`
-	Sandbox      legacySandboxConfig      `json:"Sandbox"`
-	Resolution   []legacyResolutionEntry  `json:"resolution,omitempty"`
-}
-
-// legacyProviderConfig 描述旧版 Provider JSON 字段。
-type legacyProviderConfig struct {
-	BaseURL        string                          `json:"BaseURL"`
-	Model          string                          `json:"Model"`
-	APIKeyEnv      string                          `json:"APIKeyEnv"`
-	RequestTimeout string                          `json:"RequestTimeout"`
-	ID             string                          `json:"ID"`
-	Admission      string                          `json:"Admission"`
-	Capability     *legacyProviderCapabilityConfig `json:"Capability"`
-	Generation     *legacyProviderGenerationConfig `json:"Generation"`
-}
-
-// legacyProviderCapabilityConfig 描述旧版能力声明 JSON 字段。
-type legacyProviderCapabilityConfig struct {
-	ToolCalls           bool     `json:"ToolCalls"`
-	StreamingUsage      bool     `json:"StreamingUsage"`
-	ContextWindowTokens int      `json:"ContextWindowTokens"`
-	MaxOutputTokens     int      `json:"MaxOutputTokens"`
-	StopReasons         []string `json:"StopReasons"`
-}
-
-// legacyProviderGenerationConfig 描述旧版生成参数 JSON 字段。
-type legacyProviderGenerationConfig struct {
-	MaxOutputTokens  *int   `json:"MaxOutputTokens"`
-	TemperatureMilli *int   `json:"TemperatureMilli"`
-	TopPMilli        *int   `json:"TopPMilli"`
-	ReasoningEffort  string `json:"ReasoningEffort"`
-	ToolChoice       string `json:"ToolChoice"`
-}
-
-// legacyWorkspaceConfig 描述旧版工作区限制 JSON 字段。
-type legacyWorkspaceConfig struct {
-	Ignore         []string `json:"Ignore"`
-	MaxReadBytes   int64    `json:"MaxReadBytes"`
-	MaxSearchFiles int      `json:"MaxSearchFiles"`
-	MaxSearchBytes int64    `json:"MaxSearchBytes"`
-}
-
-// legacyPolicyConfig 描述旧版策略 JSON 字段。
-type legacyPolicyConfig struct {
-	Write          string   `json:"Write"`
-	Exec           string   `json:"Exec"`
-	ProtectedPaths []string `json:"ProtectedPaths"`
-	EnvAllow       []string `json:"EnvAllow"`
-}
-
-// legacyVerificationConfig 描述旧版验证配置 JSON 字段。
-type legacyVerificationConfig struct {
-	VolatilePaths  []string                    `json:"VolatilePaths"`
-	Commands       []legacyVerificationCommand `json:"Commands"`
-	AutoAfterPatch bool                        `json:"AutoAfterPatch"`
-}
-
-// legacyVerificationCommand 描述旧版单条验证命令 JSON 字段。
-type legacyVerificationCommand struct {
-	Argv           []string          `json:"Argv"`
-	CWD            string            `json:"CWD"`
-	Timeout        string            `json:"Timeout"`
-	MaxOutputBytes int               `json:"MaxOutputBytes"`
-	Env            map[string]string `json:"Env"`
-}
-
-// legacyBudgetConfig 描述旧版预算 JSON 字段。
-type legacyBudgetConfig struct {
-	MaxTurns        int     `json:"MaxTurns"`
-	MaxToolCalls    int     `json:"MaxToolCalls"`
-	MaxInputTokens  int     `json:"MaxInputTokens"`
-	MaxOutputTokens int     `json:"MaxOutputTokens"`
-	MaxWallTime     string  `json:"MaxWallTime"`
-	MaxCostUSD      float64 `json:"MaxCostUSD"`
-}
-
-// legacyContextConfig 描述旧版上下文配置 JSON 字段。
-type legacyContextConfig struct {
-	AutoCompact             bool `json:"AutoCompact"`
-	MaxPromptTokens         int  `json:"MaxPromptTokens"`
-	MaxSummaryBytes         int  `json:"MaxSummaryBytes"`
-	InventoryBudgetPercent  int  `json:"InventoryBudgetPercent"`
-	ThresholdReservePercent int  `json:"ThresholdReservePercent"`
-}
-
-// legacyPricingConfig 描述旧版价格 JSON 字段。
-type legacyPricingConfig struct {
-	InputTokenUSD  float64 `json:"InputTokenUSD"`
-	OutputTokenUSD float64 `json:"OutputTokenUSD"`
-}
-
-// legacyOutputConfig 描述旧版制品输出限制 JSON 字段。
-type legacyOutputConfig struct {
-	MaxPreviewBytes  int `json:"MaxPreviewBytes"`
-	MaxArtifactBytes int `json:"MaxArtifactBytes"`
-}
-
-// legacyCancellationConfig 描述旧版取消配置 JSON 字段。
-type legacyCancellationConfig struct {
-	TerminateGrace string `json:"TerminateGrace"`
-}
-
-// legacySandboxConfig 描述旧版执行沙箱 JSON 字段。
-type legacySandboxConfig struct {
-	Backend     string `json:"Backend"`
-	DockerImage string `json:"DockerImage"`
-	MaxPIDs     int    `json:"MaxPIDs"`
-}
-
-// legacyResolutionEntry 描述旧版冻结制品附带的配置来源记录。
-type legacyResolutionEntry struct {
-	Field  string `json:"field"`
-	Value  string `json:"value"`
-	Source string `json:"source"`
-}
-
-// ValidateFrozenRunConfig 严格解析冻结配置，并在新格式下校验内部投影摘要与
-// run_created.config_fingerprint 的交叉绑定。frozenConfig 为空时按没有
-// config_ref 的历史 Run 处理。
+// ValidateFrozenRunConfig 严格解析冻结配置，并校验内部投影摘要与
+// run_created.config_fingerprint 的交叉绑定。
 func ValidateFrozenRunConfig(events []domain.Event, frozenConfig json.RawMessage) error {
 	if len(frozenConfig) == 0 {
-		return nil
+		return errors.New("contract: frozen config is required")
 	}
 	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
 		return errors.New("contract: run events must start with run_created")
@@ -312,53 +178,25 @@ func ValidateFrozenRunConfig(events []domain.Event, frozenConfig json.RawMessage
 	return err
 }
 
-// decodeFrozenConfig 识别新旧冻结格式并返回统一投影视图。新格式必须完成
-// 完整指纹交叉绑定；旧格式只作为历史只读兼容入口，但同样拒绝空对象、未知
-// 字段、尾随内容和版本组合矛盾。
+// decodeFrozenConfig 严格解码当前冻结格式并完成内部投影摘要与运行配置
+// 指纹的交叉绑定。旧版直接序列化 Config 的制品不再兼容。
 func decodeFrozenConfig(frozenConfig json.RawMessage, expectedConfigFingerprint string) (frozenConfigView, error) {
-	var shape map[string]json.RawMessage
-	if err := json.Unmarshal(frozenConfig, &shape); err != nil {
+	var frozen FrozenRunConfig
+	if err := decodeStrictJSON(frozenConfig, &frozen); err != nil {
 		return frozenConfigView{}, fmt.Errorf("contract: decode frozen config: %w", err)
 	}
-	if len(shape) == 0 {
-		return frozenConfigView{}, errors.New("contract: decode frozen config: value must be a non-empty object")
-	}
-	if _, current := shape["schema_version"]; current {
-		var frozen FrozenRunConfig
-		if err := decodeStrictJSON(frozenConfig, &frozen); err != nil {
-			return frozenConfigView{}, fmt.Errorf("contract: decode frozen config: %w", err)
-		}
-		if err := validateFrozenRunConfig(frozen, expectedConfigFingerprint); err != nil {
-			return frozenConfigView{}, err
-		}
-		view := frozenConfigView{
-			Version:                 frozen.Projection.ConfigVersion,
-			Preset:                  frozen.Projection.Preset,
-			Profile:                 frozen.Projection.Profile,
-			Provider:                frozenProviderViewFromProjection(frozen.Projection.Provider),
-			Policy:                  frozen.Projection.Policy,
-			VerificationCommands:    frozen.Projection.Verification.Commands,
-			VerificationFingerprint: frozen.Projection.Verification.Fingerprint,
-			StronglyBound:           true,
-		}
-		return view, nil
-	}
-	var legacy legacyFrozenConfig
-	if err := decodeStrictJSON(frozenConfig, &legacy); err != nil {
-		return frozenConfigView{}, fmt.Errorf("contract: decode legacy frozen config: %w", err)
-	}
-	view := frozenConfigView{
-		Version:              legacy.Version,
-		Preset:               legacy.Preset,
-		Profile:              legacy.Profile,
-		Provider:             frozenProviderViewFromLegacy(legacy.Provider),
-		Policy:               PolicyIdentity{Write: legacy.Policy.Write, Exec: legacy.Policy.Exec, ProtectedPaths: append([]string(nil), legacy.Policy.ProtectedPaths...)},
-		VerificationCommands: len(legacy.Verification.Commands),
-	}
-	if err := validateFrozenConfigView(view, false); err != nil {
+	if err := validateFrozenRunConfig(frozen, expectedConfigFingerprint); err != nil {
 		return frozenConfigView{}, err
 	}
-	return view, nil
+	return frozenConfigView{
+		Version:                 frozen.Projection.ConfigVersion,
+		Preset:                  frozen.Projection.Preset,
+		Profile:                 frozen.Projection.Profile,
+		Provider:                frozenProviderViewFromProjection(frozen.Projection.Provider),
+		Policy:                  frozen.Projection.Policy,
+		VerificationCommands:    frozen.Projection.Verification.Commands,
+		VerificationFingerprint: frozen.Projection.Verification.Fingerprint,
+	}, nil
 }
 
 // decodeStrictJSON 解码单个 JSON 值，拒绝未知字段和尾随内容。
@@ -404,9 +242,8 @@ func validateFrozenRunConfig(frozen FrozenRunConfig, expectedConfigFingerprint s
 		Policy:                  frozen.Projection.Policy,
 		VerificationCommands:    frozen.Projection.Verification.Commands,
 		VerificationFingerprint: frozen.Projection.Verification.Fingerprint,
-		StronglyBound:           true,
 	}
-	return validateFrozenConfigView(view, true)
+	return validateFrozenConfigView(view)
 }
 
 // frozenProviderViewFromProjection 把新格式 Provider 投影转换为内部共享视图。
@@ -417,81 +254,42 @@ func frozenProviderViewFromProjection(provider FrozenProviderProjection) frozenP
 	}
 }
 
-// frozenProviderViewFromLegacy 把旧版 Provider 配置转换为内部共享视图。
-func frozenProviderViewFromLegacy(provider legacyProviderConfig) frozenProviderView {
-	view := frozenProviderView{
-		Kind: ProviderKindOpenAICompatible, BaseURL: provider.BaseURL, Model: provider.Model,
-		ID: provider.ID, Admission: provider.Admission,
-	}
-	if capability := provider.Capability; capability != nil {
-		view.Capability = &FrozenProviderCapabilityProjection{
-			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
-			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
-			StopReasons: append([]string(nil), capability.StopReasons...),
-		}
-	}
-	return view
-}
-
-// validateFrozenConfigView 校验进入 manifest 的关键字段组合。strong 表示新格式，
-// 此时所有字段均由当前写入器生成，任何缺失或非法能力声明都必须失败关闭。
-func validateFrozenConfigView(view frozenConfigView, strong bool) error {
-	if view.Version != manifestSchemaV1 && view.Version != manifestSchemaV2 {
+// validateFrozenConfigView 校验进入 manifest 的当前 v2 关键字段组合。
+func validateFrozenConfigView(view frozenConfigView) error {
+	if view.Version != frozenAgentConfigVersionV2 {
 		return fmt.Errorf("contract: frozen config version %d is unsupported", view.Version)
 	}
 	switch view.Profile {
 	case "default", "complex":
 	case "":
-		if strong {
-			return errors.New("contract: frozen config profile is required")
-		}
+		return errors.New("contract: frozen config profile is required")
 	default:
 		return fmt.Errorf("contract: frozen config profile %q is unsupported", view.Profile)
 	}
 	switch view.Preset {
 	case "coding", "read-only", "benchmark":
 	case "":
-		if strong {
-			return errors.New("contract: frozen config preset is required")
-		}
+		return errors.New("contract: frozen config preset is required")
 	default:
 		return fmt.Errorf("contract: frozen config preset %q is unsupported", view.Preset)
 	}
-	if strong {
-		if view.Provider.Kind != ProviderKindOpenAICompatible {
-			return fmt.Errorf("contract: frozen config provider kind %q is unsupported", view.Provider.Kind)
-		}
-		if view.Provider.BaseURL == "" || view.Provider.Model == "" {
-			return errors.New("contract: frozen config provider base_url and model are required")
-		}
-		if _, err := BaseURLIdentityDigest(view.Provider.BaseURL); err != nil {
-			return fmt.Errorf("contract: frozen config provider base_url: %w", err)
-		}
+	if view.Provider.Kind != ProviderKindOpenAICompatible {
+		return fmt.Errorf("contract: frozen config provider kind %q is unsupported", view.Provider.Kind)
 	}
-	if view.Version == manifestSchemaV1 {
-		if view.Provider.ID != "" || view.Provider.Admission != "" {
-			return errors.New("contract: frozen config provider id and admission require config version 2")
-		}
-	} else {
-		if view.Provider.BaseURL == "" || view.Provider.Model == "" {
-			return errors.New("contract: version 2 frozen config requires provider base_url and model")
-		}
-		if view.Provider.Admission != "optional" && view.Provider.Admission != "required" {
-			return errors.New("contract: version 2 frozen config provider admission must be optional or required")
-		}
-		if strong && view.Provider.ID != ProviderIDCustom {
-			return fmt.Errorf("contract: frozen config provider id %q is unsupported", view.Provider.ID)
-		}
-		if strong {
-			if _, err := BaseURLIdentityDigest(view.Provider.BaseURL); err != nil {
-				return fmt.Errorf("contract: frozen config provider base_url: %w", err)
-			}
-		}
+	if view.Provider.BaseURL == "" || view.Provider.Model == "" {
+		return errors.New("contract: version 2 frozen config requires provider base_url and model")
 	}
-	if view.Policy.Write != "" || view.Policy.Exec != "" || strong {
-		if !validFrozenPolicyEffect(view.Policy.Write) || !validFrozenPolicyEffect(view.Policy.Exec) {
-			return errors.New("contract: frozen config policy write and exec must be allow, deny, or ask")
-		}
+	if view.Provider.Admission != "optional" && view.Provider.Admission != "required" {
+		return errors.New("contract: version 2 frozen config provider admission must be optional or required")
+	}
+	if view.Provider.ID != ProviderIDCustom {
+		return fmt.Errorf("contract: frozen config provider id %q is unsupported", view.Provider.ID)
+	}
+	if _, err := BaseURLIdentityDigest(view.Provider.BaseURL); err != nil {
+		return fmt.Errorf("contract: frozen config provider base_url: %w", err)
+	}
+	if !validFrozenPolicyEffect(view.Policy.Write) || !validFrozenPolicyEffect(view.Policy.Exec) {
+		return errors.New("contract: frozen config policy write and exec must be allow, deny, or ask")
 	}
 	if view.Preset == "read-only" && (view.Policy.Write != "deny" || view.Policy.Exec != "deny" || view.VerificationCommands != 0) {
 		return errors.New("contract: read-only frozen config requires deny policies and no verification commands")
@@ -499,7 +297,7 @@ func validateFrozenConfigView(view frozenConfigView, strong bool) error {
 	if view.VerificationCommands < 0 {
 		return errors.New("contract: frozen config verification command count cannot be negative")
 	}
-	if strong && !digestShape(view.VerificationFingerprint) {
+	if !digestShape(view.VerificationFingerprint) {
 		return errors.New("contract: frozen config verification fingerprint must be a sha256 digest")
 	}
 	if view.Provider.Capability != nil {
@@ -509,7 +307,7 @@ func validateFrozenConfigView(view frozenConfigView, strong bool) error {
 			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
 			StopReasons: capability.StopReasons,
 		})
-		if err != nil && strong {
+		if err != nil {
 			return fmt.Errorf("contract: frozen config provider capability: %w", err)
 		}
 	}
@@ -521,12 +319,11 @@ func validFrozenPolicyEffect(value string) bool {
 	return value == "allow" || value == "deny" || value == "ask"
 }
 
-// ManifestFromRun 由事件流、任务身份与冻结配置制品内容投影 RunManifest。
-// 事件是运行事实的唯一来源：run_created 提供 run/workspace/build/指纹，
-// 首个 model_request_started 提供实际 Provider 线协议与模型，首个
-// verification_started 提供验证计划摘要。frozenConfig 可为 nil（旧 Run），
-// 此时仅配置侧字段留空；非空配置与所有事件 payload 必须是合法 JSON 对象，
-// 被消费事件的强类型解码失败时返回带序号和类型的损坏错误。
+// ManifestFromRun 由事件流、任务身份与 v2 冻结配置制品内容投影
+// RunManifest。事件是运行事实的唯一来源：run_created 提供
+// run/workspace/build/指纹，首个 model_request_started 提供实际 Provider
+// 线协议与模型，首个 verification_started 提供验证计划摘要。冻结配置与
+// 所有事件 payload 必须是合法 JSON 对象。
 func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.RawMessage) (RunManifest, error) {
 	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
 		return RunManifest{}, errors.New("contract: run events must start with run_created")
@@ -543,7 +340,10 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 			return RunManifest{}, fmt.Errorf("contract: decode event payload seq=%d type=%s: payload must be a non-empty object", event.Seq, event.Type)
 		}
 	}
-	manifest := RunManifest{SchemaVersion: manifestSchemaV1, RunID: events[0].RunID, WorkspaceHash: events[0].WorkspaceHash, Task: task}
+	if len(frozenConfig) == 0 {
+		return RunManifest{}, errors.New("contract: frozen config is required")
+	}
+	manifest := RunManifest{SchemaVersion: manifestSchemaV2, RunID: events[0].RunID, WorkspaceHash: events[0].WorkspaceHash, Task: task}
 	var created struct {
 		ConfigFingerprint string                `json:"config_fingerprint"`
 		Build             *domain.BuildIdentity `json:"build"`
@@ -586,60 +386,52 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 			verificationSeen = true
 		}
 	}
-	if len(frozenConfig) != 0 {
-		view, err := decodeFrozenConfig(frozenConfig, created.ConfigFingerprint)
-		if err != nil {
-			return RunManifest{}, err
+	view, err := decodeFrozenConfig(frozenConfig, created.ConfigFingerprint)
+	if err != nil {
+		return RunManifest{}, err
+	}
+	if modelSeen {
+		if manifest.Provider.Kind != view.Provider.Kind {
+			return RunManifest{}, fmt.Errorf("contract: model request provider %q conflicts with frozen config provider %q", manifest.Provider.Kind, view.Provider.Kind)
 		}
-		if modelSeen {
-			if manifest.Provider.Kind != view.Provider.Kind {
-				return RunManifest{}, fmt.Errorf("contract: model request provider %q conflicts with frozen config provider %q", manifest.Provider.Kind, view.Provider.Kind)
-			}
-			if manifest.Provider.Model != view.Provider.Model {
-				return RunManifest{}, fmt.Errorf("contract: model request model %q conflicts with frozen config model %q", manifest.Provider.Model, view.Provider.Model)
-			}
+		if manifest.Provider.Model != view.Provider.Model {
+			return RunManifest{}, fmt.Errorf("contract: model request model %q conflicts with frozen config model %q", manifest.Provider.Model, view.Provider.Model)
 		}
-		if verificationSeen && view.StronglyBound && manifest.Verification.Fingerprint != view.VerificationFingerprint {
-			return RunManifest{}, errors.New("contract: verification event fingerprint conflicts with frozen config")
-		}
-		manifest.Preset = view.Preset
-		manifest.Profile = view.Profile
-		manifest.Provider.BaseURL = view.Provider.BaseURL
-		if manifest.Provider.Model == "" {
-			manifest.Provider.Model = view.Provider.Model
-		}
-		if view.Version == manifestSchemaV2 {
-			manifest.SchemaVersion = manifestSchemaV2
-			manifest.Provider.Selection = manifestProviderSelection(view)
-		}
-		manifest.Policy = PolicyIdentity{Write: view.Policy.Write, Exec: view.Policy.Exec, ProtectedPaths: view.Policy.ProtectedPaths}
-		manifest.Verification.Commands = view.VerificationCommands
-		if view.Provider.Capability != nil {
-			manifest.Provider.Card = manifestCapabilityCard(manifest, view)
-		}
+	}
+	if verificationSeen && manifest.Verification.Fingerprint != view.VerificationFingerprint {
+		return RunManifest{}, errors.New("contract: verification event fingerprint conflicts with frozen config")
+	}
+	manifest.Preset = view.Preset
+	manifest.Profile = view.Profile
+	manifest.Provider.BaseURL = view.Provider.BaseURL
+	if manifest.Provider.Model == "" {
+		manifest.Provider.Model = view.Provider.Model
+	}
+	manifest.Provider.Selection = manifestProviderSelection(view)
+	if manifest.Provider.Selection == nil {
+		return RunManifest{}, errors.New("contract: frozen config provider selection is invalid")
+	}
+	manifest.Policy = PolicyIdentity{Write: view.Policy.Write, Exec: view.Policy.Exec, ProtectedPaths: view.Policy.ProtectedPaths}
+	manifest.Verification.Commands = view.VerificationCommands
+	if view.Provider.Capability != nil {
+		manifest.Provider.Card = manifestCapabilityCard(manifest, view)
 	}
 	return manifest, nil
 }
 
-// manifestProviderSelection 由冻结配置视图派生 version 2 的 ProviderSelection
-// 身份投影：provider_id 缺省归一为 custom；protocol_id 取当前唯一注册协议
-// （注册表成员与协议的编译期绑定，此处不引入第二份映射）；model_ref 是派生
-// 值；endpoint_digest 复用无凭据规范化摘要。派生失败（防御路径，version 2
-// 配置已在校验期保证基地址合法）时保持 nil 不伪造身份。
+// manifestProviderSelection 由冻结配置视图派生 ProviderSelection 身份投影：
+// protocol_id 取当前唯一注册协议，model_ref 是派生值，endpoint_digest 复用
+// 无凭据规范化摘要。派生失败时保持 nil，不伪造身份。
 func manifestProviderSelection(view frozenConfigView) *ProviderSelection {
-	providerID := view.Provider.ID
-	if providerID == "" {
-		providerID = ProviderIDCustom
-	}
 	digest, err := BaseURLIdentityDigest(view.Provider.BaseURL)
 	if err != nil || view.Provider.Model == "" {
 		return nil
 	}
 	return &ProviderSelection{
 		SchemaVersion:  1,
-		ProviderID:     providerID,
+		ProviderID:     view.Provider.ID,
 		ProtocolID:     ProtocolOpenAIChatCompletions,
-		ModelRef:       providerID + "/" + view.Provider.Model,
+		ModelRef:       view.Provider.ID + "/" + view.Provider.Model,
 		EndpointDigest: digest,
 	}
 }

@@ -5,11 +5,13 @@ package contract_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
@@ -72,8 +74,19 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 		t.Fatalf("evidence provider card = %#v", evidence.Manifest.Provider.Card)
 	}
 
-	// benchmark 视角：同一事件流 + 自行冻结的配置，仅任务身份换成 TaskPack 投影。
-	frozen, err := json.Marshal(configuration)
+	// benchmark 视角：同一事件流 + 运行实际写入的 v2 冻结配置，仅任务身份
+	// 换成 TaskPack 投影。
+	var created struct {
+		ConfigRef artifact.Ref `json:"config_ref"`
+	}
+	if err := json.Unmarshal(inspected.Events[0].Payload, &created); err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := artifact.New(filepath.Join(stateDir, "workspaces", inspected.Projection.WorkspaceHash, "artifacts"), configuration.Output.MaxPreviewBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := artifacts.Open(created.ConfigRef)
 	if err != nil {
 		t.Fatal(err)
 	}

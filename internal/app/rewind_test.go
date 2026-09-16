@@ -182,6 +182,190 @@ func (provider *countingFinalProvider) Stream(_ context.Context, _ ports.ModelRe
 	return emitTestCompletion(emit)
 }
 
+// putActiveRewindRun 写入一个等待恢复的回退 run；frozen 为空时使用当前 v2
+// 冻结格式，非空时原样存储以覆盖损坏或旧格式场景。
+func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration config.Config, runs []domain.RunID, frozen []byte, pending bool) (domain.RunID, domain.OperationID, int) {
+	t.Helper()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := openArtifactStore(stateDir, workspaceHash, configuration.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configRef artifact.Ref
+	if len(frozen) == 0 {
+		configRef = putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
+	} else {
+		configRef, err = artifacts.Put(frozen, "application/json")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	planRef, err := artifacts.Put(encode(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: runs}), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	runID := domain.NewRunID()
+	drafts := []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
+			domain.RunCreatedPayload
+			ConfigRef artifact.Ref `json:"config_ref"`
+			TaskRef   artifact.Ref `json:"task_ref"`
+		}{RunCreatedPayload: domain.RunCreatedPayload{Task: "active rewind", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()}, ConfigRef: configRef, TaskRef: planRef})},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
+	}
+	var operationID domain.OperationID
+	if pending {
+		turnID := domain.NewTurnID()
+		operationID = domain.NewOperationID()
+		drafts = append(drafts,
+			domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventTurnOpened, TurnID: &turnID},
+			domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"rewind-pending","tool_name":"apply_patch","arguments":{"path":"note.txt","mode":"create","content":"x"}}`)},
+			domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:approved"}`)},
+			domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","side_effect_class":"workspace"}`)},
+		)
+	}
+	for index, draft := range drafts {
+		if _, err := journal.Append(context.Background(), uint64(index), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return runID, operationID, len(drafts)
+}
+
+// TestRewindEnforcesRequiredAdmissionAcrossEntryPoints 锁定新建、Resume 与
+// Reconcile 回退入口在创建事件或继续脚本化工具计划前都经过 required 准入门。
+func TestRewindEnforcesRequiredAdmissionAcrossEntryPoints(t *testing.T) {
+	t.Run("new rewind", func(t *testing.T) {
+		workspace, stateDir := t.TempDir(), t.TempDir()
+		configuration := withTestProvider(config.Defaults())
+		configuration.Provider.Admission = config.ProviderAdmissionRequired
+		provider := &countingFinalProvider{}
+		service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+		if _, err := service.Rewind(context.Background(), RewindOptions{
+			Workspace: workspace,
+			StateDir:  stateDir,
+			Config:    configuration,
+			Runs:      []domain.RunID{domain.NewRunID()},
+		}); err == nil || !strings.Contains(err.Error(), "admission gate") {
+			t.Fatalf("rewind without admission decision error = %v", err)
+		}
+		if provider.calls != 0 {
+			t.Fatalf("provider stream calls=%d, want 0", provider.calls)
+		}
+		_, workspaceHash, err := workspaceFor(workspace, configuration)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal, err := openReadOnlyJournal(stateDir, workspaceHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer journal.Close()
+		active, err := journal.NonTerminalRuns(context.Background(), workspaceHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(active) != 0 {
+			t.Fatalf("failed rewind created active runs: %+v", active)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name      string
+		pending   bool
+		reconcile bool
+	}{
+		{name: "resume", pending: false},
+		{name: "reconcile", pending: true, reconcile: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			workspace, stateDir := t.TempDir(), t.TempDir()
+			configuration := withTestProvider(config.Defaults())
+			configuration.Provider.Admission = config.ProviderAdmissionRequired
+			targetRuns := []domain.RunID{domain.NewRunID()}
+			runID, operationID, initialEvents := putActiveRewindRun(t, workspace, stateDir, configuration, targetRuns, nil, testCase.pending)
+			provider := &countingFinalProvider{}
+			service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+			var runErr error
+			if testCase.reconcile {
+				_, runErr = service.Reconcile(context.Background(), ReconcileOptions{
+					RunID: runID, OperationID: operationID, Verdict: "not_applied", Note: "not applied",
+					Workspace: workspace, StateDir: stateDir, Config: configuration,
+				})
+			} else {
+				_, runErr = service.Resume(context.Background(), ResumeOptions{
+					RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration,
+				})
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "admission gate") {
+				t.Fatalf("%s without admission decision error = %v", testCase.name, runErr)
+			}
+			if provider.calls != 0 {
+				t.Fatalf("provider stream calls=%d, want 0", provider.calls)
+			}
+			_, workspaceHash, err := workspaceFor(workspace, configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal, err := openReadOnlyJournal(stateDir, workspaceHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer journal.Close()
+			events, err := journal.Load(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != initialEvents {
+				t.Fatalf("failed %s appended events: %d", testCase.name, len(events))
+			}
+		})
+	}
+}
+
+// TestRewindReentryRejectsLegacyFrozenConfig 锁定 Rewind 幂等重入在任何工具
+// 推导和执行前拒绝旧版直接序列化 Config 的冻结制品。
+func TestRewindReentryRejectsLegacyFrozenConfig(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := withTestProvider(config.Defaults())
+	targetRuns := []domain.RunID{domain.NewRunID()}
+	legacyFrozen, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, _, initialEvents := putActiveRewindRun(t, workspace, stateDir, configuration, targetRuns, legacyFrozen, false)
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &countingFinalProvider{}, nil }}
+	if _, err := service.Rewind(context.Background(), RewindOptions{
+		Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: targetRuns,
+	}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy frozen config reentry error = %v", err)
+	}
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openReadOnlyJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != initialEvents {
+		t.Fatalf("failed reentry appended events: %d", len(events))
+	}
+}
+
 // TestRewindReconcileRespectsAppliedVerdict 锁定回退副作用悬挂后的恢复语义：
 // applied_success 跳过已生效调用，not_applied 则重新提议并在审批后执行；两条
 // 路径都不得进入模型循环。

@@ -35,7 +35,7 @@ func writeCapabilityConfig(t *testing.T, workspace string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	content := "version: 1\nprovider:\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"
+	content := "version: 2\nprovider:\n  id: custom\n  admission: optional\n  base_url: https://provider.test/v1\n  model: test-model\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ execution_contract:
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(agentConfigPath, []byte("version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(agentConfigPath, []byte("version: 2\nprovider:\n  id: custom\n  admission: optional\n  base_url: https://provider.test/v1\n  model: test-model\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	localConfig := "version: 1\npaths:\n" +
@@ -346,7 +346,7 @@ func TestHumanDiagnosticsExposeTheSameOperationalFacts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("provider:\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: CAIRN_CLI_DIAGNOSTIC_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 2\nprovider:\n  base_url: https://provider.test/v1\n  model: test-model\n  api_key_env: CAIRN_CLI_DIAGNOSTIC_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var doctorOut, doctorErr bytes.Buffer
@@ -597,7 +597,7 @@ func TestInitRefusesToOverwriteExistingConfig(t *testing.T) {
 	if err := os.MkdirAll(".agent", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config.DefaultPath("."), []byte("version: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(config.DefaultPath("."), []byte("version: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer

@@ -155,7 +155,7 @@ func TestCapabilityManifestIsSingleProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(workspace, ".agent", "config.yaml")
-	yaml := "version: 1\nprovider:\n  base_url: https://provider.test/v1\n  model: m1\n  api_key_env: CAIRN_AB3_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n  request_timeout: 30s\nsandbox:\n  backend: docker\n  docker_image: alpine:3.21\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"
+	yaml := "version: 2\nprovider:\n  id: custom\n  admission: optional\n  base_url: https://provider.test/v1\n  model: m1\n  api_key_env: CAIRN_AB3_KEY\n  capability:\n    tool_calls: true\n    streaming_usage: true\n  request_timeout: 30s\nsandbox:\n  backend: docker\n  docker_image: alpine:3.21\nverification:\n  commands:\n    - argv: [\"/usr/bin/true\"]\n"
 	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -342,4 +342,16 @@ func TestDoctorReportsProviderCapabilityCard(t *testing.T) {
 	if unknownReport.ProviderCard != nil || unknownReport.ProviderCardError == "" || unknownReport.Ready {
 		t.Fatalf("unknown capability doctor = %#v", unknownReport.ProviderCard)
 	}
+}
+
+// TestAssembleRecoveryBootRejectsLegacyConfigBeforeCreatingResources 锁定恢复
+// 控制面同样只接受 v2，且拒绝发生在 Journal、锁或制品目录创建之前。
+func TestAssembleRecoveryBootRejectsLegacyConfigBeforeCreatingResources(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Version = 1
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	if _, err := assembleRecoveryBoot(workspace, stateDir, configuration); err == nil || !strings.Contains(err.Error(), "unsupported config version 1") {
+		t.Fatalf("legacy recovery config error = %v", err)
+	}
+	assertStateDirEmpty(t, stateDir)
 }

@@ -300,8 +300,7 @@ type AdmissionOutcome struct {
 // "required"。optional 门不拦截（缺失决定即未准入，如实展示）；required 时
 // 重算请求合同指纹、解析该绑定分区链头，链头 admitted 且其证据在档、证据
 // 选择与解析身份一致才放行——任一不成立（rejected、无链头、断链、环、多
-// 链头、证据缺失或身份不一致）都失败关闭。version 1 配置不进入本函数
-// （无准入语义）。
+// 链头、证据缺失或身份不一致）都失败关闭。
 func EvaluateAdmissionGate(decisions *DecisionStore, evidence *EvidenceStore, profile contract.ResolvedProviderProfile, admission string) (AdmissionOutcome, error) {
 	switch admission {
 	case "optional":

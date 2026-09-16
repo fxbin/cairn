@@ -120,18 +120,16 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	return ExitOK
 }
 
-// providerConfigure 以显式旗标生成配置：默认 version 1；给出 --admission 即
-// 生成 version 2 身份配置（provider.id 缺省归一 custom）。语义全部复用
-// 应用层 SetupService（目录预填、密钥在环境时的零期望探测、回读自证），
-// 本命令不做交互问答——那是 init 向导的兼容职责。
+// providerConfigure 以显式旗标生成 v2 配置；admission 默认 required，只有
+// 显式给出 optional 才生成非阻断配置。语义全部复用应用层 SetupService
+// （目录预填、密钥在环境时的零期望探测、回读自证）。
 func (command Command) providerConfigure(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("provider configure", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
 	baseURL := flags.String("base-url", "", "provider base URL (required)")
 	model := flags.String("model", "", "model name (required)")
 	apiKeyEnv := flags.String("api-key-env", "", "environment variable name holding the API key (required)")
-	providerID := flags.String("provider-id", "", "registry provider id (version 2 only; empty normalizes to custom)")
-	admission := flags.String("admission", "", "admission gate mode: optional|required (selects config version 2)")
+	admission := flags.String("admission", "", "admission gate mode: optional|required (default: required)")
 	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
 	catalogCache := flags.String("catalog-cache", "", "model metadata cache file path override")
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
@@ -148,11 +146,7 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 	input := app.SetupInput{
 		BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv,
 		CatalogURL: *catalogURL, CatalogCacheDir: *catalogCache, Workspace: *workspace,
-		ProviderID: *providerID, OverwriteExisting: *overwrite, ScopeUserConfig: *userScope,
-	}
-	if *admission != "" {
-		input.ConfigVersion = 2
-		input.Admission = *admission
+		Admission: *admission, OverwriteExisting: *overwrite, ScopeUserConfig: *userScope,
 	}
 	outcome, err := app.NewSetupService().Run(ctx, input)
 	if err != nil {
@@ -254,9 +248,9 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 	return ExitOK
 }
 
-// providerStatus 展示当前配置绑定的准入状态：version 1 无准入语义；optional
-// 如实显示链头或"未准入"；required 顺带执行门判定。展示口径遵循合同：声明
-// 与观测不得展示为已验证，只有链头决定是合同状态。
+// providerStatus 展示当前 v2 配置绑定的准入状态：optional 如实显示链头或
+// "未准入"；required 顺带执行门判定。展示口径遵循合同：声明与观测不得
+// 展示为已验证，只有链头决定是合同状态。
 func (command Command) providerStatus(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("provider status", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
@@ -271,14 +265,6 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
-	}
-	if configuration.Version != 2 {
-		if *jsonOutput {
-			writeJSON(command.Stdout, map[string]any{"admission_semantics": "absent", "config_version": configuration.Version})
-			return ExitOK
-		}
-		fmt.Fprintln(command.Stdout, "version 1 配置：无准入语义")
-		return ExitOK
 	}
 	workspaceHash, err := cliWorkspaceHash(*workspace, configuration)
 	if err != nil {

@@ -1639,12 +1639,12 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 		if summary.ConfigFingerprint != "" {
 			fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", summary.ConfigFingerprint)
 		} else {
-			fmt.Fprintln(command.Stdout, "config fingerprint: unavailable (legacy run)")
+			fmt.Fprintln(command.Stdout, "config fingerprint: unavailable")
 		}
 		if summary.Build != nil {
 			writeBuildIdentity(command.Stdout, "build", *summary.Build)
 		} else {
-			fmt.Fprintln(command.Stdout, "build: unavailable (legacy run)")
+			fmt.Fprintln(command.Stdout, "build: unavailable")
 		}
 		if result.Manifest != nil {
 			writeRunManifest(command.Stdout, *result.Manifest)
@@ -1944,7 +1944,7 @@ Usage:
   cairn provider list [--json]
   cairn provider models [--query <name>] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
-  cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--provider-id <id>] [--admission optional|required] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
+  cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--admission optional|required] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
   cairn provider admit --evidence <sha256> --decision admitted|rejected --reason <text> [--supersedes <sha256>] [--workspace <path>] [--config <path>] [--state-dir <path>]
   cairn provider status [--workspace <path>] [--config <path>] [--state-dir <path>] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]

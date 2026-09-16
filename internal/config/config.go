@@ -21,6 +21,8 @@ import (
 )
 
 const (
+	// CurrentVersion 是当前唯一受支持的 Agent 配置合同版本。
+	CurrentVersion = 2
 	// DefaultMaxTurns 是普通任务的默认模型轮次硬上限。
 	DefaultMaxTurns = 40
 	// ComplexMaxTurns 是复杂任务建议显式选择的模型轮次档位；更高上限仍由场景配置决定。
@@ -124,8 +126,10 @@ type providerOverlay struct {
 	Admission *string `yaml:"admission"`
 }
 
-// profileProbe 是第二轮宽松解码的目标：只提取 Profile 名称与显式字段设置。
+// profileProbe 是宽松解码的目标：确认配置版本显式在场，并提取 Profile 名称
+// 与关键字段的显式设置。
 type profileProbe struct {
+	Version  *int            `yaml:"version"`
 	Profile  string          `yaml:"profile"`
 	Preset   *string         `yaml:"preset"`
 	Budget   budgetOverlay   `yaml:"budget"`
@@ -187,19 +191,15 @@ func budgetSourceLabel(profile string) string {
 	return "profile:" + profile
 }
 
-// ProviderConfig 配置兼容 OpenAI API 的模型提供方；ID 与 Admission 是
-// version 2 才启用的新字段，version 1 配置中出现即被严格校验拒绝。
-//
-// ProviderAdmissionOptional 与 ProviderAdmissionRequired 是 version 2 准入
+// ProviderAdmissionOptional 与 ProviderAdmissionRequired 是 Provider 准入
 // 语义的显式取值：optional 表示门不拦截，required 表示启动前必须命中该绑定
-// 的唯一准入链头。version 2 下 admission 必填，不做静默默认。
+// 的唯一准入链头。配置装载默认使用 required，只有显式配置才允许 optional。
 const (
 	ProviderAdmissionOptional = "optional"
 	ProviderAdmissionRequired = "required"
 )
 
-// ProviderConfig 汇集提供方连接与身份事实；ID 与 Admission 是 version 2 才
-// 启用的新字段，version 1 配置中出现即被严格校验拒绝。
+// ProviderConfig 汇集提供方连接、身份与准入事实。
 type ProviderConfig struct {
 	BaseURL        string                    `yaml:"base_url"`
 	Model          string                    `yaml:"model"`
@@ -359,13 +359,17 @@ type Overrides struct {
 	MaxCostUSD      float64
 }
 
-// Defaults 返回安全优先的 V0 默认配置，写入和进程执行都要求审批。
+// Defaults 返回安全优先的 v2 默认配置，Provider 启动前必须通过准入门，
+// 写入和进程执行都要求审批。
 func Defaults() Config {
 	return Config{
-		Version:   1,
-		Profile:   ProfileDefault,
-		Preset:    PresetCoding,
-		Provider:  ProviderConfig{APIKeyEnv: "AGENT_API_KEY", RequestTimeout: "120s"},
+		Version: CurrentVersion,
+		Profile: ProfileDefault,
+		Preset:  PresetCoding,
+		Provider: ProviderConfig{
+			APIKeyEnv: "AGENT_API_KEY", RequestTimeout: "120s",
+			ID: contract.ProviderIDCustom, Admission: ProviderAdmissionRequired,
+		},
 		Workspace: WorkspaceConfig{Ignore: []string{".git", ".agent", ".cairn", "node_modules", "vendor"}, MaxReadBytes: 1024 * 1024, MaxSearchFiles: 10_000, MaxSearchBytes: 64 * 1024 * 1024},
 		Policy:    PolicyConfig{Write: "ask", Exec: "ask", ProtectedPaths: []string{".git", ".agent", ".cairn", ".env", ".env.*", "**/*credential*"}, EnvAllow: []string{"PATH", "LANG", "TERM", "TMPDIR", "GOFLAGS"}},
 		Budget: BudgetConfig{
@@ -397,6 +401,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 	recorder.record("provider.model", config.Provider.Model, "default")
 	recorder.record("provider.api_key_env", config.Provider.APIKeyEnv, "default")
 	recorder.record("provider.id", contract.ProviderIDCustom, "default")
+	recorder.record("provider.admission", ProviderAdmissionRequired, "default")
 	recorder.record("budget.max_turns", strconv.Itoa(config.Budget.MaxTurns), "default")
 	recorder.record("budget.max_tool_calls", strconv.Itoa(config.Budget.MaxToolCalls), "default")
 	recorder.record("budget.max_input_tokens", strconv.Itoa(config.Budget.MaxInputTokens), "default")
@@ -410,18 +415,24 @@ func Load(path string, overrides Overrides) (Config, error) {
 				return Config{}, fmt.Errorf("read config: %w", err)
 			}
 		} else {
+			var probe profileProbe
+			relaxed := yaml.NewDecoder(strings.NewReader(string(content)))
+			if err := relaxed.Decode(&probe); err != nil {
+				return Config{}, fmt.Errorf("parse config overlay: %w", err)
+			}
+			if probe.Version == nil {
+				return Config{}, fmt.Errorf("config version is required and must be %d", CurrentVersion)
+			}
+			if *probe.Version != CurrentVersion {
+				return Config{}, fmt.Errorf("unsupported config version %d", *probe.Version)
+			}
 			decoder := yaml.NewDecoder(strings.NewReader(string(content)))
 			decoder.KnownFields(true)
 			if err := decoder.Decode(&config); err != nil {
 				return Config{}, fmt.Errorf("parse config: %w", err)
 			}
-			// 第二轮宽松解码只探测 Profile 名称与关键字段的显式设置：命名 Profile
-			// 的预算预设仅填充 YAML 缺省字段，显式值按优先级保留并标记来源。
-			var probe profileProbe
-			relaxed := yaml.NewDecoder(strings.NewReader(string(content)))
-			if err := relaxed.Decode(&probe); err != nil {
-				return Config{}, fmt.Errorf("parse config profile overlay: %w", err)
-			}
+			// 命名 Profile 的预算预设仅填充 YAML 缺省字段，显式值按优先级
+			// 保留并标记来源。
 			if probe.Preset != nil {
 				presetSource = "yaml"
 			}
@@ -513,29 +524,20 @@ func applyProfilePreset(config *Config, explicit *budgetOverlay, preset BudgetCo
 
 // Validate 验证配置版本、限额、时长、策略与验证命令的安全约束。
 func Validate(config Config) error {
-	if config.Version != 1 && config.Version != 2 {
+	if config.Version != CurrentVersion {
 		return fmt.Errorf("unsupported config version %d", config.Version)
 	}
-	if config.Version == 1 {
-		// version 1 保持全部历史行为：新身份字段出现即拒绝，避免同一配置
-		// 在两个版本语义下产生歧义指纹。
-		if config.Provider.ID != "" || config.Provider.Admission != "" {
-			return fmt.Errorf("provider.id and provider.admission require config version 2")
-		}
+	if config.Provider.BaseURL == "" || config.Provider.Model == "" {
+		return fmt.Errorf("config version 2 requires provider.base_url and provider.model")
 	}
-	if config.Version == 2 {
-		if config.Provider.BaseURL == "" || config.Provider.Model == "" {
-			return fmt.Errorf("config version 2 requires provider.base_url and provider.model")
-		}
-		if config.Provider.Admission != ProviderAdmissionOptional && config.Provider.Admission != ProviderAdmissionRequired {
-			return fmt.Errorf("provider.admission must be %s or %s in config version 2", ProviderAdmissionOptional, ProviderAdmissionRequired)
-		}
-		if config.Provider.ID != "" {
-			// 完整注册表校验（形状 + 静态成员）：未知成员失败关闭，没有隐式
-			// 回退到 custom。
-			if _, err := provider.Lookup(config.Provider.ID); err != nil {
-				return fmt.Errorf("provider.id: %w", err)
-			}
+	if config.Provider.Admission != ProviderAdmissionOptional && config.Provider.Admission != ProviderAdmissionRequired {
+		return fmt.Errorf("provider.admission must be %s or %s in config version 2", ProviderAdmissionOptional, ProviderAdmissionRequired)
+	}
+	if config.Provider.ID != "" {
+		// 完整注册表校验（形状 + 静态成员）：未知成员失败关闭，没有隐式
+		// 回退到 custom。
+		if _, err := provider.Lookup(config.Provider.ID); err != nil {
+			return fmt.Errorf("provider.id: %w", err)
 		}
 	}
 	if config.Profile != "" && config.Profile != ProfileDefault && config.Profile != ProfileComplex {
@@ -862,33 +864,22 @@ func itoaOrEmpty(value *int) string {
 	return strconv.Itoa(*value)
 }
 
-// fingerprintView 显式列出参与冻结指纹的字段：只覆盖影响执行语义、审批授权
-// 与预算终止的配置。展示与运维类字段（request_timeout、terminate_grace、output
-// 限额）被刻意排除，使后续版本新增非语义字段或调整展示参数不会令在途 run 的
-// 指纹漂移；新增执行语义字段时必须同步加入此结构并补充指纹变化测试。
+// fingerprintView 显式列出参与 v2 冻结指纹的字段：只覆盖影响执行语义、
+// 审批授权与预算终止的配置。展示与运维类字段（request_timeout、
+// terminate_grace、output 限额）被刻意排除；新增执行语义字段时必须同步
+// 加入此结构并补充指纹变化测试。
 type fingerprintView struct {
-	Version      int                 `json:"version"`
-	Profile      string              `json:"profile"`
-	Preset       string              `json:"preset"`
-	Provider     providerFingerprint `json:"provider"`
-	Workspace    WorkspaceConfig     `json:"workspace"`
-	Policy       PolicyConfig        `json:"policy"`
-	Verification VerificationConfig  `json:"verification"`
-	Budget       BudgetConfig        `json:"budget"`
-	Context      ContextConfig       `json:"context"`
-	Pricing      PricingConfig       `json:"pricing"`
-	Sandbox      SandboxConfig       `json:"sandbox"`
-}
-
-// providerFingerprint 只保留决定请求去向与身份的提供方字段；request_timeout 属
-// 运维调参，不影响授权与回放语义，不参与指纹。capability 声明决定 Boot 时的
-// 能力合同与预算对照，属于执行语义，必须进入指纹。
-type providerFingerprint struct {
-	BaseURL    string                         `json:"base_url"`
-	Model      string                         `json:"model"`
-	APIKeyEnv  string                         `json:"api_key_env"`
-	Capability *providerCapabilityFingerprint `json:"capability,omitempty"`
-	Generation *providerGenerationFingerprint `json:"generation,omitempty"`
+	Version      int                          `json:"version"`
+	Profile      string                       `json:"profile"`
+	Preset       string                       `json:"preset"`
+	Provider     providerSelectionFingerprint `json:"provider"`
+	Workspace    WorkspaceConfig              `json:"workspace"`
+	Policy       PolicyConfig                 `json:"policy"`
+	Verification VerificationConfig           `json:"verification"`
+	Budget       BudgetConfig                 `json:"budget"`
+	Context      ContextConfig                `json:"context"`
+	Pricing      PricingConfig                `json:"pricing"`
+	Sandbox      SandboxConfig                `json:"sandbox"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -911,34 +902,9 @@ type providerGenerationFingerprint struct {
 	ToolChoice       string `json:"tool_choice,omitempty"`
 }
 
-// providerFingerprintFor 组装提供方指纹视图；能力声明存在时整体进入指纹，
-// 使在途 run 的能力合同漂移被 resume 拒绝。
-func providerFingerprintFor(config Config) providerFingerprint {
-	view := providerFingerprint{BaseURL: config.Provider.BaseURL, Model: config.Provider.Model, APIKeyEnv: config.Provider.APIKeyEnv}
-	if capability := config.Provider.Capability; capability != nil {
-		view.Capability = &providerCapabilityFingerprint{
-			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
-			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
-			StopReasons: capability.StopReasons,
-		}
-	}
-	if generation := config.Provider.Generation; generation != nil {
-		view.Generation = &providerGenerationFingerprint{
-			TemperatureMilli: generation.TemperatureMilli,
-			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
-		}
-		if generation.MaxOutputTokens != nil {
-			view.Generation.MaxOutputTokens = *generation.MaxOutputTokens
-		}
-	}
-	return view
-}
-
-// Fingerprint 生成可写入事件日志的冻结非敏感配置摘要；带版本前缀，指纹算法
-// 本身演进时递增前缀使新旧摘要天然不可比。version 1 使用 v3 算法（冻结，
-// 一行不改）；version 2 使用 v4 算法：骨架与 v3 相同，provider 段替换为
-// ProviderSelection 身份投影（D5a：endpoint_digest 是规范化身份，不是保密
-// 手段）。落盘值只有 "sha256:<hex>"，禁止从中推断算法版本。
+// Fingerprint 生成可写入事件日志的 v2 冻结非敏感配置摘要。Provider 段使用
+// ProviderSelection 身份投影；endpoint_digest 是规范化身份，不是保密手段。
+// 落盘值只有 "sha256:<hex>"，禁止从中推断算法版本。
 func (config Config) Fingerprint() string {
 	profile := config.Profile
 	if profile == "" {
@@ -948,7 +914,7 @@ func (config Config) Fingerprint() string {
 		Version:      config.Version,
 		Profile:      profile,
 		Preset:       config.Preset,
-		Provider:     providerFingerprintFor(config),
+		Provider:     providerSelectionFingerprintFor(config),
 		Workspace:    config.Workspace,
 		Policy:       config.Policy,
 		Verification: config.Verification,
@@ -957,49 +923,18 @@ func (config Config) Fingerprint() string {
 		Pricing:      config.Pricing,
 		Sandbox:      config.Sandbox,
 	}
-	prefix := "cairn-config-fingerprint-v3\x00"
-	if config.Version == 2 {
-		viewV4 := fingerprintViewV4{
-			Version: view.Version, Profile: view.Profile, Preset: view.Preset,
-			Provider:  providerSelectionFingerprintFor(config),
-			Workspace: view.Workspace, Policy: view.Policy, Verification: view.Verification,
-			Budget: view.Budget, Context: view.Context, Pricing: view.Pricing, Sandbox: view.Sandbox,
-		}
-		encoded, err := json.Marshal(viewV4)
-		if err != nil {
-			panic(err)
-		}
-		digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v4\x00"), encoded...))
-		return "sha256:" + hex.EncodeToString(digest[:])
-	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		panic(err)
 	}
-	digest := sha256.Sum256(append([]byte(prefix), encoded...))
+	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v4\x00"), encoded...))
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-// fingerprintViewV4 是 version 2 配置的指纹视图：除 provider 段替换为身份
-// 投影外，与 v3 骨架保持字段对字段一致，保证非身份语义的漂移检测口径不变。
-type fingerprintViewV4 struct {
-	Version      int                          `json:"version"`
-	Profile      string                       `json:"profile"`
-	Preset       string                       `json:"preset"`
-	Provider     providerSelectionFingerprint `json:"provider"`
-	Workspace    WorkspaceConfig              `json:"workspace"`
-	Policy       PolicyConfig                 `json:"policy"`
-	Verification VerificationConfig           `json:"verification"`
-	Budget       BudgetConfig                 `json:"budget"`
-	Context      ContextConfig                `json:"context"`
-	Pricing      PricingConfig                `json:"pricing"`
-	Sandbox      SandboxConfig                `json:"sandbox"`
-}
-
-// providerSelectionFingerprint 是 v4 指纹的 provider 段：身份字段（provider_id、
+// providerSelectionFingerprint 是 v2 指纹的 provider 段：身份字段（provider_id、
 // protocol_id、model_ref、endpoint_digest、api_key_env、admission）永远在场，
 // 缺省 provider_id 归一为显式 "custom"，禁止 omitempty 制造同语义不同指纹；
-// 能力与生成参数块保留与 v3 相同的指针两态语义。
+// 能力与生成参数块保留指针两态语义。
 type providerSelectionFingerprint struct {
 	ProviderID     string                         `json:"provider_id"`
 	ProtocolID     string                         `json:"protocol_id"`
@@ -1012,9 +947,9 @@ type providerSelectionFingerprint struct {
 	Generation     *providerGenerationFingerprint `json:"generation,omitempty"`
 }
 
-// providerSelectionFingerprintFor 组装 v4 的 provider 身份段：身份字段复用
+// providerSelectionFingerprintFor 组装 v2 的 provider 身份段：身份字段复用
 // 静态注册表与 Selection 派生函数，保证指纹、manifest 投影与准入绑定使用
-// 同一身份事实来源。调用前提是配置已通过 version 2 校验（base_url 与
+// 同一身份事实来源。调用前提是配置已通过 v2 校验（base_url 与
 // admission 必在场）；派生失败属于防御路径，直接 panic 失败关闭。
 func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint {
 	selection, err := provider.ResolveSelection(provider.SelectionFacts{
@@ -1023,7 +958,7 @@ func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint
 		BaseURL:    config.Provider.BaseURL,
 	})
 	if err != nil {
-		panic(fmt.Sprintf("config version 2 must derive a provider selection: %v", err))
+		panic(fmt.Sprintf("config v2 must derive a provider selection: %v", err))
 	}
 	view := providerSelectionFingerprint{
 		ProviderID:     selection.ProviderID,

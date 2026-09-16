@@ -74,11 +74,33 @@ func TestServiceRunRejectsInvalidBuildIdentityBeforePersistence(t *testing.T) {
 // withTestProvider 为应用层测试配置补齐能力卡所需的模型与显式声明；
 // 测试替身模型名不在内建目录，必须显式声明才能通过装配期失败关闭。
 func withTestProvider(configuration config.Config) config.Config {
+	if configuration.Provider.BaseURL == "" {
+		configuration.Provider.BaseURL = "https://provider.test/v1"
+	}
 	if configuration.Provider.Model == "" {
 		configuration.Provider.Model = "test-model"
 	}
+	configuration.Provider.Admission = config.ProviderAdmissionOptional
 	configuration.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true}
 	return configuration
+}
+
+// putTestFrozenRunConfig 写入符合当前 v2 合同的冻结配置，供手工事件夹具引用。
+func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) artifact.Ref {
+	t.Helper()
+	frozen, err := marshalFrozenRunConfig(configuration, configuration.Fingerprint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := openArtifactStore(stateDir, workspaceHash, configuration.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := artifacts.Put(frozen, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reference
 }
 
 // mustTestCard 解析测试配置的能力卡，供 manifest 投影断言复用。
@@ -92,6 +114,19 @@ func mustTestCard(t *testing.T, configuration config.Config) contract.ProviderCa
 }
 
 type finalProvider struct{}
+
+// admissionGuardProvider 记录准入失败前是否错误进入了模型流。
+type admissionGuardProvider struct {
+	calls int
+}
+
+func (provider *admissionGuardProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(ports.ModelEvent) error) error {
+	provider.calls++
+	if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "unexpected model call"}); err != nil {
+		return err
+	}
+	return emitTestCompletion(emit)
+}
 
 func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
@@ -554,16 +589,18 @@ func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
+	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	appendEvent := func(expected uint64, draft domain.EventDraft) {
 		if _, err := journal.Append(context.Background(), expected, draft); err != nil {
 			t.Fatal(err)
 		}
 	}
 	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
-		Task              string `json:"task"`
-		Workspace         string `json:"workspace"`
-		ConfigFingerprint string `json:"config_fingerprint"`
-	}{Task: "recover", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()})})
+		Task              string       `json:"task"`
+		Workspace         string       `json:"workspace"`
+		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigFingerprint string       `json:"config_fingerprint"`
+	}{Task: "recover", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted})
 	appendEvent(2, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventTurnOpened, TurnID: &turnID})
 	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"call-recover","tool_name":"apply_patch","arguments":{"path":"x.txt","mode":"create","content":"x"}}`)})
@@ -794,16 +831,18 @@ func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
+	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	appendEvent := func(expected uint64, draft domain.EventDraft) {
 		if _, err := journal.Append(context.Background(), expected, draft); err != nil {
 			t.Fatal(err)
 		}
 	}
 	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
-		Task              string `json:"task"`
-		Workspace         string `json:"workspace"`
-		ConfigFingerprint string `json:"config_fingerprint"`
-	}{Task: "recover command", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()})})
+		Task              string       `json:"task"`
+		Workspace         string       `json:"workspace"`
+		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigFingerprint string       `json:"config_fingerprint"`
+	}{Task: "recover command", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted})
 	appendEvent(2, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventTurnOpened, TurnID: &turnID})
 	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"command-recover","tool_name":"exec_command","arguments":{"argv":["/usr/bin/true"]}}`)})
@@ -870,18 +909,7 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifacts, err := openArtifactStore(stateDir, hash, configuration.Output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	frozen, err := json.Marshal(configuration)
-	if err != nil {
-		t.Fatal(err)
-	}
-	configRef, err := artifacts.Put(artifact.RedactJSON(frozen), "application/json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	runID := domain.NewRunID()
 	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: encode(struct {
 		Task              string       `json:"task"`
@@ -1013,9 +1041,8 @@ func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
 	}
 }
 
-// TestLegacyFingerprintRunsInspectButRefuseResume 锁定 AB Gate 兼容矩阵的关键
-// 行：指纹算法 v2（eadbe9c）之前的在途 run，inspect/doctor 照常工作，resume
-// 以 ErrConfigDrift 失败关闭——一次性失效是设计决策并已公开记录。
+// TestLegacyFingerprintRunsInspectButRefuseResume 锁定旧指纹运行不再被解释为
+// 当前合同：只读投影与 Doctor 报状态损坏，恢复则先由指纹漂移失败关闭。
 func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -1042,11 +1069,11 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
-	if _, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, false); err != nil {
-		t.Fatalf("legacy inspect must work: %v", err)
+	if _, err := service.Inspect(context.Background(), workspace, stateDir, configuration, runID, false); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy inspect must fail closed with ErrStateCorrupt: %v", err)
 	}
-	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); err != nil {
-		t.Fatalf("legacy doctor must work: %v", err)
+	if _, err := service.Doctor(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy doctor must fail closed with ErrStateCorrupt: %v", err)
 	}
 	_, err = service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if !errors.Is(err, ErrConfigDrift) {
@@ -1054,14 +1081,13 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 	}
 }
 
-// TestLegacyProviderCapabilityRunResumesWithFrozenCompatibility 锁定能力卡引入
-// 后的唯一兼容例外：创建时和当前配置都没有 provider.capability、且冻结制品
-// 完整的历史运行可恢复收尾，但新 Run 仍必须保持能力未知即失败关闭。
-func TestLegacyProviderCapabilityRunResumesWithFrozenCompatibility(t *testing.T) {
-	configuration := config.Defaults()
+// TestLegacyProviderCapabilityRunRefusesRecovery 锁定旧版直接序列化 Config 的
+// 冻结制品在 Resume、Abort 和两类 Reconcile 前失败关闭，且不得追加事件或
+// 进入模型流。
+func TestLegacyProviderCapabilityRunRefusesRecovery(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
 	configuration.Provider.BaseURL = "https://example.invalid/v1"
 	configuration.Provider.Model = "legacy-model"
-	configuration.Provider.Capability = nil
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	_, hash, err := workspaceFor(workspace, configuration)
 	if err != nil {
@@ -1098,13 +1124,58 @@ func TestLegacyProviderCapabilityRunResumesWithFrozenCompatibility(t *testing.T)
 	if err := journal.Close(); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
-	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration})
-	if err != nil || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) || resumed.Result.Manifest.Provider.Card != nil {
-		t.Fatalf("legacy resume=%#v err=%v", resumed, err)
+	provider := &admissionGuardProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy frozen config must fail closed with ErrStateCorrupt: %v", err)
 	}
-	if _, err := service.Run(context.Background(), RunOptions{Task: "new run must fail closed", Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "provider capability unknown") {
-		t.Fatalf("new run with legacy config err=%v", err)
+	if _, err := service.Abort(context.Background(), AbortOptions{
+		RunID: runID, Reason: "reject legacy frozen config",
+		Workspace: workspace, StateDir: stateDir, Config: configuration,
+	}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("legacy frozen config abort must fail closed with ErrStateCorrupt: %v", err)
+	}
+	turnID, operationID := domain.NewTurnID(), domain.NewOperationID()
+	journal, err = openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts := []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventTurnOpened, TurnID: &turnID},
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"legacy-reconcile","tool_name":"apply_patch","arguments":{"path":"x.txt","mode":"create","content":"x"}}`)},
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:approved"}`)},
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","side_effect_class":"workspace"}`)},
+	}
+	for index, draft := range drafts {
+		if _, err := journal.Append(context.Background(), uint64(index+2), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, verdict := range []string{"not_applied", "abort_run"} {
+		if _, err := service.Reconcile(context.Background(), ReconcileOptions{
+			RunID: runID, OperationID: operationID, Verdict: verdict, Note: "legacy config rejected",
+			Workspace: workspace, StateDir: stateDir, Config: configuration,
+		}); !errors.Is(err, ErrStateCorrupt) {
+			t.Fatalf("legacy frozen config reconcile %s must fail closed with ErrStateCorrupt: %v", verdict, err)
+		}
+	}
+	if provider.calls != 0 {
+		t.Fatalf("legacy recovery called provider %d times", provider.calls)
+	}
+	readOnly, err := openReadOnlyJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	events, err := readOnly.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 6 {
+		t.Fatalf("failed recovery appended events: %d", len(events))
 	}
 }
 
@@ -1131,10 +1202,128 @@ func TestVerificationEnvironmentFlowsThroughConfiguredExecTool(t *testing.T) {
 	}
 }
 
-// TestEnforceAdmissionGateVersions 锁定准入门的版本语义：version 1 无准入
-// 语义直接通过；version 2 optional 门不拦截；version 2 required 在无决定、
-// 无证据时失败关闭，写入 admitted 决定与匹配证据后放行。
-func TestEnforceAdmissionGateVersions(t *testing.T) {
+// TestServiceResumeEnforcesRequiredAdmission 锁定普通运行恢复入口仍经过
+// required 准入门；拒绝发生在模型调用和任何新事件之前。
+func TestServiceResumeEnforcesRequiredAdmission(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Provider.Admission = config.ProviderAdmissionRequired
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
+		RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
+		Payload: encode(struct {
+			Task              string       `json:"task"`
+			Workspace         string       `json:"workspace"`
+			ConfigRef         artifact.Ref `json:"config_ref"`
+			ConfigFingerprint string       `json:"config_fingerprint"`
+		}{Task: "resume requires admission", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &admissionGuardProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: runID, Workspace: workspace, StateDir: stateDir, Config: configuration}); err == nil || !strings.Contains(err.Error(), "admission gate") {
+		t.Fatalf("resume without admission decision error = %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider stream calls=%d, want 0", provider.calls)
+	}
+	readOnly, err := openReadOnlyJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	events, err := readOnly.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("failed resume appended events: %d", len(events))
+	}
+}
+
+// TestServiceReconcileEnforcesRequiredAdmission 锁定普通运行对账入口在写入
+// 人工判定前重新准入，失败时既不调用模型，也不追加对账事件。
+func TestServiceReconcileEnforcesRequiredAdmission(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Provider.Admission = config.ProviderAdmissionRequired
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
+	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
+	drafts := []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
+			Task              string       `json:"task"`
+			Workspace         string       `json:"workspace"`
+			ConfigRef         artifact.Ref `json:"config_ref"`
+			ConfigFingerprint string       `json:"config_fingerprint"`
+		}{Task: "reconcile requires admission", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventTurnOpened, TurnID: &turnID},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"call-admission","tool_name":"apply_patch","arguments":{"path":"x.txt","mode":"create","content":"x"}}`)},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:approved"}`)},
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"apply_patch","side_effect_class":"workspace"}`)},
+	}
+	for index, draft := range drafts {
+		if _, err := journal.Append(context.Background(), uint64(index), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &admissionGuardProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	if _, err := service.Reconcile(context.Background(), ReconcileOptions{
+		RunID: runID, OperationID: operationID, Verdict: "not_applied",
+		Note: "operation was not applied", Workspace: workspace, StateDir: stateDir, Config: configuration,
+	}); err == nil || !strings.Contains(err.Error(), "admission gate") {
+		t.Fatalf("reconcile without admission decision error = %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider stream calls=%d, want 0", provider.calls)
+	}
+	readOnly, err := openReadOnlyJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	events, err := readOnly.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != len(drafts) {
+		t.Fatalf("failed reconcile appended events: %d", len(events))
+	}
+}
+
+// TestEnforceAdmissionGateModes 锁定 v2 准入语义：optional 不拦截；
+// required 在无决定、无证据时失败关闭，写入匹配决定与证据后放行。
+func TestEnforceAdmissionGateModes(t *testing.T) {
 	stateDir := t.TempDir()
 	workspaceHash := "sha256:" + strings.Repeat("a", 64)
 	base := config.Defaults()
@@ -1143,25 +1332,19 @@ func TestEnforceAdmissionGateVersions(t *testing.T) {
 	base.Provider.APIKeyEnv = "AGENT_API_KEY"
 	base.Provider.Capability = &config.ProviderCapabilityConfig{ToolCalls: true, StreamingUsage: true, StopReasons: []string{"stop"}}
 
-	legacy := base
-	if err := enforceAdmissionGate(stateDir, workspaceHash, legacy); err != nil {
-		t.Fatalf("version 1 must bypass the gate: %v", err)
-	}
 	optional := base
-	optional.Version = 2
 	optional.Provider.Admission = config.ProviderAdmissionOptional
 	if err := enforceAdmissionGate(stateDir, workspaceHash, optional); err != nil {
 		t.Fatalf("optional must not block: %v", err)
 	}
 	required := base
-	required.Version = 2
 	required.Provider.Admission = config.ProviderAdmissionRequired
 	if err := enforceAdmissionGate(stateDir, workspaceHash, required); err == nil {
 		t.Fatal("required with no decisions must fail closed")
 	}
 
 	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
-		Selection:     provider.SelectionFacts{Model: "gate-model", BaseURL: "https://api.example.com/v1"},
+		Selection:     provider.SelectionFacts{ProviderID: contract.ProviderIDCustom, Model: "gate-model", BaseURL: "https://api.example.com/v1"},
 		Capability:    &contract.ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true, StopReasons: []string{"stop"}},
 		CredentialRef: "AGENT_API_KEY",
 	})
@@ -1445,6 +1628,142 @@ func TestServiceListRunsClassifiesInvalidDatabaseAsCorrupt(t *testing.T) {
 	}
 	if _, err := (Service{}).ListRuns(context.Background(), workspace, stateDir, configuration); !errors.Is(err, ErrStateCorrupt) {
 		t.Fatalf("ListRuns error = %v", err)
+	}
+}
+
+// TestRunRejectsPriorRunWithoutFrozenConfig 锁定新运行续接前必须校验前驱的
+// v2 冻结配置；缺少 config_ref 时不得调用模型或创建新的运行。
+func TestRunRejectsPriorRunWithoutFrozenConfig(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorRunID := domain.NewRunID()
+	drafts := []domain.EventDraft{
+		{
+			RunID: priorRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
+			Payload: encode(domain.RunCreatedPayload{
+				Task: "legacy prior", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), SessionID: "session-v2",
+			}),
+		},
+		{RunID: priorRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
+		{RunID: priorRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunFailed, Payload: json.RawMessage(`{"error":"legacy contract"}`)},
+	}
+	for index, draft := range drafts {
+		if _, err := journal.Append(context.Background(), uint64(index), draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &admissionGuardProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	if _, err := service.Run(context.Background(), RunOptions{
+		Task: "continue", Workspace: workspace, StateDir: stateDir, Config: configuration,
+		SessionID: "session-v2", PrevRunID: priorRunID,
+	}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("run with legacy prior error = %v, want state corrupt", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("run with legacy prior called provider %d times", provider.calls)
+	}
+	items, err := service.ListRuns(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != priorRunID {
+		t.Fatalf("failed continuation created a new run: %#v", items)
+	}
+}
+
+// TestSessionContinuationRejectsLegacyAncestorConfig 锁定会话链选择与普通续链
+// 都会校验全部祖先；即使直接前驱使用 v2，旧格式祖先也必须按状态损坏拒绝。
+func TestSessionContinuationRejectsLegacyAncestorConfig(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, workspaceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := openArtifactStore(stateDir, workspaceHash, configuration.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFrozen, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyRef, err := artifacts.Put(artifact.RedactJSON(legacyFrozen), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
+	rootRunID, tailRunID := domain.NewRunID(), domain.NewRunID()
+	sessionID := "session-with-legacy-root"
+	appendTerminalRun := func(runID domain.RunID, previous domain.RunID, configRef artifact.Ref) {
+		t.Helper()
+		drafts := []domain.EventDraft{
+			{
+				RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
+				Payload: encode(struct {
+					domain.RunCreatedPayload
+					ConfigRef artifact.Ref `json:"config_ref"`
+				}{
+					RunCreatedPayload: domain.RunCreatedPayload{
+						Task: "session member", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(),
+						SessionID: sessionID, PrevRunID: previous,
+					},
+					ConfigRef: configRef,
+				}),
+			},
+			{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
+			{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunFailed, Payload: json.RawMessage(`{"error":"terminal fixture"}`)},
+		}
+		for index, draft := range drafts {
+			if _, err := journal.Append(context.Background(), uint64(index), draft); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	appendTerminalRun(rootRunID, "", legacyRef)
+	appendTerminalRun(tailRunID, rootRunID, currentRef)
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (Service{}).ResolveSessionContinuation(context.Background(), workspace, stateDir, configuration, tailRunID); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("session with legacy ancestor error = %v, want state corrupt", err)
+	}
+
+	model := &admissionGuardProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return model, nil }}
+	if _, err := service.Run(context.Background(), RunOptions{
+		Task: "continue", Workspace: workspace, StateDir: stateDir, Config: configuration,
+		SessionID: sessionID, PrevRunID: tailRunID, RequireSessionTail: false,
+	}); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("run with legacy ancestor error = %v, want state corrupt", err)
+	}
+	if model.calls != 0 {
+		t.Fatalf("run with legacy ancestor called provider %d times", model.calls)
+	}
+	items, err := service.ListRuns(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("failed continuation created a new run: %#v", items)
 	}
 }
 

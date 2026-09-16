@@ -34,7 +34,7 @@ func TestResolveTrialActivationReturnsBaselineWhenInactive(t *testing.T) {
 // TestApplyCompactionVariantOverridesAllFourFields 锁定变体应用单一源：四项
 // 压缩参数全部落到配置副本、指纹改变且整体校验通过。
 func TestApplyCompactionVariantOverridesAllFourFields(t *testing.T) {
-	base := config.Defaults()
+	base := withTestProvider(config.Defaults())
 	variant := memory.CompactionParamsVariant{
 		SchemaVersion: memory.EvolutionSchemaVersion, MaxPromptTokens: 32_000, MaxSummaryBytes: 8_192,
 		InventoryBudgetPercent: 40, ThresholdReservePercent: 25,
