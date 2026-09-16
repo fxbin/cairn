@@ -37,3 +37,6 @@ coverage.out
 # 本地工具运行产物。
 /.pi/
 /.video_agent/
+
+# 判门报告等本地产物
+/results/
