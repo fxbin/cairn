@@ -44,6 +44,10 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	if err != nil {
 		return Result{}, err
 	}
+	if projection.State == domain.RunCancelling {
+		result, _, cancellationErr := loop.repairMissingCancellationTerminal(ctx, &projection, input, events)
+		return result, cancellationErr
+	}
 	operationRepaired, err := loop.repairUnstartedOperationTerminals(ctx, &projection, input, events)
 	if err != nil {
 		return Result{}, err
