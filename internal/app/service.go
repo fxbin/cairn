@@ -199,11 +199,12 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 			return RunResult{}, fmt.Errorf("%w: run %s belongs to session %s", ErrSessionContinuation, options.PrevRunID, continuation.SessionID)
 		}
 	}
-	frozenConfig, err := json.Marshal(options.Config)
+	configFingerprint := options.Config.Fingerprint()
+	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("encode frozen run config: %w", err)
 	}
-	configRef, err := boot.Artifacts.Put(artifact.RedactJSON(frozenConfig), "application/json")
+	configRef, err := boot.Artifacts.Put(frozenConfig, "application/json")
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
@@ -216,7 +217,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		domain.RunCreatedPayload
 		ConfigRef       artifact.Ref  `json:"config_ref"`
 		PriorContextRef *artifact.Ref `json:"prior_context_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: options.Config.Fingerprint(), Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -611,7 +612,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	if err := checkArtifactReferences(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash); err != nil {
+	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
@@ -647,11 +648,16 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 // 返回前关闭 Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
-	legacyCapability, err := legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
-	if err != nil {
-		return RunResult{ID: options.RunID}, err
+	var boot *Boot
+	if options.Verdict == "abort_run" {
+		boot, err = assembleRecoveryBoot(options.Workspace, options.StateDir, options.Config)
+	} else {
+		var legacyCapability bool
+		legacyCapability, err = legacyProviderCapabilityResume(options.Workspace, options.StateDir, options.Config, options.RunID)
+		if err == nil {
+			boot, err = service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
+		}
 	}
-	boot, err := service.assembleBootWithLegacyProviderCapability(options.Workspace, options.StateDir, options.Config, options.OnEvent, legacyCapability)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -667,7 +673,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	if err := checkArtifactReferences(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash); err != nil {
+	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.State != domain.RunRunning || projection.PendingOperation == nil || projection.PendingOperation.ID != options.OperationID {
@@ -805,25 +811,16 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 // 所具有的不确定性只能通过 Reconcile 的判定解决。除 running 外，它也是 created 与
 // cancelling 运行的唯一恢复出口：进程在 run_created/run_started 之间或取消序列中途
 // 崩溃后，工作区会被非终态 run 永久阻塞，此处按状态机允许的起点补写终态。
-func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResult, error) {
+func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome RunResult, err error) {
 	if strings.TrimSpace(options.Reason) == "" {
 		return RunResult{}, errors.New("abort reason is required")
 	}
-	_, hash, err := workspaceFor(options.Workspace, options.Config)
+	boot, err := assembleRecoveryBoot(options.Workspace, options.StateDir, options.Config)
 	if err != nil {
 		return RunResult{}, err
 	}
-	journal, err := openJournal(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer journal.Close()
-	workspaceLock, err := acquireWorkspaceLock(options.StateDir, hash)
-	if err != nil {
-		return RunResult{}, err
-	}
-	defer workspaceLock.Release()
-	events, err := journal.Load(ctx, options.RunID)
+	defer func() { err = errors.Join(err, boot.Close()) }()
+	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -839,19 +836,38 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	if err := checkArtifactReferences(ctx, journal, options.StateDir, hash); err != nil {
+	if err := checkRunArtifactReferences(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	if projection.PendingOperation != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=abort_run", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
+	terminal := abortTerminal{
+		eventType:   domain.EventRunFailed,
+		turnOutcome: "failed",
+		payload: struct {
+			Error  string `json:"error"`
+			Reason string `json:"reason"`
+		}{Error: "user_aborted", Reason: options.Reason},
+		approvalReason: options.Reason,
+	}
+	if projection.State == domain.RunCancelling {
+		request, found, requestErr := latestAbortCancellationRequest(events)
+		if requestErr != nil {
+			return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, requestErr)
+		}
+		if !found {
+			return RunResult{ID: options.RunID}, fmt.Errorf("%w: cancelling run has no persisted cancellation request", ErrStateCorrupt)
+		}
+		terminal = abortTerminalFromCancellation(request)
+	}
 	appendEvent := func(eventType domain.EventType, turnID *domain.TurnID, operationID *domain.OperationID, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: hash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: encode(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: encode(payload)}
 		// 与 Reconcile 相同：先在克隆投影上模拟迁移再写入，防止不可回放事件落盘。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
 		}
-		event, err := journal.Append(ctx, projection.LastSeq, draft)
+		event, err := boot.Journal.Append(ctx, projection.LastSeq, draft)
 		if err != nil {
 			return err
 		}
@@ -872,33 +888,99 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (RunResu
 			Fingerprint string `json:"fingerprint"`
 			Actor       string `json:"actor"`
 			Reason      string `json:"reason"`
-		}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: options.Reason}); err != nil {
+		}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: terminal.approvalReason}); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
 	}
 	if projection.CurrentTurn != nil {
 		turnID := *projection.CurrentTurn
-		if err := appendEvent(domain.EventTurnClosed, &turnID, nil, domain.TurnClosedPayload{Outcome: "failed"}); err != nil {
+		if err := appendEvent(domain.EventTurnClosed, &turnID, nil, domain.TurnClosedPayload{Outcome: terminal.turnOutcome}); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
 	}
-	// cancelling 运行的取消意图已持久化，补写 run_cancelled 完成该序列；
-	// created/running 运行按中止语义写 run_failed（两类起点均为状态机允许）。
-	if projection.State == domain.RunCancelling {
-		if err := appendEvent(domain.EventRunCancelled, nil, nil, struct {
-			Cause string `json:"cause"`
-		}{Cause: "user_interrupt"}); err != nil {
-			return RunResult{ID: options.RunID}, err
-		}
-		return projectedRunOutcome(journal, options.StateDir, hash, options.RunID, "", nil)
-	}
-	if err := appendEvent(domain.EventRunFailed, nil, nil, struct {
-		Error  string `json:"error"`
-		Reason string `json:"reason"`
-	}{Error: "user_aborted", Reason: options.Reason}); err != nil {
+	if err := appendEvent(terminal.eventType, nil, nil, terminal.payload); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	return projectedRunOutcome(journal, options.StateDir, hash, options.RunID, "", nil)
+	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, "", nil)
+}
+
+// abortCancellationRequest 是应用层恢复已持久化取消意图所需的最小投影。
+type abortCancellationRequest struct {
+	Cause            string `json:"cause"`
+	ExpectedTerminal string `json:"expected_terminal,omitempty"`
+	BudgetDimension  string `json:"budget_dimension,omitempty"`
+}
+
+// abortTerminal 描述 Abort 补写开放轮次与运行终态时使用的一致决定。
+type abortTerminal struct {
+	eventType      domain.EventType
+	turnOutcome    string
+	payload        any
+	approvalReason string
+}
+
+// latestAbortCancellationRequest 返回最近一次取消请求，并兼容未记录预期终态
+// 的旧事件：预算原因或预算维度映射为 failed，其余原因映射为 cancelled。
+func latestAbortCancellationRequest(events []domain.Event) (abortCancellationRequest, bool, error) {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Type != domain.EventRunCancelRequested {
+			continue
+		}
+		var request abortCancellationRequest
+		if err := json.Unmarshal(events[index].Payload, &request); err != nil {
+			return abortCancellationRequest{}, false, fmt.Errorf("decode run_cancel_requested payload: %w", err)
+		}
+		if request.ExpectedTerminal == "" {
+			if request.Cause == "budget_exhausted" || request.BudgetDimension != "" {
+				request.ExpectedTerminal = "failed"
+			} else {
+				request.ExpectedTerminal = "cancelled"
+			}
+		}
+		switch request.ExpectedTerminal {
+		case "failed":
+			if request.Cause == "" {
+				request.Cause = "budget_exhausted"
+			}
+		case "cancelled":
+			if request.Cause == "" {
+				request.Cause = "user_interrupt"
+			}
+		default:
+			return abortCancellationRequest{}, false, fmt.Errorf("run_cancel_requested has invalid expected terminal %q", request.ExpectedTerminal)
+		}
+		return request, true, nil
+	}
+	return abortCancellationRequest{}, false, nil
+}
+
+// abortTerminalFromCancellation 把持久化取消决定转换为终态事件，保留预算
+// 失败维度；错误文本复用 Agent 的稳定预算错误格式。
+func abortTerminalFromCancellation(request abortCancellationRequest) abortTerminal {
+	if request.ExpectedTerminal == "cancelled" {
+		return abortTerminal{
+			eventType: domain.EventRunCancelled, turnOutcome: "cancelled",
+			payload: struct {
+				Cause string `json:"cause"`
+			}{Cause: request.Cause},
+			approvalReason: request.Cause,
+		}
+	}
+	errorText := request.Cause
+	if request.Cause == "budget_exhausted" {
+		errorText = "budget exhausted"
+		if request.BudgetDimension != "" {
+			errorText = (&agent.BudgetExceededError{Dimension: request.BudgetDimension}).Error()
+		}
+	}
+	return abortTerminal{
+		eventType: domain.EventRunFailed, turnOutcome: "failed",
+		payload: struct {
+			Error           string `json:"error"`
+			BudgetDimension string `json:"budget_dimension,omitempty"`
+		}{Error: errorText, BudgetDimension: request.BudgetDimension},
+		approvalReason: request.Cause,
+	}
 }
 
 // provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。能力
@@ -1203,6 +1285,15 @@ func legacyProviderCapabilityResume(workspacePath, stateDir string, configuratio
 	if len(frozenConfig) == 0 {
 		return false, nil
 	}
+	var envelope struct {
+		SchemaVersion *int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(frozenConfig, &envelope); err != nil {
+		return false, fmt.Errorf("%w: decode frozen provider capability: %v", ErrStateCorrupt, err)
+	}
+	if envelope.SchemaVersion != nil {
+		return false, nil
+	}
 	var frozen struct {
 		Provider struct {
 			Capability *json.RawMessage `json:"Capability"`
@@ -1290,19 +1381,14 @@ func expiredWallBudgetContext(ctx context.Context) (context.Context, context.Can
 	return context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
 }
 
-// enforceAdmissionGate 执行版本 2 配置的准入门（D4 优先级链的最后一环）：
-// version 1 配置无准入语义直接通过；optional 门不拦截（缺失决定即未准入，
-// 由展示层如实呈现）；required 时打开工作区作用域的决定与证据存储，重算
-// 请求合同指纹并要求该绑定分区存在唯一 admitted 链头且证据在档、身份一
-// 致——任一不成立都在写第一个事件之前失败关闭。门是门不是源：决定不覆盖
-// 配置，只决定能否启动。
-func enforceAdmissionGate(stateDir, workspaceHash string, configuration config.Config) error {
+// checkAdmissionGate 以只读方式计算版本化 Provider 准入状态；即使 optional
+// 不拦截，也验证现有 admitted 决定及其证据，供 Run 与 Doctor 共享同一事实。
+func checkAdmissionGate(stateDir, workspaceHash string, configuration config.Config) (AdmissionHealth, error) {
+	status := AdmissionHealth{Mode: "disabled"}
 	if configuration.Version != 2 {
-		return nil
+		return status, nil
 	}
-	if configuration.Provider.Admission == config.ProviderAdmissionOptional {
-		return nil
-	}
+	status.Mode = configuration.Provider.Admission
 	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
 		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL},
 		Capability:    config.ProviderCapabilityDeclaration(configuration),
@@ -1310,21 +1396,64 @@ func enforceAdmissionGate(stateDir, workspaceHash string, configuration config.C
 		CredentialRef: configuration.Provider.APIKeyEnv,
 	})
 	if err != nil {
-		return fmt.Errorf("admission gate: %w", err)
+		status.Error = admissionErrorSummary(err)
+		return status, err
 	}
-	decisions, err := provider.OpenDecisionStore(stateDir, workspaceHash)
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	decisions, err := provider.OpenDecisionStoreReadOnly(stateDir, workspaceHash)
+	if err != nil {
+		status.Error = admissionErrorSummary(err)
+		return status, err
+	}
+	evidence, err := provider.OpenEvidenceStoreReadOnly(stateDir, workspaceHash)
+	if err != nil {
+		status.Error = admissionErrorSummary(err)
+		return status, err
+	}
+	outcome, err := provider.EvaluateAdmissionGate(decisions, evidence, profile, config.ProviderAdmissionRequired)
+	if err != nil {
+		status.Error = admissionErrorSummary(err)
+		return status, err
+	}
+	status.Admitted = outcome.Head != nil && outcome.Head.Decision == provider.DecisionAdmitted
+	if configuration.Provider.Admission == config.ProviderAdmissionRequired {
+		status.Admitted = outcome.Allowed
+	}
+	return status, nil
+}
+
+// admissionErrorSummary 把准入失败归一为不含路径和凭据的稳定诊断原因。
+func admissionErrorSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "no admission decision"):
+		return "no admission decision on file for this binding"
+	case strings.Contains(message, "admission is rejected"):
+		return "provider admission is rejected for this binding"
+	case strings.Contains(message, "selection does not match"):
+		return "admission evidence does not match the resolved provider"
+	default:
+		return "admission evidence or decision state is invalid"
+	}
+}
+
+// enforceAdmissionGate 执行版本 2 配置的准入门（D4 优先级链的最后一环）：
+// version 1 配置无准入语义直接通过；optional 只展示检查结果而不拦截；
+// required 要求唯一 admitted 链头、在档证据与解析身份一致。
+func enforceAdmissionGate(stateDir, workspaceHash string, configuration config.Config) error {
+	status, err := checkAdmissionGate(stateDir, workspaceHash, configuration)
+	if configuration.Version != 2 || configuration.Provider.Admission == config.ProviderAdmissionOptional {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("admission gate: %w", err)
 	}
-	evidence, err := provider.OpenEvidenceStore(stateDir, workspaceHash)
-	if err != nil {
-		return fmt.Errorf("admission gate: %w", err)
-	}
-	outcome, err := provider.EvaluateAdmissionGate(decisions, evidence, profile, configuration.Provider.Admission)
-	if err != nil {
-		return fmt.Errorf("admission gate: %w", err)
-	}
-	if !outcome.Allowed {
+	if !status.Admitted {
 		return errors.New("admission gate: provider is not admitted for this binding")
 	}
 	return nil

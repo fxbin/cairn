@@ -71,6 +71,31 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	return service.assembleBootWithLegacyProviderCapability(workspacePath, stateDir, cfg, onEvent, false)
 }
 
+// assembleRecoveryBoot 只装配确定性恢复控制面需要的工作区、Journal 与排他锁；
+// 它不解析能力卡、不构造 Provider、工具或 Loop，供 abort_run 与显式 Abort 在
+// Provider 不可用时仍能依据既有事件安全收尾。
+func assembleRecoveryBoot(workspacePath, stateDir string, cfg config.Config) (*Boot, error) {
+	boot := &Boot{Config: cfg}
+	workspace, hash, err := workspaceFor(workspacePath, cfg)
+	if err != nil {
+		return nil, err
+	}
+	boot.Workspace, boot.WorkspaceHash = workspace, hash
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		return nil, err
+	}
+	boot.Journal = journal
+	boot.closeJournal = journal.Close
+	workspaceLock, err := acquireWorkspaceLock(stateDir, hash)
+	if err != nil {
+		return nil, bootAssemblyFailure(boot, err)
+	}
+	boot.workspaceLock = workspaceLock
+	boot.releaseLock = workspaceLock.Release
+	return boot, nil
+}
+
 // assembleBootWithLegacyProviderCapability 仅为已验证的历史 Run 提供受限兼容
 // 装配：legacyProviderCapability 为真时不再解析后来新增的能力卡，保留历史
 // 执行语义；它只能由 Resume/Reconcile 在冻结配置明确缺失该字段后调用，新

@@ -35,6 +35,14 @@ type SandboxHealth struct {
 	ImageAvailable string `json:"image_available,omitempty"`
 }
 
+// AdmissionHealth 汇总当前 Provider 绑定的准入模式和只读判定；Error 只使用
+// 稳定、非敏感原因，不暴露本地路径、凭据或证据正文。
+type AdmissionHealth struct {
+	Mode     string `json:"mode"`
+	Admitted bool   `json:"admitted"`
+	Error    string `json:"error,omitempty"`
+}
+
 // DoctorReport 回答"环境和配置是否可运行"：非敏感 resolved 配置、Profile、
 // 预算来源、Provider/Sandbox 可用性、Provider 能力卡与 capability manifest；
 // journal_ok 与 artifacts_ok 对应既有只读完整性检查。ready 是总体就绪判定：
@@ -58,6 +66,7 @@ type DoctorReport struct {
 	Provider          ProviderHealth                   `json:"provider"`
 	ProviderCard      *contract.ProviderCapabilityCard `json:"provider_card,omitempty"`
 	ProviderCardError string                           `json:"provider_card_error,omitempty"`
+	Admission         AdmissionHealth                  `json:"admission"`
 	Sandbox           SandboxHealth                    `json:"sandbox"`
 	Tools             []string                         `json:"tools"`
 	VerificationCount int                              `json:"verification_commands"`
@@ -102,6 +111,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
 		Resolution:        configuration.Resolution,
 		Provider:          ProviderHealth{BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
+		Admission:         AdmissionHealth{Mode: "disabled"},
 		Sandbox:           SandboxHealth{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
 		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),
@@ -131,6 +141,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, err
 	}
 	report.WorkspaceHash = hash
+	report.Admission, _ = checkAdmissionGate(stateDir, hash, configuration)
 	if _, err := execToolFor(workspace, configuration); err != nil {
 		return report, err
 	}
@@ -184,10 +195,12 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 }
 
 // evaluateReadiness 汇总总体就绪判定：配置与构建身份有效、能力卡可解析、
-// Provider 前提在位、Docker 后端镜像可用、journal 完整或首次运行前尚不存在。
+// Provider 前提在位、required 准入通过、Docker 后端镜像可用，且 journal
+// 完整或首次运行前尚不存在。
 func (report *DoctorReport) evaluateReadiness() {
 	sandboxReady := report.Sandbox.Backend != "docker" || report.Sandbox.ImageAvailable == "yes"
-	report.Ready = report.ConfigValid && report.BuildValid && report.ProviderCardError == "" && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
+	admissionReady := report.Admission.Mode != config.ProviderAdmissionRequired || report.Admission.Admitted
+	report.Ready = report.ConfigValid && report.BuildValid && report.ProviderCardError == "" && report.Provider.BaseURL != "" && report.Provider.Model != "" && report.Provider.APIKeyPresent && admissionReady && sandboxReady && (report.JournalState == "ok" || report.JournalState == "absent")
 }
 
 // buildIdentity 返回实际二进制的非敏感身份。revision 缺失时保留空值、dirty

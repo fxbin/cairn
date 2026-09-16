@@ -202,6 +202,15 @@ func OpenEvidenceStore(stateDir, workspaceHash string) (*EvidenceStore, error) {
 	return &EvidenceStore{root: root}, nil
 }
 
+// OpenEvidenceStoreReadOnly 构造只读证据存储视图，不创建目录、不修改权限；
+// 只有准入决定引用具体证据时才读取并验证对应内容寻址文件。
+func OpenEvidenceStoreReadOnly(stateDir, workspaceHash string) (*EvidenceStore, error) {
+	if stateDir == "" || workspaceHash == "" {
+		return nil, errors.New("evidence store requires a state dir and workspace hash")
+	}
+	return &EvidenceStore{root: filepath.Join(stateDir, "workspaces", workspaceHash, "provider", evidenceDirName)}, nil
+}
+
 // Append 校验并落盘一条证据：内容指纹回填后以同目录唯一临时文件发布
 // （0600）；同指纹文件已存在时校验内容一致即幂等返回，永不覆盖或删除。
 func (store *EvidenceStore) Append(evidence *ProviderProbeEvidence) (string, error) {

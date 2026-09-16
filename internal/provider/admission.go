@@ -173,6 +173,15 @@ func OpenDecisionStore(stateDir, workspaceHash string) (*DecisionStore, error) {
 	return &DecisionStore{root: root}, nil
 }
 
+// OpenDecisionStoreReadOnly 构造只读决定存储视图，不创建目录、不修改权限；
+// 目录不存在时后续分区读取按空集合处理，供 doctor 与运行前准入检查使用。
+func OpenDecisionStoreReadOnly(stateDir, workspaceHash string) (*DecisionStore, error) {
+	if stateDir == "" || workspaceHash == "" {
+		return nil, errors.New("decision store requires a state dir and workspace hash")
+	}
+	return &DecisionStore{root: filepath.Join(stateDir, "workspaces", workspaceHash, "provider", decisionDirName)}, nil
+}
+
 // Append 校验并落盘一条决定；语义同证据存储的 append-only 幂等写入。
 func (store *DecisionStore) Append(decision *ProviderAdmissionDecision) (string, error) {
 	fingerprint, err := decision.ComputeFingerprint()
