@@ -969,17 +969,67 @@ func appendCanonicalJSON(buffer *bytes.Buffer, value any) error {
 	}
 }
 
-// writeJSON 原子写入结果 JSON，避免被中断的评测留下半个可读取文件。
+// writeJSON 通过唯一临时文件原子替换结果 JSON，避免并发写者共享固定临时
+// 路径，也避免被中断的评测留下半个可读取文件。
 func writeJSON(path string, value any) error {
+	return writeJSONAtomic(path, value)
+}
+
+// writeJSONAtomic 以原子替换语义提交可更新 JSON，并在发布成功后同步目标
+// 目录，使文件内容与目录项在支持目录同步的平台上共同持久化。
+func writeJSONAtomic(path string, value any) error {
 	encoded, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, append(encoded, '\n'), 0o600); err != nil {
+	return commitJSON(path, filepath.Dir(path), append(encoded, '\n'), false)
+}
+
+// writeJSONExclusive 以不覆盖语义提交不可变 JSON；临时文件位于调用方指定
+// 的同文件系统目录，硬链接提交确保目标一旦存在就失败关闭。
+func writeJSONExclusive(path, temporaryDirectory string, value any) error {
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
 		return err
 	}
-	return os.Rename(temporary, path)
+	if err := os.MkdirAll(temporaryDirectory, 0o700); err != nil {
+		return fmt.Errorf("create JSON temporary directory: %w", err)
+	}
+	return commitJSON(path, temporaryDirectory, append(encoded, '\n'), true)
+}
+
+// commitJSON 把完整同步的临时文件提交到目标路径；exclusive 使用同文件系统
+// 硬链接作为原子 create-if-absent，普通模式保留既有原子替换语义。
+func commitJSON(path, temporaryDirectory string, content []byte, exclusive bool) error {
+	temporary, err := os.CreateTemp(temporaryDirectory, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create JSON temporary file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return fmt.Errorf("restrict JSON temporary file: %w", err)
+	}
+	if _, err := temporary.Write(content); err != nil {
+		return fmt.Errorf("write JSON temporary file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("sync JSON temporary file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close JSON temporary file: %w", err)
+	}
+	if err := commitJSONFile(temporaryPath, path, exclusive); err != nil {
+		action := "replace"
+		if exclusive {
+			action = "commit immutable"
+		}
+		return fmt.Errorf("%s JSON %q: %w", action, filepath.Base(path), err)
+	}
+	return nil
 }
 
 // resultFileName 将本地任务 ID 映射为不会逃出结果目录的稳定文件名。

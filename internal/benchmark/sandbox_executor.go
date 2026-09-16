@@ -27,6 +27,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/memory"
 	"github.com/fxbin/cairn/internal/sandboxeval"
 )
@@ -230,6 +231,15 @@ func (failure *prescreenFailure) Error() string {
 // 档根，Memory 侧只保留其内套件结果的字节摘要引用。
 func evaluationDirectory(stateRoot, evaluationID string) string {
 	return filepath.Join(stateRoot, "evaluations", safePathComponent(evaluationID))
+}
+
+// evaluationLockPath 返回 Evaluation ID 级进程锁路径；锁锚定在候选的权威
+// Memory 状态根而非可替换的套件输出根，进程退出后可由后继恢复者安全重获。
+func evaluationLockPath(memoryStateDir, evaluationID string) string {
+	if strings.TrimSpace(memoryStateDir) == "" {
+		memoryStateDir = app.DefaultStateDir()
+	}
+	return filepath.Join(memoryStateDir, "evaluation-locks", safePathComponent(evaluationID)+".lock")
 }
 
 // suiteSegmentForArm 生成按臂分离的套件段标识：Workspace、状态目录与任务身
@@ -444,8 +454,7 @@ func prepareEvaluationDirectory(directory string, resuming bool) error {
 // Run 编排一次完整的候选评测：前置检查 →（dry-run 止步）→ 启动事务 → 成对
 // 交错 Run 循环 → 判定收尾。返回值与落盘产物不含任务正文与密钥；无法合法
 // 闭合时如实报错保留 running 状态，不做启发式改写。
-func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutorOptions) (SandboxExecutionOutcome, error) {
-	outcome := SandboxExecutionOutcome{}
+func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutorOptions) (outcome SandboxExecutionOutcome, runErr error) {
 	precheck, prescreenIssues, err := executor.runPrecheck(options)
 	if err != nil {
 		return outcome, err
@@ -458,6 +467,18 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 		}
 		return outcome, nil
 	}
+	evaluationLock, err := lock.Acquire(evaluationLockPath(options.MemoryStateDir, precheck.evaluationID))
+	if err != nil {
+		if errors.Is(err, lock.ErrHeld) {
+			return outcome, fmt.Errorf("evaluation %s is already active in another process: %w", precheck.evaluationID, err)
+		}
+		return outcome, fmt.Errorf("acquire evaluation lock: %w", err)
+	}
+	defer func() {
+		if releaseErr := evaluationLock.Release(); releaseErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("release evaluation lock: %w", releaseErr))
+		}
+	}()
 	inspected, err := executor.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{
 		CandidateID: options.CandidateID, Workspace: options.MemoryWorkspace,
 		StateDir: options.MemoryStateDir, Config: options.MemoryConfig,
@@ -478,7 +499,7 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 	}
 	outcome.Evaluation = created
 	if resuming {
-		persisted, resultPath, resultDigest, found, loadErr := loadPersistedSuiteResult(options, precheck.evaluationID)
+		persisted, resultPath, resultDigest, found, loadErr := loadPersistedSuiteResult(options, precheck.evaluationID, len(prescreenIssues) > 0)
 		if loadErr != nil {
 			return outcome, fmt.Errorf("load persisted suite result: %w", loadErr)
 		}
@@ -657,7 +678,7 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 		}
 		record, verdict, stepAbort := executor.executeScheduledStep(ctx, options, precheck, taskByID[step.TaskID], step, ledger, evaluationDir, stop)
 		if record != nil {
-			if writeErr := writeJSON(filepath.Join(evaluationDir, "runs", sandboxRecordFileName(step)), record); writeErr != nil {
+			if writeErr := writeJSONExclusive(filepath.Join(evaluationDir, "runs", sandboxRecordFileName(step)), filepath.Join(evaluationDir, ".tmp"), record); writeErr != nil {
 				return conclusion, stopReason, stopDetail, records, verdicts, fmt.Errorf("persist sandbox run record: %w", writeErr)
 			}
 			records = append(records, *record)
@@ -666,8 +687,7 @@ func (executor SandboxExecutor) runSchedule(ctx context.Context, options Sandbox
 			verdicts = append(verdicts, *verdict)
 		}
 		if stepAbort != nil {
-			stopReason, stopDetail = stop.reason, stop.detail
-			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, stopReason, stopDetail, records, verdicts, nil
+			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: stepAbort.trigger}, "", "", records, verdicts, nil
 		}
 		if stop.reason != "" {
 			stopReason, stopDetail = stop.reason, stop.detail
@@ -821,6 +841,8 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 	if err := os.MkdirAll(diffDirectory, 0o700); err != nil {
 		// 此时尚无任何运行发生，工作区与状态目录都是全新空面，clean 初值与
 		// 事实一致；不满足"未扫描不得称干净"的例外必须在注释中显式成立。
+		record.FailureClass = sandboxTriggerLeakScanFailed
+		record.FinishedAt = executor.now()
 		return record, nil, &scheduleAbort{trigger: sandboxTriggerLeakScanFailed, err: fmt.Errorf("create diff archive directory: %w", err)}
 	}
 	// finalizeSurfaces 是所有出口共用的封口段：归档工作区 diff、枚举全部持久
@@ -931,6 +953,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 	record.RepeatedExplorations = evidence.RepeatedExplorations
 	record.DoctorOK = doctorOK
 	if scanErr := finalizeSurfaces(); scanErr != nil {
+		record.FailureClass = scanErr.trigger
 		return record, nil, scanErr
 	}
 	record.Success = completedVerified
@@ -963,10 +986,14 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 // verdictFromSandboxRunRecord 把已校验的闭合记录恢复为比较器最小投影；恢复
 // 过程只消费冻结字段，不重新执行 Agent 或 verifier。
 func verdictFromSandboxRunRecord(record SandboxRunRecord) sandboxeval.SuiteVerdict {
+	securityIncidents := record.SecurityIncidents
+	if record.LeakScan.Outcome == sandboxeval.LeakDetected && securityIncidents == 0 {
+		securityIncidents = 1
+	}
 	return sandboxeval.SuiteVerdict{
 		RunID: record.RunID, Arm: sandboxeval.SuiteArm(record.Arm), TaskID: record.TaskID,
 		AttemptIndex: record.AttemptIndex, Success: record.Success,
-		SecurityIncidents:  record.SecurityIncidents,
+		SecurityIncidents:  securityIncidents,
 		DoctorReplayBroken: !record.DoctorOK || !record.ReplayConsistent,
 		ToolPairingBreaks:  record.ToolPairingBreaks, RepeatedExplorations: record.RepeatedExplorations,
 		InputTokens: record.InputTokens, OutputTokens: record.OutputTokens, WallTimeMS: record.WallTimeMS,
@@ -975,16 +1002,16 @@ func verdictFromSandboxRunRecord(record SandboxRunRecord) sandboxeval.SuiteVerdi
 
 // recoveredInvalidTrigger 返回未计分记录中可重放的安全/证据破坏触发名。
 func recoveredInvalidTrigger(record SandboxRunRecord) string {
-	if record.SecurityIncidents > 0 || record.LeakScan.Outcome == sandboxeval.LeakDetected {
+	if record.FailureClass == sandboxTriggerCredentialLeak &&
+		record.SecurityIncidents == 1 &&
+		record.LeakScan.Outcome == sandboxeval.LeakDetected {
 		return sandboxTriggerCredentialLeak
 	}
 	switch record.FailureClass {
-	case sandboxTriggerOfflinePrescreenFailed, sandboxTriggerFrozenAssetDivergence,
-		sandboxTriggerCostUnitsOverflow, sandboxTriggerEvidenceUnverifiable,
+	case sandboxTriggerEvidenceUnverifiable,
 		sandboxTriggerEvidenceIntegrityBroken, sandboxTriggerReplayDivergence,
 		sandboxTriggerContractProjectionFailed, sandboxTriggerToolPairingExtraction,
-		sandboxTriggerExplorationSignatureMissing, sandboxTriggerLeakScanFailed,
-		sandboxTriggerComparisonNotComputable, sandboxTriggerRunIdentityDerivation:
+		sandboxTriggerExplorationSignatureMissing, sandboxTriggerLeakScanFailed:
 		return record.FailureClass
 	default:
 		return ""
@@ -1131,6 +1158,51 @@ func validateSandboxRunRecord(record SandboxRunRecord, evaluationID string, eval
 	if record.LeakScan.Outcome != sandboxeval.LeakClean && record.LeakScan.Outcome != sandboxeval.LeakDetected {
 		return fmt.Errorf("sandbox run record %q has an invalid leak scan outcome", record.RunID)
 	}
+	hasLeakHits := false
+	for surface, count := range record.LeakScan.Hits {
+		if strings.TrimSpace(surface) == "" || count <= 0 {
+			return fmt.Errorf("sandbox run record %q has invalid leak scan hits", record.RunID)
+		}
+		hasLeakHits = true
+	}
+	if record.LeakScan.Outcome == sandboxeval.LeakClean && hasLeakHits {
+		return fmt.Errorf("sandbox run record %q reports clean with leak hits", record.RunID)
+	}
+	if record.LeakScan.Outcome == sandboxeval.LeakClean && record.SecurityIncidents != 0 {
+		return fmt.Errorf("sandbox run record %q reports security incidents without leak evidence", record.RunID)
+	}
+	if record.LeakScan.Outcome == sandboxeval.LeakDetected {
+		if !hasLeakHits {
+			return fmt.Errorf("sandbox run record %q reports a leak without hit evidence", record.RunID)
+		}
+		if record.SecurityIncidents != 1 || record.FailureClass != sandboxTriggerCredentialLeak {
+			return fmt.Errorf("sandbox run record %q has inconsistent credential leak evidence", record.RunID)
+		}
+		if record.Counted {
+			return fmt.Errorf("sandbox run record %q counts a credential leak as comparable evidence", record.RunID)
+		}
+	}
+	if record.Success && (strings.TrimSpace(record.FailureClass) != "" || strings.TrimSpace(record.Error) != "" || record.SecurityIncidents > 0) {
+		return fmt.Errorf("sandbox run record %q reports success with failure or security evidence", record.RunID)
+	}
+	if record.Success && !record.Counted {
+		return fmt.Errorf("sandbox run record %q reports an uncounted success", record.RunID)
+	}
+	if record.Counted {
+		if !record.ReplayConsistent || record.LeakScan.Outcome != sandboxeval.LeakClean {
+			return fmt.Errorf("sandbox run record %q counts incomplete evidence", record.RunID)
+		}
+		if !record.Success && strings.TrimSpace(record.FailureClass) == "" {
+			return fmt.Errorf("sandbox run record %q counts a failure without a failure class", record.RunID)
+		}
+		if !record.Success && record.FailureClass != verificationFailedClass && !contract.IsBudgetFailure(record.FailureClass) {
+			return fmt.Errorf("sandbox run record %q counts an unsupported failure class", record.RunID)
+		}
+	} else if recoveredInvalidTrigger(record) == "" &&
+		record.FailureClass != sandboxStopProviderFailure &&
+		!contract.IsKnownTerminalFailureClass(record.FailureClass) {
+		return fmt.Errorf("sandbox run record %q has an unsupported uncounted failure class", record.RunID)
+	}
 	if record.InputTokens < 0 || record.OutputTokens < 0 || record.WallTimeMS < 0 || record.ToolPairingBreaks < 0 || record.RepeatedExplorations < 0 || record.SecurityIncidents < 0 {
 		return fmt.Errorf("sandbox run record %q has negative metrics", record.RunID)
 	}
@@ -1177,9 +1249,141 @@ func loadRecoveredSandboxRunRecords(evaluationDir, evaluationID string, evalSet 
 	return recovered, nil
 }
 
+// validatePersistedSuiteStopFields 将停止原因及明细限制为执行器真实可产生的封闭
+// 组合；明细不能脱离原因单独出现，也不能携带任意错误文本。
+func validatePersistedSuiteStopFields(reason, detail string) error {
+	switch reason {
+	case "":
+		if detail != "" {
+			return errors.New("persisted suite result has stop detail without a stop reason")
+		}
+	case sandboxStopLeaseExhausted, sandboxStopContextCancelled:
+		if detail != "" {
+			return fmt.Errorf("persisted suite result stop reason %q does not allow detail", reason)
+		}
+	case sandboxStopProviderFailure:
+		if detail == sandboxStopProviderFailure {
+			return nil
+		}
+		if detail == "" || !contract.IsKnownTerminalFailureClass(detail) {
+			return errors.New("persisted suite result has an invalid provider stop detail")
+		}
+	case sandboxStopEnvironmentFailure:
+		switch detail {
+		case "preparation_prepare", "preparation_verifier", "preparation_bootstrap",
+			"preparation_sandbox", "preparation_config", sandboxStopDetailTaskImageDigest:
+			return nil
+		default:
+			return errors.New("persisted suite result has an invalid environment stop detail")
+		}
+	default:
+		return fmt.Errorf("persisted suite result has an unknown stop reason %q", reason)
+	}
+	return nil
+}
+
+// judgePersistedSuite 复用生产判定并把比较器不可计算错误映射回执行器持久化
+// 使用的稳定 invalid 触发名，避免恢复路径把合法留档误判为损坏。
+func judgePersistedSuite(evalSet sandboxeval.EvalSet, verdicts []sandboxeval.SuiteVerdict) (sandboxeval.Conclusion, error) {
+	conclusion, err := sandboxeval.JudgeSuite(evalSet, verdicts)
+	if err != nil {
+		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerComparisonNotComputable}, nil
+	}
+	return conclusion, nil
+}
+
+// recomputePersistedSuiteConclusion 按冻结调度顺序重放记录与租约账面，确定套件
+// 唯一可接受的结论。记录必须构成调度前缀；invalid 只能来自预筛、下一步启动前
+// 的封闭触发、记录内证据、成本计算或比较器，不能由结果正文自行声明。
+func recomputePersistedSuiteConclusion(options SandboxExecutorOptions, result SandboxSuiteResult, prescreenFailed bool) (sandboxeval.Conclusion, error) {
+	steps, err := SandboxSchedule(options.EvalSet.TaskIDs, options.EvalSet.AttemptsPerTask)
+	if err != nil {
+		return sandboxeval.Conclusion{}, fmt.Errorf("rebuild sandbox schedule: %w", err)
+	}
+	if len(result.Records) > len(steps) {
+		return sandboxeval.Conclusion{}, errors.New("persisted suite result contains more records than the frozen schedule")
+	}
+	if err := validatePersistedSuiteStopFields(result.StopReason, result.StopDetail); err != nil {
+		return sandboxeval.Conclusion{}, err
+	}
+	if prescreenFailed {
+		if len(result.Records) != 0 || result.StopReason != "" {
+			return sandboxeval.Conclusion{}, errors.New("offline prescreen invalidation cannot contain run or stop evidence")
+		}
+		return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerOfflinePrescreenFailed}, nil
+	}
+
+	verdicts := make([]sandboxeval.SuiteVerdict, 0, len(result.Records))
+	ledger := &leaseLedger{}
+	for index, record := range result.Records {
+		step := steps[index]
+		if record.TaskID != step.TaskID || record.AttemptIndex != step.Try || record.Arm != string(step.Arm) {
+			return sandboxeval.Conclusion{}, errors.New("persisted suite records do not form the frozen schedule prefix")
+		}
+		lastRecord := index == len(result.Records)-1
+		if record.Counted {
+			verdict := verdictFromSandboxRunRecord(record)
+			verdicts = append(verdicts, verdict)
+			units, costErr := sandboxeval.ComputeRunCostUnits(verdict.InputTokens, verdict.OutputTokens,
+				int64(options.EvalSet.PricingSnapshot.InputPriceMicrousdPerMillionTokens),
+				int64(options.EvalSet.PricingSnapshot.OutputPriceMicrousdPerMillionTokens))
+			if costErr != nil {
+				if !lastRecord || result.StopReason != "" {
+					return sandboxeval.Conclusion{}, errors.New("persisted suite result contradicts its cost overflow boundary")
+				}
+				return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: sandboxTriggerCostUnitsOverflow}, nil
+			}
+			ledger.chargeUnits(units)
+			ledger.chargeUsage(verdict.InputTokens, verdict.OutputTokens, 1)
+			if ledger.exceedsLease(options.Lease) {
+				if !lastRecord || result.StopReason != sandboxStopLeaseExhausted {
+					return sandboxeval.Conclusion{}, errors.New("persisted suite result contradicts its lease exhaustion boundary")
+				}
+				return judgePersistedSuite(options.EvalSet, verdicts)
+			}
+			continue
+		}
+
+		if !lastRecord {
+			return sandboxeval.Conclusion{}, errors.New("persisted suite result continues after an uncounted run")
+		}
+		if trigger := recoveredInvalidTrigger(record); trigger != "" {
+			if result.StopReason != "" {
+				return sandboxeval.Conclusion{}, errors.New("invalid run evidence cannot carry an independent stop reason")
+			}
+			return sandboxeval.Conclusion{Status: sandboxeval.ConclusionInvalid, Trigger: trigger}, nil
+		}
+		if result.StopReason != sandboxStopProviderFailure || result.StopDetail != record.FailureClass {
+			return sandboxeval.Conclusion{}, errors.New("persisted provider stop does not match its terminal run record")
+		}
+		return judgePersistedSuite(options.EvalSet, verdicts)
+	}
+	if len(result.Records) == len(steps) {
+		if result.StopReason != "" {
+			return sandboxeval.Conclusion{}, errors.New("complete persisted suite result carries an unexplained stop reason")
+		}
+		return judgePersistedSuite(options.EvalSet, verdicts)
+	}
+
+	switch result.StopReason {
+	case sandboxStopContextCancelled, sandboxStopEnvironmentFailure:
+		return judgePersistedSuite(options.EvalSet, verdicts)
+	case "":
+		if result.Trigger != "" {
+			return sandboxeval.Conclusion{}, errors.New("persisted invalid result lacks independently replayable evidence")
+		}
+		if len(result.Records) == 0 {
+			return judgePersistedSuite(options.EvalSet, verdicts)
+		}
+		return sandboxeval.Conclusion{}, errors.New("incomplete persisted suite result lacks deterministic stop or invalid evidence")
+	default:
+		return sandboxeval.Conclusion{}, errors.New("persisted suite stop is inconsistent with its record prefix")
+	}
+}
+
 // loadPersistedSuiteResult 在崩溃发生于“套件结果落盘、Memory 终态提交”之间
 // 时恢复不可变结论；正文身份不符时失败关闭，绝不覆盖既有结果。
-func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID string) (SandboxSuiteResult, string, string, bool, error) {
+func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID string, prescreenFailure ...bool) (SandboxSuiteResult, string, string, bool, error) {
 	resultPath := filepath.Join(evaluationDirectory(options.StateRoot, evaluationID), "suite-result.json")
 	content, err := os.ReadFile(resultPath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -1202,7 +1406,6 @@ func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID strin
 		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result has invalid timestamps")
 	}
 	seen := make(map[string]struct{}, len(result.Records))
-	verdicts := make([]sandboxeval.SuiteVerdict, 0, len(result.Records))
 	for _, record := range result.Records {
 		if err := validateSandboxRunRecord(record, evaluationID, options.EvalSet); err != nil {
 			return SandboxSuiteResult{}, "", "", false, err
@@ -1212,22 +1415,14 @@ func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID strin
 			return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result contains duplicate run identities")
 		}
 		seen[key] = struct{}{}
-		if record.Counted {
-			verdicts = append(verdicts, verdictFromSandboxRunRecord(record))
-		}
 	}
-	if result.Status == sandboxeval.ConclusionInvalid {
-		if result.Trigger == "" {
-			return SandboxSuiteResult{}, "", "", false, errors.New("invalid persisted suite result requires a trigger")
-		}
-	} else {
-		recomputed, err := sandboxeval.JudgeSuite(options.EvalSet, verdicts)
-		if err != nil {
-			return SandboxSuiteResult{}, "", "", false, fmt.Errorf("recompute persisted suite result: %w", err)
-		}
-		if recomputed.Status != result.Status || recomputed.Trigger != result.Trigger {
-			return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result diverges from its run evidence")
-		}
+	prescreenFailed := len(prescreenFailure) > 0 && prescreenFailure[0]
+	recomputed, err := recomputePersistedSuiteConclusion(options, result, prescreenFailed)
+	if err != nil {
+		return SandboxSuiteResult{}, "", "", false, fmt.Errorf("recompute persisted suite result: %w", err)
+	}
+	if recomputed.Status != result.Status || recomputed.Trigger != result.Trigger {
+		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result diverges from its run and stop evidence")
 	}
 	digest := sha256.Sum256(content)
 	return result, resultPath, "sha256:" + hex.EncodeToString(digest[:]), true, nil
@@ -1249,7 +1444,7 @@ func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOption
 		Records:       append([]SandboxRunRecord(nil), records...),
 	}
 	resultPath := filepath.Join(evaluationDirectory(options.StateRoot, evaluationID), "suite-result.json")
-	if err := writeJSON(resultPath, result); err != nil {
+	if err := writeJSONExclusive(resultPath, filepath.Join(evaluationDirectory(options.StateRoot, evaluationID), ".tmp"), result); err != nil {
 		return "", "", err
 	}
 	content, readErr := os.ReadFile(resultPath)
