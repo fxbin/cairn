@@ -23,31 +23,33 @@ const (
 
 // RunProjection 是由事件序列重放得到的当前运行状态与恢复依据。
 type RunProjection struct {
-	ID                      RunID
-	Task                    string
-	Workspace               string
-	WorkspaceHash           string
-	ConfigFingerprint       string         `json:"config_fingerprint,omitempty"`
-	Build                   *BuildIdentity `json:"build,omitempty"`
-	SessionID               string
-	PrevRunID               RunID
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-	WorkspaceObservation    string
-	State                   RunState
-	LastSeq                 uint64
-	CurrentTurn             *TurnID
-	LastAssistantMessage    string
-	VerificationSucceeded   bool
-	LastVerificationSeq     uint64
-	LastMutationSeq         uint64
-	LastContextCompactSeq   uint64
-	ContextCompactedThrough uint64
-	PendingApproval         *PendingApproval
-	PendingOperation        *PendingOperation
-	operationFingerprints   map[OperationID]string
-	reconciledFingerprints  map[string]struct{}
-	operations              map[OperationID]*operationRecord
+	ID                       RunID
+	Task                     string
+	Workspace                string
+	WorkspaceHash            string
+	ConfigFingerprint        string         `json:"config_fingerprint,omitempty"`
+	Build                    *BuildIdentity `json:"build,omitempty"`
+	SessionID                string
+	PrevRunID                RunID
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	WorkspaceObservation     string
+	State                    RunState
+	LastSeq                  uint64
+	CurrentTurn              *TurnID
+	LastAssistantMessage     string
+	VerificationSucceeded    bool
+	LastVerificationSeq      uint64
+	LastMutationSeq          uint64
+	LastContextCompactSeq    uint64
+	ContextCompactedThrough  uint64
+	PendingApproval          *PendingApproval
+	PendingOperation         *PendingOperation
+	unfinishedVerification   *TurnID
+	unfinishedVerificationID string
+	operationFingerprints    map[OperationID]string
+	reconciledFingerprints   map[string]struct{}
+	operations               map[OperationID]*operationRecord
 }
 
 // ValidateDraft 在不改变当前投影的前提下校验一条待追加事件的 payload 与状态迁移。
@@ -120,6 +122,7 @@ func (projection RunProjection) clone() RunProjection {
 	candidate.CurrentTurn = copyTurn(projection.CurrentTurn)
 	candidate.PendingApproval = copyApproval(projection.PendingApproval)
 	candidate.PendingOperation = copyOperation(projection.PendingOperation)
+	candidate.unfinishedVerification = copyTurn(projection.unfinishedVerification)
 	candidate.Build = copyBuild(projection.Build)
 	if projection.operationFingerprints != nil {
 		candidate.operationFingerprints = make(map[OperationID]string, len(projection.operationFingerprints))
@@ -435,15 +438,24 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.LastAssistantMessage = payload.Text
 	case EventVerificationFinished:
-		if (projection.State != RunRunning && projection.State != RunCancelling) || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn {
-			return fmt.Errorf("verification_finished requires the current running turn")
-		}
 		var payload VerificationFinishedPayload
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode verification result: %w", err)
 		}
+		matchesVerification := projection.unfinishedVerification == nil ||
+			(projection.unfinishedVerificationID == "" || payload.VerificationID == "" || payload.VerificationID == projection.unfinishedVerificationID)
+		activeTurn := event.TurnID != nil && projection.CurrentTurn != nil &&
+			*event.TurnID == *projection.CurrentTurn && matchesVerification
+		closedUnfinishedTurn := event.TurnID != nil && projection.CurrentTurn == nil &&
+			projection.unfinishedVerification != nil && *event.TurnID == *projection.unfinishedVerification &&
+			matchesVerification
+		if (projection.State != RunRunning && projection.State != RunCancelling) || (!activeTurn && !closedUnfinishedTurn) {
+			return fmt.Errorf("verification_finished requires the current running turn or its unfinished closed verification")
+		}
 		projection.VerificationSucceeded = payload.OK
 		projection.LastVerificationSeq = event.Seq
+		projection.unfinishedVerification = nil
+		projection.unfinishedVerificationID = ""
 	case EventContextCompacted:
 		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
 			return fmt.Errorf("context_compacted is not legal for run state %s", projection.State)
@@ -656,10 +668,16 @@ func (projection *RunProjection) Apply(event Event) error {
 		// verification_started 的观察摘要是最近一次 verifier 视图；它不参与终态
 		// 判定，却让 inspect 能解释验证时看到的工作区而无需重新扫描或写入状态。
 		var payload struct {
+			VerificationID       string `json:"verification_id"`
 			WorkspaceObservation string `json:"workspace_observation"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode verification start: %w", err)
+		}
+		if event.TurnID != nil {
+			turnID := *event.TurnID
+			projection.unfinishedVerification = &turnID
+			projection.unfinishedVerificationID = payload.VerificationID
 		}
 		if payload.WorkspaceObservation != "" {
 			projection.WorkspaceObservation = payload.WorkspaceObservation

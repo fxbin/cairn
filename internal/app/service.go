@@ -843,8 +843,9 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=abort_run", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
 	terminal := abortTerminal{
-		eventType:   domain.EventRunFailed,
-		turnOutcome: "failed",
+		eventType:         domain.EventRunFailed,
+		turnOutcome:       "failed",
+		approvalStopCause: "user_abort",
 		payload: struct {
 			Error  string `json:"error"`
 			Reason string `json:"reason"`
@@ -874,6 +875,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		if err := projection.Apply(event); err != nil {
 			return err
 		}
+		events = append(events, event)
 		if options.OnEvent != nil {
 			options.OnEvent(event)
 		}
@@ -895,18 +897,46 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 			return RunResult{ID: options.RunID}, err
 		}
 	}
-	if pending := projection.PendingApproval; pending != nil {
-		if projection.CurrentTurn == nil {
-			return RunResult{}, errors.New("pending approval has no open turn")
+	cancellation, found, err := agent.ResolvePendingApprovalCancellation(events, &projection, terminal.approvalStopCause)
+	if err != nil {
+		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	if found {
+		turnID, operationID := cancellation.TurnID, cancellation.OperationID
+		if !cancellation.ApprovalDenied {
+			if err := appendEvent(domain.EventApprovalDenied, &turnID, &operationID, struct {
+				Fingerprint string `json:"fingerprint"`
+				Actor       string `json:"actor"`
+				Reason      string `json:"reason"`
+				StopCause   string `json:"stop_cause"`
+			}{
+				Fingerprint: cancellation.Fingerprint,
+				Actor:       "system",
+				Reason:      terminal.approvalReason,
+				StopCause:   terminal.approvalStopCause,
+			}); err != nil {
+				return RunResult{ID: options.RunID}, err
+			}
 		}
-		turnID, operationID := *projection.CurrentTurn, pending.OperationID
-		if err := appendEvent(domain.EventApprovalDenied, &turnID, &operationID, struct {
-			Fingerprint string `json:"fingerprint"`
-			Actor       string `json:"actor"`
-			Reason      string `json:"reason"`
-		}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: terminal.approvalReason}); err != nil {
-			return RunResult{ID: options.RunID}, err
+		if !cancellation.OperationTerminal {
+			if err := appendEvent(domain.EventOperationFailed, &turnID, &operationID, struct {
+				ToolName string       `json:"tool_name"`
+				Result   tools.Result `json:"result"`
+			}{ToolName: cancellation.ToolName, Result: cancellation.Result}); err != nil {
+				return RunResult{ID: options.RunID}, err
+			}
 		}
+		if cancellation.VerificationID != "" && !cancellation.VerificationFinished {
+			if err := appendEvent(domain.EventVerificationFinished, &turnID, nil, domain.VerificationFinishedPayload{
+				VerificationID: cancellation.VerificationID,
+				OK:             false,
+			}); err != nil {
+				return RunResult{ID: options.RunID}, err
+			}
+		}
+	}
+	if projection.PendingApproval != nil {
+		return RunResult{ID: options.RunID}, errors.New("pending approval cancellation did not close the approval")
 	}
 	if projection.CurrentTurn != nil {
 		turnID := *projection.CurrentTurn
@@ -929,10 +959,11 @@ type abortCancellationRequest struct {
 
 // abortTerminal 描述 Abort 补写开放轮次与运行终态时使用的一致决定。
 type abortTerminal struct {
-	eventType      domain.EventType
-	turnOutcome    string
-	payload        any
-	approvalReason string
+	eventType         domain.EventType
+	turnOutcome       string
+	payload           any
+	approvalReason    string
+	approvalStopCause string
 }
 
 // latestAbortCancellationRequest 返回最近一次取消请求，并兼容未记录预期终态
@@ -979,7 +1010,8 @@ func abortTerminalFromCancellation(request abortCancellationRequest) abortTermin
 			payload: struct {
 				Cause string `json:"cause"`
 			}{Cause: request.Cause},
-			approvalReason: request.Cause,
+			approvalReason:    request.Cause,
+			approvalStopCause: request.Cause,
 		}
 	}
 	errorText := request.Cause
@@ -995,7 +1027,8 @@ func abortTerminalFromCancellation(request abortCancellationRequest) abortTermin
 			Error           string `json:"error"`
 			BudgetDimension string `json:"budget_dimension,omitempty"`
 		}{Error: errorText, BudgetDimension: request.BudgetDimension},
-		approvalReason: request.Cause,
+		approvalReason:    request.Cause,
+		approvalStopCause: request.Cause,
 	}
 }
 
