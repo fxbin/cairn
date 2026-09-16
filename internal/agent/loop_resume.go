@@ -939,10 +939,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 			if !found {
 				continue
 			}
-			var payload struct {
-				Effect  string `json:"effect"`
-				Summary string `json:"summary"`
-			}
+			var payload policyDecisionPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return nil, fmt.Errorf("decode policy decision for operation %s: %w", operationID, err)
 			}
@@ -950,7 +947,11 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 			case "allow":
 				record.authorized = true
 			case "deny":
-				result := tools.Failure("policy_denied", payload.Summary)
+				result := policyFailureResult(policy.Decision{
+					Summary:     payload.Summary,
+					FailureCode: payload.FailureCode,
+					FailureData: payload.FailureData,
+				})
 				record.failure = &result
 			}
 		case domain.EventApprovalGranted:
@@ -1171,7 +1172,7 @@ func (loop *Loop) repairMissingRunTerminal(ctx context.Context, projection *doma
 			return Result{}, false, nil
 		}
 		cause := errors.New(evidence.failure.Error)
-		if evidence.approvalDenied {
+		if evidence.approvalDenied || evidence.policyDenied {
 			cause = &PolicyDeniedError{Summary: evidence.failure.Reason}
 		}
 		if evidence.retryable {
@@ -1228,16 +1229,23 @@ type openTurnFailureRecord struct {
 	failure        runFailurePayload
 	retryable      bool
 	approvalDenied bool
+	policyDenied   bool
 }
 
-// openTurnFailureEvidence 查找开放轮次中的运行级失败证据；人工拒绝和 abort_run
-// 总是终止运行，模型失败仅在它是该轮次最近的模型尝试结果时生效。
+// openTurnFailureEvidence 查找开放轮次中的运行级失败证据；人工拒绝、验证策略
+// 拒绝和 abort_run 总是终止运行，模型失败仅在它是最近模型尝试结果时生效。
 func openTurnFailureEvidence(events []domain.Event, turnID domain.TurnID) (openTurnFailureRecord, bool, error) {
 	hasModelResponse := false
+	verificationOperations := make(map[domain.OperationID]struct{})
 	for _, event := range events {
-		if event.Type == domain.EventModelResponseFinished && event.TurnID != nil && *event.TurnID == turnID {
+		if event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		if event.Type == domain.EventModelResponseFinished {
 			hasModelResponse = true
-			break
+		}
+		if event.Type == domain.EventVerificationCommandProposed && event.OperationID != nil {
+			verificationOperations[*event.OperationID] = struct{}{}
 		}
 	}
 	for index := len(events) - 1; index >= 0; index-- {
@@ -1246,6 +1254,33 @@ func openTurnFailureEvidence(events []domain.Event, turnID domain.TurnID) (openT
 			continue
 		}
 		switch event.Type {
+		case domain.EventPolicyDecided:
+			if event.OperationID == nil {
+				continue
+			}
+			if _, found := verificationOperations[*event.OperationID]; !found {
+				continue
+			}
+			var payload policyDecisionPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return openTurnFailureRecord{}, false, fmt.Errorf("decode verification policy decision: %w", err)
+			}
+			if payload.Effect != string(policy.Deny) {
+				continue
+			}
+			result := policyFailureResult(policy.Decision{
+				Summary:     payload.Summary,
+				FailureCode: payload.FailureCode,
+				FailureData: payload.FailureData,
+			})
+			return openTurnFailureRecord{
+				failure: runFailurePayload{
+					Error:      (&PolicyDeniedError{Summary: payload.Summary}).Error(),
+					ErrorClass: result.Code,
+					Reason:     payload.Summary,
+				},
+				policyDenied: true,
+			}, true, nil
 		case domain.EventOperationReconciled:
 			var payload struct {
 				Verdict string `json:"verdict"`

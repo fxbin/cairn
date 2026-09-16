@@ -121,7 +121,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventVerificationCommandProposed: {
 		"payload_version": {}, "verification_id": {}, "command_index": {}, "tool_name": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}, "plan_ref": {},
 	},
-	EventPolicyDecided:     {"payload_version": {}, "effect": {}, "rule": {}, "rule_id": {}, "fingerprint": {}, "summary": {}, "reason": {}},
+	EventPolicyDecided:     {"payload_version": {}, "effect": {}, "rule": {}, "rule_id": {}, "fingerprint": {}, "summary": {}, "reason": {}, "failure_code": {}, "failure_data": {}},
 	EventApprovalRequested: {"payload_version": {}, "fingerprint": {}, "summary": {}, "rule": {}, "rule_id": {}, "workspace_observation": {}},
 	EventApprovalGranted:   {"payload_version": {}, "fingerprint": {}, "actor": {}},
 	EventApprovalDenied:    {"payload_version": {}, "fingerprint": {}, "actor": {}, "reason": {}, "stop_cause": {}},
@@ -620,6 +620,16 @@ func validatePayloadV1(eventType EventType, raw json.RawMessage, object map[stri
 		}
 		if err := validateOptionalPayloadDigest(eventType, "fingerprint", payload.Fingerprint); err != nil {
 			return err
+		}
+		failureCode, err := validateOptionalPayloadString(eventType, object, "failure_code", false)
+		if err != nil {
+			return err
+		}
+		if err := validateOptionalPayloadObject(eventType, object, "failure_data"); err != nil {
+			return err
+		}
+		if _, exists := object["failure_data"]; exists && failureCode == nil {
+			return fmt.Errorf("%s field %q requires field %q", eventType, "failure_data", "failure_code")
 		}
 	case EventApprovalRequested:
 		if err := validateRequiredPayloadDigest(eventType, object, "fingerprint"); err != nil {

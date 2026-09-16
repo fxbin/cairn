@@ -204,6 +204,32 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 			return &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 		}
 		if decision.Effect == policy.Deny {
+			result := policyFailureResult(decision)
+			commitContext, cancel := loop.commitContext(ctx)
+			defer cancel()
+			if err := loop.append(commitContext, projection, domain.EventDraft{
+				RunID:         input.RunID,
+				WorkspaceHash: input.WorkspaceHash,
+				Type:          domain.EventOperationFailed,
+				TurnID:        &turnID,
+				OperationID:   &operationID,
+				Payload:       mustJSON(operationPayload{ToolName: "exec_command", Result: result}),
+			}); err != nil {
+				return &verificationPersistenceError{cause: err}
+			}
+			if err := loop.append(commitContext, projection, domain.EventDraft{
+				RunID:         input.RunID,
+				WorkspaceHash: input.WorkspaceHash,
+				Type:          domain.EventVerificationFinished,
+				TurnID:        &turnID,
+				Payload: mustJSON(domain.VerificationFinishedPayload{
+					VerificationID:    verificationID,
+					OK:                false,
+					ResultFingerprint: stableToolResultFingerprint(result),
+				}),
+			}); err != nil {
+				return &verificationPersistenceError{cause: err}
+			}
 			return &PolicyDeniedError{Summary: decision.Summary}
 		}
 		if err := loop.executeVerificationCommand(ctx, projection, input, turnID, operationID, command, observation); err != nil {
@@ -403,9 +429,10 @@ func latestIncompleteVerification(events []domain.Event) (incompleteVerification
 
 // verificationOperationRecord 关联冻结命令提议与其既有操作终态。
 type verificationOperationRecord struct {
-	proposal  verificationProposalPayload
-	terminal  domain.Event
-	hasResult bool
+	proposal     verificationProposalPayload
+	terminal     domain.Event
+	hasResult    bool
+	policyDenied bool
 }
 
 // verificationOperations 返回未完成验证中按 command_index 排列的命令记录。
@@ -435,6 +462,16 @@ func verificationOperations(events []domain.Event, verification incompleteVerifi
 			if payload.CommandIndex > maxIndex {
 				maxIndex = payload.CommandIndex
 			}
+		case domain.EventPolicyDecided:
+			record, found := records[operationID]
+			if !found {
+				continue
+			}
+			var payload policyDecisionPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return nil, fmt.Errorf("decode verification policy decision: %w", err)
+			}
+			record.policyDenied = payload.Effect == string(policy.Deny)
 		case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled, domain.EventOperationReconciled:
 			if record, found := records[operationID]; found {
 				record.terminal = event
@@ -572,7 +609,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	}); err != nil {
 		return false, &verificationPersistenceError{cause: err}
 	}
-	if result.Code == "approval_denied" {
+	if result.Code == "approval_denied" || latest.policyDenied {
 		return true, nil
 	}
 	if result.Code == "approval_stale" {
@@ -595,8 +632,8 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 }
 
 // repairMissingVerificationFeedback 补写失败验证在 verification_finished 之后
-// 遗漏的模型反馈；它只消费既有操作终态，不重新执行命令，也不把人工拒绝
-// 伪装为验证命令执行失败。
+// 遗漏的模型反馈；它只消费既有操作终态，不重新执行命令，也不把人工拒绝或
+// 策略拒绝伪装为验证命令执行失败。
 func (loop *Loop) repairMissingVerificationFeedback(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (bool, error) {
 	if projection.CurrentTurn == nil {
 		return false, nil
@@ -672,7 +709,7 @@ func (loop *Loop) repairMissingVerificationFeedback(ctx context.Context, project
 	if err != nil {
 		return false, err
 	}
-	if succeeded || result.Code == "approval_denied" {
+	if succeeded || result.Code == "approval_denied" || latest.policyDenied {
 		return false, nil
 	}
 	verificationID := verification.verificationID
@@ -826,12 +863,21 @@ func equalVerificationArguments(proposed json.RawMessage, command json.RawMessag
 
 // policyDecisionDraft 将策略决定编码为可追加的领域事件草稿。
 func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision policy.Decision) domain.EventDraft {
-	return domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
-		Effect      string `json:"effect"`
-		Rule        string `json:"rule"`
-		Fingerprint string `json:"fingerprint"`
-		Summary     string `json:"summary"`
-	}{Effect: string(decision.Effect), Rule: decision.RuleID, Fingerprint: decision.Fingerprint, Summary: decision.Summary})}
+	return domain.EventDraft{
+		RunID:         input.RunID,
+		WorkspaceHash: input.WorkspaceHash,
+		Type:          domain.EventPolicyDecided,
+		TurnID:        &turnID,
+		OperationID:   &operationID,
+		Payload: mustJSON(policyDecisionPayload{
+			Effect:      string(decision.Effect),
+			Rule:        decision.RuleID,
+			Fingerprint: decision.Fingerprint,
+			Summary:     decision.Summary,
+			FailureCode: decision.FailureCode,
+			FailureData: append(json.RawMessage(nil), decision.FailureData...),
+		}),
+	}
 }
 
 // approvalRequestedDraft 将待审批操作编码为可追加的领域事件草稿。

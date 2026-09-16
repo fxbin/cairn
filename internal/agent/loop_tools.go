@@ -35,6 +35,16 @@ type operationPayload struct {
 	ResultStorageError string        `json:"result_storage_error,omitempty"`
 }
 
+// policyDecisionPayload 保存可回放的策略结论及拒绝时的结构化失败信息。
+type policyDecisionPayload struct {
+	Effect      string          `json:"effect"`
+	Rule        string          `json:"rule"`
+	Fingerprint string          `json:"fingerprint"`
+	Summary     string          `json:"summary"`
+	FailureCode string          `json:"failure_code,omitempty"`
+	FailureData json.RawMessage `json:"failure_data,omitempty"`
+}
+
 // toolResultPersistenceError 表示操作终态已经持久化，但模型可见的 Tool Result
 // 尚未写入；调用方必须保留运行现场，交由 Resume 从终态证据确定性补齐。
 type toolResultPersistenceError struct {
@@ -117,12 +127,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, err
 	}
 	decision = freshApprovalDecision(*projection, decision)
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
-		Effect      string `json:"effect"`
-		Rule        string `json:"rule"`
-		Fingerprint string `json:"fingerprint"`
-		Summary     string `json:"summary"`
-	}{Effect: string(decision.Effect), Rule: decision.RuleID, Fingerprint: decision.Fingerprint, Summary: decision.Summary})}); err != nil {
+	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 		return tools.Result{}, err
 	}
 	if decision.Effect == policy.Ask {
@@ -136,14 +141,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
-		failureCode := decision.FailureCode
-		if failureCode == "" {
-			failureCode = "policy_denied"
-		}
-		result := tools.Failure(failureCode, decision.Summary)
-		if len(decision.FailureData) != 0 {
-			result.Data = append(json.RawMessage(nil), decision.FailureData...)
-		}
+		result := policyFailureResult(decision)
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 			return tools.Result{}, err
 		}
@@ -196,6 +194,19 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return result, err
 	}
 	return result, nil
+}
+
+// policyFailureResult 将 Policy 拒绝转换为工具与验证流程共用的结构化失败结果。
+func policyFailureResult(decision policy.Decision) tools.Result {
+	failureCode := decision.FailureCode
+	if failureCode == "" {
+		failureCode = "policy_denied"
+	}
+	result := tools.Failure(failureCode, decision.Summary)
+	if len(decision.FailureData) != 0 {
+		result.Data = append(json.RawMessage(nil), decision.FailureData...)
+	}
+	return result
 }
 
 // appendToolResult 使用不受调用方取消影响的提交上下文写入模型可见结果；若
