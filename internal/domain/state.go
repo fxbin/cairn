@@ -57,6 +57,31 @@ func (projection RunProjection) ValidateDraft(draft EventDraft) error {
 	if err != nil {
 		return err
 	}
+	if err := validatePayload(event.Type, event.Payload); err != nil {
+		return fmt.Errorf("event payload: %w", err)
+	}
+	if event.Type == EventOperationStarted {
+		var payload struct {
+			SideEffectClass *string `json:"side_effect_class"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("decode operation_started draft: %w", err)
+		}
+		if payload.SideEffectClass == nil || !oneOf(*payload.SideEffectClass, "none", "workspace", "process") {
+			return errors.New("operation_started draft requires a valid side_effect_class")
+		}
+	}
+	if event.Type == EventRunCancelRequested {
+		var payload struct {
+			ExpectedTerminal *string `json:"expected_terminal"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("decode run_cancel_requested draft: %w", err)
+		}
+		if payload.ExpectedTerminal == nil || !oneOf(*payload.ExpectedTerminal, "failed", "cancelled") {
+			return errors.New("run_cancel_requested draft requires a valid expected_terminal")
+		}
+	}
 	candidate := projection.clone()
 	return candidate.Apply(event)
 }
@@ -264,6 +289,7 @@ type AssistantMessagePayload struct {
 
 // VerificationFinishedPayload 记录一次验证是否通过。
 type VerificationFinishedPayload struct {
+	VerificationID    string `json:"verification_id,omitempty"`
 	OK                bool   `json:"ok"`
 	ResultFingerprint string `json:"result_fingerprint,omitempty"`
 }
@@ -409,7 +435,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.LastAssistantMessage = payload.Text
 	case EventVerificationFinished:
-		if projection.State != RunRunning || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn {
+		if (projection.State != RunRunning && projection.State != RunCancelling) || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn {
 			return fmt.Errorf("verification_finished requires the current running turn")
 		}
 		var payload VerificationFinishedPayload
@@ -521,8 +547,10 @@ func (projection *RunProjection) Apply(event Event) error {
 			return fmt.Errorf("operation terminal event requires operation id")
 		}
 		record, exists := projection.operations[*event.OperationID]
-		if !exists || (record.state != operationStarted && !(event.Type == EventOperationFailed && record.state == operationDenied)) {
-			return fmt.Errorf("%s requires a started or denied operation", event.Type)
+		failedBeforeStart := event.Type == EventOperationFailed &&
+			(record.state == operationDenied || record.state == operationApprovalGranted || record.state == operationAuthorized)
+		if !exists || (record.state != operationStarted && !failedBeforeStart) {
+			return fmt.Errorf("%s requires a started operation or a pre-start failure decision", event.Type)
 		}
 		record.state = operationTerminal
 		if projection.PendingOperation != nil && projection.PendingOperation.ID == *event.OperationID {
