@@ -2,17 +2,79 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
+
+// marshalFrozenRunConfig 把已校验配置投影为不含凭据定位信息的版本化制品。
+// 验证摘要直接基于 Loop 实际消费的命令结构计算，保证配置、事件与 manifest
+// 使用同一序列化口径。
+func marshalFrozenRunConfig(configuration config.Config, configFingerprint string) ([]byte, error) {
+	if err := config.Validate(configuration); err != nil {
+		return nil, err
+	}
+	commands, err := verificationCommands(configuration.Verification)
+	if err != nil {
+		return nil, fmt.Errorf("build frozen verification commands: %w", err)
+	}
+	encodedCommands, err := json.Marshal(commands)
+	if err != nil {
+		return nil, fmt.Errorf("encode frozen verification commands: %w", err)
+	}
+	verificationDigest := sha256.Sum256(encodedCommands)
+	profile := configuration.Profile
+	if profile == "" {
+		profile = config.ProfileDefault
+	}
+	preset := configuration.Preset
+	if preset == "" {
+		preset = config.PresetCoding
+	}
+	providerID := configuration.Provider.ID
+	admission := configuration.Provider.Admission
+	if configuration.Version == 2 && providerID == "" {
+		providerID = contract.ProviderIDCustom
+	}
+	var capability *contract.FrozenProviderCapabilityProjection
+	if declared := configuration.Provider.Capability; declared != nil {
+		capability = &contract.FrozenProviderCapabilityProjection{
+			ToolCalls: declared.ToolCalls, StreamingUsage: declared.StreamingUsage,
+			ContextWindowTokens: declared.ContextWindowTokens, MaxOutputTokens: declared.MaxOutputTokens,
+			StopReasons: append([]string(nil), declared.StopReasons...),
+		}
+	}
+	frozen, err := contract.NewFrozenRunConfig(configFingerprint, contract.FrozenConfigProjection{
+		ConfigVersion: configuration.Version,
+		Preset:        preset,
+		Profile:       profile,
+		Provider: contract.FrozenProviderProjection{
+			Kind: contract.ProviderKindOpenAICompatible, BaseURL: configuration.Provider.BaseURL,
+			Model: configuration.Provider.Model, ID: providerID, Admission: admission, Capability: capability,
+		},
+		Policy: contract.PolicyIdentity{
+			Write: configuration.Policy.Write, Exec: configuration.Policy.Exec,
+			ProtectedPaths: append([]string(nil), configuration.Policy.ProtectedPaths...),
+		},
+		Verification: contract.FrozenVerificationProjection{
+			Commands: len(commands), Fingerprint: fmt.Sprintf("sha256:%x", verificationDigest),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build frozen run config: %w", err)
+	}
+	encoded, err := json.Marshal(frozen)
+	if err != nil {
+		return nil, fmt.Errorf("encode frozen run config: %w", err)
+	}
+	return encoded, nil
+}
 
 // readFrozenRunConfig 只读加载 run_created 引用的冻结配置制品，并校验内容
 // 摘要一致后返回其非敏感内容。没有 config_ref 的历史 Run 保持兼容地返回
@@ -32,13 +94,12 @@ func readFrozenRunConfig(events []domain.Event, stateDir, workspaceHash string) 
 		return nil, nil
 	}
 	root := manifestArtifactRoot(stateDir, workspaceHash)
-	if err := checkArtifactReference(root, *payload.ConfigRef); err != nil {
+	content, err := readArtifactContent(root, *payload.ConfigRef)
+	if err != nil {
 		return nil, fmt.Errorf("verify frozen run config: %w", err)
 	}
-	digest := strings.TrimPrefix(payload.ConfigRef.SHA256, "sha256:")
-	content, err := os.ReadFile(filepath.Join(root, "sha256", digest[:2], digest))
-	if err != nil {
-		return nil, fmt.Errorf("read frozen run config: %w", err)
+	if err := contract.ValidateFrozenRunConfig(events, content); err != nil {
+		return nil, fmt.Errorf("validate frozen run config: %w", err)
 	}
 	return content, nil
 }
