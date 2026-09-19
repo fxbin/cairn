@@ -97,7 +97,11 @@ func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input Ru
 	if replayErr != nil {
 		return errors.Join(err, fmt.Errorf("replay run while persisting cancellation: %w", replayErr))
 	}
-	verificationRepaired, repairErr := loop.cancelAuthorizedVerificationBeforeStart(ctx, &projection, input, events)
+	events, projection, repairErr := loop.repairRecoverableOperationGaps(ctx, input, events, projection)
+	if repairErr != nil {
+		return errors.Join(err, repairErr)
+	}
+	verificationRepaired, repairErr := loop.finishVerificationForCancellation(ctx, &projection, input, events)
 	if repairErr != nil {
 		return errors.Join(err, repairErr)
 	}
@@ -112,7 +116,7 @@ func (loop *Loop) persistCancellationIfInterrupted(ctx context.Context, input Ru
 		}
 	}
 	if hasRecoverableTerminalGap(events) {
-		return err
+		return errors.Join(err, errors.New("run cancellation still has a recoverable terminal gap"))
 	}
 	if projection.State != domain.RunRunning {
 		return err

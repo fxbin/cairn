@@ -174,12 +174,8 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	} else if !result.OK {
 		eventType = domain.EventOperationFailed
 	}
-	resultContext := ctx
-	var cancel context.CancelFunc
-	if cancelled {
-		resultContext, cancel = loop.commitContext(ctx)
-		defer cancel()
-	}
+	resultContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	payload := loop.resultPayload(call.Name, result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return tools.Result{}, err

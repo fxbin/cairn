@@ -809,9 +809,10 @@ func (loop *Loop) finishUnstartedVerification(ctx context.Context, projection *d
 	return nil
 }
 
-// cancelAuthorizedVerificationBeforeStart 在运行取消兜底中关闭已授权但尚未启动
-// 的验证命令，防止下次恢复把取消前的授权空窗重新解释为可执行操作。
-func (loop *Loop) cancelAuthorizedVerificationBeforeStart(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (bool, error) {
+// finishVerificationForCancellation 在运行取消兜底中安全关闭尚未完成的验证：
+// 已授权但未启动的命令记为取消；已有命令终态时只关闭验证覆盖层，绝不执行
+// 冻结计划中的后续命令。
+func (loop *Loop) finishVerificationForCancellation(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (bool, error) {
 	verification, found, err := latestIncompleteVerification(events)
 	if err != nil {
 		return false, err
@@ -827,12 +828,34 @@ func (loop *Loop) cancelAuthorizedVerificationBeforeStart(ctx context.Context, p
 		return false, nil
 	}
 	latest := operations[len(operations)-1]
-	if latest.hasResult || latest.started || !latest.authorized {
-		return false, nil
-	}
 	verificationID := verification.verificationID
 	if verificationID == "" {
 		verificationID = latest.proposal.VerificationID
+	}
+	if latest.hasResult {
+		result, _, err := verificationTerminalResult(latest.terminal)
+		if err != nil {
+			return false, err
+		}
+		commitContext, cancel := loop.commitContext(ctx)
+		defer cancel()
+		if err := loop.append(commitContext, projection, domain.EventDraft{
+			RunID:         input.RunID,
+			WorkspaceHash: input.WorkspaceHash,
+			Type:          domain.EventVerificationFinished,
+			TurnID:        &verification.turnID,
+			Payload: mustJSON(domain.VerificationFinishedPayload{
+				VerificationID:    verificationID,
+				OK:                false,
+				ResultFingerprint: stableToolResultFingerprint(result),
+			}),
+		}); err != nil {
+			return false, &verificationPersistenceError{cause: err}
+		}
+		return true, nil
+	}
+	if latest.started || !latest.authorized {
+		return false, nil
 	}
 	result := tools.Failure("user_interrupt", "verification command was cancelled before execution because the run was stopping")
 	result.Data = mustJSON(struct {
@@ -1182,12 +1205,6 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	} else if !result.OK {
 		eventType = domain.EventOperationFailed
 	}
-	resultContext := ctx
-	var cancel context.CancelFunc
-	if cancelled {
-		resultContext, cancel = loop.commitContext(ctx)
-		defer cancel()
-	}
 	if result.OK {
 		afterObservation, observationErr := loop.verificationObservation()
 		if observationErr != nil {
@@ -1198,6 +1215,8 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 			eventType = domain.EventOperationFailed
 		}
 	}
+	resultContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	payload := loop.resultPayload("exec_command", result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return err

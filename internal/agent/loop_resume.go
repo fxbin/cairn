@@ -339,12 +339,8 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	} else if !result.OK {
 		eventType = domain.EventOperationFailed
 	}
-	resultContext := ctx
-	var cancel context.CancelFunc
-	if cancelled {
-		resultContext, cancel = loop.commitContext(ctx)
-		defer cancel()
-	}
+	resultContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	payload := loop.resultPayload(call.Name, result)
 	if err := loop.append(resultContext, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(payload)}); err != nil {
 		return Result{}, err
@@ -1126,6 +1122,41 @@ func (loop *Loop) repairMissingToolResults(ctx context.Context, projection *doma
 		repaired = true
 	}
 	return repaired, nil
+}
+
+// repairRecoverableOperationGaps 仅依据既有 Journal 事实补齐普通操作的确定性
+// 终态与模型可见结果；每阶段追加后重新加载并回放，绝不重新执行工具。
+func (loop *Loop) repairRecoverableOperationGaps(ctx context.Context, input RunInput, events []domain.Event, projection domain.RunProjection) ([]domain.Event, domain.RunProjection, error) {
+	operationRepaired, err := loop.repairUnstartedOperationTerminals(ctx, &projection, input, events)
+	if err != nil {
+		return nil, domain.RunProjection{}, err
+	}
+	if operationRepaired {
+		events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if err != nil {
+			return nil, domain.RunProjection{}, fmt.Errorf("reload run after repairing unstarted operations: %w", err)
+		}
+		projection, err = domain.Replay(events)
+		if err != nil {
+			return nil, domain.RunProjection{}, fmt.Errorf("replay run after repairing unstarted operations: %w", err)
+		}
+	}
+	resultRepaired, err := loop.repairMissingToolResults(ctx, &projection, input, events)
+	if err != nil {
+		return nil, domain.RunProjection{}, err
+	}
+	if !resultRepaired {
+		return events, projection, nil
+	}
+	events, err = loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+	if err != nil {
+		return nil, domain.RunProjection{}, fmt.Errorf("reload run after repairing tool results: %w", err)
+	}
+	projection, err = domain.Replay(events)
+	if err != nil {
+		return nil, domain.RunProjection{}, fmt.Errorf("replay run after repairing tool results: %w", err)
+	}
+	return events, projection, nil
 }
 
 // toolResultFromOperationTerminal 从普通操作终态或人工对账结论严格重建
