@@ -48,22 +48,34 @@ type Command struct {
 	Stderr  io.Writer
 }
 
-// jsonOutputTracker 为仍使用包级 JSON helper 的子命令保存首个输出错误，
-// 由顶级 Run 统一映射为 stderr 诊断与失败退出码。
-type jsonOutputTracker struct {
-	writer io.Writer
-	err    error
+// outputTracker 保存标准流的首个输出错误及其诊断状态，供顶级 Run 统一
+// 映射为失败退出码，并避免重复报告已由子命令处理的错误。
+type outputTracker struct {
+	writer   io.Writer
+	err      error
+	reported bool
 }
 
-// Write 将内容原样写入底层 stdout；JSON helper 负责登记失败。
-func (tracker *jsonOutputTracker) Write(content []byte) (int, error) {
-	return tracker.writer.Write(content)
+// Write 将内容写入底层标准流，并保存首次写入失败。
+func (tracker *outputTracker) Write(content []byte) (int, error) {
+	written, err := tracker.writer.Write(content)
+	if err != nil {
+		tracker.record(err)
+	}
+	return written, err
 }
 
-// record 保存首个 JSON 输出错误，避免后续失败覆盖根因。
-func (tracker *jsonOutputTracker) record(err error) {
+// record 保存首个输出错误，避免后续失败覆盖根因。
+func (tracker *outputTracker) record(err error) {
 	if tracker.err == nil {
 		tracker.err = err
+	}
+}
+
+// markOutputErrorReported 标记调用方已经针对当前标准输出首错写出诊断。
+func markOutputErrorReported(writer io.Writer) {
+	if tracker, ok := writer.(*outputTracker); ok && tracker.err != nil {
+		tracker.reported = true
 	}
 }
 
@@ -80,11 +92,20 @@ func (command Command) Run(ctx context.Context, args []string) int {
 	if command.Stderr == nil {
 		command.Stderr = os.Stderr
 	}
-	tracker := &jsonOutputTracker{writer: command.Stdout}
-	command.Stdout = tracker
+	stderr := command.Stderr
+	stdoutTracker := &outputTracker{writer: command.Stdout}
+	stderrTracker := &outputTracker{writer: command.Stderr}
+	command.Stdout = stdoutTracker
+	command.Stderr = stderrTracker
 	exitCode := command.dispatch(ctx, args)
-	if tracker.err != nil {
-		fmt.Fprintln(command.Stderr, "json output failed:", tracker.err)
+	if stdoutTracker.err != nil {
+		if !stdoutTracker.reported {
+			fmt.Fprintln(stderr, "stdout output failed:", stdoutTracker.err)
+		}
+		return ExitFailed
+	}
+	if stderrTracker.err != nil {
+		fmt.Fprintln(stderr, "stderr output failed:", stderrTracker.err)
 		return ExitFailed
 	}
 	return exitCode
@@ -277,6 +298,7 @@ func (command Command) benchmarkRun(ctx context.Context, arguments []string) int
 		return ExitFailed
 	}
 	if err := json.NewEncoder(command.Stdout).Encode(report); err != nil {
+		markOutputErrorReported(command.Stdout)
 		fmt.Fprintln(command.Stderr, "write benchmark report:", err)
 		return ExitFailed
 	}
@@ -681,6 +703,7 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 			StopDetail:    outcome.StopDetail,
 		}
 		if err := writeJSONChecked(command.Stdout, projection); err != nil {
+			markOutputErrorReported(command.Stdout)
 			fmt.Fprintln(command.Stderr, "memory candidate evaluate output failed:", err)
 			return ExitFailed
 		}
@@ -748,6 +771,7 @@ func (command Command) memoryCandidateEvidence(ctx context.Context, arguments []
 	}
 	if *jsonOutput {
 		if err := writeJSONChecked(command.Stdout, evidence); err != nil {
+			markOutputErrorReported(command.Stdout)
 			fmt.Fprintln(command.Stderr, "memory candidate evidence output failed:", err)
 			return ExitFailed
 		}
@@ -1378,6 +1402,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		}
 		result, err := command.Service.Reconcile(ctx, app.ReconcileOptions{RunID: domain.RunID(flags.Arg(0)), OperationID: domain.OperationID(parts[0]), Verdict: parts[1], Note: *note, Evidence: *evidence, Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
 		if outputErr != nil {
+			markOutputErrorReported(command.Stdout)
 			fmt.Fprintln(command.Stderr, "reconcile output failed:", outputErr)
 			return ExitFailed
 		}
@@ -1400,6 +1425,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	if *abortRun {
 		result, err := command.Service.Abort(ctx, app.AbortOptions{RunID: domain.RunID(flags.Arg(0)), Reason: *reason, Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
 		if outputErr != nil {
+			markOutputErrorReported(command.Stdout)
 			fmt.Fprintln(command.Stderr, "abort output failed:", outputErr)
 			return ExitFailed
 		}
@@ -1426,6 +1452,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 	}
 	result, err := command.Service.Resume(ctx, app.ResumeOptions{RunID: domain.RunID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: fingerprint, Approve: approved, Reason: *reason}, OnEvent: onEvent})
 	if outputErr != nil {
+		markOutputErrorReported(command.Stdout)
 		fmt.Fprintln(command.Stderr, "resume output failed:", outputErr)
 		return ExitFailed
 	}
@@ -1545,6 +1572,7 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	}
 	result, err := command.Service.Run(ctx, app.RunOptions{Task: flags.Arg(0), Workspace: *workspace, StateDir: *stateDir, Config: configuration, OnEvent: onEvent})
 	if outputErr != nil {
+		markOutputErrorReported(command.Stdout)
 		fmt.Fprintln(command.Stderr, "run output failed:", outputErr)
 		return ExitFailed
 	}
@@ -1985,11 +2013,11 @@ func writeJSONChecked(writer io.Writer, value any) error {
 
 // writeJSON 为未迁移的同包子命令保留兼容入口，并把失败登记到顶级输出追踪器。
 func writeJSON(writer io.Writer, value any) {
-	if tracker, ok := writer.(*jsonOutputTracker); ok && tracker.err != nil {
+	if tracker, ok := writer.(*outputTracker); ok && tracker.err != nil {
 		return
 	}
 	if err := writeJSONChecked(writer, value); err != nil {
-		if tracker, ok := writer.(*jsonOutputTracker); ok {
+		if tracker, ok := writer.(*outputTracker); ok {
 			tracker.record(err)
 		}
 	}
@@ -1998,6 +2026,7 @@ func writeJSON(writer io.Writer, value any) {
 // writeJSONOutput 将 JSON 输出失败统一写入 stderr，并映射为公开失败退出码。
 func (command Command) writeJSONOutput(label string, value any) int {
 	if err := writeJSONChecked(command.Stdout, value); err != nil {
+		markOutputErrorReported(command.Stdout)
 		fmt.Fprintf(command.Stderr, "%s output failed: %v\n", label, err)
 		return ExitFailed
 	}
