@@ -239,7 +239,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	defer cancelRun()
 	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
-	if errors.Is(err, context.DeadlineExceeded) {
+	if wallBudgetExpired(runContext) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
@@ -709,7 +709,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	defer cancelRun()
 	resumeInput := agent.RunInput{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, ResumeInvocation: domain.NewID("invoke"), ResumeFromSeq: projection.LastSeq, ResumeObservation: observation}
 	result, err := boot.Loop.Resume(runContext, resumeInput, options.Approval)
-	if errors.Is(err, context.DeadlineExceeded) {
+	if wallBudgetExpired(runContext) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		resumeInput.ResumeInvocation = ""
@@ -881,7 +881,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	}
 	defer cancelRun()
 	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
-	if errors.Is(err, context.DeadlineExceeded) {
+	if wallBudgetExpired(runContext) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
@@ -1478,6 +1478,14 @@ func runBudgetContext(ctx context.Context, createdAt time.Time, configuration co
 // expiredWallBudgetContext 返回已过期上下文，供持久化墙钟预算耗尽事件使用。
 func expiredWallBudgetContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
+}
+
+// wallBudgetExpired 只在墙钟预算上下文自身到期时为真。HTTP 客户端的单请求
+// 超时在当前 Go 版本同样满足 errors.Is(err, context.DeadlineExceeded)，因此
+// 判断预算是否耗尽必须依据预算上下文而非错误链，避免把可重试的瞬态请求
+// 超时误终态化为 wall_time 预算失败。
+func wallBudgetExpired(runContext context.Context) bool {
+	return errors.Is(runContext.Err(), context.DeadlineExceeded)
 }
 
 // checkAdmissionGate 以只读方式计算 Provider 准入状态；即使 optional
