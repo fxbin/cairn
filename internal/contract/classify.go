@@ -7,6 +7,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 // 失败分类是普通 Run 与 benchmark 共用的统一词表：错误分类优先使用
@@ -50,6 +51,8 @@ const (
 	FailureSensitiveToolArguments = "sensitive_tool_arguments"
 	// FailureRateLimited 表示 Provider 明确返回可分类的限流错误。
 	FailureRateLimited = "rate_limited"
+	// FailurePaymentRequired 表示 Provider 因余额、计费或付款要求拒绝请求。
+	FailurePaymentRequired = "payment_required"
 	// FailureProviderCapabilityMismatch 表示 Provider 违背冻结能力合同。
 	FailureProviderCapabilityMismatch = "provider_capability_mismatch"
 )
@@ -74,6 +77,7 @@ var knownTerminalFailureClasses = map[string]struct{}{
 	FailureMalformedToolArguments:            {},
 	FailureSensitiveToolArguments:            {},
 	FailureRateLimited:                       {},
+	FailurePaymentRequired:                   {},
 	FailureProviderCapabilityMismatch:        {},
 }
 
@@ -109,6 +113,7 @@ func ClassifyError(err error) string {
 	var denied *agent.PolicyDeniedError
 	var exhausted *agent.BudgetExceededError
 	var guarded *agent.LoopGuardExceededError
+	var providerFailure ports.ClassifiedError
 	switch {
 	case errors.As(err, &waiting):
 		return FailureApproval
@@ -122,6 +127,11 @@ func ClassifyError(err error) string {
 		return FailureTimeout
 	case errors.Is(err, context.Canceled):
 		return FailureCancelled
+	case errors.As(err, &providerFailure):
+		if class := providerFailure.ErrorClass(); IsKnownTerminalFailureClass(class) {
+			return class
+		}
+		return FailureAgent
 	default:
 		return FailureAgent
 	}

@@ -549,12 +549,14 @@ func orderedToolCalls(calls map[int]*toolCallAccumulator) ([]*toolCallAccumulato
 	return ordered, nil
 }
 
-// statusKind 将 HTTP 状态码归类为稳定的提供方错误种类；429 必须复用统一
-// 失败词表的 rate_limited，禁止在此自造别名造成词表漂移。
+// statusKind 将 HTTP 状态码归类为稳定的提供方错误种类；402 与 429 必须
+// 复用统一失败词表，禁止在此自造别名造成事件、CLI 与评测投影漂移。
 func statusKind(statusCode int) string {
 	switch {
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
 		return "auth"
+	case statusCode == http.StatusPaymentRequired:
+		return contract.FailurePaymentRequired
 	case statusCode == http.StatusTooManyRequests:
 		return contract.FailureRateLimited
 	case statusCode >= 500:
