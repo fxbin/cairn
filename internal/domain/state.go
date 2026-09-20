@@ -559,9 +559,12 @@ func (projection *RunProjection) Apply(event Event) error {
 			return fmt.Errorf("operation terminal event requires operation id")
 		}
 		record, exists := projection.operations[*event.OperationID]
+		if !exists || record == nil {
+			return fmt.Errorf("%s requires a proposed operation", event.Type)
+		}
 		failedBeforeStart := event.Type == EventOperationFailed &&
 			(record.state == operationDenied || record.state == operationApprovalGranted || record.state == operationAuthorized)
-		if !exists || (record.state != operationStarted && !failedBeforeStart) {
+		if record.state != operationStarted && !failedBeforeStart {
 			return fmt.Errorf("%s requires a started operation or a pre-start failure decision", event.Type)
 		}
 		record.state = operationTerminal
