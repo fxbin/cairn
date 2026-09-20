@@ -460,6 +460,9 @@ type verificationOperationRecord struct {
 	terminal            domain.Event
 	approvalFingerprint string
 	policyFingerprint   string
+	policySummary       string
+	policyAsked         bool
+	approvalRequested   bool
 	hasResult           bool
 	authorized          bool
 	policyAuthorized    bool
@@ -504,12 +507,19 @@ func verificationOperations(events []domain.Event, verification incompleteVerifi
 				return nil, fmt.Errorf("decode verification policy decision: %w", err)
 			}
 			record.policyFingerprint = payload.Fingerprint
+			record.policySummary = payload.Summary
 			switch payload.Effect {
 			case string(policy.Allow):
 				record.authorized = true
 				record.policyAuthorized = true
+			case string(policy.Ask):
+				record.policyAsked = true
 			case string(policy.Deny):
 				record.policyDenied = true
+			}
+		case domain.EventApprovalRequested:
+			if record, found := records[operationID]; found {
+				record.approvalRequested = true
 			}
 		case domain.EventApprovalGranted:
 			record, found := records[operationID]
@@ -573,6 +583,23 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if err != nil {
 		return false, err
 	}
+	if verification.lastMutationSeq == 0 {
+		if len(operations) != 0 {
+			return false, errors.New("zero-mutation verification contains a command proposal")
+		}
+		commitContext, cancel := loop.commitContext(ctx)
+		defer cancel()
+		if err := loop.append(commitContext, projection, domain.EventDraft{
+			RunID:         input.RunID,
+			WorkspaceHash: input.WorkspaceHash,
+			Type:          domain.EventVerificationFinished,
+			TurnID:        &verification.turnID,
+			Payload:       mustJSON(domain.VerificationFinishedPayload{VerificationID: verification.verificationID, OK: true}),
+		}); err != nil {
+			return false, &verificationPersistenceError{cause: err}
+		}
+		return true, nil
+	}
 	if len(operations) != 0 {
 		latest := operations[len(operations)-1]
 		if latest.hasResult && latest.terminal.Type == domain.EventOperationCancelled {
@@ -602,13 +629,12 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		}
 		commitContext, cancel := loop.commitContext(ctx)
 		defer cancel()
-		ok := verification.lastMutationSeq == 0
 		if err := loop.append(commitContext, projection, domain.EventDraft{
 			RunID:         input.RunID,
 			WorkspaceHash: input.WorkspaceHash,
 			Type:          domain.EventVerificationFinished,
 			TurnID:        &verification.turnID,
-			Payload:       mustJSON(domain.VerificationFinishedPayload{VerificationID: verificationID, OK: ok}),
+			Payload:       mustJSON(domain.VerificationFinishedPayload{VerificationID: verificationID, OK: false}),
 		}); err != nil {
 			return false, &verificationPersistenceError{cause: err}
 		}
@@ -616,7 +642,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	}
 	latest := operations[len(operations)-1]
 	if !latest.hasResult {
-		if latest.started || !latest.authorized {
+		if latest.started {
 			return false, nil
 		}
 		if ctx.Err() != nil {
@@ -626,6 +652,16 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			return false, errors.New("verification command index exceeds frozen plan")
 		}
 		command := commands[latest.proposal.CommandIndex]
+		if latest.policyAsked && !latest.authorized {
+			if latest.approvalRequested {
+				return false, nil
+			}
+			decision := policy.Decision{Effect: policy.Ask, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
+			if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
+				return false, err
+			}
+			return true, &WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
+		}
 		observation, err := loop.verificationObservation()
 		if err != nil {
 			return false, fmt.Errorf("observe workspace before resuming verification: %w", err)
@@ -639,26 +675,42 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			return false, err
 		}
 		decision = freshApprovalDecision(*projection, decision)
-		if !verificationAuthorizationMatches(latest, decision) {
-			reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
-			result := tools.Failure("approval_stale", reason)
-			feedback := "Verification approval expired after workspace drift. Re-inspect the workspace and decide whether to repair or rerun verification."
-			if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-		if !latest.policyAuthorized {
-			if latest.approvalFingerprint == "" {
-				return false, errors.New("approved verification command has no persisted approval fingerprint")
-			}
-			decision := policy.Decision{
-				Effect:      policy.Allow,
-				RuleID:      "approved_once",
-				Fingerprint: latest.approvalFingerprint,
-			}
+		if !latest.authorized {
 			if err := loop.append(ctx, projection, policyDecisionDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
 				return false, err
+			}
+			switch decision.Effect {
+			case policy.Ask:
+				if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
+					return false, err
+				}
+				return true, &WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
+			case policy.Deny:
+				result := policyFailureResult(decision)
+				feedback := "Verification command was denied by policy. Inspect the frozen command and policy before retrying."
+				if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+		} else {
+			if !verificationAuthorizationMatches(latest, decision) {
+				reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
+				result := tools.Failure("approval_stale", reason)
+				feedback := "Verification approval expired after workspace drift. Re-inspect the workspace and decide whether to repair or rerun verification."
+				if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+			if !latest.policyAuthorized {
+				if latest.approvalFingerprint == "" {
+					return false, errors.New("approved verification command has no persisted approval fingerprint")
+				}
+				approved := policy.Decision{Effect: policy.Allow, RuleID: "approved_once", Fingerprint: latest.approvalFingerprint}
+				if err := loop.append(ctx, projection, policyDecisionDraft(input, verification.turnID, latest.operationID, approved)); err != nil {
+					return false, err
+				}
 			}
 		}
 		runErr := loop.executeVerificationCommand(ctx, projection, input, verification.turnID, latest.operationID, command, observation)
