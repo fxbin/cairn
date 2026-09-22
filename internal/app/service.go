@@ -239,7 +239,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	defer cancelRun()
 	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
-	if wallBudgetExpired(runContext) {
+	if wallBudgetExpired(runContext) && !runReachedTerminal(boot.Journal, runID) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
@@ -709,7 +709,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	defer cancelRun()
 	resumeInput := agent.RunInput{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, ResumeInvocation: domain.NewID("invoke"), ResumeFromSeq: projection.LastSeq, ResumeObservation: observation}
 	result, err := boot.Loop.Resume(runContext, resumeInput, options.Approval)
-	if wallBudgetExpired(runContext) {
+	if wallBudgetExpired(runContext) && !runReachedTerminal(boot.Journal, options.RunID) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		resumeInput.ResumeInvocation = ""
@@ -881,7 +881,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	}
 	defer cancelRun()
 	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
-	if wallBudgetExpired(runContext) {
+	if wallBudgetExpired(runContext) && !runReachedTerminal(boot.Journal, options.RunID) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
 		result, err = boot.Loop.Run(expiredContext, agent.RunInput{RunID: options.RunID, Task: projection.Task, WorkspaceHash: boot.WorkspaceHash})
@@ -1486,6 +1486,25 @@ func expiredWallBudgetContext(ctx context.Context) (context.Context, context.Can
 // 超时误终态化为 wall_time 预算失败。
 func wallBudgetExpired(runContext context.Context) bool {
 	return errors.Is(runContext.Err(), context.DeadlineExceeded)
+}
+
+// runReachedTerminal 只读回放日志，判断运行是否已持久化终态。墙钟收尾必须
+// 以 Journal 为准：回调或返回调度跨过截止时间时，已完成的运行不能被再次按
+// 超时收尾，调用方已拿到的成功响应与既有失败分类都必须原样保留。
+func runReachedTerminal(journal *sqlite.Journal, runID domain.RunID) bool {
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		return false
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		return false
+	}
+	switch projection.State {
+	case domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
+		return true
+	}
+	return false
 }
 
 // checkAdmissionGate 以只读方式计算 Provider 准入状态；即使 optional
