@@ -46,7 +46,7 @@ func manifestFixtureEvents(t *testing.T) []domain.Event {
 // frozenFixtureProjection 返回当前 v2 冻结配置合同的最小合法投影。
 func frozenFixtureProjection() FrozenConfigProjection {
 	return FrozenConfigProjection{
-		ConfigVersion: frozenAgentConfigVersionV2,
+		ConfigVersion: frozenAgentConfigVersion,
 		Preset:        "coding",
 		Profile:       "default",
 		Provider: FrozenProviderProjection{
@@ -84,7 +84,7 @@ func uncheckedFrozenFixture(t *testing.T, projection FrozenConfigProjection) jso
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(FrozenRunConfig{
-		SchemaVersion: frozenRunConfigSchemaV1, ConfigFingerprint: fixtureConfigFingerprint,
+		SchemaVersion: frozenRunConfigSchemaVersion, ConfigFingerprint: fixtureConfigFingerprint,
 		ProjectionFingerprint: fingerprint, Projection: projection,
 	})
 	if err != nil {
@@ -114,7 +114,7 @@ func TestManifestFromRunProjectsIdentityAcrossSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != manifestSchemaV2 || manifest.RunID != "run-1" || manifest.WorkspaceHash != "sha256:ws" {
+	if manifest.SchemaVersion != manifestSchemaVersion || manifest.RunID != "run-1" || manifest.WorkspaceHash != "sha256:ws" {
 		t.Fatalf("manifest=%#v", manifest)
 	}
 	if manifest.ConfigFingerprint != fixtureConfigFingerprint || manifest.Build.Revision != "abc123" || manifest.Build.Fingerprint == "" {
@@ -290,7 +290,7 @@ func TestManifestProjectsVersion2Selection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != manifestSchemaV2 {
+	if manifest.SchemaVersion != manifestSchemaVersion {
 		t.Fatalf("schema version = %d", manifest.SchemaVersion)
 	}
 	selection := manifest.Provider.Selection

@@ -14,12 +14,12 @@ import (
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
 
-// evaluationSchemaV1 是 Evaluation 行的当前合同版本。
-const evaluationSchemaV1 = 1
+// evaluationSchemaVersion 是 Evaluation 行的当前合同版本。
+const evaluationSchemaVersion = 1
 
-// EvaluationSchemaVersionV1 是面向编排方的当前评测行 schema 版本导出常量；
+// EvaluationSchemaVersion 是面向编排方的当前评测行 schema 版本导出常量；
 // 构造新评测行必须经此表达版本事实，不得散落字面量。
-const EvaluationSchemaVersionV1 = evaluationSchemaV1
+const EvaluationSchemaVersion = evaluationSchemaVersion
 
 // evaluationIDPrefix 是 Evaluation 标识的版本化域前缀。
 const evaluationIDPrefix = "cairn-evaluation-v1"
@@ -93,7 +93,7 @@ func (binding EvaluationBinding) Validate() error {
 // Validate 校验评测行的结构合同：schema 版本、身份词表、状态合法性与
 // running/结论两态的完整性约束（running 不得携带结论产物；结论态必须齐全）。
 func (evaluation Evaluation) Validate() error {
-	if evaluation.SchemaVersion != evaluationSchemaV1 {
+	if evaluation.SchemaVersion != evaluationSchemaVersion {
 		return fmt.Errorf("evaluation schema_version %d is not supported", evaluation.SchemaVersion)
 	}
 	if evaluation.ID == "" || evaluation.CandidateID == "" {

@@ -6,8 +6,8 @@ import (
 	"sort"
 )
 
-// providerCardSchemaV1 是 Provider Capability Card 的当前产品合同版本。
-const providerCardSchemaV1 = 1
+// providerCardSchemaVersion 是 Provider Capability Card 的当前产品合同版本。
+const providerCardSchemaVersion = 1
 
 // ProviderCardSourceConfig 表示卡来自用户显式配置声明；能力模型不进编译期
 // 代码，配置是唯一来源。
@@ -75,7 +75,7 @@ func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclara
 			return ProviderCapabilityCard{}, errors.New("provider.capability token limits must not be negative")
 		}
 		card := ProviderCapabilityCard{
-			SchemaVersion: providerCardSchemaV1, ProviderKind: kind, Model: model,
+			SchemaVersion: providerCardSchemaVersion, ProviderKind: kind, Model: model,
 			Protocol:  providerCardProtocolChatCompletions,
 			ToolCalls: declared.ToolCalls, StreamingUsage: declared.StreamingUsage,
 			ContextWindowTokens: declared.ContextWindowTokens, MaxOutputTokens: declared.MaxOutputTokens,

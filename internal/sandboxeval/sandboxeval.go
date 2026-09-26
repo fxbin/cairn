@@ -21,10 +21,10 @@ import (
 // 输入选择。
 const SandboxProviderKeyEnv = "CAIRN_SANDBOX_PROVIDER_KEY"
 
-// leaseSchemaV1 与 policySchemaV1 分别是租约描述与凭据策略的当前 schema 版本。
+// leaseSchemaVersion 与 policySchemaVersion 分别是租约描述与凭据策略的当前 schema 版本。
 const (
-	leaseSchemaV1  = 1
-	policySchemaV1 = 1
+	leaseSchemaVersion  = 1
+	policySchemaVersion = 1
 )
 
 // credentialPolicyPrefix 是凭据策略指纹的版本化域前缀。
@@ -86,7 +86,7 @@ func fingerprintShape(value string) bool {
 // 时间窗方向、正数总量上限与服务端配额/可撤销硬要求。跨对象约束（覆盖
 // 策略下限、晚于套件截止）在 AuthorizeLease 中统一失败关闭。
 func (lease CredentialLease) Validate() error {
-	if lease.SchemaVersion != leaseSchemaV1 {
+	if lease.SchemaVersion != leaseSchemaVersion {
 		return fmt.Errorf("lease schema_version %d is not supported", lease.SchemaVersion)
 	}
 	if lease.LeaseID == "" || lease.CredentialProfileID == "" {
@@ -121,7 +121,7 @@ func (lease CredentialLease) Validate() error {
 // Validate 校验凭据策略自身一致性：固定注入名、去重排序后非空的账号标识、
 // Provider 身份摘要形态、正数的套件时长与非负的最小需求。
 func (policy CredentialPolicy) Validate() error {
-	if policy.SchemaVersion != policySchemaV1 {
+	if policy.SchemaVersion != policySchemaVersion {
 		return fmt.Errorf("policy schema_version %d is not supported", policy.SchemaVersion)
 	}
 	if policy.EnvName != SandboxProviderKeyEnv {

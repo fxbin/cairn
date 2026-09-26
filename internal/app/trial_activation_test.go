@@ -88,7 +88,7 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 	}
 	started, err := service.StartEvolutionEvaluation(context.Background(), MemoryEvaluationStartOptions{
 		Evaluation: memory.Evaluation{
-			SchemaVersion: memory.EvaluationSchemaVersionV1, ID: evaluationID, CandidateID: candidate.ID,
+			SchemaVersion: memory.EvaluationSchemaVersion, ID: evaluationID, CandidateID: candidate.ID,
 			EvalSetFingerprint: evalSetFingerprint, BaselineConfigFingerprint: baselineFingerprint,
 			VariantConfigFingerprint: variantFingerprint, ComparatorVersion: "trial-comparator",
 			Status: memory.EvaluationStatusRunning,
@@ -110,7 +110,7 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	promotion := memory.Promotion{
-		ID: promotionID, SchemaVersion: memory.PromotionSchemaVersionV1,
+		ID: promotionID, SchemaVersion: memory.PromotionSchemaVersion,
 		CandidateID: candidate.ID, EvaluationID: started.ID, TargetKind: memory.TargetKindContextCompactionParams,
 		Version: 1, Variant: variant, VariantFingerprint: variantFingerprint, VariantSpecSHA256: variantSpec,
 		BaselineFingerprint: baselineFingerprint, EvalSetFingerprint: evalSetFingerprint,

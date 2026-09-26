@@ -6,8 +6,8 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// resultSchemaV1 是 Result 的当前产品合同版本。
-const resultSchemaV1 = 1
+// resultSchemaVersion 是 Result 的当前产品合同版本。
+const resultSchemaVersion = 1
 
 // CompletionEvidence 绑定一次运行的完成依据：最新验证序号与结果、最后
 // 变更序号，以及"验证覆盖全部变更"的可信完成判定。它绝不引用模型自述。
@@ -60,7 +60,7 @@ func ResultFromRun(events []domain.Event, projection domain.RunProjection, task 
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{SchemaVersion: resultSchemaV1, Manifest: manifest, State: string(projection.State), Outcome: projection.Phase()}
+	result := Result{SchemaVersion: resultSchemaVersion, Manifest: manifest, State: string(projection.State), Outcome: projection.Phase()}
 	result.FailureClass = ClassifyTerminal(events)
 	result.StopReason = TerminalStopReason(events)
 	for _, event := range events {

@@ -29,8 +29,8 @@ var ErrAdmissionRejected = errors.New("provider admission is rejected for this b
 // ErrAdmissionSelectionMismatch 表示在档证据的解析身份与当前配置选择不一致。
 var ErrAdmissionSelectionMismatch = errors.New("admission evidence selection does not match the resolved profile")
 
-// admissionDecisionSchemaV1 是 ProviderAdmissionDecision 的当前合同版本。
-const admissionDecisionSchemaV1 = 1
+// admissionDecisionSchemaVersion 是 ProviderAdmissionDecision 的当前合同版本。
+const admissionDecisionSchemaVersion = 1
 
 // admissionFingerprintPrefix 是准入决定内容指纹的版本化域前缀。
 const admissionFingerprintPrefix = "cairn-provider-admission-decision-v1"
@@ -99,7 +99,7 @@ func (decision ProviderAdmissionDecision) ComputeFingerprint() (string, error) {
 
 // Validate 复核决定的结构自洽：schema 版本、全部指纹引用、理由边界、词表闭合与时间戳。
 func (decision ProviderAdmissionDecision) Validate() error {
-	if decision.SchemaVersion != admissionDecisionSchemaV1 {
+	if decision.SchemaVersion != admissionDecisionSchemaVersion {
 		return errors.New("admission decision schema version is not supported")
 	}
 	if !sha256DigestShape(decision.EvidenceFingerprint) {

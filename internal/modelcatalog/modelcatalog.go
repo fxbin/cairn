@@ -36,9 +36,9 @@ func DefaultCachePath() (string, error) {
 // 陈旧度不构成问题，而更短的间隔只会在弱网下制造无谓的失败面。
 const catalogTTL = 24 * time.Hour
 
-// cacheSchemaV2 是缓存文件外层结构的当前版本；v2 相比 v1 新增 provider 摘
+// cacheSchemaVersion 是缓存文件外层结构的当前版本；v2 相比 v1 新增 provider 摘
 // 要投影，v1 缓存因缺少该投影而判不可用，由调用方走网络刷新。
-const cacheSchemaV2 = 2
+const cacheSchemaVersion = 2
 
 // ProviderInfo 是目录 provider 节点的闭合投影：默认端点与推荐密钥环境变
 // 量名只作向导预填建议，不构成已验证事实；ModelCount 反映该 provider 在目
@@ -296,7 +296,7 @@ func loadCache(path string) (*cacheWrapper, error) {
 	if err := json.Unmarshal(content, &wrapper); err != nil {
 		return nil, fmt.Errorf("decode catalog cache: %w", err)
 	}
-	if wrapper.SchemaVersion != cacheSchemaV2 {
+	if wrapper.SchemaVersion != cacheSchemaVersion {
 		return nil, fmt.Errorf("catalog cache schema_version %d is unsupported", wrapper.SchemaVersion)
 	}
 	if wrapper.FetchedAt.IsZero() || len(wrapper.Entries) == 0 {
@@ -307,7 +307,7 @@ func loadCache(path string) (*cacheWrapper, error) {
 
 // writeCache 以临时文件加原子重命名落盘缓存，目录按 0700 创建。
 func writeCache(path string, catalog *Catalog) error {
-	wrapper := cacheWrapper{SchemaVersion: cacheSchemaV2, FetchedAt: catalog.FetchedAt, Entries: catalog.Entries, Providers: catalog.Providers, SkippedCount: catalog.SkippedCount}
+	wrapper := cacheWrapper{SchemaVersion: cacheSchemaVersion, FetchedAt: catalog.FetchedAt, Entries: catalog.Entries, Providers: catalog.Providers, SkippedCount: catalog.SkippedCount}
 	encoded, err := json.Marshal(wrapper)
 	if err != nil {
 		return err

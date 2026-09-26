@@ -15,16 +15,16 @@ import (
 )
 
 const (
-	promotionSchemaV1         = 1
-	promotionDecisionSchemaV1 = 1
-	promotionIDPrefix         = "cairn-evolution-version-v1"
-	promotionDecisionIDPrefix = "cairn-evolution-promotion-decision-v1"
-	promotionApprovalPrefix   = "cairn-evolution-promotion-approval-v2"
-	approverLabelMaxRunes     = 64
+	promotionSchemaVersion         = 1
+	promotionDecisionSchemaVersion = 1
+	promotionIDPrefix              = "cairn-evolution-version-v1"
+	promotionDecisionIDPrefix      = "cairn-evolution-promotion-decision-v1"
+	promotionApprovalPrefix        = "cairn-evolution-promotion-approval-v2"
+	approverLabelMaxRunes          = 64
 )
 
-// PromotionSchemaVersionV1 是面向编排方的当前演化版本合同版本。
-const PromotionSchemaVersionV1 = promotionSchemaV1
+// PromotionSchemaVersion 是面向编排方的当前演化版本合同版本。
+const PromotionSchemaVersion = promotionSchemaVersion
 
 // SandboxEnvironment 是 M4 唯一允许的激活环境；生产环境没有激活 API。
 const SandboxEnvironment = "sandbox"
@@ -116,7 +116,7 @@ type Activation struct {
 
 // Validate 校验版本投影的结构合同；跨表事实一致性由 SQLite Store.Check 负责。
 func (promotion Promotion) Validate() error {
-	if promotion.SchemaVersion != promotionSchemaV1 {
+	if promotion.SchemaVersion != promotionSchemaVersion {
 		return fmt.Errorf("promotion schema_version %d is not supported", promotion.SchemaVersion)
 	}
 	if promotion.ID == "" || promotion.DecisionID == "" || promotion.CandidateID == "" || promotion.EvaluationID == "" || promotion.TargetKind == "" {
@@ -166,7 +166,7 @@ func (promotion Promotion) Validate() error {
 // Decision 返回与版本投影一一对应的不可变人工决策。
 func (promotion Promotion) Decision() PromotionDecision {
 	return PromotionDecision{
-		ID: promotion.DecisionID, SchemaVersion: promotionDecisionSchemaV1,
+		ID: promotion.DecisionID, SchemaVersion: promotionDecisionSchemaVersion,
 		CandidateID: promotion.CandidateID, EvaluationID: promotion.EvaluationID,
 		TargetKind: promotion.TargetKind, VariantFingerprint: promotion.VariantFingerprint,
 		VariantSpecSHA256: promotion.VariantSpecSHA256, BaselineFingerprint: promotion.BaselineFingerprint,
@@ -181,7 +181,7 @@ func (promotion Promotion) Decision() PromotionDecision {
 // Validate 校验人工决策的字段形态与一次性审批绑定；存储层还会把它与候选、
 // 评测及版本行交叉验证。
 func (decision PromotionDecision) Validate() error {
-	if decision.SchemaVersion != promotionDecisionSchemaV1 || decision.ID == "" || decision.CandidateID == "" || decision.EvaluationID == "" || decision.TargetKind != TargetKindContextCompactionParams {
+	if decision.SchemaVersion != promotionDecisionSchemaVersion || decision.ID == "" || decision.CandidateID == "" || decision.EvaluationID == "" || decision.TargetKind != TargetKindContextCompactionParams {
 		return errors.New("promotion decision identity is invalid")
 	}
 	for name, value := range map[string]string{"variant_fingerprint": decision.VariantFingerprint, "variant_spec_sha256": decision.VariantSpecSHA256, "baseline_fingerprint": decision.BaselineFingerprint, "eval_set_fingerprint": decision.EvalSetFingerprint, "suite_result_digest": decision.SuiteResultDigest, "approval_fingerprint": decision.ApprovalFingerprint, "approval_nonce": decision.ApprovalNonce} {

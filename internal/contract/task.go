@@ -9,8 +9,8 @@ import (
 	"encoding/hex"
 )
 
-// taskSchemaV1 是 TaskSpec 的当前产品合同版本；演进必须升版本并保留解码兼容。
-const taskSchemaV1 = 1
+// taskSchemaVersion 是 TaskSpec 的当前产品合同版本；演进必须升版本并保留解码兼容。
+const taskSchemaVersion = 1
 
 // TaskKindFreeform 表示由 CLI 直接提交的自由任务文本。
 const TaskKindFreeform = "freeform"
@@ -48,7 +48,7 @@ type BenchmarkTaskRef struct {
 func FreeformTaskSpec(task string) TaskSpec {
 	digest := sha256.Sum256([]byte(task))
 	return TaskSpec{
-		SchemaVersion: taskSchemaV1,
+		SchemaVersion: taskSchemaVersion,
 		Kind:          TaskKindFreeform,
 		Source:        "cli",
 		PromptDigest:  "sha256:" + hex.EncodeToString(digest[:]),
@@ -60,7 +60,7 @@ func FreeformTaskSpec(task string) TaskSpec {
 func BenchmarkTaskSpec(prompt string, reference BenchmarkTaskRef) TaskSpec {
 	digest := sha256.Sum256([]byte(prompt))
 	return TaskSpec{
-		SchemaVersion: taskSchemaV1,
+		SchemaVersion: taskSchemaVersion,
 		Kind:          TaskKindBenchmark,
 		Source:        "benchmark",
 		PromptDigest:  "sha256:" + hex.EncodeToString(digest[:]),

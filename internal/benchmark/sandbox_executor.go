@@ -103,8 +103,8 @@ type scheduleStop struct {
 	detail string
 }
 
-// sandboxRecordSchemaV2 是支持断点恢复计账的本地记录与套件结果 schema 版本。
-const sandboxRecordSchemaV2 = 2
+// sandboxRecordSchemaVersion 是支持断点恢复计账的本地记录与套件结果 schema 版本。
+const sandboxRecordSchemaVersion = 2
 
 // sandboxArmTag 返回臂的稳定短标识，用于按臂分离的目录段、记录与 diff 文件
 // 命名；基线与变体永不共享可写归档路径。
@@ -569,7 +569,7 @@ func (executor SandboxExecutor) Run(ctx context.Context, options SandboxExecutor
 func (executor SandboxExecutor) startEvaluationTransaction(ctx context.Context, options SandboxExecutorOptions, precheck precheckResult) (memory.Evaluation, error) {
 	return executor.Service.StartEvolutionEvaluation(ctx, app.MemoryEvaluationStartOptions{
 		Evaluation: memory.Evaluation{
-			SchemaVersion:             memory.EvaluationSchemaVersionV1,
+			SchemaVersion:             memory.EvaluationSchemaVersion,
 			ID:                        precheck.evaluationID,
 			CandidateID:               options.CandidateID,
 			EvalSetFingerprint:        precheck.evalSetFingerprint,
@@ -827,7 +827,7 @@ func dockerImageSelfDigest(ctx context.Context, image string) (string, error) {
 // 原文一律不落盘。
 func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared preparedAttempt, runID, evaluationID string, step SandboxPairStep, evaluationDir string, stop *scheduleStop) (*SandboxRunRecord, *sandboxeval.SuiteVerdict, *scheduleAbort) {
 	record := &SandboxRunRecord{
-		SchemaVersion: sandboxRecordSchemaV2,
+		SchemaVersion: sandboxRecordSchemaVersion,
 		RunID:         runID,
 		EvaluationID:  evaluationID,
 		Arm:           string(step.Arm),
@@ -1130,7 +1130,7 @@ func decodeStrictSandboxJSON(content []byte, target any) error {
 // validateSandboxRunRecord 核对恢复记录的 schema、确定性身份、时间与闭合
 // 指标；任何错位都保留 running 状态并要求人工处理，绝不猜测归属。
 func validateSandboxRunRecord(record SandboxRunRecord, evaluationID string, evalSet sandboxeval.EvalSet) error {
-	if record.SchemaVersion != sandboxRecordSchemaV2 || record.EvaluationID != evaluationID {
+	if record.SchemaVersion != sandboxRecordSchemaVersion || record.EvaluationID != evaluationID {
 		return errors.New("sandbox run record schema or evaluation identity mismatch")
 	}
 	arm := sandboxeval.SuiteArm(record.Arm)
@@ -1398,7 +1398,7 @@ func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID strin
 	if err := decodeStrictSandboxJSON(content, &result); err != nil {
 		return SandboxSuiteResult{}, "", "", false, err
 	}
-	if result.SchemaVersion != sandboxRecordSchemaV2 || result.EvaluationID != evaluationID || result.CandidateID != options.CandidateID {
+	if result.SchemaVersion != sandboxRecordSchemaVersion || result.EvaluationID != evaluationID || result.CandidateID != options.CandidateID {
 		return SandboxSuiteResult{}, "", "", false, errors.New("persisted suite result identity mismatch")
 	}
 	if !memory.ValidEvaluationStatus(result.Status) || result.Status == memory.EvaluationStatusRunning {
@@ -1434,7 +1434,7 @@ func loadPersistedSuiteResult(options SandboxExecutorOptions, evaluationID strin
 // 该 sha256 引用，读回环节保证留存正文与其引用不可静默漂移。
 func (executor SandboxExecutor) persistSuiteResult(options SandboxExecutorOptions, evaluationID string, startedAt time.Time, conclusion sandboxeval.Conclusion, stopReason, stopDetail string, records []SandboxRunRecord) (string, string, error) {
 	result := SandboxSuiteResult{
-		SchemaVersion: sandboxRecordSchemaV2,
+		SchemaVersion: sandboxRecordSchemaVersion,
 		EvaluationID:  evaluationID,
 		CandidateID:   options.CandidateID,
 		StartedAt:     startedAt,

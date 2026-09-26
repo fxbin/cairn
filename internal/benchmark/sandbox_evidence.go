@@ -17,7 +17,7 @@ import (
 	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
-const sandboxEvidenceSchemaV1 = 1
+const sandboxEvidenceSchemaVersion = 1
 
 // ErrSandboxEvidenceCorrupt 表示持久化的评测身份、摘要或运行证据无法通过重算校验。
 var ErrSandboxEvidenceCorrupt = errors.New("sandbox benefit evidence is corrupt")
@@ -103,7 +103,7 @@ func VerifySandboxBenefitEvidence(stateRoot string, evaluation memory.Evaluation
 	if err := decodeStrictSandboxJSON(content, &result); err != nil {
 		return SandboxBenefitEvidence{}, corruptSandboxEvidence("decode suite result: %v", err)
 	}
-	if result.SchemaVersion != sandboxRecordSchemaV2 || result.EvaluationID != evaluation.ID || result.CandidateID != evaluation.CandidateID {
+	if result.SchemaVersion != sandboxRecordSchemaVersion || result.EvaluationID != evaluation.ID || result.CandidateID != evaluation.CandidateID {
 		return SandboxBenefitEvidence{}, corruptSandboxEvidence("suite result identity mismatch")
 	}
 	if result.StartedAt.IsZero() || result.FinishedAt.IsZero() || result.FinishedAt.Before(result.StartedAt) {
@@ -156,7 +156,7 @@ func VerifySandboxBenefitEvidence(stateRoot string, evaluation memory.Evaluation
 		return SandboxBenefitEvidence{}, errors.New("suite result does not contain a complete counted comparison")
 	}
 	return SandboxBenefitEvidence{
-		SchemaVersion:             sandboxEvidenceSchemaV1,
+		SchemaVersion:             sandboxEvidenceSchemaVersion,
 		Verified:                  true,
 		EvaluationID:              evaluation.ID,
 		CandidateID:               evaluation.CandidateID,

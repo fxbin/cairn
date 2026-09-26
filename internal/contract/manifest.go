@@ -11,17 +11,17 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// manifestSchemaV2 是当前 RunManifest 产品合同版本，包含 ProviderSelection
+// manifestSchemaVersion 是当前 RunManifest 产品合同版本，包含 ProviderSelection
 // 身份投影。
-const manifestSchemaV2 = 2
+const manifestSchemaVersion = 2
 
-// frozenAgentConfigVersionV2 是冻结投影接受的 Agent 配置合同版本；它与
+// frozenAgentConfigVersion 是冻结投影接受的 Agent 配置合同版本；它与
 // RunManifest schema 属于不同版本域，不能复用后者的常量。
-const frozenAgentConfigVersionV2 = 2
+const frozenAgentConfigVersion = 2
 
-// frozenRunConfigSchemaV1 是新冻结配置制品的外层合同版本。该制品不保存
+// frozenRunConfigSchemaVersion 是新冻结配置制品的外层合同版本。该制品不保存
 // APIKeyEnv 等凭据定位信息，只保存 manifest 所需的非敏感投影及其独立摘要。
-const frozenRunConfigSchemaV1 = 1
+const frozenRunConfigSchemaVersion = 1
 
 // frozenRunConfigProjectionPrefix 隔离冻结配置投影摘要与其他 sha256 指纹域。
 const frozenRunConfigProjectionPrefix = "cairn-frozen-run-config-projection-v1"
@@ -123,7 +123,7 @@ type FrozenVerificationProjection struct {
 // 配置指纹。
 func NewFrozenRunConfig(configFingerprint string, projection FrozenConfigProjection) (FrozenRunConfig, error) {
 	frozen := FrozenRunConfig{
-		SchemaVersion:     frozenRunConfigSchemaV1,
+		SchemaVersion:     frozenRunConfigSchemaVersion,
 		ConfigFingerprint: configFingerprint,
 		Projection:        projection,
 	}
@@ -218,7 +218,7 @@ func decodeStrictJSON(raw json.RawMessage, target any) error {
 
 // validateFrozenRunConfig 校验新格式的版本、摘要、事件绑定与投影语义。
 func validateFrozenRunConfig(frozen FrozenRunConfig, expectedConfigFingerprint string) error {
-	if frozen.SchemaVersion != frozenRunConfigSchemaV1 {
+	if frozen.SchemaVersion != frozenRunConfigSchemaVersion {
 		return fmt.Errorf("contract: frozen config schema_version %d is unsupported", frozen.SchemaVersion)
 	}
 	if !digestShape(frozen.ConfigFingerprint) || !digestShape(frozen.ProjectionFingerprint) {
@@ -256,7 +256,7 @@ func frozenProviderViewFromProjection(provider FrozenProviderProjection) frozenP
 
 // validateFrozenConfigView 校验进入 manifest 的当前 v2 关键字段组合。
 func validateFrozenConfigView(view frozenConfigView) error {
-	if view.Version != frozenAgentConfigVersionV2 {
+	if view.Version != frozenAgentConfigVersion {
 		return fmt.Errorf("contract: frozen config version %d is unsupported", view.Version)
 	}
 	switch view.Profile {
@@ -343,7 +343,7 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 	if len(frozenConfig) == 0 {
 		return RunManifest{}, errors.New("contract: frozen config is required")
 	}
-	manifest := RunManifest{SchemaVersion: manifestSchemaV2, RunID: events[0].RunID, WorkspaceHash: events[0].WorkspaceHash, Task: task}
+	manifest := RunManifest{SchemaVersion: manifestSchemaVersion, RunID: events[0].RunID, WorkspaceHash: events[0].WorkspaceHash, Task: task}
 	var created struct {
 		ConfigFingerprint string                `json:"config_fingerprint"`
 		Build             *domain.BuildIdentity `json:"build"`

@@ -17,8 +17,8 @@ import (
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
 
-// providerProfileSchemaV1 是 ProviderRequestProfile 的当前合同版本。
-const providerProfileSchemaV1 = 1
+// providerProfileSchemaVersion 是 ProviderRequestProfile 的当前合同版本。
+const providerProfileSchemaVersion = 1
 
 // ProtocolOpenAIChatCompletions 是规范线协议标识（D1 词表的公共合同常量），
 // 由能力卡的 Protocol 字面值提升而来；与 internal/contract/provider_card.go
@@ -64,8 +64,8 @@ const (
 	GenerationTopPMaxMilli = 1000
 )
 
-// pricingSnapshotSchemaV1 是 PricingSnapshot 的当前合同版本。
-const pricingSnapshotSchemaV1 = 1
+// pricingSnapshotSchemaVersion 是 PricingSnapshot 的当前合同版本。
+const pricingSnapshotSchemaVersion = 1
 
 // RevisionAbsent 是模型修订的显式缺席标记：别名或兼容端点无法钉住服务端
 // 模型修订时，profile 必须携带该字面量，由成对交错执行降低时段漂移。
@@ -163,7 +163,7 @@ func ResolveProviderRequestProfile(kind string, declaration ProviderRequestDecla
 		revision = RevisionAbsent
 	}
 	return ProviderRequestProfile{
-		SchemaVersion:         providerProfileSchemaV1,
+		SchemaVersion:         providerProfileSchemaVersion,
 		ProviderKind:          kind,
 		BaseURLIdentityDigest: digest,
 		Model:                 declaration.Model,
@@ -237,7 +237,7 @@ func BaseURLIdentityDigest(rawURL string) (string, error) {
 // 摘要形态与修订占位。区间级生成参数校验由 ResolveProviderRequestProfile
 // 在构造期完成，此处防御 EvalSet 引用了被手工篡改的实例。
 func (profile ProviderRequestProfile) Validate() error {
-	if profile.SchemaVersion != providerProfileSchemaV1 {
+	if profile.SchemaVersion != providerProfileSchemaVersion {
 		return fmt.Errorf("request profile schema_version %d is not supported", profile.SchemaVersion)
 	}
 	if profile.ProviderKind != ProviderKindOpenAICompatible {
@@ -327,9 +327,9 @@ func (card ProviderCapabilityCard) Fingerprint() (string, error) {
 	return canonicaljson.Fingerprint(capabilityFingerprintPrefix, view)
 }
 
-// ResolvedProfileSchemaV1 是 ResolvedProviderProfile 的当前合同版本，导出
+// ResolvedProfileSchemaVersion 是 ResolvedProviderProfile 的当前合同版本，导出
 // 供装配层构造时引用。
-const ResolvedProfileSchemaV1 = 1
+const ResolvedProfileSchemaVersion = 1
 
 // resolvedProfileFingerprintPrefix 是 request_profile_fingerprint 的版本化
 // 域前缀；准入有效性只绑定该指纹，不绑定完整配置指纹。
@@ -391,7 +391,7 @@ func NewPricingSnapshot(inputUSDPerToken, outputUSDPerToken float64) (PricingSna
 	if err != nil {
 		return PricingSnapshot{}, fmt.Errorf("pricing output rate: %w", err)
 	}
-	return PricingSnapshot{SchemaVersion: pricingSnapshotSchemaV1, InputPriceMicrousdPerMillionTokens: input, OutputPriceMicrousdPerMillionTokens: output}, nil
+	return PricingSnapshot{SchemaVersion: pricingSnapshotSchemaVersion, InputPriceMicrousdPerMillionTokens: input, OutputPriceMicrousdPerMillionTokens: output}, nil
 }
 
 // priceToMicrousdPerMillion 执行单个单价的十进制位移折算。
@@ -444,7 +444,7 @@ func allDecimalDigits(text string) bool {
 
 // Validate 复核定价快照的结构合同：schema 版本与非负整数单价。
 func (snapshot PricingSnapshot) Validate() error {
-	if snapshot.SchemaVersion != pricingSnapshotSchemaV1 {
+	if snapshot.SchemaVersion != pricingSnapshotSchemaVersion {
 		return fmt.Errorf("pricing snapshot schema_version %d is not supported", snapshot.SchemaVersion)
 	}
 	if snapshot.InputPriceMicrousdPerMillionTokens < 0 || snapshot.OutputPriceMicrousdPerMillionTokens < 0 {

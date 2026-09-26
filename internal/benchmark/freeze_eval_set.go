@@ -132,7 +132,7 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 		})
 	}
 	policy := sandboxeval.CredentialPolicy{
-		SchemaVersion:               sandboxeval.CredentialPolicySchemaVersionV1,
+		SchemaVersion:               sandboxeval.CredentialPolicySchemaVersion,
 		EnvName:                     sandboxeval.SandboxProviderKeyEnv,
 		AllowedCredentialProfileIDs: []string{options.PolicyProfileID},
 		ProviderIdentityFingerprint: privateProfile.BaseURLIdentityDigest,
@@ -145,7 +145,7 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 		return report, fmt.Errorf("credential policy fingerprint: %w", err)
 	}
 	evalSet := sandboxeval.EvalSet{
-		SchemaVersion:       sandboxeval.EvalSetSchemaVersionV1,
+		SchemaVersion:       sandboxeval.EvalSetSchemaVersion,
 		TaskPackFingerprint: packFingerprint,
 		TaskIDs:             taskIDs,
 		TaskContracts:       taskContracts,
@@ -197,7 +197,7 @@ func FreezeEvaluationAssets(ctx context.Context, options FreezeEvalSetOptions) (
 func selfCheckFrozenAssets(options FreezeEvalSetOptions, evalSet sandboxeval.EvalSet, policy sandboxeval.CredentialPolicy) error {
 	now := time.Now().UTC()
 	syntheticLease := sandboxeval.CredentialLease{
-		SchemaVersion: sandboxeval.LeaseSchemaVersionV1, LeaseID: "freeze-selfcheck",
+		SchemaVersion: sandboxeval.LeaseSchemaVersion, LeaseID: "freeze-selfcheck",
 		CredentialProfileID:         options.PolicyProfileID,
 		ProviderIdentityFingerprint: policy.ProviderIdentityFingerprint,
 		EnvName:                     policy.EnvName,

@@ -15,7 +15,7 @@ const validDigest = "sha256:5f9b8f0f0e37dfb26c29a0a21be29d1d97d04be563ad98300ce9
 // validLease 返回一个通过全部自检的租约。
 func validLease() CredentialLease {
 	return CredentialLease{
-		SchemaVersion: leaseSchemaV1, LeaseID: "lease-01", CredentialProfileID: "sandbox-subaccount",
+		SchemaVersion: leaseSchemaVersion, LeaseID: "lease-01", CredentialProfileID: "sandbox-subaccount",
 		ProviderIdentityFingerprint: validDigest, EnvName: SandboxProviderKeyEnv,
 		IssuedAt: time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC),
 		MaxRequests: 1000, MaxInputTokens: 10_000_000, MaxOutputTokens: 10_000_000, MaxCostMicrousd: 100_000_000,
@@ -26,7 +26,7 @@ func validLease() CredentialLease {
 // validPolicy 返回一个通过全部自检的策略。
 func validPolicy() CredentialPolicy {
 	return CredentialPolicy{
-		SchemaVersion: policySchemaV1, EnvName: SandboxProviderKeyEnv,
+		SchemaVersion: policySchemaVersion, EnvName: SandboxProviderKeyEnv,
 		AllowedCredentialProfileIDs: []string{"sandbox-subaccount", "backup-subaccount"},
 		ProviderIdentityFingerprint: validDigest, SuiteMaxWallMilliseconds: 3 * 60 * 60 * 1000,
 		MinRequests: 200, MinInputTokens: 5_000_000, MinOutputTokens: 1_000_000, MinCostMicrousd: 50_000_000,

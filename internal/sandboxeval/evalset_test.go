@@ -31,7 +31,7 @@ func validEvalSet(t *testing.T) EvalSet {
 		t.Fatalf("provider request profile fixture: %v", err)
 	}
 	return EvalSet{
-		SchemaVersion:       evalSetSchemaV1,
+		SchemaVersion:       evalSetSchemaVersion,
 		TaskPackFingerprint: validProfileDigest,
 		TaskIDs:             []string{"AgentScope", "TokenTracker", "TopicEye"},
 		TaskContracts: []TaskContract{

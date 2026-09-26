@@ -108,7 +108,7 @@ func IsStateCorruptError(err error) bool {
 	}
 }
 
-// migrate 配置 SQLite 的耐久性选项并以校验和保护 V1 schema 迁移。
+// migrate 配置 SQLite 的耐久性选项并以校验和保护初始 schema 迁移。
 func (journal *Journal) migrate(ctx context.Context) error {
 	statements := []string{
 		"PRAGMA journal_mode = WAL",

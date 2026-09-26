@@ -58,7 +58,7 @@ func ResolveResolvedProfile(facts ResolvedFacts) (contract.ResolvedProviderProfi
 		return contract.ResolvedProviderProfile{}, errors.New("credential_ref must be a portable environment variable name")
 	}
 	return contract.ResolvedProviderProfile{
-		SchemaVersion:         contract.ResolvedProfileSchemaV1,
+		SchemaVersion:         contract.ResolvedProfileSchemaVersion,
 		Selection:             selection,
 		CapabilityFingerprint: capabilityDigest,
 		Generation:            generation,

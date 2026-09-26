@@ -30,7 +30,7 @@ func repeatHex() string {
 // testEvidence 构造一条结构合法的探测证据。
 func testEvidence() ProviderProbeEvidence {
 	return ProviderProbeEvidence{
-		SchemaVersion: probeEvidenceSchemaV1, Selection: testSelection(),
+		SchemaVersion: probeEvidenceSchemaVersion, Selection: testSelection(),
 		ProbeContractVersion: probeContractVersion,
 		Observations: EvidenceObservations{
 			UsageStreamed: ObservationObservedTrue, StopReasonsState: StateObserved,
@@ -136,7 +136,7 @@ func TestEvidenceStoreIsContentAddressedAndAtomic(t *testing.T) {
 // decisionFixture 构造一条合法决定；supersedes 与时间戳由用例覆写。
 func decisionFixture(requestFingerprint string) ProviderAdmissionDecision {
 	return ProviderAdmissionDecision{
-		SchemaVersion: admissionDecisionSchemaV1, EvidenceFingerprint: "sha256:" + repeatHex(),
+		SchemaVersion: admissionDecisionSchemaVersion, EvidenceFingerprint: "sha256:" + repeatHex(),
 		Binding:  AdmissionBinding{RequestProfileFingerprint: requestFingerprint, ConfigFingerprint: "sha256:" + repeatHex()},
 		Decision: DecisionAdmitted, DecidedAt: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
 		Authority: AuthorityMaintainer, Reason: "probe evidence accepted",
@@ -242,7 +242,7 @@ func TestGateFailsClosedWhenRequiredAndUnadmitted(t *testing.T) {
 		t.Fatal("admitted head with missing evidence must fail closed")
 	}
 	evidence := ProviderProbeEvidence{
-		SchemaVersion: probeEvidenceSchemaV1, Selection: profile.Selection,
+		SchemaVersion: probeEvidenceSchemaVersion, Selection: profile.Selection,
 		ProbeContractVersion: probeContractVersion,
 		Observations: EvidenceObservations{
 			UsageStreamed: ObservationObservedTrue, StopReasonsState: StateObserved, StopReasons: []string{"stop"},

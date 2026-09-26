@@ -12,20 +12,20 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// evalSetSchemaV1 与 comparatorContractSchemaV1 分别是 EvalSet 与比较器合同
+// evalSetSchemaVersion 与 comparatorContractSchemaVersion 分别是 EvalSet 与比较器合同
 // 的当前 schema 版本。
 const (
-	evalSetSchemaV1            = 1
-	comparatorContractSchemaV1 = 1
+	evalSetSchemaVersion            = 1
+	comparatorContractSchemaVersion = 1
 )
 
-// EvalSetSchemaVersionV1 与 CredentialPolicySchemaVersionV1 是面向装配方的当
+// EvalSetSchemaVersion 与 CredentialPolicySchemaVersion 是面向装配方的当
 // 前评测集与凭据策略 schema 版本导出常量；构造冻结输入必须经此表达版本事实，
 // 不得散落字面量。
 const (
-	EvalSetSchemaVersionV1          = evalSetSchemaV1
-	CredentialPolicySchemaVersionV1 = policySchemaV1
-	LeaseSchemaVersionV1            = leaseSchemaV1
+	EvalSetSchemaVersion          = evalSetSchemaVersion
+	CredentialPolicySchemaVersion = policySchemaVersion
+	LeaseSchemaVersion            = leaseSchemaVersion
 	// FirstEvalTaskCount 固定首轮候选评测的任务数量。
 	FirstEvalTaskCount = 3
 	// FirstEvalAttemptsPerTask 固定首轮每个任务的重复次数。
@@ -88,7 +88,7 @@ type ComparatorContract struct {
 // 版本标识与全部门槛绑定，EvalSet 冻结必须经由此入口而不是手工拼装。
 func PreregisteredComparatorContract(version string) ComparatorContract {
 	return ComparatorContract{
-		SchemaVersion:             comparatorContractSchemaV1,
+		SchemaVersion:             comparatorContractSchemaVersion,
 		ComparatorVersion:         version,
 		CostPassBasisPoints:       comparatorCostPassBasisPoints,
 		WallPassBasisPoints:       comparatorWallPassBasisPoints,
@@ -101,7 +101,7 @@ func PreregisteredComparatorContract(version string) ComparatorContract {
 // Validate 校验比较器合同与注册组合逐位一致：阈值偏离注册值（哪怕一个基
 // 点）都使合同非法，让"评测后调阈值"在任何阶段都不可能通过校验。
 func (comparator ComparatorContract) Validate() error {
-	if comparator.SchemaVersion != comparatorContractSchemaV1 {
+	if comparator.SchemaVersion != comparatorContractSchemaVersion {
 		return fmt.Errorf("comparator contract schema_version %d is not supported", comparator.SchemaVersion)
 	}
 	if comparator.ComparatorVersion == "" {
@@ -165,7 +165,7 @@ type EvalSet struct {
 // 任务清单升序去重并与合同一一对应、首轮单并发与交替 pair 顺序、干净构建
 // 身份以及嵌套合同的递归自检。
 func (evalSet EvalSet) Validate() error {
-	if evalSet.SchemaVersion != evalSetSchemaV1 {
+	if evalSet.SchemaVersion != evalSetSchemaVersion {
 		return fmt.Errorf("eval set schema_version %d is not supported", evalSet.SchemaVersion)
 	}
 	if !fingerprintShape(evalSet.TaskPackFingerprint) || !fingerprintShape(evalSet.ResolvedExecutionPlanDigest) || !fingerprintShape(evalSet.ToolRegistryFingerprint) || !fingerprintShape(evalSet.CredentialPolicyFingerprint) {

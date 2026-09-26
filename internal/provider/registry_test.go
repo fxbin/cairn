@@ -51,7 +51,7 @@ func TestResolveSelectionDerivesModelRefAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.SchemaVersion != providerSelectionSchemaV1 {
+	if selection.SchemaVersion != providerSelectionSchemaVersion {
 		t.Fatalf("schema version = %d", selection.SchemaVersion)
 	}
 	if selection.ProviderID != contract.ProviderIDCustom {

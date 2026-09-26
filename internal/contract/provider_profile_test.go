@@ -23,7 +23,7 @@ func TestResolveProviderRequestProfileProjectsClosedContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve profile: %v", err)
 	}
-	if profile.SchemaVersion != providerProfileSchemaV1 || profile.ProviderKind != ProviderKindOpenAICompatible || profile.Model != "test-model" {
+	if profile.SchemaVersion != providerProfileSchemaVersion || profile.ProviderKind != ProviderKindOpenAICompatible || profile.Model != "test-model" {
 		t.Fatalf("identity fields = %#v", profile)
 	}
 	if !strings.HasPrefix(profile.BaseURLIdentityDigest, "sha256:") || !strings.HasPrefix(profile.CapabilityFingerprint, "sha256:") {

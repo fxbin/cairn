@@ -2168,7 +2168,7 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 		rollbackTarget = activation.PromotionID
 	}
 	promotion := memory.Promotion{
-		SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, EvaluationID: inspected.Evaluation.ID, TargetKind: candidate.TargetKind,
+		SchemaVersion: memory.PromotionSchemaVersion, CandidateID: candidate.ID, EvaluationID: inspected.Evaluation.ID, TargetKind: candidate.TargetKind,
 		Version: nextVersion, Variant: variant, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
 		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,

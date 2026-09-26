@@ -18,8 +18,8 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// probeEvidenceSchemaV1 是 ProviderProbeEvidence 的当前合同版本。
-const probeEvidenceSchemaV1 = 1
+// probeEvidenceSchemaVersion 是 ProviderProbeEvidence 的当前合同版本。
+const probeEvidenceSchemaVersion = 1
 
 // probeContractVersion 标识探测行为的合同代数：行为语义（两程工具回路、
 // usage/stop reason 核对口径）发生变更即递增，使不同代数的观测不可直接
@@ -124,7 +124,7 @@ func (evidence ProviderProbeEvidence) ComputeFingerprint() (string, error) {
 // Validate 复核证据的结构自洽：schema 版本、选择身份、词表闭合与观测一致
 // 性；违反任何一条即失败关闭，防御被手工篡改或跨代混用的记录。
 func (evidence ProviderProbeEvidence) Validate() error {
-	if evidence.SchemaVersion != probeEvidenceSchemaV1 {
+	if evidence.SchemaVersion != probeEvidenceSchemaVersion {
 		return errors.New("probe evidence schema version is not supported")
 	}
 	if evidence.ProbeContractVersion != probeContractVersion {

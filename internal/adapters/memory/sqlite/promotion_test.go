@@ -64,7 +64,7 @@ func promotionRequestFor(t *testing.T, candidate memory.EvolutionCandidate, eval
 		t.Fatal(err)
 	}
 	return memory.Promotion{
-		ID: id, SchemaVersion: memory.PromotionSchemaVersionV1, CandidateID: candidate.ID, EvaluationID: evaluation.ID,
+		ID: id, SchemaVersion: memory.PromotionSchemaVersion, CandidateID: candidate.ID, EvaluationID: evaluation.ID,
 		TargetKind: memory.TargetKindContextCompactionParams, Version: version, Variant: variant,
 		VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: evaluation.EvalSetFingerprint,
@@ -305,7 +305,7 @@ func TestMigrationEightFailsClosedOnLegacyLedger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-v7-ledger.db")
 	store, seedCandidate, seedEvaluation, _ := passedCandidateFixtureAt(t, path, evalSetFrozen, suiteResultFrozen)
 	decision := memory.Promotion{
-		ID: "sha256:" + evolutionHex(40), SchemaVersion: memory.PromotionSchemaVersionV1,
+		ID: "sha256:" + evolutionHex(40), SchemaVersion: memory.PromotionSchemaVersion,
 		CandidateID: seedCandidate.ID, EvaluationID: seedEvaluation.ID,
 		TargetKind:         memory.TargetKindContextCompactionParams,
 		VariantFingerprint: "sha256:" + evolutionHex(42), VariantSpecSHA256: "sha256:" + evolutionHex(43),

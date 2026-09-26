@@ -13,8 +13,8 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// providerSelectionSchemaV1 是本包产出的 ProviderSelection 合同版本。
-const providerSelectionSchemaV1 = 1
+// providerSelectionSchemaVersion 是本包产出的 ProviderSelection 合同版本。
+const providerSelectionSchemaVersion = 1
 
 // providerIDMaxLen 限定 ProviderID 的最长字符数，防止无界标识进入指纹与审计。
 const providerIDMaxLen = 64
@@ -110,7 +110,7 @@ func ResolveSelection(facts SelectionFacts) (contract.ProviderSelection, error) 
 		return contract.ProviderSelection{}, err
 	}
 	return contract.ProviderSelection{
-		SchemaVersion:  providerSelectionSchemaV1,
+		SchemaVersion:  providerSelectionSchemaVersion,
 		ProviderID:     providerID,
 		ProtocolID:     definition.ProtocolID,
 		ModelRef:       providerID + "/" + facts.Model,

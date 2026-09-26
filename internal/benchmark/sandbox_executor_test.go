@@ -239,7 +239,7 @@ func TestRecoveredSandboxRunRecordsPreserveClosedRunIdentity(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	record := SandboxRunRecord{
-		SchemaVersion: sandboxRecordSchemaV2, RunID: runID, EvaluationID: evaluationID,
+		SchemaVersion: sandboxRecordSchemaVersion, RunID: runID, EvaluationID: evaluationID,
 		Arm: string(step.Arm), TaskID: step.TaskID, AttemptIndex: step.Try,
 		StartedAt: now, FinishedAt: now.Add(time.Second), Counted: true,
 		ReplayConsistent: true, DoctorOK: true, InputTokens: 1, OutputTokens: 1,
@@ -272,7 +272,7 @@ func TestLoadPersistedSuiteResultRecomputesConclusion(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	result := SandboxSuiteResult{
-		SchemaVersion: sandboxRecordSchemaV2, EvaluationID: evaluationID,
+		SchemaVersion: sandboxRecordSchemaVersion, EvaluationID: evaluationID,
 		CandidateID: options.CandidateID, StartedAt: now, FinishedAt: now.Add(time.Second),
 		Status: sandboxeval.ConclusionInconclusive, Trigger: "incomplete_suite", StopReason: "context_cancelled", Records: []SandboxRunRecord{},
 	}
