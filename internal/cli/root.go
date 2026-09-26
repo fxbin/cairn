@@ -2011,18 +2011,6 @@ func writeJSONChecked(writer io.Writer, value any) error {
 	return nil
 }
 
-// writeJSON 为未迁移的同包子命令保留兼容入口，并把失败登记到顶级输出追踪器。
-func writeJSON(writer io.Writer, value any) {
-	if tracker, ok := writer.(*outputTracker); ok && tracker.err != nil {
-		return
-	}
-	if err := writeJSONChecked(writer, value); err != nil {
-		if tracker, ok := writer.(*outputTracker); ok {
-			tracker.record(err)
-		}
-	}
-}
-
 // writeJSONOutput 将 JSON 输出失败统一写入 stderr，并映射为公开失败退出码。
 func (command Command) writeJSONOutput(label string, value any) int {
 	if err := writeJSONChecked(command.Stdout, value); err != nil {

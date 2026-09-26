@@ -57,6 +57,25 @@ type providerListEntry struct {
 	ProtocolID string `json:"protocol_id"`
 }
 
+// providerConfigureReport 是 provider configure --json 的稳定输出合同。
+type providerConfigureReport struct {
+	ConfigPath     string   `json:"config_path"`
+	CatalogMatched bool     `json:"catalog_matched"`
+	ProbeRan       bool     `json:"probe_ran"`
+	Notes          []string `json:"notes"`
+}
+
+// providerAdmissionReport 是 provider admission 检查的稳定输出合同。
+type providerAdmissionReport struct {
+	Admission          string `json:"admission"`
+	RequestFingerprint string `json:"request_profile_fingerprint"`
+	GateError          string `json:"gate_error,omitempty"`
+	HeadDecision       string `json:"head_decision,omitempty"`
+	HeadEvidence       string `json:"head_evidence,omitempty"`
+	HeadFingerprint    string `json:"head_fingerprint,omitempty"`
+	Allowed            bool   `json:"allowed"`
+}
+
 // providerList 列出静态注册表成员与各自绑定的规范协议；注册表是编译期
 // 冻结的闭合集合，不存在动态发现。
 func (command Command) providerList(ctx context.Context, arguments []string) int {
@@ -69,7 +88,10 @@ func (command Command) providerList(ctx context.Context, arguments []string) int
 	entries := []providerListEntry{{ProviderID: "custom", ProtocolID: "openai-chat-completions"}}
 	if *jsonOutput {
 		for _, entry := range entries {
-			writeJSON(command.Stdout, entry)
+			if err := writeJSONChecked(command.Stdout, entry); err != nil {
+				fmt.Fprintln(command.Stderr, "provider list output failed:", err)
+				return ExitFailed
+			}
 		}
 		return ExitOK
 	}
@@ -112,7 +134,10 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	}
 	for _, entry := range entries {
 		if *jsonOutput {
-			writeJSON(command.Stdout, entry)
+			if err := writeJSONChecked(command.Stdout, entry); err != nil {
+				fmt.Fprintln(command.Stderr, "provider models output failed:", err)
+				return ExitFailed
+			}
 			continue
 		}
 		fmt.Fprintf(command.Stdout, "%s\tcontext=%d\toutput=%d\ttool_call=%t\n", entry.Name, entry.ContextTokens, entry.OutputTokens, entry.ToolCall)
@@ -154,7 +179,10 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 		return ExitFailed
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, map[string]any{"config_path": outcome.ConfigPath, "catalog_matched": outcome.CatalogMatched, "probe_ran": outcome.ProbeRan, "notes": outcome.Notes})
+		if err := writeJSONChecked(command.Stdout, providerConfigureReport{ConfigPath: outcome.ConfigPath, CatalogMatched: outcome.CatalogMatched, ProbeRan: outcome.ProbeRan, Notes: outcome.Notes}); err != nil {
+			fmt.Fprintln(command.Stderr, "configure output failed:", err)
+			return ExitFailed
+		}
 		return ExitOK
 	}
 	fmt.Fprintf(command.Stdout, "配置已生成: %s\n", outcome.ConfigPath)
@@ -290,22 +318,24 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 		return ExitFailed
 	}
 	outcome, err := provider.EvaluateAdmissionGate(decisions, evidenceStore, profile, configuration.Provider.Admission)
-	report := map[string]any{
-		"admission":                   configuration.Provider.Admission,
-		"request_profile_fingerprint": requestFingerprint,
+	report := providerAdmissionReport{
+		Admission:          configuration.Provider.Admission,
+		RequestFingerprint: requestFingerprint,
 	}
 	if err != nil {
-		report["gate_error"] = err.Error()
+		report.GateError = err.Error()
 	}
 	if outcome.Head != nil {
-		report["head_decision"] = outcome.Head.Decision
-		report["head_evidence"] = outcome.Head.EvidenceFingerprint
-		report["head_fingerprint"] = outcome.Head.DecisionFingerprint
+		report.HeadDecision = string(outcome.Head.Decision)
+		report.HeadEvidence = outcome.Head.EvidenceFingerprint
+		report.HeadFingerprint = outcome.Head.DecisionFingerprint
 	}
-	allowed := err == nil && outcome.Allowed
-	report["allowed"] = allowed
+	report.Allowed = err == nil && outcome.Allowed
 	if *jsonOutput {
-		writeJSON(command.Stdout, report)
+		if writeErr := writeJSONChecked(command.Stdout, report); writeErr != nil {
+			fmt.Fprintln(command.Stderr, "admission output failed:", writeErr)
+			return ExitFailed
+		}
 	} else {
 		if outcome.Head != nil {
 			fmt.Fprintf(command.Stdout, "链头决定: %s（证据 %s）\n", outcome.Head.Decision, outcome.Head.EvidenceFingerprint)
@@ -315,9 +345,9 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 		if err != nil {
 			fmt.Fprintf(command.Stdout, "门评估: %v\n", err)
 		}
-		fmt.Fprintf(command.Stdout, "admission=%s allowed=%t\n", configuration.Provider.Admission, allowed)
+		fmt.Fprintf(command.Stdout, "admission=%s allowed=%t\n", configuration.Provider.Admission, report.Allowed)
 	}
-	if configuration.Provider.Admission == config.ProviderAdmissionRequired && !allowed {
+	if configuration.Provider.Admission == config.ProviderAdmissionRequired && !report.Allowed {
 		return ExitFailed
 	}
 	return ExitOK

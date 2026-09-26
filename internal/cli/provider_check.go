@@ -112,7 +112,10 @@ func (command Command) checkProvider(ctx context.Context, arguments []string) in
 		result.EvidenceFingerprint = fingerprint
 	}
 	if *jsonOutput {
-		writeJSON(command.Stdout, result)
+		if err := writeJSONChecked(command.Stdout, result); err != nil {
+			fmt.Fprintln(command.Stderr, "check-provider output failed:", err)
+			return ExitFailed
+		}
 	} else {
 		command.writeProviderCheck(result)
 	}

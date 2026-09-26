@@ -29,13 +29,14 @@ const (
 // SuiteVerdict 是单个 Run 的最小判定投影：由编排器从事件流与外部检查中提
 // 取，比较器只读取本结构与冻结 EvalSet，绝不接触原始正文、路径或参考答案。
 type SuiteVerdict struct {
-	RunID                string
-	Arm                  SuiteArm
-	TaskID               string
-	AttemptIndex         int
-	Success              bool
-	SecurityIncidents    int
-	DoctorReplayBroken   bool // doctor 或确定性回放任一失败即为真
+	RunID             string
+	Arm               SuiteArm
+	TaskID            string
+	AttemptIndex      int
+	Success           bool
+	SecurityIncidents int
+	// DoctorReplayBroken 在 doctor 或确定性回放任一失败时为真。
+	DoctorReplayBroken   bool
 	ToolPairingBreaks    int
 	RepeatedExplorations int
 	InputTokens          int64

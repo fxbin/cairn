@@ -295,10 +295,19 @@ func waitForExitAfterKill(finished <-chan error, limit time.Duration) (error, bo
 	}
 }
 
+// exec_command 默认与上限是工具合同的硬边界：策略层与执行器共享同一组语义常量。
+const (
+	defaultExecTimeoutMS  = 120_000
+	maxExecTimeoutMS      = 3_600_000
+	defaultMaxOutputBytes = 256 * 1024
+	maxAllowedOutputBytes = 1024 * 1024
+	resultPreviewMaxBytes = 1024
+)
+
 // ParseExecArguments 校验命令参数并填充与执行器相同的默认值；策略层在审批前
 // 调用它，确保审批始终绑定到将被实际执行的命令。
 func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
-	arguments := ExecArguments{CWD: ".", TimeoutMS: 120_000, MaxOutputBytes: 256 * 1024}
+	arguments := ExecArguments{CWD: ".", TimeoutMS: defaultExecTimeoutMS, MaxOutputBytes: defaultMaxOutputBytes}
 	if err := decodeArguments(raw, &arguments); err != nil {
 		return ExecArguments{}, err
 	}
@@ -310,7 +319,7 @@ func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
 			return ExecArguments{}, errors.New("argv cannot contain empty values")
 		}
 	}
-	if arguments.TimeoutMS < 1 || arguments.TimeoutMS > 3_600_000 || arguments.MaxOutputBytes < 1 || arguments.MaxOutputBytes > 1024*1024 {
+	if arguments.TimeoutMS < 1 || arguments.TimeoutMS > maxExecTimeoutMS || arguments.MaxOutputBytes < 1 || arguments.MaxOutputBytes > maxAllowedOutputBytes {
 		return ExecArguments{}, errors.New("timeout_ms or max_output_bytes is outside its allowed range")
 	}
 	arguments.CWD = normalizeWorkspaceAlias(arguments.CWD)
@@ -417,11 +426,11 @@ func (buffer *limitedBuffer) Len() int { return buffer.buffer.Len() }
 // 且调用方可以识别被截断的预览而不尝试解析不完整的 JSON。
 func stringResult(value any) string {
 	encoded, _ := json.Marshal(value)
-	if len(encoded) <= 1024 {
+	if len(encoded) <= resultPreviewMaxBytes {
 		return string(encoded)
 	}
 	const marker = "...[preview-truncated]"
-	budget := 1024
+	budget := resultPreviewMaxBytes
 	for budget > 0 && continuationByte(encoded[budget]) {
 		budget--
 	}
