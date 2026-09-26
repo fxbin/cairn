@@ -25,6 +25,7 @@ func TestStoreCapturesRecallsSupersedesAndRevokes(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	first := testCandidate(t, "run_first", now, memory.DefaultTTL, "")
 	captured, err := store.Capture(context.Background(), first)
 	if err != nil || captured.ID != first.ID || captured.Status != memory.StatusActive {
@@ -76,6 +77,7 @@ func TestStoreRejectsExpiredRecallAndConflictingIdempotency(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	expired := testCandidate(t, "run_expired", now.Add(-time.Hour), time.Minute, "")
 	if _, err := store.Capture(context.Background(), expired); err != nil {
 		t.Fatal(err)
@@ -106,6 +108,7 @@ func TestStoreRecallAppliesStructuredFiltersWithoutWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	failed := testCandidate(t, "run_exact_failed", now, memory.DefaultTTL, "")
 	completed := testCandidate(t, "run_exact_completed", now.Add(time.Second), memory.DefaultTTL, "")
 	completed.Outcome = "completed"
@@ -164,7 +167,9 @@ func TestStoreMigrationPermissionsAndReadOnlyMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate := testCandidate(t, "run_permissions", time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC), memory.DefaultTTL, "")
+	permissionsNow := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, permissionsNow)
+	candidate := testCandidate(t, "run_permissions", permissionsNow, memory.DefaultTTL, "")
 	if _, err := store.Capture(context.Background(), candidate); err != nil {
 		t.Fatal(err)
 	}

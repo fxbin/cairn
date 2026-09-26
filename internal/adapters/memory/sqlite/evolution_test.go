@@ -198,6 +198,7 @@ func TestEvolutionCandidateCreateIsIdempotentAndDurable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	freezeStoreClock(t, reopened, now)
 	if err := reopened.Check(context.Background()); err != nil {
 		t.Fatalf("durable check: %v", err)
 	}
@@ -217,6 +218,7 @@ func evolutionFixtureOn(t *testing.T, path string) (*Store, memory.EvolutionCand
 	workspaceHash := "sha256:" + evolutionHex(1)
 	taskDigest := "sha256:" + evolutionHex(2)
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	firstEvidence := []memory.EventEvidenceRef{{RunID: "run_a", EventSeq: 3, EventHash: "sha256:" + evolutionHex(3), EventType: "run_failed"}}
 	secondEvidence := []memory.EventEvidenceRef{{RunID: "run_b", EventSeq: 5, EventHash: "sha256:" + evolutionHex(4), EventType: "run_failed"}}
 	first, err := memory.NewRunOutcomeCandidate(workspaceHash, "run_a", taskDigest, "failed", "budget_turns", false, now.Add(-time.Hour), memory.DefaultTTL, firstEvidence, "")

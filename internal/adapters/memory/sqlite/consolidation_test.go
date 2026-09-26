@@ -1312,6 +1312,7 @@ func TestConsolidationDurableAcrossReopen(t *testing.T) {
 	workspaceHash := "sha256:" + consolidationHex(1)
 	taskDigest := "sha256:" + consolidationHex(2)
 	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	freezeStoreClock(t, store, now)
 	inputs := memory.ConsolidationInputs{WorkspaceHash: workspaceHash, Candidates: []memory.Candidate{
 		consolidationInputCandidate(t, workspaceHash, taskDigest, "run_a", now.Add(-time.Hour)),
 		consolidationInputCandidate(t, workspaceHash, taskDigest, "run_b", now),
@@ -1338,6 +1339,7 @@ func TestConsolidationDurableAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
+	freezeStoreClock(t, reopened, now)
 	if err := reopened.Check(context.Background()); err != nil {
 		t.Fatalf("durable audit check: %v", err)
 	}
