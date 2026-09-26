@@ -518,7 +518,7 @@ func (store *Store) Check(ctx context.Context) error {
 	if err := checkDerivedInvariants(ctx, store.db); err != nil {
 		return err
 	}
-	if err := checkEvolutionInvariants(ctx, store.db); err != nil {
+	if err := checkEvolutionInvariants(ctx, store.db, store.currentUTC()); err != nil {
 		return err
 	}
 	return checkPromotionInvariants(ctx, store.db)

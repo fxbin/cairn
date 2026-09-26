@@ -556,9 +556,10 @@ func evolutionCandidateReadBackMatches(actual, expected memory.EvolutionCandidat
 
 // checkEvolutionInvariants 验证演化候选的结构不变量：审计时间线、状态与
 // 审计一致、rejected 与冷却绑定、来源派生版本存在且同工作区，以及非终态
-// 候选的来源仍为 active（否则必须已迁移到 invalidated）。
-func checkEvolutionInvariants(ctx context.Context, source queryerRows) error {
-	return checkEvolutionInvariantsAt(ctx, source, time.Now().UTC())
+// 候选的来源仍为 active（否则必须已迁移到 invalidated）。到期判定必须使用
+// 调用方注入的同一时钟，禁止在此回退到墙钟。
+func checkEvolutionInvariants(ctx context.Context, source queryerRows, checkNow time.Time) error {
+	return checkEvolutionInvariantsAt(ctx, source, checkNow)
 }
 
 // checkEvolutionInvariantsAt 以给定时刻执行演化不变量校验，供测试冻结时钟。
