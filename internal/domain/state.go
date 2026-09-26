@@ -700,6 +700,11 @@ func (projection RunProjection) Terminal() bool {
 	return projection.State == RunCompleted || projection.State == RunFailed || projection.State == RunCancelled
 }
 
+// Cancelling 报告运行是否处于收尾取消中：已请求终止但仍有未关闭轮次或待决操作。
+func (projection RunProjection) Cancelling() bool {
+	return projection.State == RunCancelling
+}
+
 // RequiresFreshApproval 在同一指纹曾因不确定副作用被对账后返回 true；
 // 回放历史绝不能再次授予执行权限。
 func (projection RunProjection) RequiresFreshApproval(fingerprint string) bool {
