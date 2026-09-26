@@ -96,7 +96,7 @@ func TestBuildIdentityIsPlainAndDeterministic(t *testing.T) {
 	if first != second {
 		t.Fatalf("build identity is not deterministic: first=%+v second=%+v", first, second)
 	}
-	if first.Flavor != "plain" || first.Fingerprint == "" || first.Fingerprint != buildIdentityFingerprint(first) {
+	if first.Flavor != "plain" || first.Fingerprint == "" || first.Fingerprint != first.ComputeFingerprint() {
 		t.Fatalf("build identity = %+v", first)
 	}
 }

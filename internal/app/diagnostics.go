@@ -253,12 +253,6 @@ func currentBuildIdentity() (*domain.BuildIdentity, error) {
 	return &identity, nil
 }
 
-// buildIdentityFingerprint 是构建身份摘要的既有调用面：公式已收敛到领域方法，
-// 本函数仅作兼容委托保持单一事实源。
-func buildIdentityFingerprint(identity domain.BuildIdentity) string {
-	return identity.ComputeFingerprint()
-}
-
 // probeDockerImage 以无 shell 的只读 argv 查询本地镜像存在性；docker 不可用
 // 或镜像缺失分别返回 unknown 与 no，探测本身不产生副作用。
 func probeDockerImage(image string) string {
