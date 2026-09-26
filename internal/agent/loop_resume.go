@@ -566,68 +566,65 @@ func completedModelResponseForTurn(events []domain.Event, turnID domain.TurnID) 
 	return modelResponsePayload{}, false
 }
 
-// hasAnyToolProposal 判断模型响应中的任一工具调用是否已经被提议并持久化。
-func hasAnyToolProposal(events []domain.Event, calls []ports.ToolCall) bool {
-	callIDs := make(map[string]struct{}, len(calls))
-	for _, call := range calls {
-		callIDs[call.ID] = struct{}{}
+// toolEventIndex 是一次事件遍历重建的工具提议/结果索引；恢复路径多个查询
+// 共用同一套解析规则，避免各 helper 分叉扫描语义。
+type toolEventIndex struct {
+	callIDs   map[string]bool
+	proposals map[domain.OperationID]toolCallPayload
+	results   map[domain.OperationID]tools.Result
+}
+
+// buildToolEventIndex 扫描工具提议与工具结果事件；解析失败的单条载荷跳过，
+// 与既有恢复路径保持一致（缺记录表现为“尚未完成”而不是硬错误）。
+func buildToolEventIndex(events []domain.Event) toolEventIndex {
+	index := toolEventIndex{
+		callIDs:   make(map[string]bool),
+		proposals: make(map[domain.OperationID]toolCallPayload),
+		results:   make(map[domain.OperationID]tools.Result),
 	}
 	for _, event := range events {
-		if event.Type != domain.EventToolCallProposed {
+		if event.OperationID == nil && event.Type != domain.EventToolCallProposed {
 			continue
 		}
-		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) == nil {
-			if _, found := callIDs[payload.CallID]; found {
-				return true
+		switch event.Type {
+		case domain.EventToolCallProposed:
+			var payload toolCallPayload
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			if payload.CallID != "" {
+				index.callIDs[payload.CallID] = true
+			}
+			if event.OperationID != nil {
+				index.proposals[*event.OperationID] = payload
+			}
+		case domain.EventToolResultAppended:
+			if event.OperationID == nil {
+				continue
+			}
+			var result tools.Result
+			if json.Unmarshal(event.Payload, &result) == nil {
+				index.results[*event.OperationID] = result
 			}
 		}
 	}
-	return false
+	return index
 }
 
 // proposedToolCallIDs 返回已经持久化提议的模型工具调用 ID，用于恢复一条
 // 部分执行的模型响应时避免重复提议或重复执行。
 func proposedToolCallIDs(events []domain.Event) map[string]bool {
-	ids := make(map[string]bool)
-	for _, event := range events {
-		if event.Type != domain.EventToolCallProposed {
-			continue
-		}
-		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
-			ids[payload.CallID] = true
-		}
-	}
-	return ids
+	return buildToolEventIndex(events).callIDs
 }
 
 // completedResponseToolResults 汇总一条模型响应中各调用是否都已有持久化结果，
 // 并确认是否至少成功写入过一个补丁。它用于恢复路径，避免在部分工具批次中
 // 提前验证或重复执行已有调用。
 func completedResponseToolResults(events []domain.Event, response modelResponsePayload) (complete, successfulPatch, allSucceeded bool) {
-	proposals := make(map[domain.OperationID]toolCallPayload)
-	results := make(map[domain.OperationID]tools.Result)
-	for _, event := range events {
-		if event.OperationID == nil {
-			continue
-		}
-		switch event.Type {
-		case domain.EventToolCallProposed:
-			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				proposals[*event.OperationID] = payload
-			}
-		case domain.EventToolResultAppended:
-			var result tools.Result
-			if json.Unmarshal(event.Payload, &result) == nil {
-				results[*event.OperationID] = result
-			}
-		}
-	}
+	index := buildToolEventIndex(events)
 	byCallID := make(map[string]tools.Result)
-	for operationID, proposal := range proposals {
-		if result, found := results[operationID]; found {
+	for operationID, proposal := range index.proposals {
+		if result, found := index.results[operationID]; found {
 			byCallID[proposal.CallID] = result
 		}
 	}
