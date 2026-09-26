@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
+	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -230,7 +230,7 @@ func openTelemetryWriter(ctx context.Context, stateDir, workspaceHash string, le
 		return err
 	}
 	defer writer.Close()
-	return writer.RecordRecallTelemetry(ctx, memorysqlite.RecallTelemetryRecord{
+	return writer.RecordRecallTelemetry(ctx, memstoresqlite.RecallTelemetryRecord{
 		OccurredAt:           time.Now().UTC(),
 		CandidatesReturned:   len(ledger.Entries),
 		Conflicts:            len(ledger.Conflicts),
@@ -359,7 +359,7 @@ func (service Service) RevokeMemory(ctx context.Context, options MemoryRevokeOpt
 		}
 		return memory.Candidate{}, err
 	}
-	store, err := memorysqlite.Open(path)
+	store, err := memstoresqlite.Open(path)
 	if err != nil {
 		return memory.Candidate{}, err
 	}
@@ -449,7 +449,7 @@ func checkMemoryReferences(ctx context.Context, journal interface {
 
 // verifyReadOnlyMemoryStore 为 recall/inspect 提供和 doctor 同等严格的只读信任
 // 校验：Memory Store 一旦存在，缺失 Journal 或任何外部证据均为状态损坏而非空集。
-func verifyReadOnlyMemoryStore(ctx context.Context, store *memorysqlite.Store, stateDir, workspaceHash string) error {
+func verifyReadOnlyMemoryStore(ctx context.Context, store *memstoresqlite.Store, stateDir, workspaceHash string) error {
 	journal, err := openReadOnlyJournal(stateDir, workspaceHash)
 	if err != nil {
 		return fmt.Errorf("open memory source journal: %w", err)
@@ -460,7 +460,7 @@ func verifyReadOnlyMemoryStore(ctx context.Context, store *memorysqlite.Store, s
 
 // verifyMemoryStore 复用给 doctor、recall 与 inspect 的内部/外部完整性验证；它
 // 检查全部候选而非仅当前 recall 命中，防止把损坏记录静默过滤成成功结果。
-func verifyMemoryStore(ctx context.Context, store *memorysqlite.Store, journal interface {
+func verifyMemoryStore(ctx context.Context, store *memstoresqlite.Store, journal interface {
 	Load(context.Context, domain.RunID) ([]domain.Event, error)
 }, stateDir, workspaceHash string) error {
 	if err := store.Check(ctx); err != nil {
@@ -549,12 +549,12 @@ func memoryDBPath(stateDir, workspaceHash string) string {
 }
 
 // openMemory 打开可写的独立 Memory Store，仅供 capture/revoke 这类明确写入用例使用。
-func openMemory(stateDir, workspaceHash string) (*memorysqlite.Store, error) {
-	return memorysqlite.Open(memoryDBPath(stateDir, workspaceHash))
+func openMemory(stateDir, workspaceHash string) (*memstoresqlite.Store, error) {
+	return memstoresqlite.Open(memoryDBPath(stateDir, workspaceHash))
 }
 
 // openReadOnlyMemory 打开既有 Memory Store；缺失路径返回原始 fs.ErrNotExist，
 // 由 recall/doctor 根据各自的只读语义决定是空集还是完整性失败。
-func openReadOnlyMemory(stateDir, workspaceHash string) (*memorysqlite.Store, error) {
-	return memorysqlite.OpenReadOnly(memoryDBPath(stateDir, workspaceHash))
+func openReadOnlyMemory(stateDir, workspaceHash string) (*memstoresqlite.Store, error) {
+	return memstoresqlite.OpenReadOnly(memoryDBPath(stateDir, workspaceHash))
 }

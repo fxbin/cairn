@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
+	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
 )
@@ -50,7 +50,7 @@ type MemoryInspectDerivedOptions struct {
 // 严格的跨库验证，再从全部 active、未过期的 run_outcome 候选确定性归纳，最后
 // 将全部计划作为一个批次在 Memory Store 单写入者事务中提交。缺少 Memory Store 时失败关闭，
 // 绝不为巩固创建新状态；派生候选永不进入运行时召回。
-func (service Service) ConsolidateMemory(ctx context.Context, options MemoryConsolidateOptions) ([]memorysqlite.ConsolidationResult, error) {
+func (service Service) ConsolidateMemory(ctx context.Context, options MemoryConsolidateOptions) ([]memstoresqlite.ConsolidationResult, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (service Service) ConsolidateMemory(ctx context.Context, options MemoryCons
 		}
 		return nil, err
 	}
-	store, err := memorysqlite.Open(path)
+	store, err := memstoresqlite.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func (service Service) ConsolidateMemory(ctx context.Context, options MemoryCons
 		}
 	}
 	if len(inputs.Candidates) == 0 {
-		return []memorysqlite.ConsolidationResult{}, nil
+		return []memstoresqlite.ConsolidationResult{}, nil
 	}
 	plans, err := memory.DeriveConsolidations(inputs, memory.ConsolidationOptions{
 		Now:                  now,
@@ -110,65 +110,65 @@ func (service Service) ConsolidateMemory(ctx context.Context, options MemoryCons
 
 // RejectDerivedMemory 在工作区锁内显式拒绝当前 active 的派生候选版本；
 // 拒绝理由只能是封闭词表，重复拒绝幂等，不产生任何自动晋升。
-func (service Service) RejectDerivedMemory(ctx context.Context, options MemoryRejectDerivedOptions) (memorysqlite.DerivedVersionKey, error) {
+func (service Service) RejectDerivedMemory(ctx context.Context, options MemoryRejectDerivedOptions) (memstoresqlite.DerivedVersionKey, error) {
 	if !memory.ValidRejectionReason(options.Reason) {
-		return memorysqlite.DerivedVersionKey{}, errors.New("derived rejection reason must be insufficient_evidence or human_request")
+		return memstoresqlite.DerivedVersionKey{}, errors.New("derived rejection reason must be insufficient_evidence or human_request")
 	}
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
-		return memorysqlite.DerivedVersionKey{}, err
+		return memstoresqlite.DerivedVersionKey{}, err
 	}
 	workspaceLock, err := acquireWorkspaceLock(options.StateDir, workspaceHash)
 	if err != nil {
-		return memorysqlite.DerivedVersionKey{}, err
+		return memstoresqlite.DerivedVersionKey{}, err
 	}
 	defer workspaceLock.Release()
 	store, err := openWritableExistingMemory(options.StateDir, workspaceHash)
 	if err != nil {
-		return memorysqlite.DerivedVersionKey{}, err
+		return memstoresqlite.DerivedVersionKey{}, err
 	}
 	defer store.Close()
 	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
-		return memorysqlite.DerivedVersionKey{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+		return memstoresqlite.DerivedVersionKey{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	inspected, err := store.InspectDerived(ctx, options.DerivedID)
 	if err != nil {
-		return memorysqlite.DerivedVersionKey{}, err
+		return memstoresqlite.DerivedVersionKey{}, err
 	}
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
-		return memorysqlite.DerivedVersionKey{}, memory.ErrNotFound
+		return memstoresqlite.DerivedVersionKey{}, memory.ErrNotFound
 	}
 	return store.RejectDerived(ctx, options.DerivedID, options.Reason, time.Now().UTC())
 }
 
 // InspectDerivedMemory 只读返回派生候选最新版本与审计历史；跨工作区标识
 // 即使猜中也失败关闭。
-func (service Service) InspectDerivedMemory(ctx context.Context, options MemoryInspectDerivedOptions) (memorysqlite.DerivedInspectResult, error) {
+func (service Service) InspectDerivedMemory(ctx context.Context, options MemoryInspectDerivedOptions) (memstoresqlite.DerivedInspectResult, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
-		return memorysqlite.DerivedInspectResult{}, err
+		return memstoresqlite.DerivedInspectResult{}, err
 	}
 	store, err := openReadOnlyMemory(options.StateDir, workspaceHash)
 	if err != nil {
-		return memorysqlite.DerivedInspectResult{}, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
+		return memstoresqlite.DerivedInspectResult{}, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
 	}
 	defer store.Close()
 	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
-		return memorysqlite.DerivedInspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+		return memstoresqlite.DerivedInspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	inspected, err := store.InspectDerived(ctx, options.DerivedID)
 	if err != nil {
-		return memorysqlite.DerivedInspectResult{}, err
+		return memstoresqlite.DerivedInspectResult{}, err
 	}
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
-		return memorysqlite.DerivedInspectResult{}, memory.ErrNotFound
+		return memstoresqlite.DerivedInspectResult{}, memory.ErrNotFound
 	}
 	return inspected, nil
 }
 
 // openWritableExistingMemory 打开既有的可写 Memory Store；缺失路径按各用例
 // 的封闭语义返回 ErrNotFound，而不是为写入用例创建新数据库。
-func openWritableExistingMemory(stateDir, workspaceHash string) (*memorysqlite.Store, error) {
+func openWritableExistingMemory(stateDir, workspaceHash string) (*memstoresqlite.Store, error) {
 	path := memoryDBPath(stateDir, workspaceHash)
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -176,5 +176,5 @@ func openWritableExistingMemory(stateDir, workspaceHash string) (*memorysqlite.S
 		}
 		return nil, err
 	}
-	return memorysqlite.Open(path)
+	return memstoresqlite.Open(path)
 }

@@ -11,7 +11,7 @@ import (
 	"io/fs"
 	"time"
 
-	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
+	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
 )
@@ -251,28 +251,28 @@ func (service Service) ExpireEvolutionCandidate(ctx context.Context, options Mem
 }
 
 // InspectEvolutionCandidate 只读返回候选与审计历史；跨工作区失败关闭。
-func (service Service) InspectEvolutionCandidate(ctx context.Context, options MemoryEvolutionInspectOptions) (memorysqlite.EvolutionInspectResult, error) {
+func (service Service) InspectEvolutionCandidate(ctx context.Context, options MemoryEvolutionInspectOptions) (memstoresqlite.EvolutionInspectResult, error) {
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
-		return memorysqlite.EvolutionInspectResult{}, err
+		return memstoresqlite.EvolutionInspectResult{}, err
 	}
 	store, err := openReadOnlyMemory(options.StateDir, workspaceHash)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return memorysqlite.EvolutionInspectResult{}, memory.ErrNotFound
+			return memstoresqlite.EvolutionInspectResult{}, memory.ErrNotFound
 		}
-		return memorysqlite.EvolutionInspectResult{}, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
+		return memstoresqlite.EvolutionInspectResult{}, fmt.Errorf("%w: open memory store: %v", ErrStateCorrupt, err)
 	}
 	defer store.Close()
 	if err := verifyReadOnlyMemoryStore(ctx, store, options.StateDir, workspaceHash); err != nil {
-		return memorysqlite.EvolutionInspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+		return memstoresqlite.EvolutionInspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	inspected, err := store.InspectEvolutionCandidate(ctx, options.CandidateID)
 	if err != nil {
-		return memorysqlite.EvolutionInspectResult{}, err
+		return memstoresqlite.EvolutionInspectResult{}, err
 	}
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
-		return memorysqlite.EvolutionInspectResult{}, memory.ErrNotFound
+		return memstoresqlite.EvolutionInspectResult{}, memory.ErrNotFound
 	}
 	return inspected, nil
 }
@@ -518,7 +518,7 @@ func (service Service) InspectEvolutionPromotions(ctx context.Context, targetKin
 
 // InspectMemoryTelemetry 只读返回记忆体系聚合遥测快照：跨表只读聚合，零
 // 正文零路径零密钥。库缺失映射 ErrNotFound，一致性破坏映射 ErrStateCorrupt。
-func (service Service) InspectMemoryTelemetry(ctx context.Context, workspace, stateDir string, configuration config.Config) (*memorysqlite.TelemetrySnapshot, error) {
+func (service Service) InspectMemoryTelemetry(ctx context.Context, workspace, stateDir string, configuration config.Config) (*memstoresqlite.TelemetrySnapshot, error) {
 	_, workspaceHash, err := workspaceFor(workspace, configuration)
 	if err != nil {
 		return nil, err
