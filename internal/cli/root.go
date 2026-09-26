@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
@@ -2367,8 +2366,8 @@ func (command Command) memoryTelemetry(ctx context.Context, arguments []string) 
 	}
 	if *jsonOutput {
 		return command.writeJSONOutput("memory telemetry", struct {
-			Type     string                          `json:"type"`
-			Snapshot *memorysqlite.TelemetrySnapshot `json:"snapshot"`
+			Type     string `json:"type"`
+			Snapshot any    `json:"snapshot"`
 		}{Type: "memory_telemetry", Snapshot: snapshot})
 	}
 	fmt.Fprintf(command.Stdout, "memory: candidates=%d active=%d revoked=%d superseded=%d\n",
