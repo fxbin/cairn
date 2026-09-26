@@ -121,13 +121,13 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
-	planRef, err := boot.Artifacts.Put(encode(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: options.Runs}), "application/json")
+	planRef, err := boot.Artifacts.Put(artifact.EncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: options.Runs}), "application/json")
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store rewind plan artifact: %w", err)
 	}
 	task := fmt.Sprintf("工作区回退：反放 %d 个已生效补丁", len(calls))
 	runID := domain.NewRunID()
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef artifact.Ref `json:"config_ref"`
 		TaskRef   artifact.Ref `json:"task_ref"`
@@ -138,7 +138,7 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 	if options.OnEvent != nil {
 		options.OnEvent(first)
 	}
-	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: encode(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.EncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {

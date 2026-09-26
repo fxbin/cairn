@@ -225,11 +225,7 @@ func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunPr
 
 // mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。
 func mustJSON(value any) json.RawMessage {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(fmt.Errorf("encode event payload: %w", err))
-	}
-	return append(json.RawMessage(nil), artifact.RedactJSON(encoded)...)
+	return artifact.EncodeRedactedJSON(value)
 }
 
 // containsSecretJSON 通过比较脱敏前后 JSON 判断载荷是否含有敏感内容。

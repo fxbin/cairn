@@ -213,7 +213,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	runID := domain.NewRunID()
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef       artifact.Ref  `json:"config_ref"`
 		PriorContextRef *artifact.Ref `json:"prior_context_ref,omitempty"`
@@ -224,7 +224,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if options.OnEvent != nil {
 		options.OnEvent(first)
 	}
-	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: encode(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.EncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {
@@ -804,7 +804,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, err
 	}
 	appendEvent := func(eventType domain.EventType, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: encode(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: artifact.EncodeRedactedJSON(payload)}
 		// 写入前先在克隆投影上模拟迁移，避免把不可回放的事件永久写入日志。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
@@ -852,7 +852,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunResumed, Payload: encode(struct {
+	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunResumed, Payload: artifact.EncodeRedactedJSON(struct {
 		Invocation           string `json:"invocation"`
 		FromSeq              uint64 `json:"from_seq"`
 		WorkspaceObservation string `json:"workspace_observation"`
@@ -948,7 +948,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		terminal = abortTerminalFromCancellation(request)
 	}
 	appendEvent := func(eventType domain.EventType, turnID *domain.TurnID, operationID *domain.OperationID, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: encode(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: artifact.EncodeRedactedJSON(payload)}
 		// 与 Reconcile 相同：先在克隆投影上模拟迁移再写入，防止不可回放事件落盘。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
@@ -1376,15 +1376,6 @@ func DefaultStateDir() string {
 		return filepath.Join(xdg, "cairn")
 	}
 	return filepath.Join(home, ".local", "state", "cairn")
-}
-
-// encode 将事件 payload 序列化并在写入前执行 JSON 脱敏。
-func encode(value any) json.RawMessage {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return append(json.RawMessage(nil), artifact.RedactJSON(encoded)...)
 }
 
 // requireMatchingConfig 确保当前运行配置与创建事件中冻结的指纹一致。

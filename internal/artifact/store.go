@@ -122,6 +122,16 @@ func Redact(content []byte) []byte {
 }
 
 // RedactJSON 保留有效 JSON 结构和数字精度，再递归清除凭据式键及字符串内容。
+// EncodeRedactedJSON 将值序列化为脱敏后的事件载荷 JSON。编码失败表示调用方
+// 构造了不可序列化值，属于编程错误，直接 panic，禁止把未脱敏残片写入日志。
+func EncodeRedactedJSON(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(fmt.Errorf("encode event payload: %w", err))
+	}
+	return append(json.RawMessage(nil), RedactJSON(encoded)...)
+}
+
 func RedactJSON(content []byte) []byte {
 	if !json.Valid(content) {
 		return Redact(content)
