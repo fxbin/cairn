@@ -1543,17 +1543,17 @@ func checkAdmissionGate(stateDir, workspaceHash string, configuration config.Con
 }
 
 // admissionErrorSummary 把准入失败归一为不含路径和凭据的稳定诊断原因。
+// 只识别类型化哨兵错误，不再对错误文本做脆弱匹配。
 func admissionErrorSummary(err error) string {
 	if err == nil {
 		return ""
 	}
-	message := err.Error()
 	switch {
-	case strings.Contains(message, "no admission decision"):
+	case errors.Is(err, provider.ErrNoAdmissionDecision):
 		return "no admission decision on file for this binding"
-	case strings.Contains(message, "admission is rejected"):
+	case errors.Is(err, provider.ErrAdmissionRejected):
 		return "provider admission is rejected for this binding"
-	case strings.Contains(message, "selection does not match"):
+	case errors.Is(err, provider.ErrAdmissionSelectionMismatch):
 		return "admission evidence does not match the resolved provider"
 	default:
 		return "admission evidence or decision state is invalid"

@@ -20,6 +20,15 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
+// ErrNoAdmissionDecision 表示当前绑定在档的准入分区为空。
+var ErrNoAdmissionDecision = errors.New("provider is not admitted: no admission decision on file for this binding")
+
+// ErrAdmissionRejected 表示分区链头决定为拒绝。
+var ErrAdmissionRejected = errors.New("provider admission is rejected for this binding")
+
+// ErrAdmissionSelectionMismatch 表示在档证据的解析身份与当前配置选择不一致。
+var ErrAdmissionSelectionMismatch = errors.New("admission evidence selection does not match the resolved profile")
+
 // admissionDecisionSchemaV1 是 ProviderAdmissionDecision 的当前合同版本。
 const admissionDecisionSchemaV1 = 1
 
@@ -333,21 +342,21 @@ func EvaluateAdmissionGate(decisions *DecisionStore, evidence *EvidenceStore, pr
 			return AdmissionOutcome{}, err
 		}
 		if len(partition) == 0 {
-			return AdmissionOutcome{}, errors.New("provider is not admitted: no admission decision on file for this binding")
+			return AdmissionOutcome{}, ErrNoAdmissionDecision
 		}
 		head, err := ResolveChainHead(partition)
 		if err != nil {
 			return AdmissionOutcome{}, fmt.Errorf("admission gate fails closed: %w", err)
 		}
 		if head.Decision != DecisionAdmitted {
-			return AdmissionOutcome{Head: head}, errors.New("provider admission is rejected for this binding")
+			return AdmissionOutcome{Head: head}, ErrAdmissionRejected
 		}
 		record, err := evidence.Get(head.EvidenceFingerprint)
 		if err != nil {
 			return AdmissionOutcome{Head: head}, fmt.Errorf("admission gate fails closed: %w", err)
 		}
 		if record.Selection != profile.Selection {
-			return AdmissionOutcome{Head: head}, errors.New("admission evidence selection does not match the resolved profile")
+			return AdmissionOutcome{Head: head}, ErrAdmissionSelectionMismatch
 		}
 		return AdmissionOutcome{Allowed: true, Head: head}, nil
 	default:
