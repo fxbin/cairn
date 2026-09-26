@@ -6,7 +6,6 @@ package benchmark
 import (
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
@@ -179,9 +178,4 @@ func SandboxSchedule(taskIDs []string, attemptsPerTask int) ([]SandboxPairStep, 
 // errorsNewScheduleMismatch 返回调度规模对不上任务数的关闭错误。
 func errorsNewScheduleMismatch() error {
 	return fmt.Errorf("sandbox schedule size does not cover the frozen task set")
-}
-
-// sandboxDeadline 计算套件最坏截止时刻。
-func sandboxDeadline(start time.Time, wallMilliseconds int64) time.Time {
-	return start.Add(time.Duration(wallMilliseconds) * time.Millisecond)
 }

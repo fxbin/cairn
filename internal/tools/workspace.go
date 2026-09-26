@@ -25,13 +25,6 @@ func NewWorkspace(root string, ignored []string, maxReadBytes int64, maxSearchFi
 	return newWorkspace(root, ignored, maxReadBytes, maxSearchFiles, maxSearchBytes, true)
 }
 
-// NewObservationWorkspace 创建 verifier 使用的全工作区视图。它不继承
-// workspace.ignore，避免 node_modules 等工具便利项掩盖验证命令的写入；
-// 仅排除 Cairn 状态、Git 元数据、敏感路径和显式 volatile 路径。
-func NewObservationWorkspace(root string, volatile []string) (Workspace, error) {
-	return newWorkspace(root, volatile, 1, 1, 1, false)
-}
-
 // ObservationView 从已规范化的工具视图派生 verifier 视图；它不会失败，
 // 从而避免策略配置与使用之间重新打开或重新规范化路径。
 func (workspace Workspace) ObservationView(volatile []string) Workspace {
@@ -192,7 +185,7 @@ func sensitivePath(relative string) bool {
 }
 
 // Observation 计算当前视图的稳定摘要。模型审批使用 NewWorkspace，而
-// verifier 使用 NewObservationWorkspace，确保工具级忽略不能掩盖测试写入。
+// verifier 使用 ObservationView，确保工具级忽略不能掩盖测试写入。
 func (workspace Workspace) Observation() (string, error) {
 	entries := make([]string, 0)
 	err := filepath.WalkDir(workspace.Root, func(path string, entry os.DirEntry, walkErr error) error {

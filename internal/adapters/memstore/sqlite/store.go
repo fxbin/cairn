@@ -1235,9 +1235,3 @@ func nullableString(value string) any {
 	}
 	return value
 }
-
-// validWorkspaceDigest 复用 memory 的严格摘要格式，而不向适配器暴露内部校验函数。
-func validWorkspaceDigest(value string) bool {
-	probe, err := memory.NewRunOutcomeCandidate(value, "run_probe", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "failed", "agent", false, time.Unix(0, 0), time.Second, []memory.EventEvidenceRef{{RunID: "run_probe", EventSeq: 1, EventHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000", EventType: "run_failed"}}, "")
-	return err == nil && probe.WorkspaceHash == value
-}

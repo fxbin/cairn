@@ -932,7 +932,7 @@ func TestSummarizeMessagesRetainsExplorationInventoryUnderBudgetPressure(t *test
 		{Role: "tool", ToolCallID: "c3", Content: result("second read of the same file")},
 		{Role: "assistant", Content: "已定位 ReAct 循环的纯思考分支处理位置，下一步在 _agent.py 修改循环继续条件。"},
 	}
-	summary := summarizeMessages(messages, 260)
+	summary := summarizeMessagesWithInventoryBudget(messages, 260, 25)
 	if !strings.Contains(summary, "已检查对象") {
 		t.Fatalf("summary missing exploration inventory: %q", summary)
 	}
@@ -963,7 +963,7 @@ func TestSummarizeMessagesRetainsPriorCheckpointWhenCompactingAgain(t *testing.T
 		{Role: "user", Content: contextCheckpointPrefix + "earlier decision: inspect config before changing it"},
 		{Role: "assistant", Content: "new finding: the config remains unchanged"},
 	}
-	summary := summarizeMessages(messages, 240)
+	summary := summarizeMessagesWithInventoryBudget(messages, 240, 25)
 	if !strings.Contains(summary, "earlier decision") || !strings.Contains(summary, "new finding") {
 		t.Fatalf("summary did not preserve both checkpoint and recent fact: %q", summary)
 	}

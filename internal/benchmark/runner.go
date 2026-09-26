@@ -1055,13 +1055,3 @@ func allAttemptsPassed(results []AttemptResult) bool {
 	}
 	return true
 }
-
-// SortResults 按任务 ID 与尝试序号稳定排序，供报告读取方独立复现展示顺序。
-func SortResults(results []AttemptResult) {
-	sort.Slice(results, func(left, right int) bool {
-		if results[left].TaskID == results[right].TaskID {
-			return results[left].Attempt < results[right].Attempt
-		}
-		return results[left].TaskID < results[right].TaskID
-	})
-}

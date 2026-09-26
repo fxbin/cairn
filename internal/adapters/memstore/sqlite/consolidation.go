@@ -960,19 +960,6 @@ func checkDerivedFactsRecompute(ctx context.Context, source queryerRows, consoli
 	return nil
 }
 
-// earliestDerivedAnchor 返回一次巩固事务派生行的创建锚点；计划级保留期校验
-// 保证同一事务内锚点唯一，因此任取一行即为该锚点，缺失派生行返回错误。
-func earliestDerivedAnchor(ctx context.Context, source queryerRows, consolidationID string) (time.Time, error) {
-	derived, err := derivedForConsolidation(ctx, source, consolidationID)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if len(derived) == 0 {
-		return time.Time{}, fmt.Errorf("consolidation %s has no derived rows", consolidationID)
-	}
-	return derived[0].CreatedAt, nil
-}
-
 // derivedAuditFor 返回派生候选版本行的审计历史（含 reason）。
 func derivedAuditFor(ctx context.Context, source queryerRows, derivedID, consolidationID string) ([]DerivedAuditEntry, error) {
 	rows, err := source.QueryContext(ctx, `SELECT action, reason, occurred_at FROM derived_audit_log

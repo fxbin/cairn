@@ -26,7 +26,7 @@ func TestSummarizeMessagesDropsSecretLikeExecArguments(t *testing.T) {
 		{Role: "tool", ToolCallID: "legacy_exec", Content: string(encoded)},
 		{Role: "assistant", Content: "已执行探测命令，基于已有发现推进。"},
 	}
-	summary := summarizeMessages(messages, 2_048)
+	summary := summarizeMessagesWithInventoryBudget(messages, 2_048, 25)
 	if !strings.Contains(summary, "curl") {
 		t.Fatalf("inventory must keep the executable for exploration memory: %q", summary)
 	}
@@ -65,7 +65,7 @@ func TestMessagesFromEventsReplayKeepsLegacySecretOutOfCheckpoint(t *testing.T) 
 	if !replayedRaw {
 		t.Fatalf("journal replay must faithfully carry legacy facts; test fixture broken: %#v", rebuilt)
 	}
-	summary := summarizeMessages(rebuilt, 2_048)
+	summary := summarizeMessagesWithInventoryBudget(rebuilt, 2_048, 25)
 	if !strings.Contains(summary, "curl") {
 		t.Fatalf("checkpoint inventory must keep the executable: %q", summary)
 	}

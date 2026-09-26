@@ -267,18 +267,6 @@ func finishConclusionReadBack(ctx context.Context, transaction *sql.Tx, prior me
 	return row, nil
 }
 
-// LookupEvolutionEvaluation 按 ID 只读返回评测行。
-func (store *Store) LookupEvolutionEvaluation(ctx context.Context, evaluationID string) (memory.Evaluation, error) {
-	row, found, err := lookupEvolutionEvaluation(ctx, store.db, evaluationID)
-	if err != nil {
-		return memory.Evaluation{}, err
-	}
-	if !found {
-		return memory.Evaluation{}, memory.ErrNotFound
-	}
-	return row, nil
-}
-
 // LookupEvolutionEvaluationByCandidate 返回候选绑定的唯一评测行；尚无评测
 // 时返回 ErrNotFound。
 func (store *Store) LookupEvolutionEvaluationByCandidate(ctx context.Context, candidateID string) (memory.Evaluation, error) {

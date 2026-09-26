@@ -250,10 +250,6 @@ func (loop *Loop) estimatePromptTokens(messages []ports.Message) int {
 // summarizeMessages 优先保留探索清单、最近的工具结果、模型决策和验证反馈，
 // 不复制原始数据体。探索清单获得独立预算切片（至多四分之一）：它是从工具
 // 调用确定性派生的去重"已检查对象"视图，压缩后防止模型重读循环。
-func summarizeMessages(messages []ports.Message, maximumBytes int) string {
-	return summarizeMessagesWithInventoryBudget(messages, maximumBytes, 25)
-}
-
 // summarizeMessagesWithInventoryBudget 按显式比例切分探索清单与近期事实预算；
 // 比例由冻结配置进入运行时，越界值在配置装配前失败关闭。
 func summarizeMessagesWithInventoryBudget(messages []ports.Message, maximumBytes, inventoryBudgetPercent int) string {
@@ -289,11 +285,6 @@ func summarizeMessagesWithInventoryBudgetFrom(messages []ports.Message, maximumB
 		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
 	}
 	return string(artifact.Redact([]byte(inventory + facts)))
-}
-
-// summarizeRecentFacts 从尾部反向保留预算内的近期事实；先前检查点占用一半预算。
-func summarizeRecentFacts(messages []ports.Message, maximumBytes int) string {
-	return summarizeRecentFactsFrom(messages, maximumBytes, 2)
 }
 
 // summarizeRecentFactsFrom 从指定历史起点反向保留近期事实。

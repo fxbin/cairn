@@ -117,25 +117,3 @@ func ResolveSelection(facts SelectionFacts) (contract.ProviderSelection, error) 
 		EndpointDigest: digest,
 	}, nil
 }
-
-// validateProviderID 校验 ProviderID 的确定性形状：小写 kebab
-// （[a-z][a-z0-9-]*）且不超过上限。ProviderID 非敏感，错误文本允许回显值
-// 本身以便定位配置错误。
-func validateProviderID(providerID string) error {
-	if providerID == "" {
-		return errors.New("provider id must not be empty")
-	}
-	if len(providerID) > providerIDMaxLen {
-		return fmt.Errorf("provider id exceeds %d characters", providerIDMaxLen)
-	}
-	for index := 0; index < len(providerID); index++ {
-		character := providerID[index]
-		lower := character >= 'a' && character <= 'z'
-		digit := index > 0 && character >= '0' && character <= '9'
-		dash := index > 0 && character == '-'
-		if !lower && !digit && !dash {
-			return fmt.Errorf("provider id %q must be lowercase kebab: [a-z][a-z0-9-]*", providerID)
-		}
-	}
-	return nil
-}

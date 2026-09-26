@@ -51,14 +51,6 @@ type Service struct {
 	NewProvider func(config.Config) (ports.Provider, error)
 }
 
-// derefRef 解引用可选制品引用；nil 返回零值（配合 omitempty 不写入事件）。
-func derefRef(ref *artifact.Ref) artifact.Ref {
-	if ref == nil {
-		return artifact.Ref{}
-	}
-	return *ref
-}
-
 // RunOptions 描述启动一次全新 Agent 运行所需的输入与依赖。
 type RunOptions struct {
 	Task      string

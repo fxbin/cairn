@@ -39,7 +39,7 @@ func TestCompactionSummaryLimitIncludesActualRequestOverhead(t *testing.T) {
 func TestCompactionSummaryRespectsTinyByteBudget(t *testing.T) {
 	messages := []ports.Message{{Role: "system", Content: "system"}, {Role: "user", Content: "task"}, {Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"path":"sample.txt"}`)}}}}
 	for size := 1; size <= 128; size++ {
-		if summary := summarizeMessages(messages, size); len(summary) > size {
+		if summary := summarizeMessagesWithInventoryBudget(messages, size, 25); len(summary) > size {
 			t.Fatalf("budget %d produced %d bytes", size, len(summary))
 		}
 	}
