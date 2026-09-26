@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -227,7 +226,7 @@ func TestSummarizeRunAnswersFourQuestions(t *testing.T) {
 	waitingService := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &patchThenFinalProvider{}, nil }}
 	waitingWorkspace, waitingState := t.TempDir(), t.TempDir()
 	waitingResult, err := waitingService.Run(context.Background(), RunOptions{Task: "patch", Workspace: waitingWorkspace, StateDir: waitingState, Config: withTestProvider(config.Defaults())})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) || waitingResult.ID == "" {
 		t.Fatalf("expected waiting approval, got %v", err)
 	}

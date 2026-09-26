@@ -41,15 +41,15 @@ func budgetUsageFromEvents(events []domain.Event) budgetUsage {
 }
 
 // responseBudgetExceeded 检查 token 和显式定价成本是否超过配置上限。
-func (loop *Loop) responseBudgetExceeded(usage budgetUsage) *BudgetExceededError {
+func (loop *Loop) responseBudgetExceeded(usage budgetUsage) *ports.BudgetExceededError {
 	if loop.MaxInputTokens > 0 && usage.InputTokens > loop.MaxInputTokens {
-		return &BudgetExceededError{Dimension: "input_tokens"}
+		return &ports.BudgetExceededError{Dimension: "input_tokens"}
 	}
 	if loop.MaxOutputTokens > 0 && usage.OutputTokens > loop.MaxOutputTokens {
-		return &BudgetExceededError{Dimension: "output_tokens"}
+		return &ports.BudgetExceededError{Dimension: "output_tokens"}
 	}
 	if loop.MaxCostUSD > 0 && usage.cost(loop.InputTokenUSD, loop.OutputTokenUSD) > loop.MaxCostUSD {
-		return &BudgetExceededError{Dimension: "cost_usd"}
+		return &ports.BudgetExceededError{Dimension: "cost_usd"}
 	}
 	return nil
 }
@@ -82,7 +82,7 @@ func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) erro
 		loop.startedOperationsKnown = true
 	}
 	if loop.startedOperations >= loop.MaxToolCalls {
-		return &BudgetExceededError{Dimension: "tool_calls"}
+		return &ports.BudgetExceededError{Dimension: "tool_calls"}
 	}
 	return nil
 }

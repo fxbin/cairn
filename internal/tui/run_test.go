@@ -17,11 +17,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/modelcatalog"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 // eventWithPayload 构造带 JSON payload 的测试事件。
@@ -88,7 +88,7 @@ func TestAppendLineCapsBuffer(t *testing.T) {
 func TestReceiveResultApprovalTransition(t *testing.T) {
 	console := NewRunConsole(context.Background(), RunConsoleInput{})
 	console.mode = consoleRunning
-	waiting := &agent.WaitingApprovalError{RunID: "run-x", Fingerprint: "sha256:abc", Summary: "写入 main.go"}
+	waiting := &ports.WaitingApprovalError{RunID: "run-x", Fingerprint: "sha256:abc", Summary: "写入 main.go"}
 	model, _ := console.receiveResult(runFinishedMsg{err: waiting})
 	console = model.(RunConsole)
 	if console.mode != consoleApproval || console.waiting != waiting {
@@ -417,7 +417,7 @@ func TestCommandSuggestionsAndCompletion(t *testing.T) {
 func TestReceiveResultLoadsApprovalDetail(t *testing.T) {
 	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Defaults()})
 	console.mode = consoleRunning
-	model, _ := console.receiveResult(runFinishedMsg{err: &agent.WaitingApprovalError{RunID: "run-missing", Fingerprint: "f", Summary: "s"}})
+	model, _ := console.receiveResult(runFinishedMsg{err: &ports.WaitingApprovalError{RunID: "run-missing", Fingerprint: "f", Summary: "s"}})
 	console = model.(RunConsole)
 	if console.mode != consoleApproval {
 		t.Fatal("应进入审批模式")
@@ -654,7 +654,7 @@ func TestReceiveRewindResultTransitions(t *testing.T) {
 	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
 	console.mode = consoleRunning
 	console.rewinding = &rewindState{}
-	waiting := &agent.WaitingApprovalError{RunID: "run_rewind", Fingerprint: "sha256:f", Summary: "update note.txt"}
+	waiting := &ports.WaitingApprovalError{RunID: "run_rewind", Fingerprint: "sha256:f", Summary: "update note.txt"}
 	model, cmd := console.Update(rewindFinishedMsg{err: waiting})
 	console = model.(RunConsole)
 	if console.mode != consoleApproval || console.rewinding == nil {
@@ -683,7 +683,7 @@ func TestReceiveRewindResultTransitions(t *testing.T) {
 func TestApprovalDiffKeyRouting(t *testing.T) {
 	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
 	console.mode = consoleApproval
-	console.waiting = &agent.WaitingApprovalError{RunID: "run_missing", OperationID: "op_missing", Fingerprint: "sha256:f", Summary: "update note.txt"}
+	console.waiting = &ports.WaitingApprovalError{RunID: "run_missing", OperationID: "op_missing", Fingerprint: "sha256:f", Summary: "update note.txt"}
 	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
 	console = model.(RunConsole)
 	if console.mode != consoleApproval || !strings.Contains(strings.Join(console.lines, "\n"), "差异不可用") {

@@ -54,7 +54,7 @@ type RewindOptions struct {
 	StateDir  string
 	Config    config.Config
 	Runs      []domain.RunID
-	Approval  agent.Approval
+	Approval  ports.Approval
 	OnEvent   EventSink
 }
 
@@ -171,7 +171,7 @@ func (service Service) driveRewindRun(ctx context.Context, boot *Boot, runID dom
 	if errors.Is(err, context.DeadlineExceeded) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
 		defer cancelExpired()
-		result, err = boot.Loop.RunScriptedToolPlan(expiredContext, input, agent.Approval{}, calls)
+		result, err = boot.Loop.RunScriptedToolPlan(expiredContext, input, ports.Approval{}, calls)
 	}
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
 }
@@ -504,7 +504,7 @@ func activeRunError(active domain.RunProjection) error {
 	switch active.Phase() {
 	case "waiting_approval":
 		if pending := active.PendingApproval; pending != nil {
-			return fmt.Errorf("%w: %w", ErrActiveRun, &agent.WaitingApprovalError{RunID: active.ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
+			return fmt.Errorf("%w: %w", ErrActiveRun, &ports.WaitingApprovalError{RunID: active.ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
 		}
 	case "waiting_reconcile":
 		return fmt.Errorf("%w: %w", ErrActiveRun, ErrWaitingReconcile)

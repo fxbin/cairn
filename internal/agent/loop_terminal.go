@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -31,7 +32,7 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 	cause := context.Canceled
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCancelRequested, TurnID: turnID, Payload: mustJSON(struct {
@@ -63,10 +64,10 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 
 // persistBudgetExceeded 将触发的预算维度及失败状态追加到事件日志。
 func (loop *Loop) persistBudgetExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, dimension string) (Result, error) {
-	cause := &BudgetExceededError{Dimension: dimension}
+	cause := &ports.BudgetExceededError{Dimension: dimension}
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCancelRequested, Payload: mustJSON(struct {
@@ -326,7 +327,7 @@ func (loop *Loop) failCurrentTurn(ctx context.Context, projection *domain.RunPro
 func (loop *Loop) persistLoopGuardExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, reason string) error {
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
-	guardErr := &LoopGuardExceededError{Reason: reason}
+	guardErr := &ports.LoopGuardExceededError{Reason: reason}
 	if projection.CurrentTurn != nil {
 		turnID := *projection.CurrentTurn
 		if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {

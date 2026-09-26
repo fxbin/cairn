@@ -93,7 +93,7 @@ func TestRunTurnBudgetCountsPreviouslyClosedTurns(t *testing.T) {
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "must not run"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 1}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "respect resumed turn budget", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "turns" || len(provider.requests) != 0 {
 		t.Fatalf("error=%v requests=%d", err, len(provider.requests))
 	}
@@ -125,7 +125,7 @@ func TestLoopStopsAfterThreeMatchingFailedOperations(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "stop repeated failures")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 10}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "stop repeated failures", WorkspaceHash: "workspace"})
-	var guarded *LoopGuardExceededError
+	var guarded *ports.LoopGuardExceededError
 	if !errors.As(err, &guarded) || guarded.Reason != loopGuardRepeatedOperationFailure || len(provider.requests) != consecutiveOperationFailureLimit {
 		t.Fatalf("error=%v requests=%d", err, len(provider.requests))
 	}

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
@@ -59,11 +58,11 @@ func runApprovedUpdateTask(t *testing.T, workspace, stateDir string, path, befor
 	if err == nil {
 		t.Fatal("ask policy must pause before the patch")
 	}
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("run must wait for approval: %v", err)
 	}
-	finished, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
+	finished, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,11 +120,11 @@ func TestRewindRestoresFileFromBeforeArtifact(t *testing.T) {
 	if err == nil {
 		t.Fatal("rewind must pause for approval")
 	}
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) || waiting.RunID == runID {
 		t.Fatalf("rewind must wait for its own approval: %v", err)
 	}
-	finished, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
+	finished, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,11 +151,11 @@ func TestRewindContinuesByIdempotentReentry(t *testing.T) {
 	runID, service, configuration := runApprovedUpdateTask(t, workspace, stateDir, path, "original", "updated")
 	options := RewindOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: []domain.RunID{runID}}
 	_, first := service.Rewind(context.Background(), options)
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(first, &waiting) {
 		t.Fatalf("rewind must pause: %v", first)
 	}
-	options.Approval = agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "reentry"}
+	options.Approval = ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "reentry"}
 	finished, err := service.Rewind(context.Background(), options)
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +387,7 @@ func TestRewindReconcileRespectsAppliedVerdict(t *testing.T) {
 			provider := &countingFinalProvider{}
 			service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 			_, rewindErr := service.Rewind(context.Background(), RewindOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: []domain.RunID{sourceRunID}})
-			var waiting *agent.WaitingApprovalError
+			var waiting *ports.WaitingApprovalError
 			if !errors.As(rewindErr, &waiting) {
 				t.Fatalf("rewind must pause before operation: %v", rewindErr)
 			}
@@ -432,7 +431,7 @@ func TestRewindReconcileRespectsAppliedVerdict(t *testing.T) {
 				if !errors.As(reconcileErr, &waiting) {
 					t.Fatalf("not_applied must request approval for retry: %v", reconcileErr)
 				}
-				result, reconcileErr = service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "retry"}})
+				result, reconcileErr = service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "retry"}})
 			}
 			if reconcileErr != nil || result.Result == nil || result.Result.State != string(domain.RunCompleted) {
 				t.Fatalf("result=%#v err=%v", result, reconcileErr)
@@ -476,22 +475,22 @@ func TestRewindDeletesCreatedByReversal(t *testing.T) {
 	if err == nil {
 		t.Fatal("ask policy must pause")
 	}
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("run must wait: %v", err)
 	}
-	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}}); err != nil {
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "created.txt")); err != nil {
 		t.Fatalf("created.txt should exist: %v", err)
 	}
 	_, rewindErr := service.Rewind(context.Background(), RewindOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: []domain.RunID{result.ID}})
-	var rewindWaiting *agent.WaitingApprovalError
+	var rewindWaiting *ports.WaitingApprovalError
 	if !errors.As(rewindErr, &rewindWaiting) {
 		t.Fatalf("rewind must pause: %v", rewindErr)
 	}
-	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: rewindWaiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: rewindWaiting.Fingerprint, Approve: true, Reason: "test"}}); err != nil {
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: rewindWaiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: rewindWaiting.Fingerprint, Approve: true, Reason: "test"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "created.txt")); !os.IsNotExist(err) {
@@ -638,12 +637,12 @@ func TestRewindReversesSequentialPatchesOnSameFile(t *testing.T) {
 		t.Fatalf("note.txt=%q err=%v", content, err)
 	}
 	_, err := service.Rewind(context.Background(), RewindOptions{Workspace: workspace, StateDir: stateDir, Config: configuration, Runs: []domain.RunID{runOne, runTwo}})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("first reversal must pause: %v", err)
 	}
 	for round := 0; round < 2; round++ {
-		finished, resumeErr := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
+		finished, resumeErr := service.Resume(context.Background(), ResumeOptions{RunID: waiting.RunID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}})
 		if resumeErr == nil {
 			if finished.Result == nil || finished.Result.State != string(domain.RunCompleted) {
 				t.Fatalf("round %d finished=%#v", round, finished.Result)

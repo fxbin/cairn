@@ -14,21 +14,14 @@ import (
 	"github.com/fxbin/cairn/internal/tools"
 )
 
-// Approval 是 cairn resume 提供的显式、一次性审批决定。
-type Approval struct {
-	Fingerprint string
-	Approve     bool
-	Reason      string
-}
-
 // Resume 恢复等待审批或普通运行；返回错误前与 Run 相同地兜底持久化取消。
-func (loop *Loop) Resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
+func (loop *Loop) Resume(ctx context.Context, input RunInput, approval ports.Approval) (Result, error) {
 	result, err := loop.resume(ctx, input, approval)
 	return result, loop.persistCancellationIfInterrupted(ctx, input, err)
 }
 
 // resume 执行恢复主流程：处理挂起审批、未完成模型尝试与悬挂读操作。
-func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval) (Result, error) {
+func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.Approval) (Result, error) {
 	// 会话前情装配（ADR-0018）：恢复场景下消息组装按创建事件回放补齐，
 	// 输入显式携带仍优先——与 run 的装配语义一致。
 	loop.PriorContext = input.PriorContext
@@ -44,7 +37,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	if err != nil {
 		return Result{}, err
 	}
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		result, _, cancellationErr := loop.repairMissingCancellationTerminal(ctx, &projection, input, events)
 		return result, cancellationErr
 	}
@@ -191,7 +184,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	}
 	turnID := *projection.CurrentTurn
 	if !approval.Approve {
-		denied := &PolicyDeniedError{Summary: approval.Reason}
+		denied := &ports.PolicyDeniedError{Summary: approval.Reason}
 		result := tools.Failure("approval_denied", approval.Reason)
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 			Fingerprint string `json:"fingerprint"`
@@ -229,7 +222,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 		return loop.expireApproval(ctx, &projection, input, turnID, pending, call, verification, verificationProposal, decision)
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
-		var budget *BudgetExceededError
+		var budget *ports.BudgetExceededError
 		if errors.As(err, &budget) {
 			return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
 		}
@@ -264,17 +257,17 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 			if errors.As(err, &persistence) {
 				return Result{RunID: input.RunID}, err
 			}
-			if errors.Is(err, ErrWaitingReconcile) {
+			if errors.Is(err, ports.ErrWaitingReconcile) {
 				return Result{RunID: input.RunID}, err
 			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
-			var guard *LoopGuardExceededError
+			var guard *ports.LoopGuardExceededError
 			if errors.As(err, &guard) {
 				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 			}
-			var verificationFailure *VerificationFailureError
+			var verificationFailure *ports.VerificationFailureError
 			if errors.As(err, &verificationFailure) {
 				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
@@ -288,21 +281,21 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 			if errors.As(err, &persistence) {
 				return Result{RunID: input.RunID}, err
 			}
-			if errors.Is(err, ErrWaitingReconcile) {
+			if errors.Is(err, ports.ErrWaitingReconcile) {
 				return Result{RunID: input.RunID}, err
 			}
-			var waiting *WaitingApprovalError
+			var waiting *ports.WaitingApprovalError
 			if errors.As(err, &waiting) {
 				return Result{RunID: input.RunID}, waiting
 			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
-			var guard *LoopGuardExceededError
+			var guard *ports.LoopGuardExceededError
 			if errors.As(err, &guard) {
 				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 			}
-			var verificationFailure *VerificationFailureError
+			var verificationFailure *ports.VerificationFailureError
 			if errors.As(err, &verificationFailure) {
 				if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
 					return Result{}, err
@@ -330,7 +323,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
-		return Result{RunID: input.RunID}, &WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
+		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
@@ -352,7 +345,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval Approval)
 		return loop.persistCancellation(ctx, &projection, input, &turnID)
 	}
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
-		var guard *LoopGuardExceededError
+		var guard *ports.LoopGuardExceededError
 		if errors.As(err, &guard) {
 			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 		}
@@ -406,25 +399,25 @@ func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *doma
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, err
 		}
-		if errors.Is(err, ErrWaitingReconcile) {
+		if errors.Is(err, ports.ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, projection, input, &turnID)
 		}
-		var waiting *WaitingApprovalError
+		var waiting *ports.WaitingApprovalError
 		if errors.As(err, &waiting) {
 			return Result{RunID: input.RunID}, waiting
 		}
-		var budget *BudgetExceededError
+		var budget *ports.BudgetExceededError
 		if errors.As(err, &budget) {
 			return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 		}
-		var guard *LoopGuardExceededError
+		var guard *ports.LoopGuardExceededError
 		if errors.As(err, &guard) {
 			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 		}
-		var verificationFailure *VerificationFailureError
+		var verificationFailure *ports.VerificationFailureError
 		if errors.As(err, &verificationFailure) {
 			messages, rebuildErr := loop.messagesFromEvents(events, input.Task)
 			if rebuildErr != nil {
@@ -465,25 +458,25 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 			if errors.As(err, &persistence) {
 				return Result{RunID: input.RunID}, err
 			}
-			if errors.Is(err, ErrWaitingReconcile) {
+			if errors.Is(err, ports.ErrWaitingReconcile) {
 				return Result{RunID: input.RunID}, err
 			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, projection, input, &turnID)
 			}
-			var waiting *WaitingApprovalError
+			var waiting *ports.WaitingApprovalError
 			if errors.As(err, &waiting) {
 				return Result{RunID: input.RunID}, waiting
 			}
-			var budget *BudgetExceededError
+			var budget *ports.BudgetExceededError
 			if errors.As(err, &budget) {
 				return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 			}
-			var guard *LoopGuardExceededError
+			var guard *ports.LoopGuardExceededError
 			if errors.As(err, &guard) {
 				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 			}
-			var denied *PolicyDeniedError
+			var denied *ports.PolicyDeniedError
 			if errors.As(err, &denied) {
 				return loop.failCurrentTurn(ctx, projection, input, turnID, denied)
 			}
@@ -738,7 +731,7 @@ type runCancelRequestedPayload struct {
 // repairMissingCancellationTerminal 在普通恢复路径之前收束已持久化的取消事实；
 // operation_cancelled 只用于补写取消序列，绝不重新执行对应工具。
 func (loop *Loop) repairMissingCancellationTerminal(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (Result, bool, error) {
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		request, found, err := latestRunCancellationRequest(events)
 		if err != nil {
 			return Result{RunID: input.RunID}, true, err
@@ -890,7 +883,7 @@ func cancellationTerminalCause(request runCancelRequestedPayload) error {
 		if request.BudgetDimension == "" {
 			return errors.New("budget exhausted")
 		}
-		return &BudgetExceededError{Dimension: request.BudgetDimension}
+		return &ports.BudgetExceededError{Dimension: request.BudgetDimension}
 	}
 	if request.Cause != "" {
 		return errors.New(request.Cause)
@@ -1217,7 +1210,7 @@ func (loop *Loop) repairMissingRunTerminal(ctx context.Context, projection *doma
 		}
 		cause := errors.New(evidence.failure.Error)
 		if evidence.approvalDenied || evidence.policyDenied {
-			cause = &PolicyDeniedError{Summary: evidence.failure.Reason}
+			cause = &ports.PolicyDeniedError{Summary: evidence.failure.Reason}
 		}
 		if evidence.retryable {
 			turnID := *projection.CurrentTurn
@@ -1319,7 +1312,7 @@ func openTurnFailureEvidence(events []domain.Event, turnID domain.TurnID) (openT
 			})
 			return openTurnFailureRecord{
 				failure: runFailurePayload{
-					Error:      (&PolicyDeniedError{Summary: payload.Summary}).Error(),
+					Error:      (&ports.PolicyDeniedError{Summary: payload.Summary}).Error(),
 					ErrorClass: result.Code,
 					Reason:     payload.Summary,
 				},
@@ -1534,7 +1527,7 @@ func failedTurnEvidence(events []domain.Event, closeIndex int, turnID domain.Tur
 			if payload.ExpectedTerminal == "failed" {
 				failure := runFailurePayload{Error: "run cancellation requested", BudgetDimension: payload.Dimension}
 				if payload.Dimension != "" {
-					failure.Error = (&BudgetExceededError{Dimension: payload.Dimension}).Error()
+					failure.Error = (&ports.BudgetExceededError{Dimension: payload.Dimension}).Error()
 				}
 				return failure, false, nil
 			}

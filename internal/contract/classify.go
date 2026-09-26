@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -109,10 +108,10 @@ func IsKnownTerminalFailureClass(value string) bool {
 // ClassifyError 把运行返回的错误映射为统一失败分类；它与事件侧
 // ClassifyTerminal 共用同一词表，是失败分类的唯一 owner。
 func ClassifyError(err error) string {
-	var waiting *agent.WaitingApprovalError
-	var denied *agent.PolicyDeniedError
-	var exhausted *agent.BudgetExceededError
-	var guarded *agent.LoopGuardExceededError
+	var waiting *ports.WaitingApprovalError
+	var denied *ports.PolicyDeniedError
+	var exhausted *ports.BudgetExceededError
+	var guarded *ports.LoopGuardExceededError
 	var providerFailure ports.ClassifiedError
 	switch {
 	case errors.As(err, &waiting):

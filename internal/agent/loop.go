@@ -266,25 +266,25 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				if errors.As(err, &persistence) {
 					return Result{RunID: input.RunID}, err
 				}
-				if errors.Is(err, ErrWaitingReconcile) {
+				if errors.Is(err, ports.ErrWaitingReconcile) {
 					return Result{RunID: input.RunID}, err
 				}
 				if ctx.Err() != nil {
 					return loop.persistCancellation(ctx, &projection, input, &turnID)
 				}
-				var waiting *WaitingApprovalError
+				var waiting *ports.WaitingApprovalError
 				if errors.As(err, &waiting) {
 					return Result{RunID: input.RunID}, waiting
 				}
-				var budget *BudgetExceededError
+				var budget *ports.BudgetExceededError
 				if errors.As(err, &budget) {
 					return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
 				}
-				var guard *LoopGuardExceededError
+				var guard *ports.LoopGuardExceededError
 				if errors.As(err, &guard) {
 					return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 				}
-				var verificationFailure *VerificationFailureError
+				var verificationFailure *ports.VerificationFailureError
 				if errors.As(err, &verificationFailure) {
 					messages = append(messages, ports.Message{Role: "user", Content: verificationFailure.Feedback})
 					messages, err = loop.closeTurnAndCompact(ctx, &projection, input, turnID, messages)
@@ -312,21 +312,21 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 				if errors.As(err, &persistence) {
 					return Result{RunID: input.RunID}, err
 				}
-				if errors.Is(err, ErrWaitingReconcile) {
+				if errors.Is(err, ports.ErrWaitingReconcile) {
 					return Result{RunID: input.RunID}, err
 				}
 				if ctx.Err() != nil {
 					return loop.persistCancellation(ctx, &projection, input, &turnID)
 				}
-				var budget *BudgetExceededError
+				var budget *ports.BudgetExceededError
 				if errors.As(err, &budget) {
 					return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
 				}
-				var guard *LoopGuardExceededError
+				var guard *ports.LoopGuardExceededError
 				if errors.As(err, &guard) {
 					return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 				}
-				var waiting *WaitingApprovalError
+				var waiting *ports.WaitingApprovalError
 				if errors.As(err, &waiting) {
 					return Result{RunID: input.RunID}, waiting
 				}

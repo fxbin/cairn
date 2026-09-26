@@ -27,7 +27,7 @@ func TestLoopScriptedPlanExecutesAndCompletes(t *testing.T) {
 	loop.Provider = &scriptedProvider{scripts: [][]ports.ModelEvent{{}}}
 	runID := domain.NewRunID()
 	appendInitialRunningEvents(t, journal, runID, "scripted plan")
-	result, err := loop.RunScriptedToolPlan(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{}, scriptedCalls(fileHash(t, "original")))
+	result, err := loop.RunScriptedToolPlan(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{}, scriptedCalls(fileHash(t, "original")))
 	if err != nil || result.RunID != runID {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -72,17 +72,17 @@ func TestLoopScriptedPlanPausesPerApprovalAndResumes(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "scripted approvals")
 	calls := scriptedCalls(fileHash(t, "original"))
 	input := RunInput{RunID: runID, WorkspaceHash: "workspace"}
-	_, first := loop.RunScriptedToolPlan(context.Background(), input, Approval{}, calls)
-	var waiting *WaitingApprovalError
+	_, first := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{}, calls)
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(first, &waiting) {
 		t.Fatalf("first call must pause for approval: %v", first)
 	}
-	_, second := loop.RunScriptedToolPlan(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}, calls)
-	var waitingAgain *WaitingApprovalError
+	_, second := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}, calls)
+	var waitingAgain *ports.WaitingApprovalError
 	if !errors.As(second, &waitingAgain) {
 		t.Fatalf("second call must pause for its own approval: %v", second)
 	}
-	if _, err := loop.RunScriptedToolPlan(context.Background(), input, Approval{Fingerprint: waitingAgain.Fingerprint, Approve: true, Reason: "test"}, calls); err != nil {
+	if _, err := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{Fingerprint: waitingAgain.Fingerprint, Approve: true, Reason: "test"}, calls); err != nil {
 		t.Fatalf("final continuation: %v", err)
 	}
 	if content, err := os.ReadFile(filepath.Join(root, "note.txt")); err != nil || string(content) != "restored" {
@@ -106,13 +106,13 @@ func TestLoopScriptedPlanApprovalDenialFailsRun(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "scripted denial")
 	calls := scriptedCalls(fileHash(t, "original"))
 	input := RunInput{RunID: runID, WorkspaceHash: "workspace"}
-	_, first := loop.RunScriptedToolPlan(context.Background(), input, Approval{}, calls)
-	var waiting *WaitingApprovalError
+	_, first := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{}, calls)
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(first, &waiting) {
 		t.Fatalf("must pause for approval: %v", first)
 	}
-	_, err := loop.RunScriptedToolPlan(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: false, Reason: "rejected"}, calls)
-	var denied *PolicyDeniedError
+	_, err := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{Fingerprint: waiting.Fingerprint, Approve: false, Reason: "rejected"}, calls)
+	var denied *ports.PolicyDeniedError
 	if !errors.As(err, &denied) {
 		t.Fatalf("denial must fail the run: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestLoopScriptedPlanHealsMissingToolResult(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := loop.RunScriptedToolPlan(ctx, RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{}, []ports.ToolCall{{ID: "rewind_heal_1", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"note.txt","mode":"update","expected_sha256":"` + fileHash(t, beforeBody) + `","replacements":[{"old":"` + beforeBody + `","new":"` + afterBody + `"}]}`)}}); err != nil {
+	if _, err := loop.RunScriptedToolPlan(ctx, RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{}, []ports.ToolCall{{ID: "rewind_heal_1", Name: "apply_patch", Arguments: json.RawMessage(`{"path":"note.txt","mode":"update","expected_sha256":"` + fileHash(t, beforeBody) + `","replacements":[{"old":"` + beforeBody + `","new":"` + afterBody + `"}]}`)}}); err != nil {
 		t.Fatal(err)
 	}
 	events, _ := journal.Load(ctx, runID)

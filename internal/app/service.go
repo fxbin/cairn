@@ -34,7 +34,7 @@ var (
 	// ErrActiveRun 表示同一工作区已有尚未终态的运行。
 	ErrActiveRun = errors.New("workspace already has an active run")
 	// ErrWaitingReconcile 表示悬而未决的副作用必须由人工先对账。
-	ErrWaitingReconcile = agent.ErrWaitingReconcile
+	ErrWaitingReconcile = ports.ErrWaitingReconcile
 	// ErrConfigDrift 表示当前配置与运行创建时冻结的配置不一致。
 	ErrConfigDrift = errors.New("frozen config fingerprint does not match current configuration")
 	// ErrStateCorrupt 表示事件日志或制品引用无法通过完整性校验。
@@ -92,7 +92,7 @@ type ResumeOptions struct {
 	Workspace string
 	StateDir  string
 	Config    config.Config
-	Approval  agent.Approval
+	Approval  ports.Approval
 	OnEvent   EventSink
 }
 
@@ -176,7 +176,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		case "waiting_approval":
 			pending := active[0].PendingApproval
 			if pending != nil {
-				return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, &agent.WaitingApprovalError{RunID: active[0].ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
+				return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, &ports.WaitingApprovalError{RunID: active[0].ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
 			}
 		case "waiting_reconcile":
 			return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, ErrWaitingReconcile)
@@ -937,7 +937,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		}{Error: "user_aborted", Reason: options.Reason},
 		approvalReason: options.Reason,
 	}
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		request, found, requestErr := latestAbortCancellationRequest(events)
 		if requestErr != nil {
 			return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, requestErr)
@@ -1103,7 +1103,7 @@ func abortTerminalFromCancellation(request abortCancellationRequest) abortTermin
 	if request.Cause == "budget_exhausted" {
 		errorText = "budget exhausted"
 		if request.BudgetDimension != "" {
-			errorText = (&agent.BudgetExceededError{Dimension: request.BudgetDimension}).Error()
+			errorText = (&ports.BudgetExceededError{Dimension: request.BudgetDimension}).Error()
 		}
 	}
 	return abortTerminal{
@@ -1500,11 +1500,7 @@ func runReachedTerminal(journal *sqlite.Journal, runID domain.RunID) bool {
 	if err != nil {
 		return false
 	}
-	switch projection.State {
-	case domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
-		return true
-	}
-	return false
+	return projection.Terminal()
 }
 
 // checkAdmissionGate 以只读方式计算 Provider 准入状态；即使 optional

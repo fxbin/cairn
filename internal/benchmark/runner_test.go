@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -32,7 +31,7 @@ func benchmarkTestConfig() config.Config {
 }
 
 func TestClassifyFailurePreservesLoopGuardReason(t *testing.T) {
-	classification := contract.ClassifyError(&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
+	classification := contract.ClassifyError(&ports.LoopGuardExceededError{Reason: "periodic_turn_cycle"})
 	if classification != "loop_guard_periodic_turn_cycle" {
 		t.Fatalf("classification = %q", classification)
 	}

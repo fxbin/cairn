@@ -17,13 +17,13 @@ import (
 	"time"
 
 	memorysqlite "github.com/fxbin/cairn/internal/adapters/memory/sqlite"
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/sandboxeval"
 	"github.com/mattn/go-isatty"
 
@@ -1450,7 +1450,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		fingerprint = *deny
 		approved = false
 	}
-	result, err := command.Service.Resume(ctx, app.ResumeOptions{RunID: domain.RunID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: fingerprint, Approve: approved, Reason: *reason}, OnEvent: onEvent})
+	result, err := command.Service.Resume(ctx, app.ResumeOptions{RunID: domain.RunID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: fingerprint, Approve: approved, Reason: *reason}, OnEvent: onEvent})
 	if outputErr != nil {
 		markOutputErrorReported(command.Stdout)
 		fmt.Fprintln(command.Stderr, "resume output failed:", outputErr)
@@ -1604,11 +1604,11 @@ func manifestOf(result app.RunResult) *contract.RunManifest {
 
 // exitFor 将领域和应用错误映射为公开稳定的 CLI 退出码。
 func exitFor(err error) int {
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if errors.As(err, &waiting) {
 		return ExitApproval
 	}
-	var denied *agent.PolicyDeniedError
+	var denied *ports.PolicyDeniedError
 	if errors.As(err, &denied) {
 		return ExitDenied
 	}

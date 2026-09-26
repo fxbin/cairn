@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 const (
@@ -218,10 +218,10 @@ func TestClassifyErrorPreservesUnifiedTaxonomy(t *testing.T) {
 		err  error
 		want string
 	}{
-		{&agent.WaitingApprovalError{}, FailureApproval},
-		{&agent.PolicyDeniedError{}, FailurePolicy},
-		{&agent.BudgetExceededError{Dimension: "turns"}, "budget_turns"},
-		{&agent.LoopGuardExceededError{Reason: "periodic_turn_cycle"}, "loop_guard_periodic_turn_cycle"},
+		{&ports.WaitingApprovalError{}, FailureApproval},
+		{&ports.PolicyDeniedError{}, FailurePolicy},
+		{&ports.BudgetExceededError{Dimension: "turns"}, "budget_turns"},
+		{&ports.LoopGuardExceededError{Reason: "periodic_turn_cycle"}, "loop_guard_periodic_turn_cycle"},
 		{errors.New("plain"), FailureAgent},
 	}
 	for _, test := range tests {

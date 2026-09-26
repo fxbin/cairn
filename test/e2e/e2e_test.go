@@ -179,11 +179,11 @@ func TestFixtureApprovedSingleFilePatch(t *testing.T) {
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	service := providerService(provider)
 	initial, err := service.Run(context.Background(), app.RunOptions{Task: "create note", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}
-	result, err := service.Resume(context.Background(), app.ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
+	result, err := service.Resume(context.Background(), app.ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
 	if err != nil || result.Response != "created and verified" {
 		t.Fatalf("resume=%#v err=%v", result, err)
 	}

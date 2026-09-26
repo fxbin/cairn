@@ -15,16 +15,16 @@ import (
 // RunScriptedToolPlan 在不调用模型的前提下，按固定顺序执行一组由调用方确定
 // 的工具调用，并在完成后走既有验证收束完成运行。每个调用都完整经过
 // 提议 → 策略 → 审批 → operation_started → 结果 → tool_result 事件链；等待
-// 审批时返回 WaitingApprovalError，由调用方携带审批决定再次进入本方法续跑。
+// 审批时返回 ports.WaitingApprovalError，由调用方携带审批决定再次进入本方法续跑。
 // 已提议过的调用按事件日志去重，因此续跑是幂等的。
-func (loop *Loop) RunScriptedToolPlan(ctx context.Context, input RunInput, approval Approval, calls []ports.ToolCall) (Result, error) {
+func (loop *Loop) RunScriptedToolPlan(ctx context.Context, input RunInput, approval ports.Approval, calls []ports.ToolCall) (Result, error) {
 	result, err := loop.runScriptedToolPlan(ctx, input, approval, calls)
 	return result, loop.persistCancellationIfInterrupted(ctx, input, err)
 }
 
 // runScriptedToolPlan 执行脚本化计划主流程：处理挂起审批与中断恢复，随后
 // 依次执行剩余调用、运行冻结验证并以确定性结论收束运行。
-func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, approval Approval, calls []ports.ToolCall) (Result, error) {
+func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, approval ports.Approval, calls []ports.ToolCall) (Result, error) {
 	// 与模型循环不同，脚本化计划不触碰 Provider；模型无关性是它存在的意义。
 	if loop.Journal == nil || loop.Tools == nil || loop.Gate == nil {
 		return Result{}, errors.New("agent loop dependencies and policy gate are required")
@@ -43,7 +43,7 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if err != nil {
 		return Result{}, err
 	}
-	if projection.State == domain.RunCancelling {
+	if projection.Cancelling() {
 		result, _, cancellationErr := loop.repairMissingCancellationTerminal(ctx, &projection, input, events)
 		return result, cancellationErr
 	}
@@ -157,25 +157,25 @@ func (loop *Loop) finishScriptedRun(ctx context.Context, projection *domain.RunP
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, err
 		}
-		if errors.Is(err, ErrWaitingReconcile) {
+		if errors.Is(err, ports.ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, projection, input, &turnID)
 		}
-		var waiting *WaitingApprovalError
+		var waiting *ports.WaitingApprovalError
 		if errors.As(err, &waiting) {
 			return Result{RunID: input.RunID}, waiting
 		}
-		var budget *BudgetExceededError
+		var budget *ports.BudgetExceededError
 		if errors.As(err, &budget) {
 			return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 		}
-		var guard *LoopGuardExceededError
+		var guard *ports.LoopGuardExceededError
 		if errors.As(err, &guard) {
 			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 		}
-		var verificationFailure *VerificationFailureError
+		var verificationFailure *ports.VerificationFailureError
 		if errors.As(err, &verificationFailure) {
 			return loop.completeScriptedRun(ctx, projection, input, turnID)
 		}
@@ -202,21 +202,21 @@ func (loop *Loop) handleScriptedToolError(ctx context.Context, projection *domai
 	if errors.As(err, &persistence) {
 		return Result{RunID: input.RunID}, err
 	}
-	if errors.Is(err, ErrWaitingReconcile) {
+	if errors.Is(err, ports.ErrWaitingReconcile) {
 		return Result{RunID: input.RunID}, err
 	}
 	if ctx.Err() != nil {
 		return loop.persistCancellation(ctx, projection, input, &turnID)
 	}
-	var budget *BudgetExceededError
+	var budget *ports.BudgetExceededError
 	if errors.As(err, &budget) {
 		return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 	}
-	var guard *LoopGuardExceededError
+	var guard *ports.LoopGuardExceededError
 	if errors.As(err, &guard) {
 		return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 	}
-	var waiting *WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if errors.As(err, &waiting) {
 		return Result{RunID: input.RunID}, waiting
 	}
@@ -225,7 +225,7 @@ func (loop *Loop) handleScriptedToolError(ctx context.Context, projection *domai
 
 // resumeScriptedApproval 处理脚本化运行的挂起审批：校验指纹后按用户决定拒绝
 // 或授权执行，并继续剩余计划。工具提议与验证命令提议共用同一审批事件合同。
-func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, approval Approval, calls []ports.ToolCall) (Result, error) {
+func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, approval ports.Approval, calls []ports.ToolCall) (Result, error) {
 	if projection.CurrentTurn == nil {
 		return Result{}, errors.New("run is not waiting for an approval")
 	}
@@ -268,7 +268,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, verification, false)
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
-		var budget *BudgetExceededError
+		var budget *ports.BudgetExceededError
 		if errors.As(err, &budget) {
 			return loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 		}
@@ -299,7 +299,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
-		return Result{RunID: input.RunID}, &WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
+		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
@@ -321,7 +321,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		return loop.persistCancellation(ctx, projection, input, &turnID)
 	}
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
-		var guard *LoopGuardExceededError
+		var guard *ports.LoopGuardExceededError
 		if errors.As(err, &guard) {
 			return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 		}
@@ -334,7 +334,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err != nil {
 		return Result{}, err
 	}
-	return loop.runScriptedToolPlan(ctx, input, Approval{}, remainingScriptedCalls(reloaded, calls))
+	return loop.runScriptedToolPlan(ctx, input, ports.Approval{}, remainingScriptedCalls(reloaded, calls))
 }
 
 // grantScriptedVerification 批准并执行挂起的验证命令，随后收束剩余验证并
@@ -369,13 +369,13 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, err
 		}
-		if errors.Is(err, ErrWaitingReconcile) {
+		if errors.Is(err, ports.ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, projection, input, &turnID)
 		}
-		var verificationFailure *VerificationFailureError
+		var verificationFailure *ports.VerificationFailureError
 		if errors.As(err, &verificationFailure) {
 			return loop.completeScriptedRun(ctx, projection, input, turnID)
 		}
@@ -386,17 +386,17 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, err
 		}
-		if errors.Is(err, ErrWaitingReconcile) {
+		if errors.Is(err, ports.ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, err
 		}
-		var waiting *WaitingApprovalError
+		var waiting *ports.WaitingApprovalError
 		if errors.As(err, &waiting) {
 			return Result{RunID: input.RunID}, waiting
 		}
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, projection, input, &turnID)
 		}
-		var verificationFailure *VerificationFailureError
+		var verificationFailure *ports.VerificationFailureError
 		if errors.As(err, &verificationFailure) {
 			return loop.completeScriptedRun(ctx, projection, input, turnID)
 		}
@@ -408,7 +408,7 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 // denyScriptedApproval 将用户拒绝持久化为可审计的审批与操作失败事件并终
 // 态化运行；拒绝意味着回退中止，工作区停在拒绝点。
 func (loop *Loop) denyScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, reason string) (Result, error) {
-	denied := &PolicyDeniedError{Summary: reason}
+	denied := &ports.PolicyDeniedError{Summary: reason}
 	result := tools.Failure("approval_denied", reason)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`

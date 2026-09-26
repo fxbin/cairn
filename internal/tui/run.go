@@ -21,11 +21,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -177,7 +177,7 @@ type RunConsole struct {
 	lastTask            string
 	wizard              *ConfigWizard
 	wizardGeneration    uint64
-	waiting             *agent.WaitingApprovalError
+	waiting             *ports.WaitingApprovalError
 	approvalDetail      []string
 	result              *app.RunResult
 	runErr              error
@@ -308,7 +308,7 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 	return func() tea.Msg {
 		result, err := service.Resume(runCtx, app.ResumeOptions{
 			RunID: waiting.RunID, Workspace: console.input.Workspace, Config: console.input.Config,
-			Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: approve, Reason: approvalReason(approve)},
+			Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: approve, Reason: approvalReason(approve)},
 			OnEvent:  onEvent,
 		})
 		if rewinding != nil {
@@ -653,7 +653,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 // receiveResult 消费一次运行或恢复的结果：等待审批转入审批模式，终态进入
 // 结果页；其余错误如实展示。
 func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea.Cmd) {
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	console.finishOperation()
 	if errors.As(finished.err, &waiting) {
 		console.mode = consoleApproval
@@ -681,7 +681,7 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 // receiveRewindResult 消费一次工作区回退（或其审批续跑）的结果：等待审批转
 // 入审批模式；终态展示回退结论。回退 run 不进入会话对话链，对话前情不变。
 func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.Model, tea.Cmd) {
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	console.finishOperation()
 	if errors.As(finished.err, &waiting) {
 		console.mode = consoleApproval
@@ -887,7 +887,7 @@ func (console *RunConsole) appendLine(line string) {
 // 览：apply_patch 展示写入模式、目标路径与内容/替换摘要，exec 展示 argv，
 // 其余工具截断参数原文。预览是已持久化事实的只读投影，不可用时如实标注
 // 而不阻塞审批。
-func (console RunConsole) loadApprovalDetail(waiting *agent.WaitingApprovalError) []string {
+func (console RunConsole) loadApprovalDetail(waiting *ports.WaitingApprovalError) []string {
 	workspace := console.input.Workspace
 	if workspace == "" {
 		if current, err := os.Getwd(); err == nil {

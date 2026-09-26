@@ -298,7 +298,7 @@ func TestResumeRestoresMalformedToolArgumentsFeedback(t *testing.T) {
 	}
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "recovered" || len(provider.requests) != 1 || !hasUserMessage(provider.requests[0].Messages, malformedToolArgumentsFeedback) {
 		t.Fatalf("resume=%#v err=%v requests=%#v", result, err, provider.requests)
 	}
@@ -340,7 +340,7 @@ func TestResumeFailsOnMalformedToolArgumentsAfterCorrectionWasUsed(t *testing.T)
 	}
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{nil}, errors: []error{ports.ErrMalformedToolCallArguments}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	_, err = loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	_, err = loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if !errors.Is(err, ports.ErrMalformedToolCallArguments) || len(provider.requests) != 1 {
 		t.Fatalf("resume error=%v requests=%d", err, len(provider.requests))
 	}
@@ -1141,7 +1141,7 @@ func TestResumeClosesInterruptedModelAttemptBeforeNewCall(t *testing.T) {
 	appendEvent(3, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)})
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "recovered" {
 		t.Fatalf("resume = %#v, %v", result, err)
 	}
@@ -1189,7 +1189,7 @@ func TestResumeContinuesAfterClosedTurnWithoutPendingWork(t *testing.T) {
 	}
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "continued"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "continued" || len(provider.requests) != 1 {
 		t.Fatalf("resume=%#v err=%v requests=%d", result, err, len(provider.requests))
 	}
@@ -1227,7 +1227,7 @@ func TestResumeProposesPersistedToolCallsBeforeRequestingAnotherModelResponse(t 
 	}
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered answer"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "recovered answer" || len(provider.requests) != 1 {
 		t.Fatalf("resume=%#v err=%v requests=%d", result, err, len(provider.requests))
 	}
@@ -1267,7 +1267,7 @@ func TestResumeCompletesPersistedFinalModelResponseWithoutAnotherRequest(t *test
 	}
 	provider := &scriptedProvider{}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "durable final" || len(provider.requests) != 0 {
 		t.Fatalf("resume=%#v err=%v requests=%d", result, err, len(provider.requests))
 	}
@@ -1304,7 +1304,7 @@ func TestResumeClosesInterruptedReadBeforeStartingAnotherModelRequest(t *testing
 	appendEvent(7, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"read_file","side_effect_class":"none"}`)})
 	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "recovered after tool failure"}, {Kind: ports.Done}}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
-	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, Approval{})
+	result, err := loop.Resume(context.Background(), RunInput{RunID: runID, WorkspaceHash: "workspace"}, ports.Approval{})
 	if err != nil || result.Response != "recovered after tool failure" {
 		t.Fatalf("resume = %#v, %v", result, err)
 	}
@@ -1390,7 +1390,7 @@ func TestCancellationClosesPendingApprovalBeforeTerminalEvent(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := loop.Resume(ctx, input, Approval{}); !errors.Is(err, context.Canceled) {
+	if _, err := loop.Resume(ctx, input, ports.Approval{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("resume error = %v", err)
 	}
 	events, err := journal.Load(context.Background(), runID)
@@ -1484,7 +1484,7 @@ func TestUnconfirmedProcessTerminationLeavesOperationForReconciliation(t *testin
 	appendInitialRunningEvents(t, journal, runID, "uncertain command")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
 	_, runErr := loop.Run(context.Background(), RunInput{RunID: runID, Task: "uncertain command", WorkspaceHash: "workspace"})
-	if !errors.Is(runErr, ErrWaitingReconcile) {
+	if !errors.Is(runErr, ports.ErrWaitingReconcile) {
 		t.Fatalf("run error = %v", runErr)
 	}
 	events, err := journal.Load(context.Background(), runID)
@@ -1637,11 +1637,11 @@ func TestLoopAutomaticallyVerifiesApprovedPatchOnResume(t *testing.T) {
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
 	input := RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"}
 	_, err = loop.Run(context.Background(), input)
-	var waiting *WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial run error = %v", err)
 	}
-	result, err := loop.Resume(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: true})
+	result, err := loop.Resume(context.Background(), input, ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true})
 	if err != nil || result.Response != automaticVerificationResponse || len(provider.requests) != 1 || verificationTool.calls != 1 {
 		t.Fatalf("result=%#v err=%v requests=%d verification calls=%d", result, err, len(provider.requests), verificationTool.calls)
 	}
@@ -1681,11 +1681,11 @@ func TestLoopFeedsAutomaticVerificationFailureAfterApprovedPatchBackToModel(t *t
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, VerificationAutoAfterPatch: true, Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
 	input := RunInput{RunID: runID, Task: "repair", WorkspaceHash: "workspace"}
 	_, err = loop.Run(context.Background(), input)
-	var waiting *WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial run error = %v", err)
 	}
-	result, err := loop.Resume(context.Background(), input, Approval{Fingerprint: waiting.Fingerprint, Approve: true})
+	result, err := loop.Resume(context.Background(), input, ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true})
 	if err != nil || result.Response != "verification repaired" || len(provider.requests) != 2 || verificationTool.calls != 2 {
 		t.Fatalf("result=%#v err=%v requests=%d verification calls=%d", result, err, len(provider.requests), verificationTool.calls)
 	}
@@ -1913,7 +1913,7 @@ func TestLoopRequiresFreshApprovalWhenAReconciledActionIsProposedAgain(t *testin
 	}}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "retry", WorkspaceHash: "workspace"})
-	var waiting *WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) || waiting.Fingerprint != decision.Fingerprint {
 		t.Fatalf("re-proposal was not gated for fresh approval: %v", err)
 	}
@@ -1957,15 +1957,15 @@ func TestResumeExpiresCommandApprovalAfterWorkspaceDrift(t *testing.T) {
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
 	input := RunInput{RunID: runID, Task: "run command", WorkspaceHash: "workspace"}
 	_, err = loop.Run(context.Background(), input)
-	var initial *WaitingApprovalError
+	var initial *ports.WaitingApprovalError
 	if !errors.As(err, &initial) {
 		t.Fatalf("initial run err=%v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "context.txt"), []byte("after"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = loop.Resume(context.Background(), input, Approval{Fingerprint: initial.Fingerprint, Approve: true})
-	var renewed *WaitingApprovalError
+	_, err = loop.Resume(context.Background(), input, ports.Approval{Fingerprint: initial.Fingerprint, Approve: true})
+	var renewed *ports.WaitingApprovalError
 	if !errors.As(err, &renewed) || renewed.Fingerprint == initial.Fingerprint {
 		t.Fatalf("stale approval did not require a new approval: %v", err)
 	}
@@ -2010,7 +2010,7 @@ func TestLoopFailsBeforeToolExecutionWhenToolBudgetIsExhausted(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "tool budget")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, MaxToolCalls: 1}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "tool budget", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "tool_calls" {
 		t.Fatalf("error = %v", err)
 	}
@@ -2049,7 +2049,7 @@ func TestLoopFailsWhenReportedTokenBudgetIsExceeded(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "token budget")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, MaxInputTokens: 1}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "token budget", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "input_tokens" {
 		t.Fatalf("error = %v", err)
 	}
@@ -2084,7 +2084,7 @@ func TestLoopFailsWhenReportedCostBudgetIsExceeded(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "cost budget")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, MaxCostUSD: 0.002, InputTokenUSD: 0.001, OutputTokenUSD: 0.001}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "cost budget", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "cost_usd" {
 		t.Fatalf("error = %v", err)
 	}
@@ -2117,7 +2117,7 @@ func TestVerificationRejectsCommandsThatMutateVisibleWorkspace(t *testing.T) {
 	appendInitialRunningEvents(t, journal, runID, "verify safely")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 2, VerificationWorkspace: workspace.ObservationView(nil), Verification: []VerificationCommand{{ID: "check", Arguments: json.RawMessage(`{"argv":["/usr/bin/true"]}`)}}}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "verify safely", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "turns" {
 		t.Fatalf("error=%v", err)
 	}
@@ -2300,7 +2300,7 @@ func TestLoopEnforcesOutputBudgetWithEstimatedUsageWhenProviderOmitsUsage(t *tes
 	appendInitialRunningEvents(t, journal, runID, "estimate")
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3, MaxOutputTokens: 1}
 	_, err = loop.Run(context.Background(), RunInput{RunID: runID, Task: "estimate", WorkspaceHash: "workspace"})
-	var exceeded *BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "output_tokens" {
 		t.Fatalf("err = %v", err)
 	}
@@ -2342,9 +2342,9 @@ func TestLoopRejectsProviderResponsesThatViolateCapabilityCard(t *testing.T) {
 				RequireProviderUsage: true, AllowedProviderStopReasons: []string{"stop", "tool_calls"},
 			}
 			_, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "capability contract", WorkspaceHash: "workspace"})
-			var mismatch *ProviderCapabilityMismatchError
+			var mismatch *ports.ProviderCapabilityMismatchError
 			if !errors.As(err, &mismatch) {
-				t.Fatalf("err=%v, want ProviderCapabilityMismatchError", err)
+				t.Fatalf("err=%v, want ports.ProviderCapabilityMismatchError", err)
 			}
 			events, loadErr := journal.Load(context.Background(), runID)
 			if loadErr != nil {
@@ -2418,7 +2418,7 @@ func TestCallModelRejectsInconsistentUsage(t *testing.T) {
 				}
 				return
 			}
-			var mismatch *ProviderCapabilityMismatchError
+			var mismatch *ports.ProviderCapabilityMismatchError
 			if !errors.As(err, &mismatch) || !strings.Contains(mismatch.Observed, testCase.wantObserved) {
 				t.Fatalf("expected capability mismatch with observed containing %q, got %v", testCase.wantObserved, err)
 			}

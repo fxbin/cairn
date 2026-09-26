@@ -13,6 +13,7 @@ import (
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
+	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -68,7 +69,7 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 		return outcomeErr
 	} else if found {
 		if !outcome.OK && outcome.Feedback != "" {
-			return &VerificationFailureError{CommandID: outcome.CommandID, Feedback: outcome.Feedback}
+			return &ports.VerificationFailureError{CommandID: outcome.CommandID, Feedback: outcome.Feedback}
 		}
 		return nil
 	}
@@ -201,7 +202,7 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 			if err := loop.append(ctx, projection, approvalRequestedDraft(input, turnID, operationID, decision)); err != nil {
 				return err
 			}
-			return &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
+			return &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 		}
 		if decision.Effect == policy.Deny {
 			result := policyFailureResult(decision)
@@ -230,7 +231,7 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 			}); err != nil {
 				return &verificationPersistenceError{cause: err}
 			}
-			return &PolicyDeniedError{Summary: decision.Summary}
+			return &ports.PolicyDeniedError{Summary: decision.Summary}
 		}
 		if err := loop.executeVerificationCommand(ctx, projection, input, turnID, operationID, command, observation); err != nil {
 			return err
@@ -621,7 +622,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if len(operations) == 0 {
 		if len(commands) != 0 {
 			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, 0)
-			var failure *VerificationFailureError
+			var failure *ports.VerificationFailureError
 			if errors.As(runErr, &failure) {
 				return true, nil
 			}
@@ -660,7 +661,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
 				return false, err
 			}
-			return true, &WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
+			return true, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
 		}
 		observation, err := loop.verificationObservation()
 		if err != nil {
@@ -684,7 +685,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 				if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
 					return false, err
 				}
-				return true, &WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
+				return true, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 			case policy.Deny:
 				result := policyFailureResult(decision)
 				feedback := "Verification command was denied by policy. Inspect the frozen command and policy before retrying."
@@ -714,7 +715,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			}
 		}
 		runErr := loop.executeVerificationCommand(ctx, projection, input, verification.turnID, latest.operationID, command, observation)
-		var failure *VerificationFailureError
+		var failure *ports.VerificationFailureError
 		if errors.As(runErr, &failure) {
 			return true, nil
 		}
@@ -742,7 +743,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		nextIndex := latest.proposal.CommandIndex + 1
 		if nextIndex < len(commands) {
 			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, nextIndex)
-			var failure *VerificationFailureError
+			var failure *ports.VerificationFailureError
 			if errors.As(runErr, &failure) {
 				return true, nil
 			}
@@ -1248,7 +1249,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	}
 	result := redactToolResult(loop.Tools.Execute(ctx, "exec_command", command.Arguments))
 	if result.Code == tools.CodeTerminationUnconfirmed {
-		return &WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
+		return &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
@@ -1293,7 +1294,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 		return err
 	}
-	return &VerificationFailureError{CommandID: command.ID, Feedback: feedback}
+	return &ports.VerificationFailureError{CommandID: command.ID, Feedback: feedback}
 }
 
 // verificationObservation 返回 verifier 视图的稳定摘要，用于绑定命令审批。
@@ -1315,27 +1316,27 @@ func (loop *Loop) finishAutomaticVerification(ctx context.Context, projection *d
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, "", err
 		}
-		if errors.Is(err, ErrWaitingReconcile) {
+		if errors.Is(err, ports.ErrWaitingReconcile) {
 			return Result{RunID: input.RunID}, "", err
 		}
 		if ctx.Err() != nil {
 			result, cancellationErr := loop.persistCancellation(ctx, projection, input, &turnID)
 			return result, "", cancellationErr
 		}
-		var waiting *WaitingApprovalError
+		var waiting *ports.WaitingApprovalError
 		if errors.As(err, &waiting) {
 			return Result{RunID: input.RunID}, "", waiting
 		}
-		var budget *BudgetExceededError
+		var budget *ports.BudgetExceededError
 		if errors.As(err, &budget) {
 			result, budgetErr := loop.persistBudgetExceeded(ctx, projection, input, budget.Dimension)
 			return result, "", budgetErr
 		}
-		var guard *LoopGuardExceededError
+		var guard *ports.LoopGuardExceededError
 		if errors.As(err, &guard) {
 			return Result{RunID: input.RunID}, "", loop.persistLoopGuardExceeded(ctx, projection, input, guard.Reason)
 		}
-		var verificationFailure *VerificationFailureError
+		var verificationFailure *ports.VerificationFailureError
 		if errors.As(err, &verificationFailure) {
 			return Result{RunID: input.RunID}, verificationFailure.Feedback, nil
 		}

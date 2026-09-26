@@ -176,11 +176,11 @@ func TestLoopSnapshotsBeforeOnApprovalResume(t *testing.T) {
 	}}
 	loop.Provider = provider
 	_, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "update after approval", WorkspaceHash: "workspace"})
-	var waiting *WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("run must pause for approval: %v", err)
 	}
-	if _, err := loop.Resume(context.Background(), RunInput{RunID: runID, Task: "update after approval", WorkspaceHash: "workspace"}, Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}); err != nil {
+	if _, err := loop.Resume(context.Background(), RunInput{RunID: runID, Task: "update after approval", WorkspaceHash: "workspace"}, ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true, Reason: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	reference := startedBeforeRef(t, journal, runID)

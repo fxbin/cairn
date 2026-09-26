@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -22,14 +23,6 @@ const (
 	loopGuardPeriodicTurnCycle        = "periodic_turn_cycle"
 	loopGuardNoProgress               = "no_workspace_or_verifier_progress"
 )
-
-// LoopGuardExceededError 表示运行因确定性的重复失败、周期或无进展规则而提前终止。
-type LoopGuardExceededError struct{ Reason string }
-
-// Error 返回可用于事件和基准分类的稳定熔断原因。
-func (err *LoopGuardExceededError) Error() string {
-	return fmt.Sprintf("loop guard triggered: %s", err.Reason)
-}
 
 // openedTurnCount 从事件日志重建已经消耗的模型轮次，保证暂停或恢复不会重置硬上限。
 func openedTurnCount(events []domain.Event) int {
@@ -192,7 +185,7 @@ func (loop *Loop) currentOperationFailureGuard(ctx context.Context, runID domain
 		return err
 	}
 	if reason := repeatedOperationFailureGuard(events); reason != "" {
-		return &LoopGuardExceededError{Reason: reason}
+		return &ports.LoopGuardExceededError{Reason: reason}
 	}
 	return nil
 }

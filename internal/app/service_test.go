@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/buildinfo"
 	"github.com/fxbin/cairn/internal/config"
@@ -401,7 +400,7 @@ func TestServiceStopsBeforeUnapprovedPatch(t *testing.T) {
 	workspace := t.TempDir()
 	stateDir := t.TempDir()
 	result, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) || result.ID == "" {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
@@ -416,7 +415,7 @@ func TestServiceAbortClosesPendingApprovalWithoutStartingOperation(t *testing.T)
 	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}
@@ -447,11 +446,11 @@ func TestServiceResumeConsumesOneMatchingApproval(t *testing.T) {
 	workspace := t.TempDir()
 	stateDir := t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial = %#v, err = %v", initial, err)
 	}
-	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: "sha256:not-the-pending-approval", Approve: true}}); err == nil {
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: "sha256:not-the-pending-approval", Approve: true}}); err == nil {
 		t.Fatal("mismatched approval unexpectedly succeeded")
 	}
 	beforeApproval, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
@@ -463,11 +462,11 @@ func TestServiceResumeConsumesOneMatchingApproval(t *testing.T) {
 			t.Fatalf("mismatched approval appended run_resumed: %#v", beforeApproval.Events)
 		}
 	}
-	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
+	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
 	if err != nil || resumed.Response != "patched and verified" || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("resumed = %#v, err = %v", resumed, err)
 	}
-	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}}); err == nil {
+	if _, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}}); err == nil {
 		t.Fatal("duplicate approval unexpectedly succeeded")
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
@@ -504,7 +503,7 @@ func TestServicePersistsBudgetFailureWhenWallTimeExpires(t *testing.T) {
 	configuration.Budget.MaxWallTime = "2s"
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	result, err := service.Run(context.Background(), RunOptions{Task: "wait", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var exceeded *agent.BudgetExceededError
+	var exceeded *ports.BudgetExceededError
 	if !errors.As(err, &exceeded) || exceeded.Dimension != "wall_time" || result.ID == "" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -534,11 +533,11 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial = %#v, err = %v", initial, err)
 	}
-	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
+	resumed, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
 	if err != nil || resumed.Response != "patched and verified" || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("resumed = %#v, err = %v", resumed, err)
 	}
@@ -657,7 +656,7 @@ func TestNewRunIsRejectedWhileWorkspaceHasPendingApproval(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	first, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) || first.ID == "" {
 		t.Fatalf("first run = %#v, %v", first, err)
 	}
@@ -873,17 +872,17 @@ func TestConcurrentResumeAllowsExactlyOneWorkspaceLockHolder(t *testing.T) {
 	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"/usr/bin/true"}}}
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}
 	firstResult := make(chan error, 1)
 	go func() {
-		_, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
+		_, err := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
 		firstResult <- err
 	}()
 	<-provider.entered
-	_, secondErr := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: agent.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
+	_, secondErr := service.Resume(context.Background(), ResumeOptions{RunID: initial.ID, Workspace: workspace, StateDir: stateDir, Config: configuration, Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: true}})
 	if !errors.Is(secondErr, lock.ErrHeld) {
 		close(release)
 		t.Fatalf("second resume did not lose workspace lock: %v", secondErr)
@@ -954,7 +953,7 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}
@@ -1779,7 +1778,7 @@ func TestResumeAndDoctorRejectMissingPriorContextArtifact(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	initial, err := service.Run(context.Background(), RunOptions{Task: "patch", Workspace: workspace, StateDir: stateDir, Config: configuration, PriorContext: "必须持久恢复的前情"})
-	var waiting *agent.WaitingApprovalError
+	var waiting *ports.WaitingApprovalError
 	if !errors.As(err, &waiting) {
 		t.Fatalf("initial=%#v err=%v", initial, err)
 	}

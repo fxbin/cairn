@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -48,7 +47,7 @@ func writeCapabilityConfig(t *testing.T, workspace string) {
 type fakeProvider struct{}
 
 func TestExitForUnconfirmedOperationRequiresReconciliation(t *testing.T) {
-	err := &agent.WaitingReconcileError{OperationID: domain.OperationID("op-test"), Reason: "unconfirmed"}
+	err := &ports.WaitingReconcileError{OperationID: domain.OperationID("op-test"), Reason: "unconfirmed"}
 	if exit := exitFor(err); exit != ExitReconcile {
 		t.Fatalf("exit = %d, want %d", exit, ExitReconcile)
 	}

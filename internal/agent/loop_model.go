@@ -50,10 +50,10 @@ var errSensitiveToolArguments = errors.New("model tool arguments contain a secre
 // 定性描述、不回显具体数值，避免把响应细节写入事件。
 func validateUsage(usage *ports.Usage) error {
 	if usage.PromptTokens < 0 || usage.CompletionTokens < 0 || usage.TotalTokens < 0 {
-		return &ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "negative token count"}
+		return &ports.ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "negative token count"}
 	}
 	if usage.TotalTokens != 0 && usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
-		return &ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "total does not equal prompt plus completion"}
+		return &ports.ProviderCapabilityMismatchError{Requirement: "usage accounting", Observed: "total does not equal prompt plus completion"}
 	}
 	return nil
 }
@@ -112,14 +112,14 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 		return collectedResponse{}, errors.New("provider returned without done")
 	}
 	if loop.RequireProviderUsage && response.Usage == nil {
-		return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "streaming usage", Observed: "missing"}
+		return collectedResponse{}, &ports.ProviderCapabilityMismatchError{Requirement: "streaming usage", Observed: "missing"}
 	}
 	if len(loop.AllowedProviderStopReasons) != 0 {
 		if response.StopReason == "" {
-			return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "finish reason", Observed: "missing"}
+			return collectedResponse{}, &ports.ProviderCapabilityMismatchError{Requirement: "finish reason", Observed: "missing"}
 		}
 		if !containsString(loop.AllowedProviderStopReasons, response.StopReason) {
-			return collectedResponse{}, &ProviderCapabilityMismatchError{Requirement: "declared finish reason", Observed: response.StopReason}
+			return collectedResponse{}, &ports.ProviderCapabilityMismatchError{Requirement: "declared finish reason", Observed: response.StopReason}
 		}
 	}
 	return response, nil

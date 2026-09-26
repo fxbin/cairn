@@ -1,4 +1,4 @@
-package agent
+package ports
 
 import (
 	"errors"
@@ -7,11 +7,22 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
+// 本文件承载跨层共享的运行期控制流错误与审批决定合同。它们被 agent 执行
+// 循环产生、被 contract 失败分类消费，并由 CLI/TUI 展示；放在此处可避免
+// 合同投影与界面反向依赖执行层。错误文本不得包含密钥、原始模型输出或本地路径。
+
 // ErrTurnBudgetExceeded 表示运行耗尽了允许的模型轮次。
 var ErrTurnBudgetExceeded = errors.New("turn budget exhausted")
 
 // ErrWaitingReconcile 表示已启动的副作用操作没有可确认的终态，必须人工对账。
 var ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
+
+// Approval 是 resume 提供的显式、一次性审批决定。
+type Approval struct {
+	Fingerprint string
+	Approve     bool
+	Reason      string
+}
 
 // ProviderCapabilityMismatchError 表示 Provider 的实际响应违背已冻结的能力
 // 卡，例如声明流式 usage 却未返回 usage，或 finish_reason 不在声明集合中。它
@@ -90,3 +101,11 @@ type VerificationFailureError struct {
 
 // Error 返回可反馈给模型的验证失败信息。
 func (err *VerificationFailureError) Error() string { return err.Feedback }
+
+// LoopGuardExceededError 表示运行因确定性的重复失败、周期或无进展规则而提前终止。
+type LoopGuardExceededError struct{ Reason string }
+
+// Error 返回可用于事件和基准分类的稳定熔断原因。
+func (err *LoopGuardExceededError) Error() string {
+	return fmt.Sprintf("loop guard triggered: %s", err.Reason)
+}

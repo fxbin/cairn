@@ -64,7 +64,7 @@ func (err *toolResultPersistenceError) Unwrap() error {
 
 // Is 让尚未适配专用错误的执行入口停在可恢复边界，而不是终态化运行。
 func (err *toolResultPersistenceError) Is(target error) bool {
-	return target == ErrWaitingReconcile
+	return target == ports.ErrWaitingReconcile
 }
 
 // resumeDecision 为已提议操作重建策略判定，并保留验证计划的独立审批边界。
@@ -138,7 +138,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}{Fingerprint: decision.Fingerprint, Summary: decision.Summary, Rule: decision.RuleID})}); err != nil {
 			return tools.Result{}, err
 		}
-		return tools.Result{}, &WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
+		return tools.Result{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
 		result := policyFailureResult(decision)
@@ -165,7 +165,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
-		return result, &WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
+		return result, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
 	cancelled := result.Code == "cancelled" && ctx.Err() != nil
