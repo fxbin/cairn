@@ -149,21 +149,11 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 	if relativeCWD != "." {
 		containerCWD = path.Join(containerCWD, filepath.ToSlash(relativeCWD))
 	}
-	command := []string{
-		"run", "--rm", "--name", containerName,
-		"--pull", "never",
-		"--network", "none",
-		"--read-only",
-		"--cap-drop", "ALL",
-		"--security-opt", "no-new-privileges",
-		"--pids-limit", strconv.Itoa(tool.dockerPIDLimit()),
-		// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
-		// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
-		"--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
-		"--mount", "type=bind,src=" + tool.Workspace.Root + ",dst=/workspace",
-		"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-		"--workdir", containerCWD,
-	}
+	command := []string{"run", "--rm", "--name", containerName}
+	// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
+	// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
+	command = append(command, "--user", strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()))
+	command = append(command, DockerSandboxBaseArgs(tool.dockerPIDLimit(), tool.Workspace.Root, containerCWD)...)
 	keys := make([]string, 0, len(arguments.Env))
 	for key := range arguments.Env {
 		keys = append(keys, key)
@@ -172,8 +162,6 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 	for _, key := range keys {
 		command = append(command, "--env", key+"="+arguments.Env[key])
 	}
-	// 只提供容器内部临时目录，避免只读根文件系统让常见编译器把缓存写回宿主机。
-	command = append(command, "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp")
 	command = append(command, tool.DockerImage)
 	return append(command, arguments.Argv...)
 }

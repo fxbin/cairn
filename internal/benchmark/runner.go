@@ -22,6 +22,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Runner 在独立 clone 中依次运行本地任务，并把每次尝试写入忽略的结果目录。
@@ -558,6 +559,10 @@ func runBootstrap(ctx context.Context, workspace, image string, commands []Comma
 	return nil
 }
 
+// benchmarkDockerPIDLimit 是评测 bootstrap 的固定 PID 上限：与任务合同
+// 一致，不接受调用方改写。
+const benchmarkDockerPIDLimit = 64
+
 // bootstrapDockerArguments 将合同的预备命令收敛为无网络、只读根文件系统的 Docker
 // argv；工作区是唯一可写 bind mount，供任务镜像已经具备的本地编译缓存按需复用。
 func bootstrapDockerArguments(workspace, image string, command Command) ([]string, error) {
@@ -574,21 +579,9 @@ func bootstrapDockerArguments(workspace, image string, command Command) ([]strin
 	if command.CWD != "." {
 		containerCWD = path.Join(containerCWD, filepath.ToSlash(command.CWD))
 	}
-	arguments := []string{
-		"docker", "run", "--rm",
-		"--pull", "never",
-		"--network", "none",
-		"--read-only",
-		"--cap-drop", "ALL",
-		"--security-opt", "no-new-privileges",
-		"--pids-limit", "64",
-		"--mount", "type=bind,src=" + workspace + ",dst=/workspace",
-		"--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
-		"--workdir", containerCWD,
-		"--env", "HOME=/tmp",
-		"--env", "TMPDIR=/tmp",
-		image,
-	}
+	arguments := []string{"docker", "run", "--rm"}
+	arguments = append(arguments, tools.DockerSandboxBaseArgs(benchmarkDockerPIDLimit, workspace, containerCWD)...)
+	arguments = append(arguments, image)
 	return append(arguments, command.Argv...), nil
 }
 
