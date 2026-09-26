@@ -273,19 +273,15 @@ func normalizePayload(eventType EventType, raw json.RawMessage) (json.RawMessage
 	return encoded, nil
 }
 
-// validatePayload 拒绝未知事件种类、版本不符、schema 外字段或已知版本下
-// 类型与语义不合法的 payload。
+// validatePayload 拒绝未知事件种类、版本不符、schema 外字段或类型与语义
+// 不合法的 payload。信封版本策略为单一 SchemaVersion + 可选字段演进
+// （ADR-0007），不按 payload_version 分叉实现。
 func validatePayload(eventType EventType, raw json.RawMessage) error {
-	object, version, err := validatePayloadShape(eventType, raw)
+	object, _, err := validatePayloadShape(eventType, raw)
 	if err != nil {
 		return err
 	}
-	switch version {
-	case 1:
-		return validatePayloadV1(eventType, raw, object)
-	default:
-		return fmt.Errorf("unsupported payload_version %d", version)
-	}
+	return validatePayloadSemantics(eventType, raw, object)
 }
 
 // validatePayloadShape 校验事件种类、版本与封闭字段集合；NewEvent 只执行此层，
@@ -317,9 +313,9 @@ func validatePayloadShape(eventType EventType, raw json.RawMessage) (map[string]
 	return object, version, nil
 }
 
-// validatePayloadV1 对版本 1 的关键事件执行强类型和业务语义校验；后来新增的
-// 可选证据字段只在出现时校验，以保持历史事件可回放。
-func validatePayloadV1(eventType EventType, raw json.RawMessage, object map[string]json.RawMessage) error {
+// validatePayloadSemantics 对事件执行强类型和业务语义校验；可选证据字段只在
+// 出现时校验，以保持历史事件可回放。不按版本拆分实现。
+func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object map[string]json.RawMessage) error {
 	switch eventType {
 	case EventRunCreated:
 		var payload struct {
