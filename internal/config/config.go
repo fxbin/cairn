@@ -294,7 +294,21 @@ type ContextConfig struct {
 	MaxSummaryBytes         int  `yaml:"max_summary_bytes"`
 	InventoryBudgetPercent  int  `yaml:"inventory_budget_percent"`
 	ThresholdReservePercent int  `yaml:"threshold_reserve_percent"`
+	// DecisionCheckpoint 是可选的软决策检查点：在仍无补丁提议且已有读取
+	// 证据时插入一次说明性反馈。指针 + omitempty：未配置时指纹与旧版逐位
+	// 一致，不影响既有冻结配置。
+	DecisionCheckpoint *DecisionCheckpointConfig `yaml:"decision_checkpoint,omitempty"`
 }
+
+// DecisionCheckpointConfig 控制软决策检查点实验：只反馈、不强制写入。
+type DecisionCheckpointConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// MinTurns 是触发前至少已完成的模型轮次；缺省 DecisionCheckpointMinTurns。
+	MinTurns int `yaml:"min_turns"`
+}
+
+// DecisionCheckpointMinTurns 是软决策检查点的默认最早触发轮次。
+const DecisionCheckpointMinTurns = 4
 
 // PricingConfig 必须显式启用；只有输入与输出 token 价格都给出时，成本预算
 // 才合法，Cairn 不会静默采用虚构的成本估计。
@@ -588,6 +602,11 @@ func Validate(config Config) error {
 	}
 	if config.Workspace.MaxReadBytes < 1 || config.Workspace.MaxSearchFiles < 1 || config.Workspace.MaxSearchBytes < 1 || config.Budget.MaxTurns < 1 || config.Budget.MaxToolCalls < 1 || config.Budget.MaxInputTokens < 1 || config.Budget.MaxOutputTokens < 1 {
 		return fmt.Errorf("workspace limits and budget limits must be positive")
+	}
+	if config.Context.DecisionCheckpoint != nil {
+		if config.Context.DecisionCheckpoint.MinTurns < 0 {
+			return errors.New("context.decision_checkpoint.min_turns must not be negative")
+		}
 	}
 	if config.Context.MaxPromptTokens < 1 || config.Context.MaxSummaryBytes < 1 {
 		return fmt.Errorf("context limits must be positive")

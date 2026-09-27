@@ -927,3 +927,20 @@ func TestResolveDefaultPathFallsBackToUserConfig(t *testing.T) {
 		t.Fatalf("工作区配置存在时应优先工作区，得到 %q", got)
 	}
 }
+
+// TestDecisionCheckpointAbsentKeepsFingerprintAndEnableChangesIt 锁定软决策
+// 检查点未配置时不改冻结指纹；显式启用后指纹变化。
+func TestDecisionCheckpointAbsentKeepsFingerprintAndEnableChangesIt(t *testing.T) {
+	base := validDefaults()
+	without := base.Fingerprint()
+	enabled := base
+	enabled.Context.DecisionCheckpoint = &DecisionCheckpointConfig{Enabled: true, MinTurns: 4}
+	if enabled.Fingerprint() == without {
+		t.Fatal("enabling decision checkpoint must change fingerprint")
+	}
+	absent := base
+	absent.Context.DecisionCheckpoint = nil
+	if absent.Fingerprint() != without {
+		t.Fatal("absent decision checkpoint must keep fingerprint")
+	}
+}

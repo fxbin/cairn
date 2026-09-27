@@ -36,8 +36,12 @@ type Loop struct {
 	ContextMaxSummaryBytes         int
 	ContextInventoryBudgetPercent  int
 	ContextThresholdReservePercent int
-	VerificationAutoAfterPatch     bool
-	Verification                   []VerificationCommand
+	// DecisionCheckpointEnabled 打开软决策检查点：无补丁提议且已有读取证据
+	// 时插入一次说明性反馈（可答证据不足），绝不强制写入。
+	DecisionCheckpointEnabled  bool
+	DecisionCheckpointMinTurns int
+	VerificationAutoAfterPatch bool
+	Verification               []VerificationCommand
 	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
 	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace
@@ -371,5 +375,9 @@ func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.Ru
 	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return nil, err
 	}
-	return loop.compactContextIfNeeded(ctx, projection, input, messages)
+	messages, err := loop.compactContextIfNeeded(ctx, projection, input, messages)
+	if err != nil {
+		return nil, err
+	}
+	return loop.maybeDecisionCheckpoint(ctx, projection, input, messages)
 }

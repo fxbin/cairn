@@ -1431,7 +1431,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink) agent.Loop {
-	return agent.Loop{
+	loop := agent.Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate,
 		Model: configuration.Provider.Model, ConfigFingerprint: configuration.Fingerprint(),
 		MaxTurns: configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls,
@@ -1446,6 +1446,15 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
 	}
+	if checkpoint := configuration.Context.DecisionCheckpoint; checkpoint != nil && checkpoint.Enabled {
+		loop.DecisionCheckpointEnabled = true
+		minTurns := checkpoint.MinTurns
+		if minTurns <= 0 {
+			minTurns = config.DecisionCheckpointMinTurns
+		}
+		loop.DecisionCheckpointMinTurns = minTurns
+	}
+	return loop
 }
 
 // runBudgetContext 将运行创建时刻与墙钟预算组合为统一截止上下文。
