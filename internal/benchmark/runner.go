@@ -137,12 +137,21 @@ type AttemptResult struct {
 	DiffSHA256          string            `json:"diff_sha256,omitempty"`
 }
 
-// AttemptMetrics 只保存基准特有、不属于核心运行合同的观测：首次 patch、
-// 首次验证所在轮次、重复探索、零 patch 耗尽轮次预算，以及按冻结单价由
-// contract.Result 的 token 事实换算的成本。轮次与 token 总量以
-// Run.Metrics 为准，避免两处统计互相漂移。
+// AttemptMetrics 只保存基准特有、不属于核心运行合同的观测：补丁提议/成功
+// 轮次、连续无成功补丁轮次、首次验证所在轮次、重复探索、零 patch 耗尽轮次
+// 预算，以及按冻结单价由 contract.Result 的 token 事实换算的成本。
+//
+// 语义边界（勿混用）：
+//   - FirstPatchTurn 是 apply_patch 的首次工具提议轮次，不是成功写入；
+//   - FirstSuccessfulPatchTurn 是首次 operation_succeeded 且 tool=apply_patch；
+//   - MaxNoSuccessfulPatchStreak 是连续没有成功补丁的最大轮数（仅观测，
+//     不作为熔断判据；工作区内容变化另需独立证据）。
+//
+// 轮次与 token 总量以 Run.Metrics 为准，避免两处统计互相漂移。
 type AttemptMetrics struct {
 	FirstPatchTurn                int     `json:"first_patch_turn,omitempty"`
+	FirstSuccessfulPatchTurn      int     `json:"first_successful_patch_turn,omitempty"`
+	MaxNoSuccessfulPatchStreak    int     `json:"max_no_successful_patch_streak"`
 	FirstVerificationTurn         int     `json:"first_verification_turn,omitempty"`
 	RepeatedReadSearchCalls       int     `json:"repeated_read_search_calls"`
 	ZeroPatchTurnsBudgetExhausted bool    `json:"zero_patch_turns_budget_exhausted"`
@@ -409,6 +418,8 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 // contract.Result 的 token 事实，事件侧只补轮次类观测，互不覆盖来源。
 func mergeObservations(target AttemptMetrics, derived AttemptMetrics) AttemptMetrics {
 	target.FirstPatchTurn = derived.FirstPatchTurn
+	target.FirstSuccessfulPatchTurn = derived.FirstSuccessfulPatchTurn
+	target.MaxNoSuccessfulPatchStreak = derived.MaxNoSuccessfulPatchStreak
 	target.FirstVerificationTurn = derived.FirstVerificationTurn
 	target.RepeatedReadSearchCalls = derived.RepeatedReadSearchCalls
 	target.ZeroPatchTurnsBudgetExhausted = derived.ZeroPatchTurnsBudgetExhausted
@@ -828,36 +839,80 @@ func validatePrepareProxy(value string) error {
 	return nil
 }
 
-// observationsFromEvents 从持久化事件推导基准特有观测（首次 patch/验证轮次、
-// 重复探索与零 patch 耗尽轮次预算）；轮次与 token 总量属于核心合同，由
-// contract.Result 统计，此处不重复计数。
+// observationsFromEvents 从持久化事件推导基准特有观测（补丁提议/成功轮次、
+// 连续无成功补丁轮次、验证轮次、重复探索与零 patch 耗尽轮次预算）。
+// 轮次与 token 总量属于核心合同，由 contract.Result 统计，此处不重复计数。
+// 本函数只做观测，不参与熔断或完成判定。
 func observationsFromEvents(events []domain.Event) AttemptMetrics {
 	var observations AttemptMetrics
 	currentTurn := 0
 	turnsBudgetExhausted := false
 	seenReadSearch := make(map[string]struct{})
+	// 当前轮是否已出现成功 apply_patch；轮末结算连续无成功补丁 streak。
+	turnHadSuccessfulPatch := false
+	// 是否已进入任何补丁相关事实（提议或成功）；之前不累积 streak，
+	// 避免把纯探索开局误记为无进展。
+	enteredPatchLifecycle := false
+	noSuccessfulPatchStreak := 0
+
+	endTurnWithoutSuccessfulPatch := func() {
+		if !enteredPatchLifecycle {
+			return
+		}
+		if turnHadSuccessfulPatch {
+			noSuccessfulPatchStreak = 0
+			return
+		}
+		noSuccessfulPatchStreak++
+		if noSuccessfulPatchStreak > observations.MaxNoSuccessfulPatchStreak {
+			observations.MaxNoSuccessfulPatchStreak = noSuccessfulPatchStreak
+		}
+	}
+
 	for _, event := range events {
 		switch event.Type {
 		case domain.EventTurnOpened:
+			if currentTurn > 0 {
+				endTurnWithoutSuccessfulPatch()
+			}
 			currentTurn++
+			turnHadSuccessfulPatch = false
 		case domain.EventToolCallProposed:
 			var payload struct {
 				ToolName  string          `json:"tool_name"`
 				Arguments json.RawMessage `json:"arguments"`
 			}
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				if payload.ToolName == "apply_patch" && observations.FirstPatchTurn == 0 {
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			if payload.ToolName == "apply_patch" {
+				enteredPatchLifecycle = true
+				if observations.FirstPatchTurn == 0 {
 					observations.FirstPatchTurn = currentTurn
 				}
-				if payload.ToolName == "read_file" || payload.ToolName == "search_text" {
-					if arguments, valid := canonicalJSONObject(payload.Arguments); valid {
-						key := payload.ToolName + "\x00" + arguments
-						if _, repeated := seenReadSearch[key]; repeated {
-							observations.RepeatedReadSearchCalls++
-						} else {
-							seenReadSearch[key] = struct{}{}
-						}
+			}
+			if payload.ToolName == "read_file" || payload.ToolName == "search_text" {
+				if arguments, valid := canonicalJSONObject(payload.Arguments); valid {
+					key := payload.ToolName + "\x00" + arguments
+					if _, repeated := seenReadSearch[key]; repeated {
+						observations.RepeatedReadSearchCalls++
+					} else {
+						seenReadSearch[key] = struct{}{}
 					}
+				}
+			}
+		case domain.EventOperationSucceeded:
+			var payload struct {
+				ToolName string `json:"tool_name"`
+			}
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			if payload.ToolName == "apply_patch" {
+				enteredPatchLifecycle = true
+				turnHadSuccessfulPatch = true
+				if observations.FirstSuccessfulPatchTurn == 0 {
+					observations.FirstSuccessfulPatchTurn = currentTurn
 				}
 			}
 		case domain.EventVerificationStarted:
@@ -872,6 +927,10 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 				turnsBudgetExhausted = true
 			}
 		}
+	}
+	// 收尾：未显式关闭的最后一轮仍计入 streak。
+	if currentTurn > 0 {
+		endTurnWithoutSuccessfulPatch()
 	}
 	observations.ZeroPatchTurnsBudgetExhausted = turnsBudgetExhausted && observations.FirstPatchTurn == 0
 	return observations

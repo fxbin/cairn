@@ -445,6 +445,70 @@ func TestObservationsFromEventsDeriveBenchmarkOnlyMetrics(t *testing.T) {
 	if observations.FirstPatchTurn != 1 || observations.FirstVerificationTurn != 1 || observations.RepeatedReadSearchCalls != 1 || observations.ZeroPatchTurnsBudgetExhausted {
 		t.Fatalf("observations=%#v", observations)
 	}
+	// 提议轮次 ≠ 成功写入：此处没有 operation_succeeded；轮内仅提议未成功
+	// 按「无成功补丁」计 1，不得记成成功补丁。
+	if observations.FirstSuccessfulPatchTurn != 0 {
+		t.Fatalf("FirstSuccessfulPatchTurn=%d want 0", observations.FirstSuccessfulPatchTurn)
+	}
+	if observations.MaxNoSuccessfulPatchStreak != 1 {
+		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 1", observations.MaxNoSuccessfulPatchStreak)
+	}
+}
+
+// TestObservationsDistinguishPatchProposalFromSuccessfulPatch 锁定提议/成功
+// 语义分离，并统计连续无成功补丁的最大轮数（仅观测）。
+func TestObservationsDistinguishPatchProposalFromSuccessfulPatch(t *testing.T) {
+	events := []domain.Event{
+		// 轮1：提议 patch，但操作未成功 → streak=1
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventOperationFailed, Payload: json.RawMessage(`{"tool_name":"apply_patch","result":{"ok":false}}`)},
+		// 轮2：无补丁 → streak=2
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"a.txt"}}`)},
+		// 轮3：成功补丁 → streak 清零
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, Payload: json.RawMessage(`{"tool_name":"apply_patch","result":{"ok":true}}`)},
+		// 轮4：无补丁 → streak=1
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":{"query":"x"}}`)},
+		// 轮5：成功补丁
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, Payload: json.RawMessage(`{"tool_name":"apply_patch","result":{"ok":true}}`)},
+	}
+	observations := observationsFromEvents(events)
+	if observations.FirstPatchTurn != 1 {
+		t.Fatalf("FirstPatchTurn=%d want 1 (proposal)", observations.FirstPatchTurn)
+	}
+	if observations.FirstSuccessfulPatchTurn != 3 {
+		t.Fatalf("FirstSuccessfulPatchTurn=%d want 3", observations.FirstSuccessfulPatchTurn)
+	}
+	if observations.MaxNoSuccessfulPatchStreak != 2 {
+		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 2", observations.MaxNoSuccessfulPatchStreak)
+	}
+}
+
+// TestObservationsIgnorePrePatchExplorationForStreak 锁定尚未进入补丁生命周期
+// 的纯探索开局不计入无成功补丁 streak。
+func TestObservationsIgnorePrePatchExplorationForStreak(t *testing.T) {
+	events := []domain.Event{
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":{"query":"x"}}`)},
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"apply_patch","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventOperationSucceeded, Payload: json.RawMessage(`{"tool_name":"apply_patch","result":{"ok":true}}`)},
+	}
+	observations := observationsFromEvents(events)
+	if observations.FirstPatchTurn != 3 || observations.FirstSuccessfulPatchTurn != 3 {
+		t.Fatalf("observations=%#v", observations)
+	}
+	if observations.MaxNoSuccessfulPatchStreak != 0 {
+		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 0 (pre-patch turns ignored)", observations.MaxNoSuccessfulPatchStreak)
+	}
 }
 
 func TestObservationsFromEventsClassifiesZeroPatchTurnsBudgetExhaustion(t *testing.T) {
