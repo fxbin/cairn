@@ -138,19 +138,23 @@ type AttemptResult struct {
 }
 
 // AttemptMetrics 只保存基准特有、不属于核心运行合同的观测：补丁提议/成功
-// 轮次、连续无成功补丁轮次、首次验证所在轮次、重复探索、零 patch 耗尽轮次
-// 预算，以及按冻结单价由 contract.Result 的 token 事实换算的成本。
+// 轮次、首次补丁前探索、提出后无成功补丁、首次验证所在轮次、重复探索、
+// 零 patch 耗尽轮次预算，以及按冻结单价由 contract.Result 的 token 事实
+// 换算的成本。
 //
 // 语义边界（勿混用）：
 //   - FirstPatchTurn 是 apply_patch 的首次工具提议轮次，不是成功写入；
 //   - FirstSuccessfulPatchTurn 是首次 operation_succeeded 且 tool=apply_patch；
-//   - MaxNoSuccessfulPatchStreak 是连续没有成功补丁的最大轮数（仅观测，
-//     不作为熔断判据；工作区内容变化另需独立证据）。
+//   - PrePatchExplorationTurns 是首次 apply_patch 提议之前结束的轮数；若全程
+//     未提出补丁，则等于本次观测到的全部轮数（刻画「只探索不动手」）；
+//   - MaxNoSuccessfulPatchStreak 仅在首次补丁提议之后累计，表示连续没有
+//     成功写入 apply_patch 的最大轮数（仅观测，不作为熔断判据）。
 //
 // 轮次与 token 总量以 Run.Metrics 为准，避免两处统计互相漂移。
 type AttemptMetrics struct {
 	FirstPatchTurn                int     `json:"first_patch_turn,omitempty"`
 	FirstSuccessfulPatchTurn      int     `json:"first_successful_patch_turn,omitempty"`
+	PrePatchExplorationTurns      int     `json:"pre_patch_exploration_turns"`
 	MaxNoSuccessfulPatchStreak    int     `json:"max_no_successful_patch_streak"`
 	FirstVerificationTurn         int     `json:"first_verification_turn,omitempty"`
 	RepeatedReadSearchCalls       int     `json:"repeated_read_search_calls"`
@@ -419,6 +423,7 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 func mergeObservations(target AttemptMetrics, derived AttemptMetrics) AttemptMetrics {
 	target.FirstPatchTurn = derived.FirstPatchTurn
 	target.FirstSuccessfulPatchTurn = derived.FirstSuccessfulPatchTurn
+	target.PrePatchExplorationTurns = derived.PrePatchExplorationTurns
 	target.MaxNoSuccessfulPatchStreak = derived.MaxNoSuccessfulPatchStreak
 	target.FirstVerificationTurn = derived.FirstVerificationTurn
 	target.RepeatedReadSearchCalls = derived.RepeatedReadSearchCalls
@@ -840,7 +845,7 @@ func validatePrepareProxy(value string) error {
 }
 
 // observationsFromEvents 从持久化事件推导基准特有观测（补丁提议/成功轮次、
-// 连续无成功补丁轮次、验证轮次、重复探索与零 patch 耗尽轮次预算）。
+// 首次补丁前探索、提出后无成功补丁、验证轮次、重复探索与零 patch 耗尽轮次预算）。
 // 轮次与 token 总量属于核心合同，由 contract.Result 统计，此处不重复计数。
 // 本函数只做观测，不参与熔断或完成判定。
 func observationsFromEvents(events []domain.Event) AttemptMetrics {
@@ -848,15 +853,16 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 	currentTurn := 0
 	turnsBudgetExhausted := false
 	seenReadSearch := make(map[string]struct{})
-	// 当前轮是否已出现成功 apply_patch；轮末结算连续无成功补丁 streak。
+	// 当前轮是否已出现成功 apply_patch；轮末结算 streak。
 	turnHadSuccessfulPatch := false
-	// 是否已进入任何补丁相关事实（提议或成功）；之前不累积 streak，
-	// 避免把纯探索开局误记为无进展。
-	enteredPatchLifecycle := false
+	// 是否已见过 apply_patch 提议；之前记 PrePatchExplorationTurns，
+	// 之后才累计 MaxNoSuccessfulPatchStreak。
+	seenPatchProposal := false
 	noSuccessfulPatchStreak := 0
 
-	endTurnWithoutSuccessfulPatch := func() {
-		if !enteredPatchLifecycle {
+	endTurn := func() {
+		if !seenPatchProposal {
+			observations.PrePatchExplorationTurns++
 			return
 		}
 		if turnHadSuccessfulPatch {
@@ -873,7 +879,7 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 		switch event.Type {
 		case domain.EventTurnOpened:
 			if currentTurn > 0 {
-				endTurnWithoutSuccessfulPatch()
+				endTurn()
 			}
 			currentTurn++
 			turnHadSuccessfulPatch = false
@@ -886,10 +892,10 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 				continue
 			}
 			if payload.ToolName == "apply_patch" {
-				enteredPatchLifecycle = true
 				if observations.FirstPatchTurn == 0 {
 					observations.FirstPatchTurn = currentTurn
 				}
+				seenPatchProposal = true
 			}
 			if payload.ToolName == "read_file" || payload.ToolName == "search_text" {
 				if arguments, valid := canonicalJSONObject(payload.Arguments); valid {
@@ -909,7 +915,7 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 				continue
 			}
 			if payload.ToolName == "apply_patch" {
-				enteredPatchLifecycle = true
+				seenPatchProposal = true
 				turnHadSuccessfulPatch = true
 				if observations.FirstSuccessfulPatchTurn == 0 {
 					observations.FirstSuccessfulPatchTurn = currentTurn
@@ -930,7 +936,7 @@ func observationsFromEvents(events []domain.Event) AttemptMetrics {
 	}
 	// 收尾：未显式关闭的最后一轮仍计入 streak。
 	if currentTurn > 0 {
-		endTurnWithoutSuccessfulPatch()
+		endTurn()
 	}
 	observations.ZeroPatchTurnsBudgetExhausted = turnsBudgetExhausted && observations.FirstPatchTurn == 0
 	return observations

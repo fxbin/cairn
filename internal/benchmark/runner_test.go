@@ -445,10 +445,12 @@ func TestObservationsFromEventsDeriveBenchmarkOnlyMetrics(t *testing.T) {
 	if observations.FirstPatchTurn != 1 || observations.FirstVerificationTurn != 1 || observations.RepeatedReadSearchCalls != 1 || observations.ZeroPatchTurnsBudgetExhausted {
 		t.Fatalf("observations=%#v", observations)
 	}
-	// 提议轮次 ≠ 成功写入：此处没有 operation_succeeded；轮内仅提议未成功
-	// 按「无成功补丁」计 1，不得记成成功补丁。
+	// 提议轮次 ≠ 成功写入：此处没有 operation_succeeded。
 	if observations.FirstSuccessfulPatchTurn != 0 {
 		t.Fatalf("FirstSuccessfulPatchTurn=%d want 0", observations.FirstSuccessfulPatchTurn)
+	}
+	if observations.PrePatchExplorationTurns != 0 {
+		t.Fatalf("PrePatchExplorationTurns=%d want 0 (proposal in turn 1)", observations.PrePatchExplorationTurns)
 	}
 	if observations.MaxNoSuccessfulPatchStreak != 1 {
 		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 1", observations.MaxNoSuccessfulPatchStreak)
@@ -485,13 +487,39 @@ func TestObservationsDistinguishPatchProposalFromSuccessfulPatch(t *testing.T) {
 	if observations.FirstSuccessfulPatchTurn != 3 {
 		t.Fatalf("FirstSuccessfulPatchTurn=%d want 3", observations.FirstSuccessfulPatchTurn)
 	}
+	if observations.PrePatchExplorationTurns != 0 {
+		t.Fatalf("PrePatchExplorationTurns=%d want 0", observations.PrePatchExplorationTurns)
+	}
 	if observations.MaxNoSuccessfulPatchStreak != 2 {
 		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 2", observations.MaxNoSuccessfulPatchStreak)
 	}
 }
 
-// TestObservationsIgnorePrePatchExplorationForStreak 锁定尚未进入补丁生命周期
-// 的纯探索开局不计入无成功补丁 streak。
+// TestObservationsCountPrePatchExplorationWhenNeverProposingPatch 锁定
+// 「只探索、始终未提出补丁」记入 PrePatchExplorationTurns，而不是 streak=0 假阴性。
+func TestObservationsCountPrePatchExplorationWhenNeverProposingPatch(t *testing.T) {
+	events := []domain.Event{
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"read_file","arguments":{"path":"a.txt"}}`)},
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"search_text","arguments":{"query":"x"}}`)},
+		{Type: domain.EventTurnOpened},
+		{Type: domain.EventToolCallProposed, Payload: json.RawMessage(`{"tool_name":"exec_command","arguments":{"argv":["ls"]}}`)},
+	}
+	observations := observationsFromEvents(events)
+	if observations.FirstPatchTurn != 0 || observations.FirstSuccessfulPatchTurn != 0 {
+		t.Fatalf("observations=%#v", observations)
+	}
+	if observations.PrePatchExplorationTurns != 3 {
+		t.Fatalf("PrePatchExplorationTurns=%d want 3", observations.PrePatchExplorationTurns)
+	}
+	if observations.MaxNoSuccessfulPatchStreak != 0 {
+		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 0 (never proposed)", observations.MaxNoSuccessfulPatchStreak)
+	}
+}
+
+// TestObservationsIgnorePrePatchExplorationForStreak 锁定首次提议前的探索
+// 计入 PrePatchExplorationTurns，且不计入提出后的无成功 streak。
 func TestObservationsIgnorePrePatchExplorationForStreak(t *testing.T) {
 	events := []domain.Event{
 		{Type: domain.EventTurnOpened},
@@ -506,8 +534,11 @@ func TestObservationsIgnorePrePatchExplorationForStreak(t *testing.T) {
 	if observations.FirstPatchTurn != 3 || observations.FirstSuccessfulPatchTurn != 3 {
 		t.Fatalf("observations=%#v", observations)
 	}
+	if observations.PrePatchExplorationTurns != 2 {
+		t.Fatalf("PrePatchExplorationTurns=%d want 2 (turns before first proposal)", observations.PrePatchExplorationTurns)
+	}
 	if observations.MaxNoSuccessfulPatchStreak != 0 {
-		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 0 (pre-patch turns ignored)", observations.MaxNoSuccessfulPatchStreak)
+		t.Fatalf("MaxNoSuccessfulPatchStreak=%d want 0 (success in proposal turn)", observations.MaxNoSuccessfulPatchStreak)
 	}
 }
 
