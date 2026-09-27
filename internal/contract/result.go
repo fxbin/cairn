@@ -46,10 +46,23 @@ type Result struct {
 }
 
 // CompletionTrusted 是"可信完成"判定的唯一公式：运行必须处于 completed、
-// 验证成功、存在验证事件，且验证序号覆盖最后一次工作区变更。app 的
-// RunSummary 与本包 Result 共用该实现，避免两套判定漂移。
-func CompletionTrusted(state domain.RunState, verificationSucceeded bool, lastVerificationSeq, lastMutationSeq uint64) bool {
-	return state == domain.RunCompleted && verificationSucceeded && lastVerificationSeq != 0 && (lastMutationSeq == 0 || lastVerificationSeq > lastMutationSeq)
+// 验证成功、存在验证事件、验证序号覆盖最后一次工作区变更，且至少执行过
+// 一条冻结验证命令。无命令执行证据（含 last_mutation_seq==0 的空验证）
+// 一律不可信；只读任务可在无命令计划下 completed，但 trusted=false。
+// app 的 RunSummary 与本包 Result 共用该实现，避免两套判定漂移。
+func CompletionTrusted(state domain.RunState, verificationSucceeded bool, lastVerificationSeq, lastMutationSeq uint64, verificationCommandExecuted bool) bool {
+	return state == domain.RunCompleted && verificationSucceeded && lastVerificationSeq != 0 && verificationCommandExecuted && (lastMutationSeq == 0 || lastVerificationSeq > lastMutationSeq)
+}
+
+// VerificationCommandExecuted 报告事件流中是否出现过验证命令提议。
+// 用于识别"配置了命令却没有对应执行证据"的旧假通过记录。
+func VerificationCommandExecuted(events []domain.Event) bool {
+	for _, event := range events {
+		if event.Type == domain.EventVerificationCommandProposed {
+			return true
+		}
+	}
+	return false
 }
 
 // ResultFromRun 由事件流投影 Result。它先经 ManifestFromRun 构建身份，
@@ -93,7 +106,7 @@ func ResultFromRun(events []domain.Event, projection domain.RunProjection, task 
 		}
 	}
 	result.Evidence.LastMutationSeq = projection.LastMutationSeq
-	result.Evidence.Trusted = CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq)
+	result.Evidence.Trusted = CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, VerificationCommandExecuted(events))
 	if len(events) != 0 {
 		first, last := events[0], events[len(events)-1]
 		if duration := last.OccurredAt.Sub(first.OccurredAt); duration > 0 {

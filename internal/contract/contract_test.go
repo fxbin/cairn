@@ -152,8 +152,9 @@ func TestManifestFromRunRejectsMissingRunCreated(t *testing.T) {
 func TestResultFromRunProjectsCompletedTrustedOutcome(t *testing.T) {
 	events := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventModelResponseFinished, Payload: json.RawMessage(`{"usage":{"prompt_tokens":11,"completion_tokens":7}}`), OccurredAt: time.Unix(1004, 0)},
-		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 6, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"ok":true}`), OccurredAt: time.Unix(1005, 0)},
-		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 6, Type: domain.EventVerificationCommandProposed, Payload: json.RawMessage(`{"verification_id":"verify-1","command_index":0}`), OccurredAt: time.Unix(1004, 1)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"verify-1","ok":true}`), OccurredAt: time.Unix(1005, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 8, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
 	)
 	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 6, LastMutationSeq: 3}
 	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix the failing test"), frozenFixtureConfig(t, nil))
@@ -163,7 +164,7 @@ func TestResultFromRunProjectsCompletedTrustedOutcome(t *testing.T) {
 	if result.SchemaVersion != 1 || result.State != string(domain.RunCompleted) || result.Outcome != "completed" || result.FailureClass != "" || result.StopReason != "" {
 		t.Fatalf("result=%#v", result)
 	}
-	if !result.Evidence.Trusted || result.Evidence.VerificationSeq != 6 || !result.Evidence.VerificationOK || result.Evidence.LastMutationSeq != 3 {
+	if !result.Evidence.Trusted || result.Evidence.VerificationSeq != 7 || !result.Evidence.VerificationOK || result.Evidence.LastMutationSeq != 3 {
 		t.Fatalf("evidence=%#v", result.Evidence)
 	}
 	if result.Metrics.Turns != 0 || result.Metrics.InputTokens != 11 || result.Metrics.OutputTokens != 7 || result.Metrics.WallTimeMS != 6000 {
@@ -232,17 +233,46 @@ func TestClassifyErrorPreservesUnifiedTaxonomy(t *testing.T) {
 }
 
 func TestCompletionTrustedRequiresFreshVerification(t *testing.T) {
-	if CompletionTrusted(domain.RunCompleted, true, 5, 3) != true {
+	if CompletionTrusted(domain.RunCompleted, true, 5, 3, true) != true {
 		t.Fatal("completed run with fresh verification must be trusted")
 	}
-	if CompletionTrusted(domain.RunCompleted, true, 3, 5) {
+	if CompletionTrusted(domain.RunCompleted, true, 3, 5, true) {
 		t.Fatal("stale verification must not be trusted")
 	}
-	if CompletionTrusted(domain.RunCompleted, true, 0, 0) {
+	if CompletionTrusted(domain.RunCompleted, true, 0, 0, true) {
 		t.Fatal("missing verification event must not be trusted")
 	}
-	if CompletionTrusted(domain.RunFailed, true, 5, 3) {
+	if CompletionTrusted(domain.RunFailed, true, 5, 3, true) {
 		t.Fatal("non-completed run must not be trusted")
+	}
+	if CompletionTrusted(domain.RunCompleted, true, 5, 0, true) != true {
+		t.Fatal("zero-mutation run with executed verification command may be trusted")
+	}
+	if CompletionTrusted(domain.RunCompleted, true, 5, 0, false) {
+		t.Fatal("verification without any command execution must not be trusted")
+	}
+	if CompletionTrusted(domain.RunCompleted, false, 5, 3, true) {
+		t.Fatal("failed verification must not be trusted")
+	}
+}
+
+// TestVerificationCommandExecutedDetectsMissingCommandEvidence 锁定读侧能识别
+// "verification_finished OK 但无 verification_command_proposed" 的旧假通过。
+func TestVerificationCommandExecutedDetectsMissingCommandEvidence(t *testing.T) {
+	withCommand := []domain.Event{
+		{Type: domain.EventVerificationCommandProposed, Payload: json.RawMessage(`{"verification_id":"v1","command_index":0}`)},
+		{Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`)},
+	}
+	if !VerificationCommandExecuted(withCommand) {
+		t.Fatal("command proposal must count as execution evidence")
+	}
+	legacyFake := []domain.Event{
+		{Type: domain.EventVerificationStarted, Payload: json.RawMessage(`{"verification_id":"v1","commands_fingerprint":"sha256:x"}`)},
+		{Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`)},
+		{Type: domain.EventRunCompleted},
+	}
+	if VerificationCommandExecuted(legacyFake) {
+		t.Fatal("finished-without-command must not count as execution evidence")
 	}
 }
 
@@ -325,5 +355,26 @@ func TestManifestRejectsLegacyConfigAndInvalidFacts(t *testing.T) {
 	broken.Provider.BaseURL = "not-a-url"
 	if _, err := ManifestFromRun(events, FreeformTaskSpec("broken"), uncheckedFrozenFixture(t, broken)); err == nil {
 		t.Fatal("invalid provider identity must fail closed")
+	}
+}
+
+// TestResultFromRunMarksLegacyVacuousVerificationUntrusted 锁定旧假通过
+// （verification_finished OK 但无命令提议）在读侧投影为不可信，日志仍可回放。
+func TestResultFromRunMarksLegacyVacuousVerificationUntrusted(t *testing.T) {
+	events := append(manifestFixtureEvents(t),
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventVerificationStarted, Payload: json.RawMessage(`{"verification_id":"v1","last_mutation_seq":0,"commands_fingerprint":"sha256:x"}`), OccurredAt: time.Unix(1004, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 6, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`), OccurredAt: time.Unix(1005, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
+	)
+	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 6, LastMutationSeq: 0}
+	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix"), frozenFixtureConfig(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evidence.Trusted {
+		t.Fatalf("legacy vacuous verification must not be trusted: %#v", result.Evidence)
+	}
+	if result.State != string(domain.RunCompleted) {
+		t.Fatalf("state=%s", result.State)
 	}
 }

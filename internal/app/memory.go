@@ -113,7 +113,7 @@ func (service Service) CaptureMemory(ctx context.Context, options MemoryCaptureO
 	if err != nil {
 		return memory.Candidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	candidate, err := memory.NewRunOutcomeCandidate(workspaceHash, string(options.RunID), contract.FreeformTaskSpec(projection.Task).PromptDigest, projection.Phase(), contract.ClassifyTerminal(events), contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq), events[len(events)-1].OccurredAt, ttl, evidence, options.SupersedesID)
+	candidate, err := memory.NewRunOutcomeCandidate(workspaceHash, string(options.RunID), contract.FreeformTaskSpec(projection.Task).PromptDigest, projection.Phase(), contract.ClassifyTerminal(events), contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events)), events[len(events)-1].OccurredAt, ttl, evidence, options.SupersedesID)
 	if err != nil {
 		return memory.Candidate{}, err
 	}
@@ -482,7 +482,7 @@ func verifyMemoryStore(ctx context.Context, store *memstoresqlite.Store, journal
 		if err != nil || !projection.Terminal() || projection.WorkspaceHash != workspaceHash {
 			return fmt.Errorf("memory candidate source run %s is invalid", candidate.RunID)
 		}
-		if candidate.TaskPromptDigest != contract.FreeformTaskSpec(projection.Task).PromptDigest || candidate.Outcome != projection.Phase() || candidate.FailureClass != contract.ClassifyTerminal(events) || candidate.TrustedVerification != contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq) {
+		if candidate.TaskPromptDigest != contract.FreeformTaskSpec(projection.Task).PromptDigest || candidate.Outcome != projection.Phase() || candidate.FailureClass != contract.ClassifyTerminal(events) || candidate.TrustedVerification != contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events)) {
 			return fmt.Errorf("memory candidate %s does not match source run facts", candidate.ID)
 		}
 		if err := verifyCandidateEvidence(candidate, events, stateDir, workspaceHash); err != nil {

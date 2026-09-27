@@ -73,7 +73,10 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 		}
 		return nil
 	}
-	if projection.LastMutationSeq != 0 && len(loop.Verification) == 0 {
+	// 冻结计划无命令时一律以 OK:false 完成（ADR-0017：完成与可信分离）。
+	// 有命令时必须真实执行，包括 last_mutation_seq==0：零变更不能跳过验证，
+	// 否则模型可在未修复时拿到可信完成（发布阻断）。
+	if len(loop.Verification) == 0 {
 		return loop.finishUnverifiedRun(ctx, projection, input, turnID)
 	}
 	verificationID := domain.NewID("verify")
@@ -93,14 +96,6 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 		WorkspaceObservation string        `json:"workspace_observation"`
 	}{VerificationID: verificationID, MutationSeq: projection.LastMutationSeq, PlanRef: planRef, CommandsFingerprint: plan.CommandsFingerprint, WorkspaceObservation: observation})}); err != nil {
 		return err
-	}
-	if projection.LastMutationSeq == 0 {
-		commitContext, cancel := loop.commitContext(ctx)
-		defer cancel()
-		if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: verificationID, OK: true})}); err != nil {
-			return &verificationPersistenceError{cause: err}
-		}
-		return nil
 	}
 	return loop.runVerificationCommands(ctx, projection, input, turnID, verificationID, planRef, plan.CommandsFingerprint, 0)
 }
@@ -584,22 +579,8 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if err != nil {
 		return false, err
 	}
-	if verification.lastMutationSeq == 0 {
-		if len(operations) != 0 {
-			return false, errors.New("zero-mutation verification contains a command proposal")
-		}
-		commitContext, cancel := loop.commitContext(ctx)
-		defer cancel()
-		if err := loop.append(commitContext, projection, domain.EventDraft{
-			RunID:         input.RunID,
-			WorkspaceHash: input.WorkspaceHash,
-			Type:          domain.EventVerificationFinished,
-			TurnID:        &verification.turnID,
-			Payload:       mustJSON(domain.VerificationFinishedPayload{VerificationID: verification.verificationID, OK: true}),
-		}); err != nil {
-			return false, &verificationPersistenceError{cause: err}
-		}
-		return true, nil
+	if verification.lastMutationSeq == 0 && len(operations) != 0 {
+		return false, errors.New("zero-mutation verification contains a command proposal")
 	}
 	if len(operations) != 0 {
 		latest := operations[len(operations)-1]

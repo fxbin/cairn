@@ -313,8 +313,9 @@ func TestServiceRunProjectsUnifiedContractResult(t *testing.T) {
 	if manifest.Build.Fingerprint == "" || manifest.Preset != config.PresetCoding {
 		t.Fatalf("manifest build/preset=%#v", manifest)
 	}
-	if result.Result.State != string(domain.RunCompleted) || !result.Result.Evidence.Trusted {
-		t.Fatalf("result=%#v", result.Result)
+	// 零命令计划：允许 completed，但不得标记可信（ADR-0017）。
+	if result.Result.State != string(domain.RunCompleted) || result.Result.Evidence.Trusted {
+		t.Fatalf("zero-command completion must be untrusted: result=%#v", result.Result)
 	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
 	if err != nil || inspected.Manifest == nil {
@@ -1189,6 +1190,7 @@ func TestVerificationEnvironmentFlowsThroughConfiguredExecTool(t *testing.T) {
 	provider := &finalProvider{}
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
 	configuration := withTestProvider(config.Defaults())
+	configuration.Policy.Exec = "allow"
 	configuration.Policy.EnvAllow = append(configuration.Policy.EnvAllow, "CAIRN_TEST_ENV")
 	configuration.Verification.Commands = []config.VerificationCommand{{
 		Argv: []string{"/bin/sh", "-c", `[ "$CAIRN_TEST_ENV" = deployed ]`},

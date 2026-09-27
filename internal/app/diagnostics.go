@@ -371,7 +371,7 @@ func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSum
 	summary.LastMutationSeq = projection.LastMutationSeq
 	summary.StopReason = contract.TerminalStopReason(events)
 	summary.NextAction = nextActionFor(projection)
-	summary.CompletionTrusted = contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq)
+	summary.CompletionTrusted = contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events))
 	return summary
 }
 

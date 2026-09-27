@@ -14,6 +14,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -2595,5 +2596,187 @@ func TestSummarizeMessagesExcludesCheckpointPrefixedTask(t *testing.T) {
 	}
 	if !strings.Contains(summary, "已完成历史步骤") {
 		t.Fatalf("摘要应保留任务后的历史: %q", summary)
+	}
+}
+
+// TestLoopRunsFrozenVerificationWhenZeroMutations 锁定零变更也执行冻结验证：
+// 命令失败必须反馈给模型继续修复，命令成功才完成且具备命令执行证据。
+func TestLoopRunsFrozenVerificationWhenZeroMutations(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &flakyVerificationTool{}
+	registry, err := tools.NewRegistry(verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.TextDelta, Text: "claimed done without patch"}, {Kind: ports.Done}},
+		{{Kind: ports.TextDelta, Text: "verified after real command"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"verify without mutation","workspace":"/workspace"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 6,
+		Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "verify without mutation", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "verified after real command" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if verificationTool.calls != 2 {
+		t.Fatalf("verification calls=%d want 2 (fail then pass)", verificationTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("provider requests=%d want at least 2", len(provider.requests))
+	}
+	foundFeedback := false
+	for _, message := range provider.requests[1].Messages {
+		if message.Role == "user" && strings.Contains(message.Content, "Verification command verification-1 failed") {
+			foundFeedback = true
+		}
+	}
+	if !foundFeedback {
+		t.Fatalf("zero-mutation verification failure was not fed back: %#v", provider.requests[1].Messages)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contract.VerificationCommandExecuted(events) {
+		t.Fatal("successful completion must carry verification command execution evidence")
+	}
+	projection, err := domain.Replay(events)
+	if err != nil || projection.State != domain.RunCompleted || !projection.VerificationSucceeded {
+		t.Fatalf("projection=%#v err=%v", projection, err)
+	}
+}
+
+// TestLoopZeroCommandPlanCompletesUntrusted 锁定零命令计划允许 completed，
+// 但 verification OK 必须为假且不得具备命令执行证据。
+func TestLoopZeroCommandPlanCompletesUntrusted(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	registry, err := tools.NewRegistry(tools.ListFiles{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.TextDelta, Text: "read-only answer"}, {Kind: ports.Done}},
+	}}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"readonly","workspace":"/workspace"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 4}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "readonly", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "read-only answer" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.State != domain.RunCompleted || projection.VerificationSucceeded {
+		t.Fatalf("zero-command plan must complete unverified: %#v", projection)
+	}
+	if contract.VerificationCommandExecuted(events) {
+		t.Fatal("zero-command plan must not invent command execution evidence")
+	}
+}
+
+// TestResumeCompletesZeroMutationVerificationByPlan 锁定零变更验证中断后
+// 按冻结计划恢复：有命令则执行命令终态，不得再走 OK:true 捷径。
+func TestResumeCompletesZeroMutationVerificationByPlan(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchTool := tools.ApplyPatch{Workspace: workspace}
+	verificationTool := &countingExecTool{}
+	registry, err := tools.NewRegistry(verificationTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("allow", "allow", nil, patchTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	turnID := domain.NewTurnID()
+	base := []domain.EventDraft{
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"resume verify","workspace":"/workspace"}`)},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID, Payload: json.RawMessage(`{"turn":1}`)},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelRequestStarted, TurnID: &turnID, Payload: json.RawMessage(`{"provider":"openai_compatible","model":"fake"}`)},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventModelResponseFinished, TurnID: &turnID, Payload: json.RawMessage(`{"text":"done","tool_calls":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"stop_reason":"stop"}`)},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: json.RawMessage(`{"text":"done"}`)},
+	}
+	var seq uint64
+	for _, draft := range base {
+		seq++
+		if _, err := journal.Append(context.Background(), seq-1, draft); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 验证已 started（last_mutation_seq=0）但未 finished——模拟中断。
+	seq++
+	verificationID := "verify_resume"
+	commandsFingerprint, err := FingerprintVerificationCommands([]VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), seq-1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: mustJSON(struct {
+		VerificationID      string `json:"verification_id"`
+		MutationSeq         uint64 `json:"last_mutation_seq"`
+		CommandsFingerprint string `json:"commands_fingerprint"`
+	}{VerificationID: verificationID, MutationSeq: 0, CommandsFingerprint: commandsFingerprint})}); err != nil {
+		t.Fatal(err)
+	}
+	loop := Loop{Journal: journal, Provider: &scriptedProvider{}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 6,
+		Verification: []VerificationCommand{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}}
+	// 恢复应执行冻结命令并收束；若走 OK:true 捷径则 verificationTool.calls==0。
+	_, err = loop.Resume(context.Background(), RunInput{RunID: runID, Task: "resume verify", WorkspaceHash: "workspace"}, ports.Approval{})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if verificationTool.calls == 0 {
+		t.Fatal("zero-mutation resume must execute frozen verification commands")
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contract.VerificationCommandExecuted(events) {
+		t.Fatal("resume must leave verification command execution evidence")
 	}
 }

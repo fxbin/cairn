@@ -420,7 +420,8 @@ func TestEvidenceCommandProjectsUnifiedResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut.String())), &projected); err != nil {
 		t.Fatalf("evidence json=%q err=%v", jsonOut.String(), err)
 	}
-	if projected.Manifest.RunID != domain.RunID(seeded.RunID) || projected.State != "completed" || !projected.Evidence.Trusted {
+	// 零命令计划：completed 但不可信（ADR-0017）。
+	if projected.Manifest.RunID != domain.RunID(seeded.RunID) || projected.State != "completed" || projected.Evidence.Trusted {
 		t.Fatalf("projected=%#v", projected)
 	}
 	card := projected.Manifest.Provider.Card
