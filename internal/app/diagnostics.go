@@ -329,9 +329,9 @@ type RunSummary struct {
 	CompletionTrusted    bool                  `json:"completion_trusted"`
 }
 
-// SummarizeRun 从事件流与投影构建诊断摘要；事件 payload 在写入时已经过脱敏，
-// 此处只读取既有事实。
-func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSummary {
+// SummarizeRun 从事件流与投影构建诊断摘要；completionTrusted 来自同一
+// 冻结计划合同投影，事件 payload 在写入时已经过脱敏。
+func SummarizeRun(events []domain.Event, projection domain.RunProjection, completionTrusted bool) RunSummary {
 	summary := RunSummary{
 		State:                string(projection.State),
 		Phase:                projection.Phase(),
@@ -371,7 +371,7 @@ func SummarizeRun(events []domain.Event, projection domain.RunProjection) RunSum
 	summary.LastMutationSeq = projection.LastMutationSeq
 	summary.StopReason = contract.TerminalStopReason(events)
 	summary.NextAction = nextActionFor(projection)
-	summary.CompletionTrusted = contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events))
+	summary.CompletionTrusted = completionTrusted
 	return summary
 }
 

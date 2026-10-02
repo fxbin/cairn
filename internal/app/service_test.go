@@ -542,9 +542,15 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 	if err != nil || resumed.Response != "patched and verified" || resumed.Result == nil || resumed.Result.State != string(domain.RunCompleted) {
 		t.Fatalf("resumed = %#v, err = %v", resumed, err)
 	}
+	if !resumed.Result.Evidence.Trusted {
+		t.Fatalf("approved frozen verifier must have complete trusted evidence: %#v", resumed.Result.Evidence)
+	}
 	inspected, err := service.Inspect(context.Background(), workspace, stateDir, configuration, initial.ID, true)
 	if err != nil || inspected.Projection.Phase() != "completed" {
 		t.Fatalf("inspect = %#v, %v", inspected, err)
+	}
+	if !inspected.Summary.CompletionTrusted {
+		t.Fatalf("inspect trust differs from result evidence: %#v", inspected.Summary)
 	}
 	proposed, started := 0, 0
 	var startedPlan, proposedPlan *artifact.Ref

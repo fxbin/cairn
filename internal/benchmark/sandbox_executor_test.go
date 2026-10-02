@@ -245,7 +245,16 @@ func TestRecoveredSandboxRunRecordsPreserveClosedRunIdentity(t *testing.T) {
 		ReplayConsistent: true, DoctorOK: true, InputTokens: 1, OutputTokens: 1,
 		WallTimeMS: 1, Success: true, LeakScan: sandboxeval.LeakScanReport{Outcome: sandboxeval.LeakClean},
 	}
-	if err := writeJSON(filepath.Join(runsDirectory, sandboxRecordFileName(step)), record); err != nil {
+	recordPath := filepath.Join(runsDirectory, sandboxRecordFileName(step))
+	legacy := record
+	legacy.SchemaVersion = sandboxRecordSchemaVersion - 1
+	if err := writeJSON(recordPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRecoveredSandboxRunRecords(directory, evaluationID, setup.evalSet, steps); err == nil {
+		t.Fatal("old success semantics must not enter the trusted recovery gate")
+	}
+	if err := writeJSON(recordPath, record); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := loadRecoveredSandboxRunRecords(directory, evaluationID, setup.evalSet, steps)

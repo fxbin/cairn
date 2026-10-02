@@ -1,8 +1,11 @@
 package contract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +17,26 @@ import (
 
 const (
 	fixtureConfigFingerprint       = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	fixtureVerificationFingerprint = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	fixtureVerificationFingerprint = "sha256:5fd644f78a8abad0a26946b2da5a493cbefc2f81ae7533d3feff2eb3f24496b4"
 )
+
+// verificationPlanFixture 用生产摘要算法构造带内容寻址引用的测试计划。
+func verificationPlanFixture(t *testing.T, verificationID string, lastMutationSeq uint64, commands []VerificationCommandSpec) (json.RawMessage, string, string) {
+	t.Helper()
+	fingerprint, err := FingerprintVerificationCommands(commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := json.Marshal(VerificationPlanSpec{
+		Version: VerificationPlanVersion, VerificationID: verificationID, ConfigFingerprint: fixtureConfigFingerprint,
+		LastMutationSeq: lastMutationSeq, CommandsFingerprint: fingerprint, Commands: commands,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(plan)
+	return plan, "sha256:" + hex.EncodeToString(digest[:]), fingerprint
+}
 
 // manifestFixtureEvents 构造一次完整运行的最小事件集：run_created 携带身份，
 // 模型请求与验证事件补齐 Provider 与验证计划事实。
@@ -150,24 +171,35 @@ func TestManifestFromRunRejectsMissingRunCreated(t *testing.T) {
 }
 
 func TestResultFromRunProjectsCompletedTrustedOutcome(t *testing.T) {
+	turnID := domain.TurnID("turn-1")
+	operationID := domain.OperationID("verify-op-1")
+	plan, planDigest, fingerprint := verificationPlanFixture(t, "verify-1", 3, []VerificationCommandSpec{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}})
+	if fingerprint != fixtureVerificationFingerprint {
+		t.Fatalf("fixture fingerprint drifted: %s", fingerprint)
+	}
+	planRef := `{"sha256":"` + planDigest + `"}`
 	events := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventModelResponseFinished, Payload: json.RawMessage(`{"usage":{"prompt_tokens":11,"completion_tokens":7}}`), OccurredAt: time.Unix(1004, 0)},
-		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 6, Type: domain.EventVerificationCommandProposed, Payload: json.RawMessage(`{"verification_id":"verify-1","command_index":0}`), OccurredAt: time.Unix(1004, 1)},
-		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"verify-1","ok":true}`), OccurredAt: time.Unix(1005, 0)},
-		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 8, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 6, Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: json.RawMessage(`{"verification_id":"verify-1","commands_fingerprint":"` + fingerprint + `","last_mutation_seq":3,"workspace_observation":"sha256:workspace","plan_ref":` + planRef + `}`), OccurredAt: time.Unix(1004, 1)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventVerificationCommandProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"verification_id":"verify-1","command_index":0,"arguments":{"argv":["verify"]},"plan_ref":` + planRef + `}`), OccurredAt: time.Unix(1004, 2)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 8, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"approval-fp"}`), OccurredAt: time.Unix(1004, 3)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 9, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"exec_command","side_effect_class":"process"}`), OccurredAt: time.Unix(1004, 4)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 10, Type: domain.EventOperationSucceeded, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"exec_command","result":{"ok":true}}`), OccurredAt: time.Unix(1004, 5)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 11, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: json.RawMessage(`{"verification_id":"verify-1","ok":true}`), OccurredAt: time.Unix(1005, 0)},
+		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 12, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
 	)
-	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 6, LastMutationSeq: 3}
-	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix the failing test"), frozenFixtureConfig(t, nil))
+	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 11, LastMutationSeq: 3}
+	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix the failing test"), frozenFixtureConfig(t, nil), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.SchemaVersion != 1 || result.State != string(domain.RunCompleted) || result.Outcome != "completed" || result.FailureClass != "" || result.StopReason != "" {
 		t.Fatalf("result=%#v", result)
 	}
-	if !result.Evidence.Trusted || result.Evidence.VerificationSeq != 7 || !result.Evidence.VerificationOK || result.Evidence.LastMutationSeq != 3 {
+	if !result.Evidence.Trusted || result.Evidence.VerificationSeq != 11 || !result.Evidence.VerificationOK || result.Evidence.LastMutationSeq != 3 {
 		t.Fatalf("evidence=%#v", result.Evidence)
 	}
-	if result.Metrics.Turns != 0 || result.Metrics.InputTokens != 11 || result.Metrics.OutputTokens != 7 || result.Metrics.WallTimeMS != 6000 {
+	if result.Metrics.Turns != 0 || result.Metrics.ToolCalls != 1 || result.Metrics.InputTokens != 11 || result.Metrics.OutputTokens != 7 || result.Metrics.WallTimeMS != 6000 {
 		t.Fatalf("metrics=%#v", result.Metrics)
 	}
 	encoded, _ := json.Marshal(result)
@@ -182,7 +214,7 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	)
 	projection := domain.RunProjection{ID: "run-1", State: domain.RunFailed}
 	frozenConfig := frozenFixtureConfig(t, nil)
-	result, err := ResultFromRun(budgetFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig)
+	result, err := ResultFromRun(budgetFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +224,7 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	guardFailed := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunFailed, Payload: json.RawMessage(`{"error":"loop guard","error_class":"loop_guard_repeated_operation_failure"}`), OccurredAt: time.Unix(1005, 0)},
 	)
-	guardResult, err := ResultFromRun(guardFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig)
+	guardResult, err := ResultFromRun(guardFailed, projection, FreeformTaskSpec("fix the failing test"), frozenConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +237,7 @@ func TestResultFromRunClassifiesBudgetAndLoopGuardFailures(t *testing.T) {
 	cancelled := append(manifestFixtureEvents(t),
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 5, Type: domain.EventRunCancelled, Payload: json.RawMessage(`{"cause":"user_interrupt"}`), OccurredAt: time.Unix(1005, 0)},
 	)
-	cancelledResult, err := ResultFromRun(cancelled, domain.RunProjection{ID: "run-1", State: domain.RunCancelled}, FreeformTaskSpec("fix the failing test"), frozenConfig)
+	cancelledResult, err := ResultFromRun(cancelled, domain.RunProjection{ID: "run-1", State: domain.RunCancelled}, FreeformTaskSpec("fix the failing test"), frozenConfig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,23 +288,118 @@ func TestCompletionTrustedRequiresFreshVerification(t *testing.T) {
 	}
 }
 
-// TestVerificationCommandExecutedDetectsMissingCommandEvidence 锁定读侧能识别
-// "verification_finished OK 但无 verification_command_proposed" 的旧假通过。
-func TestVerificationCommandExecutedDetectsMissingCommandEvidence(t *testing.T) {
-	withCommand := []domain.Event{
-		{Type: domain.EventVerificationCommandProposed, Payload: json.RawMessage(`{"verification_id":"v1","command_index":0}`)},
-		{Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`)},
+// verificationEvidenceFixture 构造实际执行或成功对账的完整命令链。
+func verificationEvidenceFixture(t *testing.T, commands []VerificationCommandSpec, reconcileLast bool) ([]domain.Event, VerificationEvidenceSpec) {
+	t.Helper()
+	plan, digest, fingerprint := verificationPlanFixture(t, "v1", 0, commands)
+	turnID := domain.TurnID("turn-1")
+	events := make([]domain.Event, 0, len(commands)*4+2)
+	appendEvent := func(eventType domain.EventType, operationID *domain.OperationID, payload json.RawMessage) {
+		events = append(events, domain.Event{Seq: uint64(len(events) + 1), Type: eventType, TurnID: &turnID, OperationID: operationID, Payload: payload})
 	}
-	if !VerificationCommandExecuted(withCommand) {
-		t.Fatal("command proposal must count as execution evidence")
+	appendEvent(domain.EventVerificationStarted, nil, json.RawMessage(fmt.Sprintf(`{"verification_id":"v1","commands_fingerprint":%q,"workspace_observation":"sha256:workspace","plan_ref":{"sha256":%q}}`, fingerprint, digest)))
+	for index, command := range commands {
+		operationID := domain.OperationID(fmt.Sprintf("operation-%d", index))
+		appendEvent(domain.EventVerificationCommandProposed, &operationID, json.RawMessage(fmt.Sprintf(`{"verification_id":"v1","command_index":%d,"arguments":%s,"plan_ref":{"sha256":%q}}`, index, command.Arguments, digest)))
+		appendEvent(domain.EventPolicyDecided, &operationID, json.RawMessage(`{"effect":"allow","fingerprint":"policy-fp"}`))
+		appendEvent(domain.EventOperationStarted, &operationID, json.RawMessage(`{"tool_name":"exec_command","side_effect_class":"process"}`))
+		if reconcileLast && index == len(commands)-1 {
+			appendEvent(domain.EventOperationReconciled, &operationID, json.RawMessage(`{"verdict":"applied_success","workspace_observation":"sha256:workspace"}`))
+		} else {
+			appendEvent(domain.EventOperationSucceeded, &operationID, json.RawMessage(`{"tool_name":"exec_command","result":{"ok":true}}`))
+		}
 	}
-	legacyFake := []domain.Event{
-		{Type: domain.EventVerificationStarted, Payload: json.RawMessage(`{"verification_id":"v1","commands_fingerprint":"sha256:x"}`)},
-		{Type: domain.EventVerificationFinished, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`)},
-		{Type: domain.EventRunCompleted},
+	appendEvent(domain.EventVerificationFinished, nil, json.RawMessage(`{"verification_id":"v1","ok":true}`))
+	return events, VerificationEvidenceSpec{Plan: plan, Commands: len(commands), Fingerprint: fingerprint, ConfigFingerprint: fixtureConfigFingerprint, FinishedSeq: events[len(events)-1].Seq}
+}
+
+// TestVerificationCommandsSucceededRequiresCompletePlan 锁定冻结参数、命令
+// 类型、授权和完整成功终态；夹入工作区变更或旧提议即完成均不得可信。
+func TestVerificationCommandsSucceededRequiresCompletePlan(t *testing.T) {
+	events, spec := verificationEvidenceFixture(t, []VerificationCommandSpec{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}, false)
+	planHash := sha256.Sum256(spec.Plan)
+	planDigest := "sha256:" + hex.EncodeToString(planHash[:])
+	if !VerificationCommandsSucceeded(events, spec) {
+		t.Fatal("complete frozen command must be trusted")
 	}
-	if VerificationCommandExecuted(legacyFake) {
-		t.Fatal("finished-without-command must not count as execution evidence")
+	cases := []struct {
+		name   string
+		change func([]domain.Event, *VerificationEvidenceSpec) []domain.Event
+	}{
+		{name: "proposal only", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			return []domain.Event{events[0], events[1], events[5]}
+		}},
+		{name: "missing terminal", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			return append(events[:4], events[5])
+		}},
+		{name: "wrong arguments", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			events[1].Payload = json.RawMessage(`{"verification_id":"v1","command_index":0,"arguments":{"argv":["other"]},"plan_ref":{"sha256":"` + planDigest + `"}}`)
+			return events
+		}},
+		{name: "wrong tool", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			events[3].Payload = json.RawMessage(`{"tool_name":"read_file","side_effect_class":"process"}`)
+			return events
+		}},
+		{name: "wrong terminal tool", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			events[4].Payload = json.RawMessage(`{"tool_name":"read_file","result":{"ok":true}}`)
+			return events
+		}},
+		{name: "empty authorization fingerprint", change: func(events []domain.Event, _ *VerificationEvidenceSpec) []domain.Event {
+			events[2].Payload = json.RawMessage(`{"effect":"allow"}`)
+			return events
+		}},
+		{name: "missing plan", change: func(events []domain.Event, spec *VerificationEvidenceSpec) []domain.Event {
+			spec.Plan = nil
+			return events
+		}},
+		{name: "missing second command", change: func(events []domain.Event, spec *VerificationEvidenceSpec) []domain.Event {
+			spec.Commands = 2
+			return events
+		}},
+		{name: "stale mutation baseline", change: func(events []domain.Event, spec *VerificationEvidenceSpec) []domain.Event {
+			spec.LastMutationSeq = 5
+			return events
+		}},
+		{name: "interleaved mutation", change: func(events []domain.Event, spec *VerificationEvidenceSpec) []domain.Event {
+			other := domain.OperationID("other")
+			mutation := domain.Event{Seq: 6, Type: domain.EventOperationStarted, OperationID: &other, Payload: json.RawMessage(`{"tool_name":"apply_patch","side_effect_class":"workspace"}`)}
+			finished := events[5]
+			finished.Seq = 7
+			spec.FinishedSeq = 7
+			return append(append(events[:5], mutation), finished)
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			copyEvents := append([]domain.Event(nil), events...)
+			copySpec := spec
+			copyEvents = test.change(copyEvents, &copySpec)
+			if VerificationCommandsSucceeded(copyEvents, copySpec) {
+				t.Fatal("incomplete or mismatched verification must not be trusted")
+			}
+		})
+	}
+}
+
+// TestVerificationCommandsSucceededAcceptsSuccessfulReconciliation 锁定多命令
+// 计划中已启动命令经成功人工对账后才可作为成功终态。
+func TestVerificationCommandsSucceededAcceptsSuccessfulReconciliation(t *testing.T) {
+	events, spec := verificationEvidenceFixture(t, []VerificationCommandSpec{
+		{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify-a"]}`)},
+		{ID: "verification-2", Arguments: json.RawMessage(`{"argv":["verify-b"]}`)},
+	}, true)
+	if !VerificationCommandsSucceeded(events, spec) {
+		t.Fatal("both frozen commands have successful terminal evidence")
+	}
+	failed := append([]domain.Event(nil), events...)
+	failed[len(failed)-2].Payload = json.RawMessage(`{"verdict":"applied_failure"}`)
+	if VerificationCommandsSucceeded(failed, spec) {
+		t.Fatal("failed reconciliation cannot satisfy a frozen command")
+	}
+	drifted := append([]domain.Event(nil), events...)
+	drifted[len(drifted)-2].Payload = json.RawMessage(`{"verdict":"applied_success","workspace_observation":"sha256:drifted"}`)
+	if VerificationCommandsSucceeded(drifted, spec) {
+		t.Fatal("successful reconciliation after workspace drift cannot be trusted")
 	}
 }
 
@@ -367,7 +494,7 @@ func TestResultFromRunMarksLegacyVacuousVerificationUntrusted(t *testing.T) {
 		domain.Event{RunID: "run-1", WorkspaceHash: "sha256:ws", Seq: 7, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`), OccurredAt: time.Unix(1006, 0)},
 	)
 	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 6, LastMutationSeq: 0}
-	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix"), frozenFixtureConfig(t, nil))
+	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix"), frozenFixtureConfig(t, nil), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,5 +503,28 @@ func TestResultFromRunMarksLegacyVacuousVerificationUntrusted(t *testing.T) {
 	}
 	if result.State != string(domain.RunCompleted) {
 		t.Fatalf("state=%s", result.State)
+	}
+}
+
+// TestResultFromRunRejectsProposedOnlyVerification 锁定旧日志中仅有命令提议
+// 与 OK 完成事件时，运行可读取但完成证据不得标记为可信。
+func TestResultFromRunRejectsProposedOnlyVerification(t *testing.T) {
+	turnID := domain.TurnID("turn-1")
+	operationID := domain.OperationID("operation-1")
+	plan, planDigest, fingerprint := verificationPlanFixture(t, "v1", 0, []VerificationCommandSpec{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}})
+	planRef := `{"sha256":"` + planDigest + `"}`
+	events := append(manifestFixtureEvents(t),
+		domain.Event{Seq: 5, Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: json.RawMessage(`{"verification_id":"v1","commands_fingerprint":"` + fingerprint + `","workspace_observation":"sha256:workspace","plan_ref":` + planRef + `}`)},
+		domain.Event{Seq: 6, Type: domain.EventVerificationCommandProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"verification_id":"v1","command_index":0,"arguments":{"argv":["verify"]},"plan_ref":` + planRef + `}`)},
+		domain.Event{Seq: 7, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: json.RawMessage(`{"verification_id":"v1","ok":true}`)},
+		domain.Event{Seq: 8, Type: domain.EventRunCompleted, Payload: json.RawMessage(`{"final_response":"done"}`)},
+	)
+	projection := domain.RunProjection{ID: "run-1", State: domain.RunCompleted, VerificationSucceeded: true, LastVerificationSeq: 7, LastMutationSeq: 0}
+	result, err := ResultFromRun(events, projection, FreeformTaskSpec("fix"), frozenFixtureConfig(t, nil), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Evidence.Trusted || !result.Evidence.VerificationOK {
+		t.Fatalf("proposed-only verification must remain untrusted: %#v", result.Evidence)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -94,7 +95,24 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	benchmarkTask := contract.BenchmarkTaskSpec("unified contract probe", contract.BenchmarkTaskRef{
 		TaskID: "CONTRACT-001", SuiteID: "suite-x", TaskPackFingerprint: "sha256:pack", VerifierFingerprint: "sha256:verifier",
 	})
-	benchmarkResult, err := contract.ResultFromRun(inspected.Events, inspected.Projection, benchmarkTask, frozen)
+	var planRef artifact.Ref
+	for _, event := range inspected.Events {
+		if event.Type != domain.EventVerificationStarted {
+			continue
+		}
+		var payload struct {
+			PlanRef artifact.Ref `json:"plan_ref"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		planRef = payload.PlanRef
+	}
+	plan, err := artifacts.Open(planRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	benchmarkResult, err := contract.ResultFromRun(inspected.Events, inspected.Projection, benchmarkTask, frozen, plan)
 	if err != nil {
 		t.Fatal(err)
 	}

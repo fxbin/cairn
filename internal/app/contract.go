@@ -112,6 +112,69 @@ func runManifest(events []domain.Event, projection domain.RunProjection, stateDi
 	return contract.ManifestFromRun(events, contract.FreeformTaskSpec(projection.Task), frozenConfig)
 }
 
+// readLatestVerificationPlan 按最新 finished 事件定位同轮次 started 所引用的
+// 冻结计划制品。旧事件未保存 plan_ref 时返回 nil，读侧据此降为不可信；引用
+// 存在却无法校验内容时返回错误，避免把损坏制品当作正常缺证。
+func readLatestVerificationPlan(events []domain.Event, finishedSeq uint64, stateDir, workspaceHash string) (json.RawMessage, error) {
+	if finishedSeq == 0 {
+		return nil, nil
+	}
+	finishIndex := -1
+	var verificationID string
+	var turnID domain.TurnID
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventVerificationFinished || event.Seq != finishedSeq || event.TurnID == nil {
+			continue
+		}
+		var payload domain.VerificationFinishedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode verification finish: %w", err)
+		}
+		finishIndex, verificationID, turnID = index, payload.VerificationID, *event.TurnID
+		break
+	}
+	if finishIndex < 0 || verificationID == "" {
+		return nil, nil
+	}
+	for index := finishIndex - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventVerificationStarted || event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		var payload struct {
+			VerificationID string        `json:"verification_id"`
+			PlanRef        *artifact.Ref `json:"plan_ref"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode verification start: %w", err)
+		}
+		if payload.VerificationID != verificationID || payload.PlanRef == nil {
+			return nil, nil
+		}
+		content, err := readArtifactContent(manifestArtifactRoot(stateDir, workspaceHash), *payload.PlanRef)
+		if err != nil {
+			return nil, fmt.Errorf("verify frozen verification plan: %w", err)
+		}
+		return content, nil
+	}
+	return nil, nil
+}
+
+// runResultFromEvents 从冻结配置、最新验证计划与已回放事件构造统一结果，
+// 供运行返回、只读 Inspect、Evidence 和记忆候选使用同一可信口径。
+func runResultFromEvents(events []domain.Event, projection domain.RunProjection, stateDir, workspaceHash string) (contract.Result, error) {
+	frozenConfig, err := readFrozenRunConfig(events, stateDir, workspaceHash)
+	if err != nil {
+		return contract.Result{}, err
+	}
+	plan, err := readLatestVerificationPlan(events, projection.LastVerificationSeq, stateDir, workspaceHash)
+	if err != nil {
+		return contract.Result{}, err
+	}
+	return contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), frozenConfig, plan)
+}
+
 // projectRunResult 在运行结束后从日志投影完整的 contract.Result；ctx 使用
 // 调用方给出的上下文（失败路径应传入 context.Background 以避免读取被取消）。
 func projectRunResult(ctx context.Context, journal *sqlite.Journal, stateDir, workspaceHash string, runID domain.RunID) (contract.Result, error) {
@@ -123,9 +186,5 @@ func projectRunResult(ctx context.Context, journal *sqlite.Journal, stateDir, wo
 	if err != nil {
 		return contract.Result{}, err
 	}
-	frozenConfig, err := readFrozenRunConfig(events, stateDir, workspaceHash)
-	if err != nil {
-		return contract.Result{}, err
-	}
-	return contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), frozenConfig)
+	return runResultFromEvents(events, projection, stateDir, workspaceHash)
 }

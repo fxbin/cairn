@@ -288,12 +288,11 @@ func (service Service) Inspect(ctx context.Context, workspacePath, stateDir stri
 	if err := checkArtifactReferences(ctx, journal, stateDir, hash); err != nil {
 		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	result := InspectResult{Projection: projection, Summary: SummarizeRun(events, projection)}
-	if manifest, manifestErr := runManifest(events, projection, stateDir, hash); manifestErr == nil {
-		result.Manifest = &manifest
-	} else {
-		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, manifestErr)
+	contractResult, contractErr := runResultFromEvents(events, projection, stateDir, hash)
+	if contractErr != nil {
+		return InspectResult{}, fmt.Errorf("%w: %v", ErrStateCorrupt, contractErr)
 	}
+	result := InspectResult{Projection: projection, Summary: SummarizeRun(events, projection, contractResult.Evidence.Trusted), Manifest: &contractResult.Manifest}
 	if includeEvents {
 		result.Events = events
 	}
@@ -637,11 +636,7 @@ func (service Service) Evidence(ctx context.Context, workspacePath, stateDir str
 	if err := checkRunArtifactReferences(events, stateDir, hash); err != nil {
 		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	frozenConfig, err := readFrozenRunConfig(events, stateDir, hash)
-	if err != nil {
-		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	result, err := contract.ResultFromRun(events, projection, contract.FreeformTaskSpec(projection.Task), frozenConfig)
+	result, err := runResultFromEvents(events, projection, stateDir, hash)
 	if err != nil {
 		return contract.Result{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}

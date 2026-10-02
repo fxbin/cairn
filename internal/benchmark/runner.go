@@ -389,12 +389,12 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 	agentStarted := runner.now()
 	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: prepared.Task.AgentPrompt(), Workspace: result.Workspace, StateDir: result.StateDir, Config: prepared.Configuration})
 	result.AgentDurationMS = runner.now().Sub(agentStarted).Milliseconds()
-	completedVerified := false
+	completedTrusted := false
 	if run.ID != "" {
 		inspected, inspectErr := runner.Service.Inspect(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID, true)
 		if inspectErr == nil {
-			completedVerified = inspected.Projection.State == domain.RunCompleted && inspected.Projection.VerificationSucceeded
 			if runResult, contractErr := runner.Service.Evidence(context.Background(), result.Workspace, result.StateDir, prepared.Configuration, run.ID); contractErr == nil {
+				completedTrusted = runResult.Evidence.Trusted
 				runResult.Manifest.Task = prepared.Result.Task
 				result.Run = &runResult
 				result.Observations.CostUSD = float64(runResult.Metrics.InputTokens)*prepared.Configuration.Pricing.InputTokenUSD + float64(runResult.Metrics.OutputTokens)*prepared.Configuration.Pricing.OutputTokenUSD
@@ -411,8 +411,8 @@ func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAt
 	if runErr != nil {
 		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(contract.ClassifyError(runErr), runErr))
 	}
-	if result.Run == nil || !completedVerified || !result.DoctorOK {
-		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(contract.FailureVerification, errors.New("run did not complete with verified and healthy state")))
+	if result.Run == nil || !completedTrusted || !result.DoctorOK {
+		return runner.captureDiff(ctx, result.Workspace, resultDirectory, result.fail(contract.FailureVerification, errors.New("run did not complete with trusted verification and healthy state")))
 	}
 	result.Outcome = "passed"
 	return runner.captureDiff(ctx, result.Workspace, resultDirectory, result)

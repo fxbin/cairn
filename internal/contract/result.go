@@ -46,29 +46,19 @@ type Result struct {
 }
 
 // CompletionTrusted 是"可信完成"判定的唯一公式：运行必须处于 completed、
-// 验证成功、存在验证事件、验证序号覆盖最后一次工作区变更，且至少执行过
-// 一条冻结验证命令。无命令执行证据（含 last_mutation_seq==0 的空验证）
+// 验证成功、存在验证事件、验证序号覆盖最后一次工作区变更，且冻结计划
+// 的全部命令均有成功终态。无完整命令证据（含零命令空验证）
 // 一律不可信；只读任务可在无命令计划下 completed，但 trusted=false。
 // app 的 RunSummary 与本包 Result 共用该实现，避免两套判定漂移。
-func CompletionTrusted(state domain.RunState, verificationSucceeded bool, lastVerificationSeq, lastMutationSeq uint64, verificationCommandExecuted bool) bool {
-	return state == domain.RunCompleted && verificationSucceeded && lastVerificationSeq != 0 && verificationCommandExecuted && (lastMutationSeq == 0 || lastVerificationSeq > lastMutationSeq)
-}
-
-// VerificationCommandExecuted 报告事件流中是否出现过验证命令提议。
-// 用于识别"配置了命令却没有对应执行证据"的旧假通过记录。
-func VerificationCommandExecuted(events []domain.Event) bool {
-	for _, event := range events {
-		if event.Type == domain.EventVerificationCommandProposed {
-			return true
-		}
-	}
-	return false
+func CompletionTrusted(state domain.RunState, verificationSucceeded bool, lastVerificationSeq, lastMutationSeq uint64, verificationCommandsSucceeded bool) bool {
+	return state == domain.RunCompleted && verificationSucceeded && lastVerificationSeq != 0 && verificationCommandsSucceeded && (lastMutationSeq == 0 || lastVerificationSeq > lastMutationSeq)
 }
 
 // ResultFromRun 由事件流投影 Result。它先经 ManifestFromRun 构建身份，
 // 再回放事件汇总终态、失败分类、完成证据与指标；输入事件必须以
 // run_created 开头且已通过哈希链校验（与 domain.Replay 的输出一致）。
-func ResultFromRun(events []domain.Event, projection domain.RunProjection, task TaskSpec, frozenConfig json.RawMessage) (Result, error) {
+// verificationPlan 是最新验证引用的已校验制品正文；缺失时可读但不可信。
+func ResultFromRun(events []domain.Event, projection domain.RunProjection, task TaskSpec, frozenConfig, verificationPlan json.RawMessage) (Result, error) {
 	manifest, err := ManifestFromRun(events, task, frozenConfig)
 	if err != nil {
 		return Result{}, err
@@ -106,7 +96,12 @@ func ResultFromRun(events []domain.Event, projection domain.RunProjection, task 
 		}
 	}
 	result.Evidence.LastMutationSeq = projection.LastMutationSeq
-	result.Evidence.Trusted = CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, VerificationCommandExecuted(events))
+	commandsSucceeded := VerificationCommandsSucceeded(events, VerificationEvidenceSpec{
+		Plan: verificationPlan, Commands: manifest.Verification.Commands,
+		Fingerprint: manifest.Verification.Fingerprint, ConfigFingerprint: manifest.ConfigFingerprint,
+		FinishedSeq: projection.LastVerificationSeq, LastMutationSeq: projection.LastMutationSeq,
+	})
+	result.Evidence.Trusted = CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, commandsSucceeded)
 	if len(events) != 0 {
 		first, last := events[0], events[len(events)-1]
 		if duration := last.OccurredAt.Sub(first.OccurredAt); duration > 0 {

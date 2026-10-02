@@ -104,7 +104,22 @@ type scheduleStop struct {
 }
 
 // sandboxRecordSchemaVersion 是支持断点恢复计账的本地记录与套件结果 schema 版本。
-const sandboxRecordSchemaVersion = 2
+// 第三版把 Success 绑定完整的 Evidence.Trusted；旧版成功记录不得进入新判门。
+const sandboxRecordSchemaVersion = sandboxeval.TrustedResultSchemaVersion
+
+// RequireTrustedSandboxSuiteVersion 拒绝旧成功语义的套件和 Run 记录；用于
+// 无法从晋升 CLI 取得冻结评测集时，至少禁止 v2 Success 穿透新可信判门。
+func RequireTrustedSandboxSuiteVersion(result SandboxSuiteResult) error {
+	if result.SchemaVersion != sandboxRecordSchemaVersion {
+		return fmt.Errorf("sandbox suite schema %d cannot satisfy trusted success schema %d", result.SchemaVersion, sandboxRecordSchemaVersion)
+	}
+	for _, record := range result.Records {
+		if record.SchemaVersion != sandboxRecordSchemaVersion {
+			return fmt.Errorf("sandbox run schema %d cannot satisfy trusted success schema %d", record.SchemaVersion, sandboxRecordSchemaVersion)
+		}
+	}
+	return nil
+}
 
 // sandboxArmTag 返回臂的稳定短标识，用于按臂分离的目录段、记录与 diff 文件
 // 命名；基线与变体永不共享可写归档路径。
@@ -917,7 +932,6 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 	if inspectErr != nil {
 		return abortInvalid(sandboxTriggerEvidenceUnverifiable, inspectErr)
 	}
-	completedVerified := inspected.Projection.State == domain.RunCompleted && inspected.Projection.VerificationSucceeded
 	replayConsistent, replayErr := replayConsistentWithProjection(inspected.Projection, inspected.Events)
 	if replayErr != nil {
 		return abortInvalid(sandboxTriggerEvidenceIntegrityBroken, replayErr)
@@ -937,6 +951,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 		return abortInvalid(sandboxTriggerContractProjectionFailed, projectionErr)
 	}
 	runResult.Manifest.Task = prepared.Result.Task
+	completedTrusted := runResult.Evidence.Trusted
 	pairingBreaks, pairingErr := domain.ToolCallPairingBreaks(inspected.Events)
 	if pairingErr != nil {
 		return abortInvalid(sandboxTriggerToolPairingExtraction, pairingErr)
@@ -958,8 +973,8 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 		record.FailureClass = scanErr.trigger
 		return record, nil, scanErr
 	}
-	record.Success = completedVerified
-	if !completedVerified && record.FailureClass == "" {
+	record.Success = completedTrusted
+	if !completedTrusted && record.FailureClass == "" {
 		// 预算终止的失败样本保留其精确预算分类，供逐类归因。
 		if budgetClass != "" {
 			record.FailureClass = budgetClass
@@ -974,7 +989,7 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 		Arm:                  step.Arm,
 		TaskID:               step.TaskID,
 		AttemptIndex:         step.Try,
-		Success:              completedVerified,
+		Success:              completedTrusted,
 		SecurityIncidents:    record.SecurityIncidents,
 		DoctorReplayBroken:   !doctorOK || !replayConsistent,
 		ToolPairingBreaks:    pairingBreaks,
@@ -1130,8 +1145,11 @@ func decodeStrictSandboxJSON(content []byte, target any) error {
 // validateSandboxRunRecord 核对恢复记录的 schema、确定性身份、时间与闭合
 // 指标；任何错位都保留 running 状态并要求人工处理，绝不猜测归属。
 func validateSandboxRunRecord(record SandboxRunRecord, evaluationID string, evalSet sandboxeval.EvalSet) error {
-	if record.SchemaVersion != sandboxRecordSchemaVersion || record.EvaluationID != evaluationID {
-		return errors.New("sandbox run record schema or evaluation identity mismatch")
+	if record.SchemaVersion != sandboxRecordSchemaVersion {
+		return fmt.Errorf("sandbox run record schema %d cannot satisfy trusted success schema %d; use a fresh evaluation state root", record.SchemaVersion, sandboxRecordSchemaVersion)
+	}
+	if record.EvaluationID != evaluationID {
+		return errors.New("sandbox run record evaluation identity mismatch")
 	}
 	arm := sandboxeval.SuiteArm(record.Arm)
 	if arm != sandboxeval.ArmBaseline && arm != sandboxeval.ArmVariant {

@@ -113,7 +113,11 @@ func (service Service) CaptureMemory(ctx context.Context, options MemoryCaptureO
 	if err != nil {
 		return memory.Candidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
-	candidate, err := memory.NewRunOutcomeCandidate(workspaceHash, string(options.RunID), contract.FreeformTaskSpec(projection.Task).PromptDigest, projection.Phase(), contract.ClassifyTerminal(events), contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events)), events[len(events)-1].OccurredAt, ttl, evidence, options.SupersedesID)
+	trusted, err := trustedRunEvidence(events, projection, options.StateDir, workspaceHash)
+	if err != nil {
+		return memory.Candidate{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
+	}
+	candidate, err := memory.NewRunOutcomeCandidate(workspaceHash, string(options.RunID), contract.FreeformTaskSpec(projection.Task).PromptDigest, projection.Phase(), contract.ClassifyTerminal(events), trusted, events[len(events)-1].OccurredAt, ttl, evidence, options.SupersedesID)
 	if err != nil {
 		return memory.Candidate{}, err
 	}
@@ -482,7 +486,11 @@ func verifyMemoryStore(ctx context.Context, store *memstoresqlite.Store, journal
 		if err != nil || !projection.Terminal() || projection.WorkspaceHash != workspaceHash {
 			return fmt.Errorf("memory candidate source run %s is invalid", candidate.RunID)
 		}
-		if candidate.TaskPromptDigest != contract.FreeformTaskSpec(projection.Task).PromptDigest || candidate.Outcome != projection.Phase() || candidate.FailureClass != contract.ClassifyTerminal(events) || candidate.TrustedVerification != contract.CompletionTrusted(projection.State, projection.VerificationSucceeded, projection.LastVerificationSeq, projection.LastMutationSeq, contract.VerificationCommandExecuted(events)) {
+		trusted, err := trustedRunEvidence(events, projection, stateDir, workspaceHash)
+		if err != nil {
+			return fmt.Errorf("memory candidate source run %s has invalid completion evidence: %w", candidate.RunID, err)
+		}
+		if candidate.TaskPromptDigest != contract.FreeformTaskSpec(projection.Task).PromptDigest || candidate.Outcome != projection.Phase() || candidate.FailureClass != contract.ClassifyTerminal(events) || candidate.TrustedVerification != trusted {
 			return fmt.Errorf("memory candidate %s does not match source run facts", candidate.ID)
 		}
 		if err := verifyCandidateEvidence(candidate, events, stateDir, workspaceHash); err != nil {
@@ -490,6 +498,16 @@ func verifyMemoryStore(ctx context.Context, store *memstoresqlite.Store, journal
 		}
 	}
 	return nil
+}
+
+// trustedRunEvidence 从冻结配置与事件重建完成可信度，供记忆写入和完整性检查
+// 共用，避免把单个验证命令提议当作全部命令执行成功。
+func trustedRunEvidence(events []domain.Event, projection domain.RunProjection, stateDir, workspaceHash string) (bool, error) {
+	result, err := runResultFromEvents(events, projection, stateDir, workspaceHash)
+	if err != nil {
+		return false, err
+	}
+	return result.Evidence.Trusted, nil
 }
 
 // verifyCandidateEvidence 验证每个 memory EvidenceRef 的 Run、seq、hash、type

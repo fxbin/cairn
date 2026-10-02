@@ -14,7 +14,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
-	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -2654,9 +2653,6 @@ func TestLoopRunsFrozenVerificationWhenZeroMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contract.VerificationCommandExecuted(events) {
-		t.Fatal("successful completion must carry verification command execution evidence")
-	}
 	projection, err := domain.Replay(events)
 	if err != nil || projection.State != domain.RunCompleted || !projection.VerificationSucceeded {
 		t.Fatalf("projection=%#v err=%v", projection, err)
@@ -2707,9 +2703,6 @@ func TestLoopZeroCommandPlanCompletesUntrusted(t *testing.T) {
 	if projection.State != domain.RunCompleted || projection.VerificationSucceeded {
 		t.Fatalf("zero-command plan must complete unverified: %#v", projection)
 	}
-	if contract.VerificationCommandExecuted(events) {
-		t.Fatal("zero-command plan must not invent command execution evidence")
-	}
 }
 
 // TestResumeCompletesZeroMutationVerificationByPlan 锁定零变更验证中断后
@@ -2755,11 +2748,16 @@ func TestResumeCompletesZeroMutationVerificationByPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	workspaceObservation, err := workspace.Observation()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := journal.Append(context.Background(), seq-1, domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: mustJSON(struct {
-		VerificationID      string `json:"verification_id"`
-		MutationSeq         uint64 `json:"last_mutation_seq"`
-		CommandsFingerprint string `json:"commands_fingerprint"`
-	}{VerificationID: verificationID, MutationSeq: 0, CommandsFingerprint: commandsFingerprint})}); err != nil {
+		VerificationID       string `json:"verification_id"`
+		MutationSeq          uint64 `json:"last_mutation_seq"`
+		CommandsFingerprint  string `json:"commands_fingerprint"`
+		WorkspaceObservation string `json:"workspace_observation"`
+	}{VerificationID: verificationID, MutationSeq: 0, CommandsFingerprint: commandsFingerprint, WorkspaceObservation: workspaceObservation})}); err != nil {
 		t.Fatal(err)
 	}
 	loop := Loop{Journal: journal, Provider: &scriptedProvider{}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 6,
@@ -2776,7 +2774,8 @@ func TestResumeCompletesZeroMutationVerificationByPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contract.VerificationCommandExecuted(events) {
-		t.Fatal("resume must leave verification command execution evidence")
+	projection, err := domain.Replay(events)
+	if err != nil || !projection.VerificationSucceeded {
+		t.Fatalf("resumed verification projection=%#v err=%v", projection, err)
 	}
 }

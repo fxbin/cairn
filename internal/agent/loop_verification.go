@@ -3,14 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -138,7 +137,7 @@ func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq 
 		return verificationPlan{}, nil, err
 	}
 	plan := verificationPlan{
-		Version:             "v1",
+		Version:             contract.VerificationPlanVersion,
 		VerificationID:      verificationID,
 		ConfigFingerprint:   loop.ConfigFingerprint,
 		LastMutationSeq:     lastMutationSeq,
@@ -271,7 +270,7 @@ func (loop *Loop) verificationCommands(verificationID string, planRef *artifact.
 	if err := json.Unmarshal(content, &plan); err != nil {
 		return nil, fmt.Errorf("decode frozen verification plan: %w", err)
 	}
-	if plan.Version != "v1" || plan.VerificationID != verificationID {
+	if plan.Version != contract.VerificationPlanVersion || plan.VerificationID != verificationID {
 		return nil, errors.New("frozen verification plan identity does not match the persisted verification")
 	}
 	if err := validateVerificationCommands(plan.Commands); err != nil {
@@ -293,38 +292,17 @@ func (loop *Loop) verificationCommands(verificationID string, planRef *artifact.
 // fingerprintVerificationCommands 为验证命令序列计算稳定摘要，用于在无制品
 // 存储时检测恢复配置漂移，并校验制品内计划未被替换。
 func fingerprintVerificationCommands(commands []VerificationCommand) (string, error) {
-	canonical := make([]VerificationCommand, 0, len(commands))
-	for index, command := range commands {
-		decoded, err := canonicalJSON(command.Arguments)
-		if err != nil {
-			return "", fmt.Errorf("canonicalize verification command %d arguments: %w", index, err)
-		}
-		canonical = append(canonical, VerificationCommand{ID: command.ID, Arguments: decoded})
+	projection := make([]contract.VerificationCommandSpec, 0, len(commands))
+	for _, command := range commands {
+		projection = append(projection, contract.VerificationCommandSpec{ID: command.ID, Arguments: command.Arguments})
 	}
-	encoded, err := json.Marshal(canonical)
-	if err != nil {
-		return "", fmt.Errorf("encode verification commands: %w", err)
-	}
-	digest := sha256.Sum256(encoded)
-	return "sha256:" + hex.EncodeToString(digest[:]), nil
+	return contract.FingerprintVerificationCommands(projection)
 }
 
 // FingerprintVerificationCommands 返回冻结验证命令序列的规范化稳定摘要，
 // 供应用层能力清单与事件侧指纹比对共用同一算法。
 func FingerprintVerificationCommands(commands []VerificationCommand) (string, error) {
 	return fingerprintVerificationCommands(commands)
-}
-
-// canonicalJSON 将 JSON 值重编码为键排序且数字字面量不变的规范化形式，
-// 与脱敏制品的重编码规则在字节层面保持可比。
-func canonicalJSON(raw json.RawMessage) (json.RawMessage, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	return json.Marshal(value)
 }
 
 // validateVerificationCommands 拒绝无法安全重放的冻结命令。
@@ -395,12 +373,13 @@ func completedVerificationForTurn(events []domain.Event, turnID domain.TurnID) (
 
 // incompleteVerificationRecord 保存最近一次尚无 finished 事件的验证计划。
 type incompleteVerificationRecord struct {
-	turnID              domain.TurnID
-	startIndex          int
-	verificationID      string
-	planRef             *artifact.Ref
-	commandsFingerprint string
-	lastMutationSeq     uint64
+	turnID               domain.TurnID
+	startIndex           int
+	verificationID       string
+	planRef              *artifact.Ref
+	commandsFingerprint  string
+	lastMutationSeq      uint64
+	workspaceObservation string
 }
 
 // latestIncompleteVerification 按事件顺序配对 started/finished；旧 finished 未带
@@ -414,21 +393,23 @@ func latestIncompleteVerification(events []domain.Event) (incompleteVerification
 				continue
 			}
 			var payload struct {
-				VerificationID      string        `json:"verification_id"`
-				PlanRef             *artifact.Ref `json:"plan_ref"`
-				CommandsFingerprint string        `json:"commands_fingerprint"`
-				LastMutationSeq     uint64        `json:"last_mutation_seq"`
+				VerificationID       string        `json:"verification_id"`
+				PlanRef              *artifact.Ref `json:"plan_ref"`
+				CommandsFingerprint  string        `json:"commands_fingerprint"`
+				LastMutationSeq      uint64        `json:"last_mutation_seq"`
+				WorkspaceObservation string        `json:"workspace_observation"`
 			}
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return incompleteVerificationRecord{}, false, fmt.Errorf("decode verification_started payload: %w", err)
 			}
 			active = &incompleteVerificationRecord{
-				turnID:              *event.TurnID,
-				startIndex:          index,
-				verificationID:      payload.VerificationID,
-				planRef:             payload.PlanRef,
-				commandsFingerprint: payload.CommandsFingerprint,
-				lastMutationSeq:     payload.LastMutationSeq,
+				turnID:               *event.TurnID,
+				startIndex:           index,
+				verificationID:       payload.VerificationID,
+				planRef:              payload.PlanRef,
+				commandsFingerprint:  payload.CommandsFingerprint,
+				lastMutationSeq:      payload.LastMutationSeq,
+				workspaceObservation: payload.WorkspaceObservation,
 			}
 		case domain.EventVerificationFinished:
 			if active == nil || event.TurnID == nil || *event.TurnID != active.turnID {
@@ -579,9 +560,6 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if err != nil {
 		return false, err
 	}
-	if verification.lastMutationSeq == 0 && len(operations) != 0 {
-		return false, errors.New("zero-mutation verification contains a command proposal")
-	}
 	if len(operations) != 0 {
 		latest := operations[len(operations)-1]
 		if latest.hasResult && latest.terminal.Type == domain.EventOperationCancelled {
@@ -602,6 +580,9 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	}
 	if len(operations) == 0 {
 		if len(commands) != 0 {
+			if err := loop.requireFrozenVerificationObservation(verification, projection); err != nil {
+				return false, err
+			}
 			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, 0)
 			var failure *ports.VerificationFailureError
 			if errors.As(runErr, &failure) {
@@ -626,6 +607,9 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if !latest.hasResult {
 		if latest.started {
 			return false, nil
+		}
+		if err := loop.requireFrozenVerificationObservation(verification, projection); err != nil {
+			return false, err
 		}
 		if ctx.Err() != nil {
 			return false, ctx.Err()
@@ -721,6 +705,9 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		return false, err
 	}
 	if succeeded {
+		if err := loop.requireFrozenVerificationObservation(verification, projection); err != nil {
+			return false, err
+		}
 		nextIndex := latest.proposal.CommandIndex + 1
 		if nextIndex < len(commands) {
 			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, nextIndex)
@@ -899,6 +886,25 @@ func (loop *Loop) finishVerificationForCancellation(ctx context.Context, project
 		return false, err
 	}
 	return true, nil
+}
+
+// requireFrozenVerificationObservation 在续跑或认可成功终态前，确认工作区与
+// 验证开始时同一视图；失败终态的如实收束不调用它。
+func (loop *Loop) requireFrozenVerificationObservation(verification incompleteVerificationRecord, projection *domain.RunProjection) error {
+	if verification.lastMutationSeq != projection.LastMutationSeq {
+		return errors.New("workspace mutation sequence changed since verification started")
+	}
+	if verification.workspaceObservation == "" {
+		return errors.New("incomplete verification has no persisted workspace observation")
+	}
+	observation, err := loop.verificationObservation()
+	if err != nil {
+		return fmt.Errorf("observe workspace before resuming verification: %w", err)
+	}
+	if observation != verification.workspaceObservation {
+		return errors.New("workspace changed since verification started; restore it before resuming verification")
+	}
+	return nil
 }
 
 // repairMissingVerificationFeedback 补写失败验证在 verification_finished 之后
