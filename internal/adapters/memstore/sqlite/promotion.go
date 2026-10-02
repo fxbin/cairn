@@ -18,6 +18,9 @@ import (
 // PromoteCandidate 在单一事务内写入人工决策和 promoted_inactive 版本。它在
 // 提交前重验来源、候选、评测、审批元组和预定回退目标，绝不写入激活指针。
 func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promotion, approvalFingerprint string, now time.Time) (memory.Promotion, error) {
+	if promotion.SchemaVersion != memory.PromotionSchemaVersion {
+		return memory.Promotion{}, errors.New("new promotion requires the current trusted evidence schema")
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -92,7 +95,7 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 	}
 	if promotion.RollbackTargetID != "" {
 		target, found, err := lookupEvolutionPromotion(ctx, transaction, promotion.RollbackTargetID)
-		if err != nil || !found || target.TargetKind != promotion.TargetKind || target.Status != memory.PromotionStatusSandboxActivated {
+		if err != nil || !found || target.TargetKind != promotion.TargetKind || target.Status != memory.PromotionStatusSandboxActivated || target.SchemaVersion != memory.PromotionSchemaVersion {
 			return memory.Promotion{}, fmt.Errorf("%w: decision rollback target is not an activated version", memory.ErrConflict)
 		}
 	}
@@ -110,7 +113,7 @@ func (store *Store) PromoteCandidate(ctx context.Context, promotion memory.Promo
 		suite_result_digest, comparator_version, conclusion_trigger, metrics_json,
 		rollback_target_promotion_id, approval_fingerprint, approval_nonce, approver, decided_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		promotion.DecisionID, promotion.SchemaVersion, promotion.CandidateID, promotion.EvaluationID, promotion.TargetKind,
+		promotion.DecisionID, promotion.Decision().SchemaVersion, promotion.CandidateID, promotion.EvaluationID, promotion.TargetKind,
 		promotion.VariantFingerprint, promotion.VariantSpecSHA256, promotion.BaselineFingerprint, promotion.EvalSetFingerprint,
 		promotion.SuiteResultDigest, promotion.ComparatorVersion, promotion.ConclusionTrigger, string(metricsJSON),
 		nullString(promotion.RollbackTargetID), promotion.ApprovalFingerprint, promotion.ApprovalNonce, promotion.Approver, promotion.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
@@ -156,6 +159,9 @@ func (store *Store) ActivatePromotion(ctx context.Context, targetKind, promotion
 	if err != nil || !found || promotion.TargetKind != targetKind || promotion.Status != memory.PromotionStatusPromotedInactive {
 		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: version is not eligible for sandbox activation", memory.ErrConflict)
 	}
+	if promotion.SchemaVersion != memory.PromotionSchemaVersion {
+		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: legacy promotion evidence cannot be activated", memory.ErrConflict)
+	}
 	current, currentFound, err := lookupEvolutionActivation(ctx, transaction, targetKind)
 	if err != nil {
 		return memory.Promotion{}, memory.Activation{}, err
@@ -165,6 +171,15 @@ func (store *Store) ActivatePromotion(ctx context.Context, targetKind, promotion
 	}
 	if !currentFound && promotion.RollbackTargetID != "" {
 		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation requires baseline but decision carries a rollback target", memory.ErrConflict)
+	}
+	if currentFound {
+		previous, previousFound, previousErr := lookupEvolutionPromotion(ctx, transaction, current.PromotionID)
+		if previousErr != nil {
+			return memory.Promotion{}, memory.Activation{}, previousErr
+		}
+		if !previousFound || previous.SchemaVersion != memory.PromotionSchemaVersion {
+			return memory.Promotion{}, memory.Activation{}, fmt.Errorf("%w: activation would retain a legacy rollback target", memory.ErrConflict)
+		}
 	}
 	if _, err := transaction.ExecContext(ctx, "UPDATE evolution_promotions SET status = ? WHERE promotion_id = ?", memory.PromotionStatusSandboxActivated, promotion.ID); err != nil {
 		return memory.Promotion{}, memory.Activation{}, fmt.Errorf("mark sandbox activation: %w", err)
@@ -311,18 +326,22 @@ func (store *Store) ActivationFor(targetKind string) (memory.Activation, bool, e
 // lookupEvolutionPromotion 联结版本与不可变决策，构造唯一的只读展示投影。
 func lookupEvolutionPromotion(ctx context.Context, source queryer, promotionID string) (memory.Promotion, bool, error) {
 	const query = `SELECT p.promotion_id, p.schema_version, p.decision_id, p.target_kind, p.version, p.variant_json, p.status, p.created_at, p.revoked_at,
-		d.candidate_id, d.evaluation_id, d.variant_fingerprint, d.variant_spec_sha256, d.baseline_fingerprint, d.eval_set_fingerprint, d.suite_result_digest, d.comparator_version, d.conclusion_trigger, d.metrics_json, d.rollback_target_promotion_id, d.approval_fingerprint, d.approval_nonce, d.approver
+		d.schema_version, d.candidate_id, d.evaluation_id, d.variant_fingerprint, d.variant_spec_sha256, d.baseline_fingerprint, d.eval_set_fingerprint, d.suite_result_digest, d.comparator_version, d.conclusion_trigger, d.metrics_json, d.rollback_target_promotion_id, d.approval_fingerprint, d.approval_nonce, d.approver
 		FROM evolution_promotions p JOIN evolution_promotion_decisions d ON d.decision_id = p.decision_id WHERE p.promotion_id = ?`
 	var promotion memory.Promotion
+	var decisionSchemaVersion int
 	var variantJSON, metricsJSON, createdAt string
 	var rollbackTarget, revokedAt sql.NullString
 	err := source.QueryRowContext(ctx, query, promotionID).Scan(&promotion.ID, &promotion.SchemaVersion, &promotion.DecisionID, &promotion.TargetKind, &promotion.Version, &variantJSON, &promotion.Status, &createdAt, &revokedAt,
-		&promotion.CandidateID, &promotion.EvaluationID, &promotion.VariantFingerprint, &promotion.VariantSpecSHA256, &promotion.BaselineFingerprint, &promotion.EvalSetFingerprint, &promotion.SuiteResultDigest, &promotion.ComparatorVersion, &promotion.ConclusionTrigger, &metricsJSON, &rollbackTarget, &promotion.ApprovalFingerprint, &promotion.ApprovalNonce, &promotion.Approver)
+		&decisionSchemaVersion, &promotion.CandidateID, &promotion.EvaluationID, &promotion.VariantFingerprint, &promotion.VariantSpecSHA256, &promotion.BaselineFingerprint, &promotion.EvalSetFingerprint, &promotion.SuiteResultDigest, &promotion.ComparatorVersion, &promotion.ConclusionTrigger, &metricsJSON, &rollbackTarget, &promotion.ApprovalFingerprint, &promotion.ApprovalNonce, &promotion.Approver)
 	if errors.Is(err, sql.ErrNoRows) {
 		return memory.Promotion{}, false, nil
 	}
 	if err != nil {
 		return memory.Promotion{}, false, fmt.Errorf("query promotion: %w", err)
+	}
+	if decisionSchemaVersion != promotion.SchemaVersion {
+		return memory.Promotion{}, false, errors.New("promotion decision and version schema differ")
 	}
 	if err := json.Unmarshal([]byte(variantJSON), &promotion.Variant); err != nil || json.Unmarshal([]byte(metricsJSON), &promotion.Metrics) != nil {
 		return memory.Promotion{}, false, errors.New("decode stored promotion projection")

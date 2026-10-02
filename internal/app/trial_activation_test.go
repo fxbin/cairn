@@ -2,11 +2,18 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
 // TestResolveTrialActivationWithoutStoreFailsClosed 锁定显式请求但记忆库缺
@@ -73,7 +80,7 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 	}
 	_ = candidate
 	evalSetFingerprint := "sha256:" + strings.Repeat("ab", 32)
-	suiteDigest := "sha256:" + strings.Repeat("cd", 32)
+	suiteRoot := t.TempDir()
 	variantFingerprint, err := memory.VariantFingerprint(memory.TargetKindContextCompactionParams, variant)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +109,34 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start evaluation: %v", err)
 	}
+	result := struct {
+		SchemaVersion int    `json:"schema_version"`
+		EvaluationID  string `json:"evaluation_id"`
+		CandidateID   string `json:"candidate_id"`
+		Status        string `json:"status"`
+		Records       []struct {
+			SchemaVersion int `json:"schema_version"`
+		} `json:"records"`
+	}{
+		SchemaVersion: sandboxeval.TrustedResultSchemaVersion, EvaluationID: started.ID,
+		CandidateID: candidate.ID, Status: memory.EvaluationStatusPassed,
+	}
+	result.Records = append(result.Records, struct {
+		SchemaVersion int `json:"schema_version"`
+	}{SchemaVersion: sandboxeval.TrustedResultSchemaVersion})
+	content, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(suiteRoot, "evaluations", strings.ReplaceAll(started.ID, ":", "_"), "suite-result.json")
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resultPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	suiteDigest := "sha256:" + hex.EncodeToString(digest[:])
 	if _, err := service.FinishEvolutionEvaluation(context.Background(), started.ID, workspace, stateDir, configuration, memory.EvaluationStatusPassed, suiteDigest); err != nil {
 		t.Fatalf("finish evaluation: %v", err)
 	}
@@ -127,6 +162,13 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 		Promotion: promotion, ApprovalFingerprint: approval,
 		Workspace: workspace, StateDir: stateDir, Config: configuration,
 	})
+	if err == nil {
+		t.Fatal("direct service promotion without suite evidence must fail closed")
+	}
+	promoted, err = service.PromoteEvolutionCandidate(context.Background(), MemoryPromotionOptions{
+		Promotion: promotion, ApprovalFingerprint: approval, SuiteStateRoot: suiteRoot,
+		Workspace: workspace, StateDir: stateDir, Config: configuration,
+	})
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -149,5 +191,57 @@ func TestResolveTrialActivationAppliesActivatedVersion(t *testing.T) {
 	}
 	if resolved.Fingerprint() == baselineFingerprint {
 		t.Fatal("activated variant must change the configuration fingerprint")
+	}
+	_, workspaceHash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", memoryDBPath(stateDir, workspaceHash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), "UPDATE evolution_promotions SET schema_version = ? WHERE promotion_id = ?", memory.PromotionSchemaVersion-1, promoted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), "UPDATE evolution_promotion_decisions SET schema_version = ? WHERE decision_id = ?", memory.PromotionSchemaVersion-1, promoted.DecisionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.ResolveTrialActivation(context.Background(), workspace, stateDir, configuration); err == nil {
+		t.Fatal("legacy activated success evidence must not be applied to trial config")
+	}
+}
+
+// TestVerifyTrustedPromotionSuiteRejectsLegacyVersions 锁定服务侧晋升证据门：
+// 即使摘要与身份完全一致，旧套件或旧 Run 也不能伪装成当前可信成功。
+func TestVerifyTrustedPromotionSuiteRejectsLegacyVersions(t *testing.T) {
+	root := t.TempDir()
+	evaluationID := "sha256:" + strings.Repeat("a", 64)
+	path := filepath.Join(root, "evaluations", strings.ReplaceAll(evaluationID, ":", "_"), "suite-result.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, content string
+		accept        bool
+	}{
+		{name: "legacy suite", content: `{"schema_version":2,"evaluation_id":"` + evaluationID + `","candidate_id":"candidate","status":"passed","records":[{"schema_version":2}]}`},
+		{name: "legacy record", content: `{"schema_version":3,"evaluation_id":"` + evaluationID + `","candidate_id":"candidate","status":"passed","records":[{"schema_version":2}]}`},
+		{name: "trusted versions", content: `{"schema_version":3,"evaluation_id":"` + evaluationID + `","candidate_id":"candidate","status":"passed","records":[{"schema_version":3}]}`, accept: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256([]byte(test.content))
+			opts := MemoryPromotionOptions{SuiteStateRoot: root, Promotion: memory.Promotion{
+				EvaluationID: evaluationID, CandidateID: "candidate", SuiteResultDigest: "sha256:" + hex.EncodeToString(digest[:]),
+			}}
+			if err := verifyTrustedPromotionSuite(opts); (err == nil) != test.accept {
+				t.Fatalf("accepted=%v want=%v err=%v", err == nil, test.accept, err)
+			}
+		})
 	}
 }

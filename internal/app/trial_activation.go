@@ -72,6 +72,9 @@ func (service Service) ResolveTrialActivation(ctx context.Context, workspace, st
 		if promotion.Status != memory.PromotionStatusSandboxActivated {
 			return config.Config{}, false, fmt.Errorf("trial activation points at version %s in state %s; the ledger is inconsistent", promotion.ID, promotion.Status)
 		}
+		if promotion.SchemaVersion != memory.PromotionSchemaVersion {
+			return config.Config{}, false, fmt.Errorf("trial activation points at legacy success evidence for version %s", promotion.ID)
+		}
 		resolved, applyErr := ApplyCompactionVariant(configuration, promotion.Variant)
 		if applyErr != nil {
 			return config.Config{}, false, fmt.Errorf("apply activated version %s: %w", promotion.ID, applyErr)

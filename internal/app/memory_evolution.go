@@ -6,14 +6,21 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
 // MemoryEvolutionCreateOptions 描述创建演化候选的输入边界：闭合变体参数、
@@ -361,13 +368,59 @@ func (service Service) FinishEvolutionEvaluation(ctx context.Context, evaluation
 
 // MemoryPromotionOptions 描述一次人工晋升决策：版本先以 inactive 形式落账，
 // approval fingerprint 必须与完整冻结元组精确匹配。指标摘要由调用方从字节
-// 摘要校验过的套件结果正文提取，本层只做结构透传。
+// 摘要校验过的套件结果正文提取；服务层还会独立核对套件与记录版本。
 type MemoryPromotionOptions struct {
 	Promotion           memory.Promotion
 	ApprovalFingerprint string
+	SuiteStateRoot      string
 	Workspace           string
 	StateDir            string
 	Config              config.Config
+}
+
+// trustedPromotionSuite 只解码晋升服务需要的套件身份与成功语义版本；原始
+// 字节摘要仍与评测账本精确绑定，其他指标继续由 CLI 的完整套件投影提取。
+type trustedPromotionSuite struct {
+	SchemaVersion int    `json:"schema_version"`
+	EvaluationID  string `json:"evaluation_id"`
+	CandidateID   string `json:"candidate_id"`
+	Status        string `json:"status"`
+	Records       []struct {
+		SchemaVersion int `json:"schema_version"`
+	} `json:"records"`
+}
+
+// verifyTrustedPromotionSuite 在服务写入前读取冻结套件正文，要求摘要、
+// 身份、结论和每条记录均满足当前可信成功语义。缺失目录不能降级为旧摘要。
+func verifyTrustedPromotionSuite(options MemoryPromotionOptions) error {
+	if options.SuiteStateRoot == "" || !memory.DigestHexShape(options.Promotion.EvaluationID) {
+		return errors.New("promotion requires a suite state root and digest-shaped evaluation identity")
+	}
+	if _, err := hex.DecodeString(strings.TrimPrefix(options.Promotion.EvaluationID, "sha256:")); err != nil {
+		return errors.New("promotion evaluation identity is not a hex digest")
+	}
+	resultPath := filepath.Join(options.SuiteStateRoot, "evaluations", strings.ReplaceAll(options.Promotion.EvaluationID, ":", "_"), "suite-result.json")
+	content, err := os.ReadFile(resultPath)
+	if err != nil {
+		return fmt.Errorf("read promotion suite result: %w", err)
+	}
+	digest := sha256.Sum256(content)
+	if "sha256:"+hex.EncodeToString(digest[:]) != options.Promotion.SuiteResultDigest {
+		return errors.New("promotion suite result bytes diverge from the evaluated digest")
+	}
+	var result trustedPromotionSuite
+	if err := json.Unmarshal(content, &result); err != nil {
+		return fmt.Errorf("decode promotion suite result: %w", err)
+	}
+	if result.EvaluationID != options.Promotion.EvaluationID || result.CandidateID != options.Promotion.CandidateID || result.Status != memory.EvaluationStatusPassed || result.SchemaVersion != sandboxeval.TrustedResultSchemaVersion || len(result.Records) == 0 {
+		return errors.New("promotion suite does not carry a passed trusted-evidence result for this evaluation")
+	}
+	for _, record := range result.Records {
+		if record.SchemaVersion != sandboxeval.TrustedResultSchemaVersion {
+			return errors.New("promotion suite contains a legacy run success record")
+		}
+	}
+	return nil
 }
 
 // PromoteEvolutionCandidate 在工作区锁内写入人工决策与 inactive 版本：前后
@@ -397,6 +450,9 @@ func (service Service) PromoteEvolutionCandidate(ctx context.Context, options Me
 	}
 	if inspected.Candidate.WorkspaceHash != workspaceHash {
 		return memory.Promotion{}, memory.ErrNotFound
+	}
+	if err := verifyTrustedPromotionSuite(options); err != nil {
+		return memory.Promotion{}, err
 	}
 	promoted, err := store.PromoteCandidate(ctx, options.Promotion, options.ApprovalFingerprint, time.Now().UTC())
 	if err != nil {

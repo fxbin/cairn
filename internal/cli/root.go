@@ -2059,6 +2059,12 @@ func loadSuiteResultForPromotion(evaluation memory.Evaluation, stateRoot string)
 	if err := json.Unmarshal(content, &result); err != nil {
 		return benchmark.SandboxSuiteResult{}, fmt.Errorf("decode suite result: %w", err)
 	}
+	if result.EvaluationID != evaluation.ID || result.CandidateID != evaluation.CandidateID || result.Status != memory.EvaluationStatusPassed {
+		return benchmark.SandboxSuiteResult{}, errors.New("suite result does not match the passed evaluation identity")
+	}
+	if err := benchmark.RequireTrustedSandboxSuiteVersion(result); err != nil {
+		return benchmark.SandboxSuiteResult{}, err
+	}
 	return result, nil
 }
 
@@ -2113,7 +2119,7 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 	}
 	promoted, err := command.Service.PromoteEvolutionCandidate(ctx, app.MemoryPromotionOptions{
 		Promotion: promotion, ApprovalFingerprint: *approvalFingerprint,
-		Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+		SuiteStateRoot: *suiteStateRoot, Workspace: *workspace, StateDir: *stateDir, Config: configuration,
 	})
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory candidate promote failed:", err)

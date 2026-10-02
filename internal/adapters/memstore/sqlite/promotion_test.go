@@ -114,6 +114,59 @@ func TestPromoteCandidateCreatesInactiveVersion(t *testing.T) {
 	}
 }
 
+// TestLegacyInactivePromotionCannotActivate 保留旧晋升版本只读历史，同时阻止
+// 尚未激活的旧成功语义进入新 sandbox 激活指针。
+func TestLegacyInactivePromotionCannotActivate(t *testing.T) {
+	store, candidate, evaluation, _ := passedCandidateFixture(t, evalSetFrozen, suiteResultFrozen)
+	promotion := promoteForTest(t, store, promotionRequestFor(t, candidate, evaluation, 1))
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_promotions SET schema_version = ? WHERE promotion_id = ?", memory.PromotionSchemaVersion-1, promotion.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Check(context.Background()); err == nil {
+		t.Fatal("decision/version schema mismatch must fail Check")
+	}
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_promotion_decisions SET schema_version = ? WHERE decision_id = ?", memory.PromotionSchemaVersion-1, promotion.DecisionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatalf("legacy inactive version must remain readable: %v", err)
+	}
+	if _, _, err := store.ActivatePromotion(context.Background(), promotion.TargetKind, promotion.ID, promotion.CreatedAt.Add(time.Minute)); err == nil {
+		t.Fatal("legacy success semantics must not activate")
+	}
+	if _, found, err := store.ActivationFor(promotion.TargetKind); err != nil || found {
+		t.Fatalf("legacy activation changed pointer: found=%v err=%v", found, err)
+	}
+}
+
+// TestLegacyActivePromotionCannotAnchorNewVersion 保留旧激活账本的只读与回退
+// 能力，但禁止新晋升把旧成功语义版本固定为回退目标。
+func TestLegacyActivePromotionCannotAnchorNewVersion(t *testing.T) {
+	store, candidate, evaluation, now := passedCandidateFixture(t, evalSetFrozen, suiteResultFrozen)
+	first := promoteForTest(t, store, promotionRequestFor(t, candidate, evaluation, 1))
+	if _, _, err := store.ActivatePromotion(context.Background(), first.TargetKind, first.ID, now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_promotions SET schema_version = ? WHERE promotion_id = ?", memory.PromotionSchemaVersion-1, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), "UPDATE evolution_promotion_decisions SET schema_version = ? WHERE decision_id = ?", memory.PromotionSchemaVersion-1, first.DecisionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatalf("legacy active history must remain readable: %v", err)
+	}
+	secondCandidate, secondEvaluation := nextVariantPassedCandidate(t, store, candidate, now, 51_000)
+	request := promotionRequestFor(t, secondCandidate, secondEvaluation, 2)
+	request.RollbackTargetID = first.ID
+	if _, err := store.PromoteCandidate(context.Background(), request, approvalFor(t, request), now.Add(8*time.Minute)); err == nil {
+		t.Fatal("legacy active version cannot anchor a new promotion")
+	}
+	if _, _, err := store.RollbackPromotion(context.Background(), first.TargetKind, memory.RejectReasonHumanRequest, now.Add(9*time.Minute)); err != nil {
+		t.Fatalf("legacy active version must remain safely rollbackable: %v", err)
+	}
+}
+
 // TestSandboxActivationAndRollbackRequireSeparateActions 验证 sandbox 激活与
 // 回退各有独立事务；空理由必须在写入前失败，不能产生提交后损坏。
 func TestSandboxActivationAndRollbackRequireSeparateActions(t *testing.T) {
