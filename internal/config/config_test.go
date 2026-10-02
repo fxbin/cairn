@@ -933,8 +933,22 @@ func TestResolveDefaultPathFallsBackToUserConfig(t *testing.T) {
 func TestDecisionCheckpointAbsentKeepsFingerprintAndEnableChangesIt(t *testing.T) {
 	base := validDefaults()
 	without := base.Fingerprint()
+	encodedAbsent, err := json.Marshal(base.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encodedAbsent, []byte(`"DecisionCheckpoint"`)) {
+		t.Fatal("absent checkpoint must not add a null field to the JSON fingerprint view")
+	}
 	enabled := base
 	enabled.Context.DecisionCheckpoint = &DecisionCheckpointConfig{Enabled: true, MinTurns: 4}
+	encodedEnabled, err := json.Marshal(enabled.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encodedEnabled, []byte(`"DecisionCheckpoint"`)) {
+		t.Fatal("enabled checkpoint must remain visible in the JSON fingerprint view")
+	}
 	if enabled.Fingerprint() == without {
 		t.Fatal("enabling decision checkpoint must change fingerprint")
 	}

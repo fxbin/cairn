@@ -297,7 +297,7 @@ type ContextConfig struct {
 	// DecisionCheckpoint 是可选的软决策检查点：在仍无补丁提议且已有读取
 	// 证据时插入一次说明性反馈。指针 + omitempty：未配置时指纹与旧版逐位
 	// 一致，不影响既有冻结配置。
-	DecisionCheckpoint *DecisionCheckpointConfig `yaml:"decision_checkpoint,omitempty"`
+	DecisionCheckpoint *DecisionCheckpointConfig `yaml:"decision_checkpoint,omitempty" json:"DecisionCheckpoint,omitempty"`
 }
 
 // DecisionCheckpointConfig 控制软决策检查点实验：只反馈、不强制写入。
