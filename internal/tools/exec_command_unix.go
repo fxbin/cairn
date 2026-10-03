@@ -119,8 +119,8 @@ func (tool ExecCommand) executeDocker(ctx context.Context, arguments ExecArgumen
 	}
 	containerName := dockerContainerName()
 	command := tool.dockerCommand(dockerBinary, arguments, relativeCWD, containerName)
-	return tool.runCommand(ctx, arguments, ExecBackendDocker, command, func() {
-		tool.removeDockerContainer(dockerBinary, containerName)
+	return tool.runCommand(ctx, arguments, ExecBackendDocker, command, func() error {
+		return tool.removeDockerContainer(dockerBinary, containerName)
 	})
 }
 
@@ -181,27 +181,59 @@ func dockerContainerName() string {
 	return fmt.Sprintf("cairn-%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
-// removeDockerContainer 在 docker run 客户端被取消后尽力删除指定容器；清理失败
-// 不会改变已经产生的命令结果，但 --rm 仍可覆盖正常退出路径。
-func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string) {
-	cleanupTimeout := tool.Grace
-	if cleanupTimeout < 3*time.Second {
-		cleanupTimeout = 3 * time.Second
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		cleanupContext, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+// Docker 清理的超时、重试次数和查询输出均保持固定上限。
+const (
+	dockerCleanupTimeout    = 3 * time.Second
+	dockerCleanupWaitDelay  = time.Second
+	dockerCleanupAttempts   = 2
+	dockerCleanupQueryBytes = 4096
+)
+
+// removeDockerContainer 在 docker run 客户端被取消后删除容器；删除失败时
+// 必须经成功的本地查询确认容器已不存在，不能把 daemon 错误当作终止证据。
+func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string) error {
+	for attempt := 0; attempt < dockerCleanupAttempts; attempt++ {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), dockerCleanupTimeout)
 		command := exec.CommandContext(cleanupContext, dockerBinary, "rm", "--force", containerName)
 		command.Env = []string{}
+		command.WaitDelay = dockerCleanupWaitDelay
 		err := command.Run()
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
 	}
+	absent, err := tool.dockerContainerAbsent(dockerBinary, containerName)
+	if err != nil {
+		return err
+	}
+	if !absent {
+		return errors.New("docker container remains after cancellation cleanup")
+	}
+	return nil
+}
+
+// dockerContainerAbsent 只在有界 Docker 列表查询成功且输出为空时确认容器
+// 不存在；名称过滤可能匹配额外容器，非空、截断或查询失败一律保守拒绝确认。
+func (tool ExecCommand) dockerContainerAbsent(dockerBinary, containerName string) (bool, error) {
+	queryContext, cancel := context.WithTimeout(context.Background(), dockerCleanupTimeout)
+	defer cancel()
+	command := exec.CommandContext(queryContext, dockerBinary, "container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "name="+containerName)
+	command.Env = []string{}
+	command.WaitDelay = dockerCleanupWaitDelay
+	output := &limitedBuffer{limit: dockerCleanupQueryBytes}
+	command.Stdout = output
+	if err := command.Run(); err != nil {
+		return false, errors.New("docker container state could not be queried after cancellation cleanup")
+	}
+	if output.truncated {
+		return false, errors.New("docker container state query was truncated after cancellation cleanup")
+	}
+	return strings.TrimSpace(output.String()) == "", nil
 }
 
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
-func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func()) Result {
+func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) Result {
 	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	stdout := &limitedBuffer{limit: arguments.MaxOutputBytes}
@@ -219,6 +251,7 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 	terminationUnconfirmed := false
 	select {
 	case waitErr = <-finished:
+		cancelled = commandContext.Err() != nil
 	case <-commandContext.Done():
 		cancelled = true
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
@@ -235,8 +268,9 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 			terminationUnconfirmed = !terminationConfirmed
 		}
 	}
+	var cleanupErr error
 	if cancelled && cleanup != nil {
-		cleanup()
+		cleanupErr = cleanup()
 		if terminationUnconfirmed {
 			select {
 			case waitErr = <-finished:
@@ -249,6 +283,9 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 		// Wait 仍可能持有 stdout/stderr 的异步写入协程；此处分支不得读取缓冲区，
 		// 同时用专用结果码要求 Agent 保留 operation_started 供人工对账。
 		return Failure(CodeTerminationUnconfirmed, "process termination could not be confirmed after SIGKILL")
+	}
+	if cleanupErr != nil {
+		return Failure(CodeTerminationUnconfirmed, "docker container termination could not be confirmed: "+cleanupErr.Error())
 	}
 	duration := time.Since(started).Milliseconds()
 	exitCode, signal := commandOutcome(waitErr)

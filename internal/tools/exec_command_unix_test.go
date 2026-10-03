@@ -137,7 +137,9 @@ func TestExecCommandDockerTimeoutAttemptsContainerCleanup(t *testing.T) {
 		"fi\n" +
 		"if [ \"$1\" = \"rm\" ]; then\n" +
 		"  printf '%s' \"$*\" > \"" + cleanupMarker + "\"\n" +
-		"fi\n"
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 1\n"
 	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +156,80 @@ func TestExecCommandDockerTimeoutAttemptsContainerCleanup(t *testing.T) {
 	content, err := os.ReadFile(cleanupMarker)
 	if err != nil || !strings.HasPrefix(string(content), "rm --force cairn-") {
 		t.Fatalf("cleanup = %q, %v", content, err)
+	}
+}
+
+// TestExecCommandDockerCancellationRequiresContainerTerminationConfirmation
+// 锁定 Docker 客户端已退出后仍须确认容器清理，daemon 错误不能表示容器不存在。
+func TestExecCommandDockerCancellationRequiresContainerTerminationConfirmation(t *testing.T) {
+	cases := []struct {
+		name        string
+		removeCode  int
+		queryCode   int
+		queryOutput string
+		wantCode    string
+		wantQuery   bool
+	}{
+		{name: "remove fails and container remains", removeCode: 1, queryOutput: "container-id\n", wantCode: CodeTerminationUnconfirmed, wantQuery: true},
+		{name: "daemon cannot be queried", removeCode: 1, queryCode: 1, wantCode: CodeTerminationUnconfirmed, wantQuery: true},
+		{name: "successful query confirms absence", removeCode: 1, wantCode: "cancelled", wantQuery: true},
+		{name: "successful remove confirms termination", wantCode: "cancelled"},
+		{name: "truncated empty looking query cannot confirm absence", removeCode: 1, queryOutput: strings.Repeat(" ", dockerCleanupQueryBytes+1), wantCode: CodeTerminationUnconfirmed, wantQuery: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			callsPath := filepath.Join(directory, "calls")
+			quotedCalls := "'" + strings.ReplaceAll(callsPath, "'", "'\"'\"'") + "'"
+			quotedOutput := "'" + strings.ReplaceAll(test.queryOutput, "'", "'\"'\"'") + "'"
+			script := fmt.Sprintf("#!/bin/sh\n"+
+				"if [ -n \"${DOCKER_HOST-}\" ]; then exit 98; fi\n"+
+				"case \"$1\" in\n"+
+				"run)\n"+
+				"  trap 'exit 0' TERM\n"+
+				"  while true; do /bin/sleep 1; done\n"+
+				"  ;;\n"+
+				"rm)\n"+
+				"  printf '%%s\\n' \"$*\" >> %s\n"+
+				"  exit %d\n"+
+				"  ;;\n"+
+				"container)\n"+
+				"  printf '%%s\\n' \"$*\" >> %s\n"+
+				"  printf '%%s' %s\n"+
+				"  exit %d\n"+
+				"  ;;\n"+
+				"*) exit 99 ;;\n"+
+				"esac\n", quotedCalls, test.removeCode, quotedCalls, quotedOutput, test.queryCode)
+			if err := os.WriteFile(filepath.Join(directory, "docker"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", directory)
+			t.Setenv("DOCKER_HOST", "tcp://must-not-reach-cleanup.invalid:2375")
+			workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := ExecCommand{Workspace: workspace, Backend: ExecBackendDocker, DockerImage: "alpine:3.21", DockerMaxPIDs: 64, Grace: 100 * time.Millisecond}
+			result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/echo","never-runs"],"timeout_ms":50}`))
+			if result.OK || result.Code != test.wantCode {
+				t.Fatalf("result = %#v, want %s", result, test.wantCode)
+			}
+			calls, err := os.ReadFile(callsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRemovals := dockerCleanupAttempts
+			if test.removeCode == 0 {
+				wantRemovals = 1
+			}
+			if got := strings.Count(string(calls), "rm --force cairn-"); got != wantRemovals {
+				t.Fatalf("remove calls = %d, want %d: %q", got, wantRemovals, calls)
+			}
+			queryRan := strings.Contains(string(calls), "container ls --all --quiet --no-trunc --filter name=cairn-")
+			if queryRan != test.wantQuery {
+				t.Fatalf("query ran = %t, want %t: %q", queryRan, test.wantQuery, calls)
+			}
+		})
 	}
 }
 
