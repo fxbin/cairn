@@ -1,7 +1,11 @@
 package artifact
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,4 +256,121 @@ func TestRedactJSONPreservesExactNumbers(t *testing.T) {
 	if trailing := RedactJSON([]byte(`{"number":1} trailing`)); !strings.Contains(string(trailing), "trailing") {
 		t.Fatalf("accepted trailing content: %s", trailing)
 	}
+}
+
+// TestPublishArtifactPreservesTargetOnTemporaryFailure 验证临时写入失败不会发布或替换已有制品。
+func TestPublishArtifactPreservesTargetOnTemporaryFailure(t *testing.T) {
+	for _, failure := range []string{"chmod", "write", "partial_write", "short_write", "sync", "close"} {
+		for _, exists := range []bool{false, true} {
+			name := "create"
+			if exists {
+				name = "existing"
+			}
+			t.Run(failure+"/"+name, func(t *testing.T) {
+				store, err := New(t.TempDir(), 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				content := []byte("artifact evidence")
+				digest := sha256.Sum256(content)
+				hexDigest := hex.EncodeToString(digest[:])
+				directory := filepath.Join(store.Root, "sha256", hexDigest[:2])
+				target := filepath.Join(directory, hexDigest)
+				var previous os.FileInfo
+				if exists {
+					if _, err := store.Put(content, "text/plain"); err != nil {
+						t.Fatal(err)
+					}
+					previous, err = os.Stat(target)
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				file, err := os.CreateTemp(directory, ".cairn-artifact-*")
+				if err != nil {
+					t.Fatal(err)
+				}
+				injected := errors.New("temporary " + failure + " failure")
+				temporary := &failingArtifactTemporary{File: file, failure: failure, failureErr: injected}
+				err = publishArtifact(temporary, target, content)
+				wanted := injected
+				if failure == "short_write" {
+					wanted = io.ErrShortWrite
+				}
+				if !errors.Is(err, wanted) {
+					t.Errorf("发布未返回预期故障: got=%v want=%v", err, wanted)
+				}
+				stored, readErr := store.Open(Ref{SHA256: "sha256:" + hexDigest})
+				if exists {
+					if readErr != nil || string(stored) != string(content) {
+						t.Errorf("已有制品内容或摘要损坏: content=%q err=%v", stored, readErr)
+					}
+					current, statErr := os.Stat(target)
+					if statErr != nil {
+						t.Fatal(statErr)
+					}
+					if !os.SameFile(previous, current) {
+						t.Error("失败后仍替换已有制品")
+					}
+				} else if !errors.Is(readErr, os.ErrNotExist) {
+					t.Errorf("失败后仍发布新制品: content=%q err=%v", stored, readErr)
+				}
+				if _, statErr := os.Stat(file.Name()); !errors.Is(statErr, os.ErrNotExist) {
+					t.Errorf("临时文件未清理: %v", statErr)
+				}
+				if _, statErr := file.Stat(); !errors.Is(statErr, os.ErrClosed) {
+					t.Errorf("临时文件句柄未关闭: %v", statErr)
+				}
+			})
+		}
+	}
+}
+
+// failingArtifactTemporary 在真实临时制品上注入单步失败，保留实际写入和发布行为。
+type failingArtifactTemporary struct {
+	*os.File
+	failure    string
+	failureErr error
+}
+
+// Chmod 可拒绝权限修改，验证未设置安全权限的制品不会发布。
+func (temporary *failingArtifactTemporary) Chmod(mode os.FileMode) error {
+	if temporary.failure == "chmod" {
+		return temporary.failureErr
+	}
+	return temporary.File.Chmod(mode)
+}
+
+// Write 可产生零写入或真实部分写入，分别覆盖带错误和无错误的短写。
+func (temporary *failingArtifactTemporary) Write(content []byte) (int, error) {
+	if temporary.failure == "write" {
+		return 0, temporary.failureErr
+	}
+	if temporary.failure == "partial_write" || temporary.failure == "short_write" {
+		written, err := temporary.File.Write(content[:len(content)/2])
+		if err == nil && temporary.failure == "partial_write" {
+			err = temporary.failureErr
+		}
+		return written, err
+	}
+	return temporary.File.Write(content)
+}
+
+// Sync 可拒绝落盘，验证完整写入后的制品同样遵守同步门禁。
+func (temporary *failingArtifactTemporary) Sync() error {
+	if temporary.failure == "sync" {
+		return temporary.failureErr
+	}
+	return temporary.File.Sync()
+}
+
+// Close 始终关闭真实句柄，再按用例返回关闭故障。
+func (temporary *failingArtifactTemporary) Close() error {
+	err := temporary.File.Close()
+	if err == nil && temporary.failure == "close" {
+		return temporary.failureErr
+	}
+	return err
 }

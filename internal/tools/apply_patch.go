@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,24 +182,7 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 	if err != nil {
 		return Failure("io", err.Error())
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(mode); err == nil {
-		_, err = temporary.Write(plan.After)
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return Failure("io", err.Error())
-	}
-	if err := os.Rename(temporaryPath, filePath); err != nil {
-		return Failure("io", err.Error())
-	}
-	if err := syncDirectory(filepath.Dir(filePath)); err != nil {
+	if err := publishPatch(temporary, filePath, mode, plan.After); err != nil {
 		return Failure("io", err.Error())
 	}
 	actual, err := os.ReadFile(filePath)
@@ -210,6 +194,42 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 		BeforeHash string `json:"before_hash"`
 		AfterHash  string `json:"after_hash"`
 	}{Path: plan.Path, BeforeHash: plan.BeforeHash, AfterHash: plan.AfterHash}, "updated "+plan.Path, int64(len(actual)), plan.AfterHash, false)
+}
+
+// patchTemporaryFile 限定单文件补丁发布所需的临时文件操作，生产实现由 os.File 提供。
+type patchTemporaryFile interface {
+	Name() string
+	Chmod(os.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+// publishPatch 完成临时补丁的写入、同步和关闭后才发布，退出时清理临时路径。
+func publishPatch(temporary patchTemporaryFile, filePath string, mode os.FileMode, content []byte) error {
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	err := temporary.Chmod(mode)
+	if err == nil {
+		var written int
+		written, err = temporary.Write(content)
+		if err == nil && written != len(content) {
+			err = io.ErrShortWrite
+		}
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, filePath); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(filePath))
 }
 
 // applyReplacements 仅在每段旧文本出现次数与声明值一致时执行替换；缺省次数按一次校验。

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -214,10 +215,32 @@ func (store *Store) Put(content []byte, mediaType string) (Ref, error) {
 	if err != nil {
 		return Ref{}, fmt.Errorf("create artifact temp file: %w", err)
 	}
+	if err := publishArtifact(temporary, path, redacted); err != nil {
+		return Ref{}, err
+	}
+	return store.ref(hexDigest, int64(len(redacted)), mediaType, redacted), nil
+}
+
+// artifactTemporaryFile 限定制品发布所需的临时文件操作，生产实现由 os.File 提供。
+type artifactTemporaryFile interface {
+	Name() string
+	Chmod(os.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+// publishArtifact 仅在临时制品写入、同步与关闭成功后发布，并清理未发布的临时文件。
+func publishArtifact(temporary artifactTemporaryFile, path string, content []byte) error {
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(redacted)
+	err := temporary.Chmod(0o600)
+	if err == nil {
+		var written int
+		written, err = temporary.Write(content)
+		if err == nil && written != len(content) {
+			err = io.ErrShortWrite
+		}
 	}
 	if err == nil {
 		err = temporary.Sync()
@@ -226,16 +249,16 @@ func (store *Store) Put(content []byte, mediaType string) (Ref, error) {
 		err = closeErr
 	}
 	if err != nil {
-		return Ref{}, fmt.Errorf("write artifact: %w", err)
+		return fmt.Errorf("write artifact: %w", err)
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
 		if !os.IsExist(err) {
-			return Ref{}, fmt.Errorf("publish artifact: %w", err)
+			return fmt.Errorf("publish artifact: %w", err)
 		}
-	} else if err := syncDirectory(directory); err != nil {
-		return Ref{}, err
+	} else if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return err
 	}
-	return store.ref(hexDigest, int64(len(redacted)), mediaType, redacted), nil
+	return nil
 }
 
 // ref 由已写入的内容生成带长度受限预览的制品引用。
