@@ -223,3 +223,96 @@ func TestExecSummaryQuotesEachArgument(t *testing.T) {
 		t.Fatalf("summary = %q, want %q", decision.Summary, want)
 	}
 }
+
+// TestGateProtectsPathAliases 锁定写策略为 allow 或 ask 时，逻辑路径与内部链接
+// 均不能绕过受保护目标；配置自身是链接时也保护其实际目标。
+func TestGateProtectsPathAliases(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"protected", "guarded", "ordinary"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"protected/locked.txt", "ordinary/locked.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for alias, target := range map[string]string{
+		"directory-alias":          "protected",
+		"file-alias.txt":           "protected/locked.txt",
+		"guarded-alias":            "guarded",
+		"protected-alias":          "ordinary",
+		"root-alias":               ".",
+		"protected-file-alias.txt": "ordinary/locked.txt",
+		".env.production":          "ordinary/locked.txt",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, alias)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, writeMode := range []string{"allow", "ask"} {
+		t.Run(writeMode, func(t *testing.T) {
+			for _, test := range []struct {
+				name      string
+				candidate string
+				protected string
+				update    bool
+				allowed   bool
+			}{
+				{name: "dot", candidate: "./protected/new.txt", protected: "protected"},
+				{name: "dotdot", candidate: "a/../protected/new.txt", protected: "protected"},
+				{name: "directory-link", candidate: "directory-alias/new.txt", protected: "protected"},
+				{name: "file-link", candidate: "file-alias.txt", protected: "protected/locked.txt", update: true},
+				{name: "configured-directory-link", candidate: "ordinary/new.txt", protected: "protected-alias"},
+				{name: "configured-root-link-file", candidate: "root-file.txt", protected: "root-alias"},
+				{name: "configured-root-link-directory", candidate: "ordinary/new.txt", protected: "root-alias"},
+				{name: "configured-file-link", candidate: "ordinary/locked.txt", protected: "protected-file-alias.txt", update: true},
+				{name: "logical-link", candidate: "protected-alias/new.txt", protected: "protected-alias"},
+				{name: "dot-logical-link", candidate: "./protected-alias/new.txt", protected: "protected-alias"},
+				{name: "configured-dot", candidate: "protected/new.txt", protected: "./protected"},
+				{name: "configured-dotdot", candidate: "protected/new.txt", protected: "a/../protected"},
+				{name: "dot-glob", candidate: "./guarded/new.txt", protected: "guarded/*"},
+				{name: "dotdot-glob", candidate: "a/../guarded/new.txt", protected: "guarded/*"},
+				{name: "resolved-glob", candidate: "guarded-alias/new.txt", protected: "guarded/*"},
+				{name: "logical-glob", candidate: "./guarded-alias/new.txt", protected: "guarded-alias/*"},
+				{name: "logical-secret-glob", candidate: "./.env.production", protected: ".env.*", update: true},
+				{name: "unprotected", candidate: "./ordinary/new.txt", protected: "protected", allowed: true},
+				{name: "sibling-prefix", candidate: "protected-sibling.txt", protected: "protected", allowed: true},
+				{name: "unprotected-link", candidate: "protected-alias/new.txt", protected: "protected", allowed: true},
+				{name: "unmatched-glob", candidate: "ordinary/new.txt", protected: "guarded/*", allowed: true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					gate, err := New(writeMode, "ask", []string{test.protected}, tools.ApplyPatch{Workspace: workspace})
+					if err != nil {
+						t.Fatal(err)
+					}
+					content := "new"
+					arguments := tools.PatchArguments{Path: test.candidate, Mode: "create", ExpectedSHA256: "absent", Content: &content}
+					if test.update {
+						arguments.Mode = "update"
+						arguments.ExpectedSHA256 = patchHash([]byte("old"))
+						arguments.Content = nil
+						arguments.Replacements = []tools.Replacement{{Old: "old", New: "new"}}
+					}
+					raw, err := json.Marshal(arguments)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decision, err := gate.Decide("apply_patch", raw)
+					wantEffect, wantRule := Deny, "protected_path"
+					if test.allowed {
+						wantEffect, wantRule = Effect(writeMode), "workspace_write"
+					}
+					if err != nil || decision.Effect != wantEffect || decision.RuleID != wantRule || decision.Fingerprint == "" {
+						t.Fatalf("candidate %q with protected %q: decision=%#v err=%v; want %s/%s", test.candidate, test.protected, decision, err, wantEffect, wantRule)
+					}
+				})
+			}
+		})
+	}
+}

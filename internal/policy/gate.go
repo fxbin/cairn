@@ -75,9 +75,19 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 				return Decision{Effect: Deny, RuleID: "protected_path", Fingerprint: fingerprint("apply_patch", raw), Summary: "protected path: " + proposed.Path}, nil
 			}
 		}
+		_, relative, err := gate.Patch.Workspace.Resolve(proposed.Path)
+		if err != nil {
+			return invalidPatchDecision(raw, err), nil
+		}
+		if gate.protectsResolvedPath(proposed.Path, relative) {
+			return Decision{Effect: Deny, RuleID: "protected_path", Fingerprint: fingerprint("apply_patch", raw), Summary: "protected path: " + proposed.Path}, nil
+		}
 		plan, err := gate.Patch.Plan(raw)
 		if err != nil {
 			return invalidPatchDecision(raw, err), nil
+		}
+		if plan.Path != relative && gate.protectsResolvedPath(proposed.Path, plan.Path) {
+			return Decision{Effect: Deny, RuleID: "protected_path", Fingerprint: fingerprint("apply_patch", raw), Summary: "protected path: " + proposed.Path}, nil
 		}
 		return Decision{Effect: gate.WriteMode, RuleID: "workspace_write", Fingerprint: patchFingerprint(plan), Summary: fmt.Sprintf("%s %s (%s → %s)", plan.Mode, plan.Path, plan.BeforeHash, plan.AfterHash)}, nil
 	case "exec_command":
@@ -218,6 +228,27 @@ func fingerprint(name string, value any) string {
 	}
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+// protectsResolvedPath 同时检查清理后的逻辑路径和 Workspace.Resolve 的真实
+// 目标；字面受保护路径自身为内部链接时也保护其目标，glob 保留原匹配语义。
+func (gate *Gate) protectsResolvedPath(logicalPath, resolvedPath string) bool {
+	logicalPath = path.Clean(strings.ReplaceAll(logicalPath, "\\", "/"))
+	for _, protected := range gate.ProtectedPaths {
+		if matchesProtected(logicalPath, protected) || matchesProtected(resolvedPath, protected) {
+			return true
+		}
+		literal := strings.Trim(strings.ReplaceAll(protected, "\\", "/"), "/")
+		if literal == "" || strings.ContainsAny(literal, "*?[") {
+			continue
+		}
+		_, resolvedProtected, err := gate.Patch.Workspace.Resolve(literal)
+		// 根目录的规范相对路径为 "."，其后代不会携带 "./" 前缀；根目标覆盖整个工作区。
+		if err == nil && (resolvedProtected == "." || resolvedPath == resolvedProtected || strings.HasPrefix(resolvedPath, resolvedProtected+"/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesProtected 判断候选路径是否命中受保护路径、glob 或其子路径。
