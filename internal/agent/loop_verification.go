@@ -67,6 +67,9 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 	if outcome, found, outcomeErr := completedVerificationForTurn(events, turnID); outcomeErr != nil {
 		return outcomeErr
 	} else if found {
+		if outcome.OK {
+			return loop.requireCompletedVerificationObservation(events, turnID, projection)
+		}
 		if !outcome.OK && outcome.Feedback != "" {
 			return &ports.VerificationFailureError{CommandID: outcome.CommandID, Feedback: outcome.Feedback}
 		}
@@ -888,6 +891,33 @@ func (loop *Loop) finishVerificationForCancellation(ctx context.Context, project
 	return true, nil
 }
 
+// requireCompletedVerificationObservation 在复用成功验证或补写完成前，
+// 用该 finished 对应的持久化 started 核对当前工作区，绝不重跑旧命令。
+func (loop *Loop) requireCompletedVerificationObservation(events []domain.Event, turnID domain.TurnID, projection *domain.RunProjection) error {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventVerificationFinished || event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		var payload domain.VerificationFinishedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("decode completed verification: %w", err)
+		}
+		if !payload.OK {
+			return nil
+		}
+		verification, found, err := latestIncompleteVerification(events[:index])
+		if err != nil {
+			return err
+		}
+		if !found || verification.turnID != turnID || (payload.VerificationID != "" && payload.VerificationID != verification.verificationID) {
+			return errors.New("completed verification has no matching persisted start")
+		}
+		return loop.requireFrozenVerificationObservation(verification, projection)
+	}
+	return nil
+}
+
 // requireFrozenVerificationObservation 在续跑或认可成功终态前，确认工作区与
 // 验证开始时同一视图；失败终态的如实收束不调用它。
 func (loop *Loop) requireFrozenVerificationObservation(verification incompleteVerificationRecord, projection *domain.RunProjection) error {
@@ -895,7 +925,7 @@ func (loop *Loop) requireFrozenVerificationObservation(verification incompleteVe
 		return errors.New("workspace mutation sequence changed since verification started")
 	}
 	if verification.workspaceObservation == "" {
-		return errors.New("incomplete verification has no persisted workspace observation")
+		return errors.New("verification has no persisted workspace observation")
 	}
 	observation, err := loop.verificationObservation()
 	if err != nil {

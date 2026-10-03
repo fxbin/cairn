@@ -381,6 +381,32 @@ func TestVerificationCommandsSucceededRequiresCompletePlan(t *testing.T) {
 	}
 }
 
+// TestVerificationCommandsSucceededChecksPostFinishObservation 确认恢复记录的
+// 漂移会使旧成功验证失去可信，同一视图和历史缺省记录仍保持兼容。
+func TestVerificationCommandsSucceededChecksPostFinishObservation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		observation string
+		want        bool
+	}{
+		{name: "same", observation: "sha256:workspace", want: true},
+		{name: "changed", observation: "sha256:changed", want: false},
+		{name: "legacy missing", want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events, spec := verificationEvidenceFixture(t, []VerificationCommandSpec{{ID: "verification-1", Arguments: json.RawMessage(`{"argv":["verify"]}`)}}, false)
+			payload := json.RawMessage(fmt.Sprintf(`{"workspace_observation":%q}`, test.observation))
+			if test.observation == "" {
+				payload = json.RawMessage(`{"invocation":"legacy"}`)
+			}
+			events = append(events, domain.Event{Seq: spec.FinishedSeq + 1, Type: domain.EventRunResumed, Payload: payload})
+			if got := VerificationCommandsSucceeded(events, spec); got != test.want {
+				t.Fatalf("trusted = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 // TestVerificationCommandsSucceededAcceptsSuccessfulReconciliation 锁定多命令
 // 计划中已启动命令经成功人工对账后才可作为成功终态。
 func TestVerificationCommandsSucceededAcceptsSuccessfulReconciliation(t *testing.T) {

@@ -87,6 +87,17 @@ func VerificationCommandsSucceeded(events []domain.Event, spec VerificationEvide
 	if startIndex < 0 {
 		return false
 	}
+	for _, event := range events[finishIndex+1:] {
+		if event.Type != domain.EventRunResumed {
+			continue
+		}
+		var payload struct {
+			WorkspaceObservation string `json:"workspace_observation"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || (payload.WorkspaceObservation != "" && payload.WorkspaceObservation != startPayload.WorkspaceObservation) {
+			return false
+		}
+	}
 	planDigest := sha256.Sum256(spec.Plan)
 	if startPayload.PlanRef.SHA256 != "sha256:"+hex.EncodeToString(planDigest[:]) {
 		return false

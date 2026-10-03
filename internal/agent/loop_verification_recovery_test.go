@@ -19,14 +19,17 @@ import (
 // 未启动命令可按授权链继续，已启动命令须对账，已成功命令不得重跑。
 func TestResumeZeroMutationVerificationStages(t *testing.T) {
 	cases := []struct {
-		name         string
-		stage        int
-		ask          bool
-		drift        bool
-		directRepair bool
-		wantCalls    int
-		wantError    string
-		wantOK       bool
+		name               string
+		stage              int
+		ask                bool
+		drift              bool
+		directRepair       bool
+		mutated            bool
+		missingObservation bool
+		volatile           bool
+		wantCalls          int
+		wantError          string
+		wantOK             bool
 	}{
 		{name: "proposed", stage: 1, wantCalls: 1, wantOK: true},
 		{name: "authorized", stage: 2, wantCalls: 1, wantOK: true},
@@ -35,6 +38,17 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 		{name: "successful terminal", stage: 4, wantCalls: 0, wantOK: true},
 		{name: "drift after success", stage: 4, drift: true, wantError: "workspace changed since verification started", wantOK: false},
 		{name: "failed terminal closes after drift", stage: 5, drift: true, directRepair: true, wantCalls: 0, wantOK: false},
+		{name: "finished stable", stage: 6, wantOK: true},
+		{name: "finished drift", stage: 6, drift: true, wantError: "workspace changed since verification started", wantOK: true},
+		{name: "closed final stable", stage: 7, wantOK: true},
+		{name: "closed final drift", stage: 7, drift: true, wantError: "workspace changed since verification started", wantOK: true},
+		{name: "finished missing observation", stage: 6, missingObservation: true, wantError: "no persisted workspace observation", wantOK: true},
+		{name: "closed final missing observation", stage: 7, missingObservation: true, wantError: "no persisted workspace observation", wantOK: true},
+		{name: "finished volatile drift", stage: 6, drift: true, volatile: true, wantOK: true},
+		{name: "mutated finished drift", stage: 6, mutated: true, drift: true, wantError: "workspace changed since verification started", wantOK: true},
+		{name: "mutated closed final drift", stage: 7, mutated: true, drift: true, wantError: "workspace changed since verification started", wantOK: true},
+		{name: "mutated finished stable", stage: 6, mutated: true, wantOK: true},
+		{name: "mutated closed final stable", stage: 7, mutated: true, wantOK: true},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -61,7 +75,11 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			observation, err := workspace.Observation()
+			verificationWorkspace := workspace
+			if test.volatile {
+				verificationWorkspace = workspace.ObservationView([]string{"drift.txt"})
+			}
+			observation, err := verificationWorkspace.Observation()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,6 +93,36 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 				}
 				seq++
 			}
+			var mutationSeq uint64
+			if test.mutated {
+				priorTurn, priorOperation := domain.NewTurnID(), domain.NewOperationID()
+				for _, draft := range []domain.EventDraft{
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"resume verify","workspace":"/workspace"}`)},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &priorTurn, Payload: json.RawMessage(`{"turn":1}`)},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(toolCallPayload{CallID: "patch", ToolName: "apply_patch", Arguments: json.RawMessage(`{"path":"initial.txt","mode":"create","content":"initial"}`)})},
+					policyDecisionDraft(RunInput{RunID: runID, WorkspaceHash: "workspace"}, priorTurn, priorOperation, policy.Decision{Effect: policy.Allow, RuleID: "write_allowed", Fingerprint: fingerprint}),
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(operationPayload{ToolName: "apply_patch", SideEffectClass: "workspace"})},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(operationPayload{ToolName: "apply_patch", Result: tools.Success(struct{}{}, "patched", 0, "", false)})},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(tools.Success(struct{}{}, "patched", 0, "", false))},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &priorTurn, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
+				} {
+					appendEvent(draft)
+				}
+				priorEvents, err := journal.Load(context.Background(), runID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				priorProjection, err := domain.Replay(priorEvents)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mutationSeq = priorProjection.LastMutationSeq
+			}
+			persistedObservation := observation
+			if test.missingObservation {
+				persistedObservation = ""
+			}
 			base := []domain.EventDraft{
 				{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"resume verify","workspace":"/workspace"}`)},
 				{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted},
@@ -86,8 +134,11 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 					VerificationID       string `json:"verification_id"`
 					LastMutationSeq      uint64 `json:"last_mutation_seq"`
 					CommandsFingerprint  string `json:"commands_fingerprint"`
-					WorkspaceObservation string `json:"workspace_observation"`
-				}{VerificationID: "verify-1", CommandsFingerprint: fingerprint, WorkspaceObservation: observation})},
+					WorkspaceObservation string `json:"workspace_observation,omitempty"`
+				}{VerificationID: "verify-1", LastMutationSeq: mutationSeq, CommandsFingerprint: fingerprint, WorkspaceObservation: persistedObservation})},
+			}
+			if test.mutated {
+				base = base[2:]
 			}
 			for _, draft := range base {
 				appendEvent(draft)
@@ -96,7 +147,7 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventVerificationCommandProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(verificationProposalPayload{VerificationID: "verify-1", CommandIndex: 0, Arguments: commands[0].Arguments})})
 			}
 			if test.stage >= 2 {
-				decision, err := gate.DecideVerificationWithObservation(commands[0].Arguments, "", 0, "", observation)
+				decision, err := gate.DecideVerificationWithObservation(commands[0].Arguments, "", int(mutationSeq), "", observation)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -113,18 +164,25 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 			if test.stage >= 3 {
 				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(tools.SideEffectProcess)})})
 			}
-			if test.stage == 4 {
+			if test.stage == 4 || test.stage >= 6 {
 				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: tools.Success(struct{}{}, "verified", 0, "", false)})})
 			}
 			if test.stage == 5 {
 				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: tools.Failure("verification_failed", "failed")})})
+			}
+			if test.stage >= 6 {
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(tools.Success(struct{}{}, "verified", 0, "", false))})
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: "verify-1", OK: true})})
+			}
+			if test.stage == 7 {
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "final"})})
 			}
 			if test.drift {
 				if err := os.WriteFile(filepath.Join(root, "drift.txt"), []byte("changed"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			loop := Loop{Journal: journal, Provider: &scriptedProvider{}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 6, Verification: commands}
+			loop := Loop{Journal: journal, Provider: &scriptedProvider{}, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 6, Verification: commands, VerificationWorkspace: verificationWorkspace}
 			if test.directRepair {
 				events, loadErr := journal.Load(context.Background(), runID)
 				if loadErr != nil {
@@ -154,6 +212,13 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 			events, err := journal.Load(context.Background(), runID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			projection, replayErr := domain.Replay(events)
+			if replayErr != nil {
+				t.Fatal(replayErr)
+			}
+			if test.wantError != "" && projection.State == domain.RunCompleted {
+				t.Fatal("unsafe recovery reached completed")
 			}
 			verificationOK := false
 			for _, event := range events {

@@ -1234,6 +1234,9 @@ func (loop *Loop) repairMissingRunTerminal(ctx context.Context, projection *doma
 	}
 	switch closed.outcome {
 	case "final":
+		if err := loop.requireCompletedVerificationObservation(events, closed.turnID, projection); err != nil {
+			return Result{RunID: input.RunID}, true, err
+		}
 		response, responseErr := loop.closedTurnFinalResponse(events, closeIndex, closed.turnID, *projection)
 		if responseErr != nil {
 			return Result{RunID: input.RunID}, true, responseErr
