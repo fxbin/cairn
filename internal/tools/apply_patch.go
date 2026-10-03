@@ -100,15 +100,16 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 			return PatchPlan{}, errors.New("create target already exists")
 		}
 		if arguments.Content == nil || len(arguments.Replacements) != 0 {
-			return PatchPlan{}, errors.New("create requires content and forbids replacements")
+			return PatchPlan{}, errors.New("invalid_patch: mode=create requires content and must omit replacements; retry with only content")
 		}
 		plan.After = []byte(*arguments.Content)
 	case "update":
 		if !exists || arguments.Content != nil || len(arguments.Replacements) == 0 {
-			return PatchPlan{}, errors.New("update requires an existing file and replacements")
+			// 拒绝后反馈必须可执行：明确互斥参数与唯一合法重提形状。
+			return PatchPlan{}, errors.New("invalid_patch: mode=update requires an existing file and replacements, and must omit content; retry with only replacements after a fresh read_file")
 		}
 		if strings.TrimSpace(arguments.ExpectedSHA256) == "" {
-			return PatchPlan{}, errors.New("update requires expected_sha256")
+			return PatchPlan{}, errors.New("invalid_patch: mode=update requires expected_sha256 copied from read_file; retry after a fresh read_file")
 		}
 		if !sameSHA256(arguments.ExpectedSHA256, plan.BeforeHash) {
 			return PatchPlan{}, &PatchPreconditionError{Path: relative, ExpectedSHA256: arguments.ExpectedSHA256, ActualSHA256: plan.BeforeHash}
@@ -120,17 +121,17 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 		plan.After = updated
 	case "delete":
 		if !exists || arguments.Content != nil || len(arguments.Replacements) != 0 {
-			return PatchPlan{}, errors.New("delete requires an existing file and no content or replacements")
+			return PatchPlan{}, errors.New("invalid_patch: mode=delete requires an existing file and must omit content and replacements; retry with only path/mode/expected_sha256")
 		}
 		if strings.TrimSpace(arguments.ExpectedSHA256) == "" {
-			return PatchPlan{}, errors.New("delete requires expected_sha256")
+			return PatchPlan{}, errors.New("invalid_patch: mode=delete requires expected_sha256 copied from read_file; retry after a fresh read_file")
 		}
 		if !sameSHA256(arguments.ExpectedSHA256, plan.BeforeHash) {
 			return PatchPlan{}, &PatchPreconditionError{Path: relative, ExpectedSHA256: arguments.ExpectedSHA256, ActualSHA256: plan.BeforeHash}
 		}
 		plan.AfterHash = "absent"
 	default:
-		return PatchPlan{}, errors.New("mode must be create, update, or delete")
+		return PatchPlan{}, errors.New("invalid_patch: mode must be create, update, or delete")
 	}
 	if arguments.Mode != "delete" {
 		plan.AfterHash = sha256Reference(plan.After)
