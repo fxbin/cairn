@@ -69,6 +69,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 			return Result{}, fmt.Errorf("replay run after repairing tool results: %w", err)
 		}
 	}
+	if result, stopped, budgetErr := loop.stopForPersistedResponseBudget(ctx, &projection, input, events); stopped {
+		return result, budgetErr
+	}
 	verificationRepaired, err := loop.repairIncompleteVerification(ctx, &projection, input, events)
 	if err != nil {
 		return Result{RunID: input.RunID}, err
@@ -102,17 +105,8 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 		if projection.CurrentTurn == nil {
 			return Result{}, errors.New("dangling read operation has no open turn")
 		}
-		pending := projection.PendingOperation
-		call, found := proposedToolCall(events, pending.ID)
-		if !found {
-			return Result{}, errors.New("dangling read operation has no replayable tool proposal")
-		}
 		turnID := *projection.CurrentTurn
-		result := tools.Failure("interrupted_read", "read-only operation was interrupted before its result was persisted")
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
-			return Result{}, err
-		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(result)}); err != nil {
+		if err := loop.repairInterruptedRead(ctx, &projection, input, events); err != nil {
 			return Result{}, err
 		}
 		if err := loop.closeContinuationTurn(ctx, &projection, input, turnID); err != nil {
@@ -360,6 +354,28 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 		return loop.failCurrentTurn(ctx, &projection, input, turnID, errors.New("approved tool has no replayable model response"))
 	}
 	return loop.resumeToolResponse(ctx, &projection, input, turnID, response, true)
+}
+
+// repairInterruptedRead 仅闭合已中断的只读操作，不启动工具或关闭轮次；
+// 调用方随后决定继续运行，还是按已落盘预算停止。
+func (loop *Loop) repairInterruptedRead(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) error {
+	pending := projection.PendingOperation
+	if pending == nil || pending.SideEffectClass == "workspace" || pending.SideEffectClass == "process" {
+		return errors.New("interrupted read repair requires a pending read-only operation")
+	}
+	if projection.CurrentTurn == nil {
+		return errors.New("dangling read operation has no open turn")
+	}
+	call, found := proposedToolCall(events, pending.ID)
+	if !found {
+		return errors.New("dangling read operation has no replayable tool proposal")
+	}
+	turnID := *projection.CurrentTurn
+	result := tools.Failure("interrupted_read", "read-only operation was interrupted before its result was persisted")
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
+		return err
+	}
+	return loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(result)})
 }
 
 // appendResume records an invocation only at a recovery boundary where there

@@ -54,6 +54,30 @@ func (loop *Loop) responseBudgetExceeded(usage budgetUsage) *ports.BudgetExceede
 	return nil
 }
 
+// stopForPersistedResponseBudget 在恢复或新模型调用前重新检查 Journal 用量；
+// 已 started 的副作用先对账，读操作可如实闭合，超限不得继续消费模型响应。
+func (loop *Loop) stopForPersistedResponseBudget(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (Result, bool, error) {
+	if projection.State != domain.RunRunning {
+		return Result{}, false, nil
+	}
+	exceeded := loop.responseBudgetExceeded(budgetUsageFromEvents(events))
+	if exceeded == nil {
+		return Result{}, false, nil
+	}
+	if pending := projection.PendingOperation; pending != nil {
+		if pending.SideEffectClass == "workspace" || pending.SideEffectClass == "process" {
+			return Result{RunID: input.RunID}, true, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.ID, Reason: "persisted response budget is exceeded; reconcile the started operation before stopping"}
+		}
+		commitContext, cancel := loop.commitContext(ctx)
+		defer cancel()
+		if err := loop.repairInterruptedRead(commitContext, projection, input, events); err != nil {
+			return Result{RunID: input.RunID}, true, err
+		}
+	}
+	result, err := loop.persistBudgetExceeded(ctx, projection, input, exceeded.Dimension)
+	return result, true, err
+}
+
 // cost 按显式输入、输出单价计算累计 token 的美元成本。
 func (usage budgetUsage) cost(inputRate, outputRate float64) float64 {
 	return float64(usage.InputTokens)*inputRate + float64(usage.OutputTokens)*outputRate

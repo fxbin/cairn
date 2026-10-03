@@ -163,6 +163,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if projection.State != domain.RunRunning {
 		return Result{}, fmt.Errorf("run %s is not runnable from state %s", input.RunID, projection.State)
 	}
+	if result, stopped, budgetErr := loop.stopForPersistedResponseBudget(ctx, &projection, input, events); stopped {
+		return result, budgetErr
+	}
 	messages, err := loop.messagesFromEvents(events, input.Task)
 	if err != nil {
 		return Result{}, err
