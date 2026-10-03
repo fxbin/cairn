@@ -139,7 +139,8 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 	}{Workspace: workspaceObservation, VerificationOK: verificationOK, VerificationResult: verificationResult, ReadEvidence: evidence})
 }
 
-// turnLoopGuard 检查最近六个继续轮次的 A-B 周期和稳定无进展状态。
+// turnLoopGuard 仅在进展观察完整且保持不变时检查继续轮次的 A-B 周期
+// 与稳定无进展状态，避免重复操作模式覆盖有效工作区或验证进展。
 func turnLoopGuard(events []domain.Event) string {
 	closed := make([]domain.TurnClosedPayload, 0, periodicTurnWindow)
 	for _, event := range events {
@@ -153,7 +154,7 @@ func turnLoopGuard(events []domain.Event) string {
 	}
 	if len(closed) >= periodicTurnWindow {
 		window := closed[len(closed)-periodicTurnWindow:]
-		if window[0].OperationSignature != "" && window[1].OperationSignature != "" &&
+		if turnProgressStable(window) && window[0].OperationSignature != "" && window[1].OperationSignature != "" &&
 			window[0].OperationSignature != window[1].OperationSignature &&
 			window[0].OperationSignature == window[2].OperationSignature &&
 			window[0].OperationSignature == window[4].OperationSignature &&
@@ -164,18 +165,26 @@ func turnLoopGuard(events []domain.Event) string {
 	}
 	if len(closed) >= noProgressTurnLimit {
 		window := closed[len(closed)-noProgressTurnLimit:]
-		baseline := window[0].ProgressFingerprint
-		if baseline != "" {
-			stable := true
-			for _, payload := range window[1:] {
-				stable = stable && payload.ProgressFingerprint == baseline
-			}
-			if stable {
-				return loopGuardNoProgress
-			}
+		if turnProgressStable(window) {
+			return loopGuardNoProgress
 		}
 	}
 	return ""
+}
+
+// turnProgressStable 要求窗口中的每轮都持久化同一进展观察；缺失旧观察
+// 或任何一次变化均不能作为无进展熔断的证据。
+func turnProgressStable(window []domain.TurnClosedPayload) bool {
+	if len(window) == 0 || window[0].ProgressFingerprint == "" {
+		return false
+	}
+	baseline := window[0].ProgressFingerprint
+	for _, turn := range window[1:] {
+		if turn.ProgressFingerprint != baseline {
+			return false
+		}
+	}
+	return true
 }
 
 // currentOperationFailureGuard 从最新事件尾部判断是否刚达到连续失败阈值。

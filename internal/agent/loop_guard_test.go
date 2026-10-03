@@ -44,6 +44,31 @@ func TestTurnLoopGuardDetectsABCycleBeforeNoProgress(t *testing.T) {
 	}
 }
 
+// TestTurnLoopGuardPreservesProgressInABCycle 锁定操作模式重复不能覆盖有效
+// 进展；旧事件缺失进展观察时也不能据此断言已经停止推进。
+func TestTurnLoopGuardPreservesProgressInABCycle(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		progress []string
+	}{
+		{name: "progress each turn", progress: []string{"p1", "p2", "p3", "p4", "p5", "p6"}},
+		{name: "progress in latest turn", progress: []string{"same", "same", "same", "same", "same", "advanced"}},
+		{name: "legacy observation absent", progress: []string{"", "", "", "", "", ""}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := make([]domain.Event, 0, periodicTurnWindow)
+			for index, signature := range []string{"A", "B", "A", "B", "A", "B"} {
+				events = append(events, domain.Event{Seq: uint64(index + 1), Type: domain.EventTurnClosed, Payload: mustJSON(domain.TurnClosedPayload{
+					Outcome: "continue", OperationSignature: signature, ProgressFingerprint: test.progress[index],
+				})})
+			}
+			if reason := turnLoopGuard(events); reason != "" {
+				t.Fatalf("valid or unobserved progress was stopped: %s", reason)
+			}
+		})
+	}
+}
+
 func TestTurnLoopGuardDetectsSixRoundsWithoutProgress(t *testing.T) {
 	events := make([]domain.Event, 0, noProgressTurnLimit)
 	for index := 0; index < noProgressTurnLimit; index++ {
