@@ -25,6 +25,9 @@ const (
 	maximumReadLines   = 2000
 )
 
+// readFileModeAdvice 给出可直接重提的坐标模式约束，不猜测或改写调用参数。
+const readFileModeAdvice = "Retry using one mode only: pair start_line with line_count and omit offset/limit; or use offset/limit and omit start_line/line_count. Byte limit counts bytes, not lines."
+
 // maximumReadPreviewBytes 限制展示预览，正文仅在 data.content 完整保留。
 const maximumReadPreviewBytes = 512
 
@@ -53,12 +56,12 @@ func (tool ListFiles) Spec() ports.ToolSpec {
 
 // Spec 返回 read_file 的受限 JSON 参数定义。
 func (tool ReadFile) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. Prefer start_line (one-based, from search_text.line) with line_count for local code inspection; provide both and do not mix them with offset or limit. Line reads preserve original newlines, are capped by the workspace byte limit without splitting UTF-8 characters, and return actual byte offset and byte limit. For byte mode, offset is zero-based (default 0, use search_text.byte_offset); limit is a byte count (default up to 16384, capped by the workspace read limit), not a line count. The result includes the complete file sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Zero-based byte offset, not a line number; byte mode only."},"limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum number of bytes to read, not lines; byte mode only."},"start_line":{"type":"integer","minimum":1,"description":"One-based first line, from search_text.line; requires line_count and excludes offset/limit."},"line_count":{"type":"integer","minimum":1,"maximum":2000,"description":"Maximum lines to read; requires start_line and excludes offset/limit."}}}`)}
+	return ports.ToolSpec{Name: "read_file", Description: "Read a UTF-8 text file from the workspace. Choose one coordinate mode. Line mode example: {\"path\":\"file.go\",\"start_line\":10,\"line_count\":40}; include both fields and omit offset and limit entirely, even if their values are 0. Byte mode example: {\"path\":\"file.go\",\"offset\":0,\"limit\":4096}; omit start_line and line_count. A byte limit counts bytes, not lines; use enough bytes for the local code block instead of repeatedly increasing tiny slices. Prefer line mode using search_text.line, or use search_text.byte_offset for byte mode. Reads preserve original newlines and remain capped by the workspace byte limit; line reads do not split UTF-8 characters. Byte mode defaults to offset 0 and up to 16384 bytes, capped by the workspace read limit. The result includes the complete file sha256; copy it exactly to apply_patch.expected_sha256 before updating or deleting this file.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Zero-based byte offset, not a line number; byte mode only."},"limit":{"type":"integer","minimum":1,"maximum":1048576,"description":"Maximum number of bytes to read, not lines; byte mode only."},"start_line":{"type":"integer","minimum":1,"description":"One-based first line, from search_text.line; requires line_count and excludes offset/limit."},"line_count":{"type":"integer","minimum":1,"maximum":2000,"description":"Maximum lines to read; requires start_line and excludes offset/limit."}}}`)}
 }
 
 // Spec 返回 search_text 的受限 JSON 参数定义。
 func (tool SearchText) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace. Each match includes a one-based line number and a zero-based byte_offset for the start of that line; prefer line as read_file.start_line together with line_count to inspect local code. For byte-mode reads, pass byte_offset to read_file.offset.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean"},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
+	return ports.ToolSpec{Name: "search_text", Description: "Search UTF-8 text files in the workspace. The default is literal substring search (regex=false): query \"A|B\" matches the literal characters A|B, not either symbol. Set regex=true explicitly for alternatives or other regex syntax, or search each literal separately. The result reports the active regex mode. Each match includes a one-based line and a zero-based byte_offset for its line start; use line with read_file.start_line and line_count, or byte_offset with byte-mode offset and limit.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["query"],"properties":{"query":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"},"regex":{"type":"boolean","description":"False or omitted: literal substring search. True: regex matching, including alternatives such as A|B."},"max_results":{"type":"integer","minimum":1,"maximum":2000}}}`)}
 }
 
 // listFilesArguments 是 list_files 的内部解码参数。
@@ -148,7 +151,7 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 	lineMode := arguments.StartLine != nil || arguments.LineCount != nil
 	if lineMode {
 		if arguments.StartLine == nil || arguments.LineCount == nil || arguments.Offset != nil || arguments.Limit != nil {
-			return Failure("invalid", "start_line and line_count must be paired and cannot be mixed with offset or limit")
+			return Failure("invalid", "start_line and line_count must be paired and cannot be mixed with offset or limit; "+readFileModeAdvice)
 		}
 		if *arguments.StartLine < 1 || *arguments.LineCount < 1 || *arguments.LineCount > maximumReadLines {
 			return Failure("invalid", fmt.Sprintf("start_line must be positive and line_count must be between 1 and %d", maximumReadLines))
@@ -328,7 +331,8 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result 
 		Matches      []match `json:"matches"`
 		ScannedFiles int     `json:"scanned_files"`
 		ScannedBytes int64   `json:"scanned_bytes"`
-	}{Matches: matches, ScannedFiles: scannedFiles, ScannedBytes: scannedBytes}, fmt.Sprintf("%d match(es)", len(matches)), scannedBytes, "", truncated)
+		Regex        bool    `json:"regex"`
+	}{Matches: matches, ScannedFiles: scannedFiles, ScannedBytes: scannedBytes, Regex: arguments.Regex}, fmt.Sprintf("%d match(es) (regex=%t)", len(matches), arguments.Regex), scannedBytes, "", truncated)
 }
 
 // decodeArguments 严格解码单个 JSON 参数对象并拒绝未知字段。

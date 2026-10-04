@@ -457,3 +457,53 @@ func TestReadFilePreviewRedactsBeforeTruncating(t *testing.T) {
 		t.Fatal("preview exposed a secret fragment or exceeded its bound")
 	}
 }
+
+// TestSearchTextReportsLiteralOrRegexMode 保留显式搜索语义，并把实际模式交给调用者。
+func TestSearchTextReportsLiteralOrRegexMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("alpha\nbeta\nalpha|beta\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 4096, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		arguments json.RawMessage
+		wantRegex bool
+		wantLines []int
+	}{
+		{name: "literal default", arguments: json.RawMessage(`{"path":"sample.txt","query":"alpha|beta"}`), wantLines: []int{3}},
+		{name: "empty literal alternatives", arguments: json.RawMessage(`{"path":"sample.txt","query":"alpha|missing"}`)},
+		{name: "literal explicit", arguments: json.RawMessage(`{"path":"sample.txt","query":"alpha|beta","regex":false}`), wantLines: []int{3}},
+		{name: "regex explicit", arguments: json.RawMessage(`{"path":"sample.txt","query":"alpha|beta","regex":true}`), wantRegex: true, wantLines: []int{1, 2, 3}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := (SearchText{Workspace: workspace}).Execute(context.Background(), test.arguments)
+			if !result.OK {
+				t.Fatalf("search failed: %#v", result)
+			}
+			var data struct {
+				Regex   *bool `json:"regex"`
+				Matches []struct {
+					Line int `json:"line"`
+				} `json:"matches"`
+			}
+			if err := json.Unmarshal(result.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.Regex == nil || *data.Regex != test.wantRegex {
+				t.Fatalf("active mode = %v, want regex=%t", data.Regex, test.wantRegex)
+			}
+			if len(data.Matches) != len(test.wantLines) {
+				t.Fatalf("matches = %d, want %d", len(data.Matches), len(test.wantLines))
+			}
+			for i, line := range test.wantLines {
+				if data.Matches[i].Line != line {
+					t.Fatalf("match %d line = %d, want %d", i, data.Matches[i].Line, line)
+				}
+			}
+		})
+	}
+}
