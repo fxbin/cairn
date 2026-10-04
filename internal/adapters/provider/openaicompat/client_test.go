@@ -58,6 +58,133 @@ func TestStreamReturnsCallbackErrorAndStops(t *testing.T) {
 	}
 }
 
+// doneBoundaryReader 在完整结束帧之后的任何额外读取上返回错误，使解码器
+// 不能依赖 EOF 或网络定时来证明已经收到 DONE。
+type doneBoundaryReader struct {
+	source        *strings.Reader
+	readAfterDone bool
+}
+
+// Read 提供预先冻结的完整帧，随后记录并拒绝越过响应结束边界的读取。
+func (reader *doneBoundaryReader) Read(target []byte) (int, error) {
+	if reader.source.Len() == 0 {
+		reader.readAfterDone = true
+		return 0, errors.New("unexpected read after complete DONE frame")
+	}
+	return reader.source.Read(target)
+}
+
+// TestDecodeStreamStopsAtCompleteDoneFrame 锁定完成帧内工具参数的校验和事件
+// 顺序；完成回调成功后不再读取输入，结束帧后的字节不属于已结束的响应。
+func TestDecodeStreamStopsAtCompleteDoneFrame(t *testing.T) {
+	reader := &doneBoundaryReader{source: strings.NewReader(
+		"data: " + `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+			"data: [DONE]\n\n")}
+	var events []ports.ModelEvent
+	err := decodeStream(context.Background(), reader, func(event ports.ModelEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("complete DONE frame must finish without another read: %v", err)
+	}
+	if reader.readAfterDone {
+		t.Fatal("decoder read beyond the complete DONE frame")
+	}
+	if len(events) != 3 || events[0].Kind != ports.UsageEvent || events[1].Kind != ports.ToolCallEvent || events[2].Kind != ports.Done {
+		t.Fatalf("unexpected event order: %#v", events)
+	}
+	if string(events[1].ToolCall.Arguments) != `{"path":"main.go"}` || events[2].StopReason != "tool_calls" {
+		t.Fatalf("completion lost tool arguments or finish reason: %#v", events)
+	}
+}
+
+// TestDecodeStreamPreservesDoneCallbackError 确认结束回调失败仍是失败，不能
+// 因为帧已标记 DONE 而把回调错误转换为成功。
+func TestDecodeStreamPreservesDoneCallbackError(t *testing.T) {
+	want := errors.New("completion callback failed")
+	err := decodeStream(context.Background(), strings.NewReader("data: [DONE]\n\n"), func(event ports.ModelEvent) error {
+		if event.Kind != ports.Done {
+			t.Fatalf("unexpected event: %#v", event)
+		}
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("completion callback error = %v, want %v", err, want)
+	}
+}
+
+// TestDecodeStreamRejectsInvalidCompletion 确认 finish_reason 不替代 DONE，
+// 且 DONE 到来前发现的冲突终止原因仍失败关闭。
+func TestDecodeStreamRejectsInvalidCompletion(t *testing.T) {
+	stop := "data: " + `{"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"
+	for _, test := range []struct {
+		name   string
+		stream string
+		want   string
+	}{
+		{name: "finish reason without DONE", stream: stop, want: "stream ended before [DONE]"},
+		{name: "conflicting reasons before DONE", stream: stop + "data: " + `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\ndata: [DONE]\n\n", want: "conflicting finish reasons"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := decodeStream(context.Background(), strings.NewReader(test.stream), func(ports.ModelEvent) error { return nil })
+			var failure *ProviderError
+			if !errors.As(err, &failure) || failure.Kind != "invalid_response" || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("invalid completion = %v, want invalid_response containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+// TestStreamClosesResponseBodyAfterDone 验证服务端发送完成帧后仍保持响应开启
+// 时，客户端立即成功并关闭响应体；通道握手区分 DONE 与服务端 EOF。
+func TestStreamClosesResponseBodyAfterDone(t *testing.T) {
+	doneWritten := make(chan struct{})
+	bodyClosed := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: " + `{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+		writer.(http.Flusher).Flush()
+		close(doneWritten)
+		select {
+		case <-request.Context().Done():
+			close(bodyClosed)
+		case <-releaseHandler:
+		}
+	}))
+	defer func() {
+		close(releaseHandler)
+		server.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := Client{BaseURL: server.URL, HTTPClient: server.Client(), Requirements: Requirements{RequireUsage: true, AllowedStopReasons: []string{"stop"}}}
+	completed := make(chan error, 1)
+	go func() {
+		completed <- client.Stream(ctx, ports.ModelRequest{Model: "test"}, func(ports.ModelEvent) error { return nil })
+	}()
+	select {
+	case <-doneWritten:
+	case <-ctx.Done():
+		t.Fatalf("server did not send completion frame: %v", ctx.Err())
+	}
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("completed response waited for EOF or failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("client still waited for server EOF after DONE: %v", ctx.Err())
+	}
+	select {
+	case <-bodyClosed:
+	case <-ctx.Done():
+		t.Fatalf("completed response body was not closed: %v", ctx.Err())
+	}
+}
+
 func TestContractRejectsMalformedToolArgumentsWithoutEchoingThem(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

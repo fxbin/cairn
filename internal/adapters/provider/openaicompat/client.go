@@ -311,7 +311,8 @@ func chatCompletionsURL(baseURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-// decodeStream 解析 SSE data 帧，累计工具调用片段并按端口事件顺序转发。
+// decodeStream 解析 SSE data 帧，累计工具调用片段并按端口事件顺序转发；
+// 完整 DONE 帧成功转发后响应即结束，后续字节不再属于该响应，也不再等待 EOF。
 func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEvent) error) error {
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
@@ -332,9 +333,6 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 		data := strings.Join(dataLines, "\n")
 		dataLines = nil
 		if data == "[DONE]" {
-			if done {
-				return &ProviderError{Kind: "invalid_response", Cause: errors.New("received duplicate done marker")}
-			}
 			orderedCalls, err := orderedToolCalls(toolCalls)
 			if err != nil {
 				return &ProviderError{Kind: "invalid_response", Cause: err}
@@ -391,6 +389,9 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 		if line == "" {
 			if err := flush(); err != nil {
 				return err
+			}
+			if done {
+				return nil
 			}
 			continue
 		}
