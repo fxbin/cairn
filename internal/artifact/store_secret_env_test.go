@@ -46,3 +46,46 @@ func TestRedactJSONScrubsBareCredentialAssignmentInStringLeaf(t *testing.T) {
 		t.Fatalf("non-credential line must survive: %s", redacted)
 	}
 }
+
+// TestRedactQuotedCredentialAtEOF 覆盖截断值的双/单引号与短片段，同时保留完整短值和非敏感键。
+func TestRedactQuotedCredentialAtEOF(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "double long EOF", input: `API_KEY="boundary-value`, want: "API_KEY=[REDACTED]"},
+		{name: "single long EOF", input: `DB_PASSWORD='boundary-value`, want: "DB_PASSWORD=[REDACTED]"},
+		{name: "double one EOF", input: `API_KEY="Z`, want: "API_KEY=[REDACTED]"},
+		{name: "double two EOF", input: `API_KEY="Z7`, want: "API_KEY=[REDACTED]"},
+		{name: "double three EOF", input: `API_KEY="Z7X`, want: "API_KEY=[REDACTED]"},
+		{name: "single one EOF", input: `DB_PASSWORD='Z`, want: "DB_PASSWORD=[REDACTED]"},
+		{name: "single two EOF", input: `DB_PASSWORD='Z7`, want: "DB_PASSWORD=[REDACTED]"},
+		{name: "single three EOF", input: `DB_PASSWORD='Z7X`, want: "DB_PASSWORD=[REDACTED]"},
+		{name: "closed short double", input: `API_KEY="Z7X"`, want: `API_KEY="Z7X"`},
+		{name: "closed short single", input: `DB_PASSWORD='Z7X'`, want: `DB_PASSWORD='Z7X'`},
+		{name: "public double EOF", input: `MESSAGE="boundary-value`, want: `MESSAGE="boundary-value`},
+		{name: "public single EOF", input: `PORT='8080`, want: `PORT='8080`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := string(Redact([]byte(test.input))); got != test.want {
+				t.Error("文本 EOF 脱敏不符合正负控")
+			}
+			payload, err := json.Marshal(struct {
+				Stdout string `json:"stdout"`
+			}{Stdout: test.input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Stdout string `json:"stdout"`
+			}
+			if err := json.Unmarshal(RedactJSON(payload), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Stdout != test.want {
+				t.Error("JSON 叶子的 EOF 脱敏不符合正负控")
+			}
+		})
+	}
+}

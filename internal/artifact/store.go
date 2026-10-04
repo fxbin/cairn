@@ -60,9 +60,10 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{12,}`),
 }
 
-// credentialAssignmentPattern 只捕获形如“标识符 = 长值”的候选赋值；键名是否
-// 敏感统一交给 credential.Key，避免文本、JSON、配置和工具各自维护词干。
-var credentialAssignmentPattern = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|[A-Za-z0-9+/=_-]{16,})`)
+// credentialAssignmentPattern 捕获带引号或足够长裸值的候选赋值；闭合引号值
+// 保留既有长度阈值，未闭合到 EOF 的非空片段也脱敏，防止输出截断后漏值。
+// 键名敏感性统一交给 credential.Key，避免文本、JSON、配置和工具各自维护词干。
+var credentialAssignmentPattern = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|"[^"]+$|'[^']+$|[A-Za-z0-9+/=_-]{16,})`)
 
 // credentialEnvAssignmentPattern 只捕获行首的“环境变量=值”赋值（.env 与 shell
 // 导出风格）。与上面的通用赋值模式不同，它行锚定且不限值长度：短的

@@ -17,7 +17,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -232,6 +234,20 @@ func (tool ExecCommand) dockerContainerAbsent(dockerBinary, containerName string
 	return strings.TrimSpace(output.String()) == "", nil
 }
 
+// execCommandOutput 保存已确认终止命令的退出事实和每路输出上限内的文本；
+// Result.Bytes 独立记录原始捕获字节数，不因展示时去掉残缺 UTF-8 尾部而减少。
+type execCommandOutput struct {
+	Argv         []string `json:"argv"`
+	Backend      string   `json:"backend"`
+	CWD          string   `json:"cwd"`
+	ExitCode     int      `json:"exit_code"`
+	Signal       string   `json:"signal,omitempty"`
+	DurationMS   int64    `json:"duration_ms"`
+	Stdout       string   `json:"stdout"`
+	Stderr       string   `json:"stderr"`
+	OutputCapped bool     `json:"output_capped"`
+}
+
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
 func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) Result {
 	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
@@ -289,24 +305,51 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 	}
 	duration := time.Since(started).Milliseconds()
 	exitCode, signal := commandOutcome(waitErr)
-	data := struct {
-		Argv         []string `json:"argv"`
-		Backend      string   `json:"backend"`
-		CWD          string   `json:"cwd"`
-		ExitCode     int      `json:"exit_code"`
-		Signal       string   `json:"signal,omitempty"`
-		DurationMS   int64    `json:"duration_ms"`
-		Stdout       string   `json:"stdout"`
-		Stderr       string   `json:"stderr"`
-		OutputCapped bool     `json:"output_capped"`
-	}{Argv: arguments.Argv, Backend: string(backend), CWD: filepath.ToSlash(arguments.CWD), ExitCode: exitCode, Signal: signal, DurationMS: duration, Stdout: stdout.String(), Stderr: stderr.String(), OutputCapped: stdout.truncated || stderr.truncated}
-	if cancelled {
-		return Result{Code: "cancelled", Preview: stringResult(data), Truncated: data.OutputCapped, Bytes: int64(stdout.Len() + stderr.Len())}
+	data := execCommandOutput{Argv: arguments.Argv, Backend: string(backend), CWD: filepath.ToSlash(arguments.CWD), ExitCode: exitCode, Signal: signal, DurationMS: duration, Stdout: stdout.String(), Stderr: stderr.String(), OutputCapped: stdout.truncated || stderr.truncated}
+	result := Success(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
+	if cancelled || waitErr != nil {
+		result.OK = false
+		result.Code = "nonzero_exit"
+		if cancelled {
+			result.Code = "cancelled"
+		}
+		result.Preview = execFailurePreview(data)
 	}
-	if waitErr != nil {
-		return Result{Code: "nonzero_exit", Preview: stringResult(data), Truncated: data.OutputCapped, Bytes: int64(stdout.Len() + stderr.Len())}
+	return result
+}
+
+// execFailurePreview 先完整脱敏捕获文本，再把两路诊断尾部置于预览前部；
+// 尾部预算使退出事实和输出截断标记也能保留在上下文摘要的短预览中。
+func execFailurePreview(data execCommandOutput) string {
+	stderr, stderrClipped := execDiagnosticTail(string(artifact.Redact([]byte(data.Stderr))))
+	stdout, stdoutClipped := execDiagnosticTail(string(artifact.Redact([]byte(data.Stdout))))
+	return stringResult(struct {
+		StderrTail    string `json:"stderr_tail,omitempty"`
+		StdoutTail    string `json:"stdout_tail,omitempty"`
+		ExitCode      int    `json:"exit_code"`
+		Signal        string `json:"signal,omitempty"`
+		OutputCapped  bool   `json:"output_capped"`
+		TailTruncated bool   `json:"tail_truncated"`
+		Backend       string `json:"backend"`
+	}{StderrTail: stderr, StdoutTail: stdout, ExitCode: data.ExitCode, Signal: data.Signal, OutputCapped: data.OutputCapped, TailTruncated: stderrClipped || stdoutClipped, Backend: data.Backend})
+}
+
+// execDiagnosticTail 仅接收已脱敏文本，按 JSON 编码字节预算保留 UTF-8 尾部；
+// 先限原文字节范围，避免长输出触发逐字符全量编码，返回是否省略了前部。
+func execDiagnosticTail(content string) (string, bool) {
+	start := max(0, len(content)-execFailureTailEncodedBytes)
+	for start < len(content) && continuationByte(content[start]) {
+		start++
 	}
-	return Success(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
+	for {
+		tail := content[start:]
+		encoded, _ := json.Marshal(tail)
+		if len(encoded) <= execFailureTailEncodedBytes {
+			return tail, start != 0
+		}
+		_, size := utf8.DecodeRuneInString(tail)
+		start += size
+	}
 }
 
 // waitForExitAfterKill 在 SIGKILL 后有界等待 Wait 结果；布尔值仅在已确认 Wait
@@ -327,6 +370,8 @@ const (
 	defaultMaxOutputBytes = 256 * 1024
 	maxAllowedOutputBytes = 1024 * 1024
 	resultPreviewMaxBytes = 1024
+	// 每路 JSON 尾部占总预览预算的八分之一，兼顾两路诊断与退出事实。
+	execFailureTailEncodedBytes = resultPreviewMaxBytes / 8
 )
 
 // ParseExecArguments 校验命令参数并填充与执行器相同的默认值；策略层在审批前
@@ -440,10 +485,23 @@ func (buffer *limitedBuffer) Write(content []byte) (int, error) {
 	return len(content), nil
 }
 
-// String 返回当前已保留的输出文本。
-func (buffer *limitedBuffer) String() string { return buffer.buffer.String() }
+// String 返回已捕获文本，仅在输出被截断时去掉末尾未完成的 UTF-8 字符；
+// 正常内容及原始捕获计数不变，避免 JSON 替换残片后膨胀越过输出上限。
+func (buffer *limitedBuffer) String() string {
+	content := buffer.buffer.Bytes()
+	if buffer.truncated && len(content) != 0 {
+		start := len(content) - 1
+		for start > 0 && continuationByte(content[start]) {
+			start--
+		}
+		if !utf8.FullRune(content[start:]) {
+			content = content[:start]
+		}
+	}
+	return string(content)
+}
 
-// Len 返回当前已保留的输出字节数。
+// Len 返回原始捕获字节数，展示时裁去残缺 UTF-8 尾部不改变计数。
 func (buffer *limitedBuffer) Len() int { return buffer.buffer.Len() }
 
 // stringResult 将结果编码为长度受限的 JSON 预览文本。截断回退到最后一个
