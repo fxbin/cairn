@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,6 +146,19 @@ func (client Client) checkStreamContract(usageSeen bool, stopReason string) erro
 	return &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("undeclared finish reason %q", stopReason)}
 }
 
+// classifyTransportError 把传输层错误统一归入可重试 transport；http.Client
+// 超时与网络瞬断一样属于瞬态，必须进入重试路径而不是一次失败。
+func classifyTransportError(err error) error {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return &ProviderError{Kind: "transport", Retryable: true, Cause: err}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return &ProviderError{Kind: "transport", Retryable: true, Cause: err}
+	}
+	return &ProviderError{Kind: "transport", Retryable: true, Cause: err}
+}
+
 // ProviderError 保留提供方失败分类、HTTP 状态、重试信息与安全的底层原因。
 type ProviderError struct {
 	Kind       string
@@ -245,7 +260,12 @@ func retryDelay(after time.Duration, attempt int) time.Duration {
 
 // streamOnce 发起一次 SSE 请求，并报告是否已收到不可安全重试的语义输出。
 func (client Client) streamOnce(ctx context.Context, endpoint string, body []byte, emit func(ports.ModelEvent) error) (bool, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	// 独立可取消上下文：decodeStream 在完整 DONE 后返回时，必须先取消请求
+	// 再关闭 Body。否则 HTTP/1.1 的 Body.Close 会为连接复用阻塞读尽 SSE，
+	// 与 http.Client.Timeout 叠加表现为「读 body 超时」。
+	requestContext, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
+	httpRequest, err := http.NewRequestWithContext(requestContext, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return false, &ProviderError{Kind: "invalid_request", Cause: err}
 	}
@@ -260,7 +280,7 @@ func (client Client) streamOnce(ctx context.Context, endpoint string, body []byt
 	}
 	response, err := httpClient.Do(httpRequest)
 	if err != nil {
-		return false, &ProviderError{Kind: "transport", Retryable: true, Cause: err}
+		return false, classifyTransportError(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -270,12 +290,14 @@ func (client Client) streamOnce(ctx context.Context, endpoint string, body []byt
 		return false, &ProviderError{Kind: "invalid_response", StatusCode: response.StatusCode, Cause: fmt.Errorf("expected text/event-stream, got %q", response.Header.Get("Content-Type"))}
 	}
 	semantic := false
-	err = decodeStream(ctx, response.Body, func(event ports.ModelEvent) error {
+	err = decodeStream(requestContext, response.Body, func(event ports.ModelEvent) error {
 		if event.Kind != ports.Done {
 			semantic = true
 		}
 		return emit(event)
 	})
+	// 不论 DONE 即关还是读到 EOF，都取消底层请求，确保 defer Close 不阻塞。
+	cancelRequest()
 	return semantic, err
 }
 
@@ -403,7 +425,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return &ProviderError{Kind: "transport", Retryable: true, Cause: err}
+		return classifyTransportError(err)
 	}
 	if err := flush(); err != nil {
 		return err
