@@ -316,3 +316,54 @@ func TestGateProtectsPathAliases(t *testing.T) {
 		})
 	}
 }
+
+// TestGateClassifiesPatchRecoveryWithoutGrantingWrite 保持拒绝及指纹，并区分形状、匹配、过期摘要和路径保护。
+func TestGateClassifiesPatchRecoveryWithoutGrantingWrite(t *testing.T) {
+	root := t.TempDir()
+	body := []byte("if ready:\n\treturn result\n")
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := tools.NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := New("allow", "allow", []string{"protected.txt"}, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		raw  json.RawMessage
+		code string
+		rule string
+	}{
+		{name: "missing path", raw: json.RawMessage(`{"content":"replacement"}`), code: "invalid_patch_arguments", rule: "invalid_patch"},
+		{name: "mixed update", raw: json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + patchHash(body) + `","content":"replacement","replacements":[{"old":"ready","new":"changed"}]}`), code: "invalid_patch_arguments", rule: "invalid_patch"},
+		{name: "text mismatch", raw: json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + patchHash(body) + `","replacements":[{"old":"if ready:\n    return result\n","new":"changed"}]}`), code: "patch_text_mismatch", rule: "invalid_patch"},
+		{name: "stale first", raw: json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + patchHash([]byte("stale")) + `","replacements":[{"old":"missing","new":"changed"}]}`), code: "stale_precondition", rule: "stale_patch_precondition"},
+		{name: "protected first", raw: json.RawMessage(`{"path":"protected.txt","mode":"update","content":"replacement"}`), rule: "protected_path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			decision, err := gate.Decide("apply_patch", test.raw)
+			if err != nil || decision.Effect != Deny || decision.FailureCode != test.code || decision.RuleID != test.rule || decision.Fingerprint == "" {
+				t.Fatalf("恢复分类改变了拒绝边界: %#v %v", decision, err)
+			}
+			second, err := gate.Decide("apply_patch", test.raw)
+			if err != nil || second.Fingerprint != decision.Fingerprint {
+				t.Fatal("失败恢复反馈扰动了同操作指纹")
+			}
+			if test.code != "" && (!json.Valid(decision.FailureData) || !strings.Contains(string(decision.FailureData), "next_action")) {
+				t.Fatal("缺少结构化恢复动作")
+			}
+			if strings.Contains(string(decision.FailureData), "return result") {
+				t.Error("Policy 恢复信息泄漏文件正文")
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || string(actual) != string(body) {
+				t.Fatalf("规划拒绝改变了文件: %v", err)
+			}
+		})
+	}
+}

@@ -68,7 +68,10 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(raw, &proposed); err != nil {
-			return Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: err.Error()}, nil
+			return invalidPatchDecision(raw, &tools.PatchArgumentsError{Message: err.Error()}), nil
+		}
+		if proposed.Path == "" {
+			return invalidPatchDecision(raw, &tools.PatchArgumentsError{Message: "path is required"}), nil
 		}
 		for _, protected := range gate.ProtectedPaths {
 			if matchesProtected(proposed.Path, protected) {
@@ -116,10 +119,17 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 	}
 }
 
-// invalidPatchDecision 将 Patch 规划失败映射为策略拒绝；摘要过期是可恢复的安全
-// 前置条件，因此额外提供不含文件正文的结构化反馈，其他参数错误保持原有语义。
+// invalidPatchDecision 保持规划失败的拒绝和操作指纹，同时把参数、精确匹配及
+// 过期摘要分别映射为可恢复反馈；未知错误与权限边界不因此得到授权。
 func invalidPatchDecision(raw json.RawMessage, cause error) Decision {
 	decision := Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: cause.Error()}
+	feedback := tools.PatchFailureResult(cause)
+	if feedback.Code == tools.CodeInvalidPatchArguments || feedback.Code == tools.CodePatchTextMismatch {
+		decision.FailureCode = feedback.Code
+		decision.FailureData = feedback.Data
+		decision.Summary = feedback.Preview
+		return decision
+	}
 	var stale *tools.PatchPreconditionError
 	if !errors.As(cause, &stale) {
 		return decision

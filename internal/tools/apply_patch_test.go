@@ -244,3 +244,139 @@ func (temporary *failingPatchTemporary) Close() error {
 	}
 	return err
 }
+
+// TestApplyPatchArgumentFeedbackReportsModeShape 验证形状错误被拒绝且提供重建字段，不改写目标。
+func TestApplyPatchArgumentFeedbackReportsModeShape(t *testing.T) {
+	root := t.TempDir()
+	original := []byte("original source")
+	path := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ApplyPatch{Workspace: workspace}
+	for _, test := range []struct {
+		name string
+		raw  json.RawMessage
+		mode string
+		omit string
+	}{
+		{name: "missing path", raw: json.RawMessage(`{"content":"replacement"}`)},
+		{name: "update mixed", raw: json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + sha256Reference(original) + `","content":"replacement","replacements":[{"old":"original","new":"changed"}]}`), mode: "update", omit: "content"},
+		{name: "create mixed", raw: json.RawMessage(`{"path":"new.txt","mode":"create","expected_sha256":"absent","content":"replacement","replacements":[{"old":"original","new":"changed"}]}`), mode: "create", omit: "replacements"},
+		{name: "delete content", raw: json.RawMessage(`{"path":"file.txt","mode":"delete","expected_sha256":"` + sha256Reference(original) + `","content":""}`), mode: "delete", omit: "content"},
+		{name: "unknown field", raw: json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"` + sha256Reference(original) + `","patch":"not supported"}`), mode: "update", omit: "content"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := tool.Execute(context.Background(), test.raw)
+			if result.OK || result.Code != "invalid_patch_arguments" {
+				t.Fatalf("错误形状未被分类拒绝: ok=%t code=%s", result.OK, result.Code)
+			}
+			var details struct {
+				Mode           string   `json:"mode"`
+				RequiredFields []string `json:"required_fields"`
+				OmitFields     []string `json:"omit_fields"`
+				NextAction     string   `json:"next_action"`
+			}
+			if err := json.Unmarshal(result.Data, &details); err != nil {
+				t.Fatal(err)
+			}
+			if details.Mode != test.mode || !patchFeedbackHasField(details.RequiredFields, "path") || !patchFeedbackHasField(details.RequiredFields, "expected_sha256") || details.NextAction == "" || (test.omit != "" && !patchFeedbackHasField(details.OmitFields, test.omit)) {
+				t.Fatalf("缺少合法模式重提信息: %#v", details)
+			}
+			if strings.Contains(string(result.Data), "original source") || strings.Contains(string(result.Data), "not supported") {
+				t.Error("恢复元数据包含原文或原请求内容")
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || string(actual) != string(original) {
+				t.Fatalf("拒绝形状时改变了原文件: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("拒绝创建形状时仍创建了文件")
+			}
+		})
+	}
+}
+
+// patchFeedbackHasField 判断恢复字段集合是否包含所需坐标，不依赖展示顺序。
+func patchFeedbackHasField(fields []string, expected string) bool {
+	for _, field := range fields {
+		if field == expected {
+			return true
+		}
+	}
+	return false
+}
+
+// TestApplyPatchTextMismatchMetadataAndExactRetry 验证失配次数与索引、失败无写入，以及读取原文后的精确重提。
+func TestApplyPatchTextMismatchMetadataAndExactRetry(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		replacements []Replacement
+		index        int
+		actual       int
+	}{
+		{name: "whitespace is not normalized", replacements: []Replacement{{Old: "if ready:\n    return result\n", New: "changed"}}, actual: 0},
+		{name: "ambiguous old", replacements: []Replacement{{Old: "alpha", New: "beta"}}, actual: 2},
+		{name: "later replacement", replacements: []Replacement{{Old: "ready", New: "done"}, {Old: "absent block", New: "changed"}}, index: 1, actual: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			original := []byte("if ready:\n\treturn result\nalpha alpha\n")
+			path := filepath.Join(root, "file.txt")
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := NewWorkspace(root, nil, 1024, 100, 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			arguments, err := json.Marshal(PatchArguments{Path: "file.txt", Mode: "update", ExpectedSHA256: sha256Reference(original), Replacements: test.replacements})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := ApplyPatch{Workspace: workspace}
+			result := tool.Execute(context.Background(), arguments)
+			if result.OK || result.Code != "patch_text_mismatch" {
+				t.Fatalf("精确匹配未分类拒绝: ok=%t code=%s", result.OK, result.Code)
+			}
+			var details struct {
+				Path                string `json:"path"`
+				ReplacementIndex    int    `json:"replacement_index"`
+				ActualOccurrences   int    `json:"actual_occurrences"`
+				ExpectedOccurrences int    `json:"expected_occurrences"`
+				NextAction          string `json:"next_action"`
+			}
+			if err := json.Unmarshal(result.Data, &details); err != nil {
+				t.Fatal(err)
+			}
+			if details.Path != "file.txt" || details.ReplacementIndex != test.index || details.ActualOccurrences != test.actual || details.ExpectedOccurrences != 1 || !strings.Contains(details.NextAction, "read_file") || !strings.Contains(details.NextAction, "whitespace") {
+				t.Fatalf("匹配恢复元数据错误: %#v", details)
+			}
+			if strings.Contains(string(result.Data), "return result") || strings.Contains(result.Preview, "absent block") {
+				t.Error("匹配恢复信息包含源文或失败 old 文本")
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil || string(actual) != string(original) {
+				t.Fatalf("失配仍发布了部分替换: %v", err)
+			}
+			read := (ReadFile{Workspace: workspace}).Execute(context.Background(), json.RawMessage(`{"path":"file.txt"}`))
+			var source struct {
+				Content string `json:"content"`
+			}
+			if !read.OK || json.Unmarshal(read.Data, &source) != nil {
+				t.Fatal("不能读取精确原文")
+			}
+			arguments, err = json.Marshal(PatchArguments{Path: "file.txt", Mode: "update", ExpectedSHA256: read.SHA256, Replacements: []Replacement{{Old: source.Content, New: "verified exact retry\n"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retry := tool.Execute(context.Background(), arguments); !retry.OK {
+				t.Fatalf("精确原文重提失败: code=%s", retry.Code)
+			}
+		})
+	}
+}
