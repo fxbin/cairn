@@ -18,6 +18,30 @@ import (
 // decisionCheckpointPrefix 标记检查点反馈，便于回放去重与审计检索。
 const decisionCheckpointPrefix = "[决策检查点]"
 
+// decisionCheckpointSummary 是压缩时优先保留的固定提醒；历史反馈不授权写入或确认完成。
+const decisionCheckpointSummary = "[决策检查点] 已触发收敛提醒，不授权写入，也不确认完成。保持原始任务和权限范围；只读任务继续只读。已有证据足够时采取任务要求的最小可验证动作，否则只定向补齐具体证据缺口。"
+
+// decisionCheckpointSummaryMaxBytes 限制固定反馈的摘要占用，避免挤占全部事实预算。
+const decisionCheckpointSummaryMaxBytes = 480
+
+// decisionCheckpointCompactionNote 在反馈已存在时保留固定范围约束，不复制用户或模型的任意说明。
+func decisionCheckpointCompactionNote(messages []ports.Message, maximumBytes int) string {
+	for _, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		if !strings.HasPrefix(message.Content, decisionCheckpointPrefix) && !(strings.HasPrefix(message.Content, contextCheckpointPrefix) && strings.Contains(message.Content, "\n"+decisionCheckpointPrefix)) {
+			continue
+		}
+		note := clipText(decisionCheckpointSummary, min(maximumBytes-len("\n"), decisionCheckpointSummaryMaxBytes))
+		if note == "" {
+			return ""
+		}
+		return note + "\n"
+	}
+	return ""
+}
+
 // decisionCheckpointPrompt 是插入模型上下文的反馈正文。措辞刻意开放：
 // 允许回答“证据不足”，不要求也不暗示必须立刻补丁。
 const decisionCheckpointPrompt = `[决策检查点] 尚未见 apply_patch 提议。请保持原始任务范围，仅基于已读事实收敛下一步（可答“证据不足”）：
@@ -29,11 +53,11 @@ const decisionCheckpointPrompt = `[决策检查点] 尚未见 apply_patch 提议
 这不是任务完成确认，不得仅因收到检查点而宣布完成或写入。不要猜测未读内容，也不要重构原文空白后提交未经确认的补丁。`
 
 // maybeDecisionCheckpoint 在满足条件时插入一次软决策检查点。条件：
-// 已启用、本轮关闭后仍无 apply_patch 提议、已有读_file 证据、已完成轮次达到
-// 阈值、且本 run 尚未插入过。成功时持久化 verification_feedback 事件并把
-// 同一文本追加进消息；失败关闭时原样返回消息，不中断运行。
+// 已启用、关闭边界无 pending、仍无 apply_patch 提议、已有成功读取回执、轮次达到
+// 阈值且仍有预算、尚未插入过。日志读取失败时跳过；反馈持久化失败返回错误，
+// 已关闭的事实留待恢复。成功时事件与模型消息使用同一反馈正文。
 func (loop *Loop) maybeDecisionCheckpoint(ctx context.Context, projection *domain.RunProjection, input RunInput, messages []ports.Message) ([]ports.Message, error) {
-	if !loop.DecisionCheckpointEnabled {
+	if !loop.DecisionCheckpointEnabled || projection.State != domain.RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
 		return messages, nil
 	}
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
@@ -53,7 +77,8 @@ func (loop *Loop) maybeDecisionCheckpoint(ctx context.Context, projection *domai
 	if minTurns <= 0 {
 		minTurns = 4
 	}
-	if openedTurnCount(events) < minTurns {
+	turns := openedTurnCount(events)
+	if turns < minTurns || loop.MaxTurns > 0 && turns >= loop.MaxTurns {
 		return messages, nil
 	}
 	turnID := domain.NewTurnID()
@@ -105,18 +130,32 @@ func hasApplyPatchProposal(events []domain.Event) bool {
 	return false
 }
 
-// hasReadFileEvidence 判断历史中是否已有 read_file 提议（模型已请求读取源码）。
+// hasReadFileEvidence 只接受已成功完成且追加了成功回执的 read_file，拒绝将提议、拒绝或未完成操作当作已读事实。
 func hasReadFileEvidence(events []domain.Event) bool {
-	for index := len(events) - 1; index >= 0; index-- {
-		event := events[index]
-		if event.Type != domain.EventToolCallProposed {
+	reads := make(map[domain.OperationID]bool)
+	for _, event := range events {
+		if event.OperationID == nil {
 			continue
 		}
-		var payload struct {
-			ToolName string `json:"tool_name"`
-		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.ToolName == "read_file" {
-			return true
+		switch event.Type {
+		case domain.EventToolCallProposed:
+			var payload struct {
+				ToolName string `json:"tool_name"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.ToolName == "read_file" {
+				reads[*event.OperationID] = false
+			}
+		case domain.EventOperationSucceeded:
+			if _, exists := reads[*event.OperationID]; exists {
+				reads[*event.OperationID] = true
+			}
+		case domain.EventToolResultAppended:
+			var payload struct {
+				OK bool `json:"ok"`
+			}
+			if reads[*event.OperationID] && json.Unmarshal(event.Payload, &payload) == nil && payload.OK {
+				return true
+			}
 		}
 	}
 	return false

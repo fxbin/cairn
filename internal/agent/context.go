@@ -18,11 +18,9 @@ const contextBytesPerEstimatedToken = 2
 
 const contextCompactionStrategy = "deterministic_journal_checkpoint_v4"
 
-// contextCheckpointPrefix 声明检查点的使用纪律：优先基于清单内已有发现推进，
-// 不重复探索。措辞本身就是行为合同——v1 的"需要细节时请重新读取工作区"曾被
-// 观测为压缩后重读循环的放大器（AgentScope 失败 run：压缩后 search 塌缩、
-// read 爆炸、零 patch 耗尽 48 轮）。
-const contextCheckpointPrefix = "此前的对话原文已被压缩为以下可审计检查点。系统提示和原始任务保持不变；检查点首先列出已检查对象清单，请基于已有发现继续推进，仅当清单之外的信息确有必要时才读取或搜索。\n"
+// contextCheckpointPrefix 区分历史成功范围与当前完整原文，要求依据具体缺口推进，
+// 避免把局部读取当作整文件完成，也避免压缩后无目的泛读或重构补丁旧文本。
+const contextCheckpointPrefix = "此前对话已压缩；任务与权限不变。清单仅含成功回执的历史范围，非完整当前文件。依据具体缺口推进，必要时定向读取精确原文，勿泛读或从摘要重构补丁旧文本。\n"
 
 // CompactionProbeEvidence 是离线预筛可消费的闭合探针证据：相同输入的两次
 // 摘要、工具调用与回执计数均来自内置固定消息，不含任务正文或本机路径。
@@ -40,7 +38,7 @@ func ProbeContextCompaction(maximumBytes, inventoryBudgetPercent int) Compaction
 		{Role: "system", Content: "固定离线探针"},
 		{Role: "user", Content: "核对压缩器的确定性与证据锚。"},
 		{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "probe-read", Name: "read_file", Arguments: json.RawMessage(`{"path":"probe.go"}`)}}},
-		{Role: "tool", ToolCallID: "probe-read", Content: "已读取目标并保留事实证据。"},
+		{Role: "tool", ToolCallID: "probe-read", Content: `{"ok":true,"code":"ok","preview":"已读取目标并保留事实证据。","data":{"path":"probe.go","offset":0,"limit":16,"total_bytes":16}}`},
 		{Role: "user", Content: "验证反馈：工具调用与回执已经配对。"},
 	}
 	first := summarizeMessagesWithInventoryBudget(messages, maximumBytes, inventoryBudgetPercent)
@@ -268,23 +266,25 @@ func summarizeMessagesWithInventoryBudgetFrom(messages []ports.Message, maximumB
 	if historyStart > len(messages) {
 		historyStart = len(messages)
 	}
+	feedback := decisionCheckpointCompactionNote(messages[historyStart:], maximumBytes)
+	remainingBytes := maximumBytes - len(feedback)
 	// 清单预算按冻结比例分配，但不低于 512 字节（覆盖中文表头与常见路径）；
 	// 极小预算下清单优先于近期事实——丢失探索记忆的代价高于丢失最后一条
 	// 工具结果的预览。
-	inventoryBudget := maximumBytes * inventoryBudgetPercent / 100
+	inventoryBudget := remainingBytes * inventoryBudgetPercent / 100
 	if inventoryBudget < 512 {
-		inventoryBudget = min(512, maximumBytes)
+		inventoryBudget = min(512, remainingBytes)
 	}
 	inventory := explorationInventory(messages[historyStart:], inventoryBudget)
-	factBudget := maximumBytes
+	factBudget := remainingBytes
 	if inventory != "" {
-		factBudget = maximumBytes - len(inventory)
+		factBudget = remainingBytes - len(inventory)
 	}
 	facts := summarizeRecentFactsFrom(messages, factBudget, historyStart)
-	if facts == "" && inventory == "" {
+	if feedback == "" && facts == "" && inventory == "" {
 		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
 	}
-	return string(artifact.Redact([]byte(inventory + facts)))
+	return string(artifact.Redact([]byte(feedback + inventory + facts)))
 }
 
 // summarizeRecentFactsFrom 从指定历史起点反向保留近期事实。
@@ -316,6 +316,9 @@ func summarizeRecentFactsFrom(messages []ports.Message, maximumBytes, historySta
 		if messages[index].Role == "user" && strings.HasPrefix(messages[index].Content, contextCheckpointPrefix) {
 			continue
 		}
+		if messages[index].Role == "user" && strings.HasPrefix(messages[index].Content, decisionCheckpointPrefix) {
+			continue
+		}
 		entry := summarizeMessage(messages[index], toolNames)
 		if entry == "" {
 			continue
@@ -341,70 +344,6 @@ func summarizeRecentFactsFrom(messages []ports.Message, maximumBytes, historySta
 		entries[left], entries[right] = entries[right], entries[left]
 	}
 	return preservedCheckpoint + strings.Join(entries, "")
-}
-
-// explorationInventory 从全部历史工具调用确定性派生去重的已检查对象清单；
-// 只读工具列路径或查询，exec 列 argv 首词，patch 列路径。清单内的事实跨压缩
-// 保留，是压缩后"不要重复探索"的机器可核对依据。
-func explorationInventory(messages []ports.Message, maximumBytes int) string {
-	if maximumBytes < 1 {
-		return ""
-	}
-	header := "已检查对象（勿重复探索）：\n"
-	if maximumBytes < len(header) {
-		return ""
-	}
-	seen := make(map[string]bool)
-	lines := make([]string, 0, 16)
-	used := len(header)
-	for _, message := range messages {
-		for _, call := range message.ToolCalls {
-			target := toolExplorationTarget(call.Name, call.Arguments)
-			if target == "" {
-				continue
-			}
-			key := call.Name + ":" + target
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			line := "- " + call.Name + " " + target + "\n"
-			if used+len(line) > maximumBytes {
-				if used+len("- …\n") <= maximumBytes {
-					lines = append(lines, "- …\n")
-				}
-				return header + strings.Join(lines, "")
-			}
-			lines = append(lines, line)
-			used += len(line)
-		}
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return header + strings.Join(lines, "")
-}
-
-// toolExplorationTarget 提取一次工具调用的探索目标摘要；无法识别目标时为空。
-func toolExplorationTarget(name string, arguments json.RawMessage) string {
-	var fields struct {
-		Path  string   `json:"path"`
-		Query string   `json:"query"`
-		Argv  []string `json:"argv"`
-	}
-	if len(arguments) == 0 || json.Unmarshal(arguments, &fields) != nil {
-		return ""
-	}
-	switch {
-	case fields.Path != "":
-		return clipText(fields.Path, 160)
-	case fields.Query != "":
-		return clipText(fields.Query, 160)
-	case len(fields.Argv) > 0:
-		return clipText(fields.Argv[0], 160)
-	default:
-		return ""
-	}
 }
 
 // summarizeMessage 将单条历史消息归约为不含工具原始 data 字段的事实记录。
@@ -457,6 +396,10 @@ func summarizeToolResult(name, content string) string {
 	if result.OK {
 		if evidence := checkpointToolEvidence(name, result.Data); evidence != "" {
 			parts = append(parts, evidence)
+		}
+	} else if name == "apply_patch" {
+		if recovery := checkpointPatchRecovery(result.Code, result.Data); recovery != "" {
+			parts = append(parts, recovery)
 		}
 	}
 	if result.Preview != "" {

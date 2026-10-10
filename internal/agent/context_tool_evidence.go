@@ -7,12 +7,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/fxbin/cairn/internal/tools"
 )
 
+// checkpointReadEvidence 是成功读取回执中的历史字节定位，不从正文长度推断范围。
+type checkpointReadEvidence struct {
+	Path       string
+	Offset     int64
+	End        int64
+	TotalBytes int64
+}
+
 const (
-	checkpointToolEvidenceMaxBytes  = 1024
-	checkpointSearchMatchLimit      = 3
-	checkpointSearchPreviewMaxBytes = 160
+	checkpointToolEvidenceMaxBytes   = 1024
+	checkpointSearchMatchLimit       = 3
+	checkpointSearchPreviewMaxBytes  = 160
+	checkpointRecoveryActionMaxBytes = 480
 )
 
 // checkpointToolEvidence 根据已知调用名选择定位字段；未知或畸形回执不推断证据。
@@ -31,6 +42,19 @@ func checkpointToolEvidence(name string, data json.RawMessage) string {
 // checkpointReadLocation 保留读取时的字节区间；缺字段不推断零值，区间按原始
 // 字节元数据计算，不能使用已脱敏或经 UTF-8 替换后的正文长度。
 func checkpointReadLocation(raw json.RawMessage) string {
+	data, ok := decodeCheckpointReadEvidence(raw)
+	if !ok {
+		return ""
+	}
+	evidence := fmt.Sprintf("historical_read: path=%q byte_range=[%d,%d) total_bytes=%d", data.Path, data.Offset, data.End, data.TotalBytes)
+	if len(evidence) > checkpointToolEvidenceMaxBytes {
+		return ""
+	}
+	return evidence
+}
+
+// decodeCheckpointReadEvidence 校验完整定位元数据，防止缺字段、越界或整数溢出产生虚构范围。
+func decodeCheckpointReadEvidence(raw json.RawMessage) (checkpointReadEvidence, bool) {
 	var data struct {
 		Path       string `json:"path"`
 		Offset     *int64 `json:"offset"`
@@ -38,18 +62,46 @@ func checkpointReadLocation(raw json.RawMessage) string {
 		TotalBytes *int64 `json:"total_bytes"`
 	}
 	if json.Unmarshal(raw, &data) != nil || data.Path == "" || data.Offset == nil || data.Limit == nil || data.TotalBytes == nil {
-		return ""
+		return checkpointReadEvidence{}, false
 	}
 	offset, limit, total := *data.Offset, *data.Limit, *data.TotalBytes
 	if offset < 0 || limit < 0 || total < offset || limit == 0 && offset != total {
-		return ""
+		return checkpointReadEvidence{}, false
 	}
 	end := offset + min(limit, total-offset)
-	evidence := fmt.Sprintf("historical_read: path=%q byte_range=[%d,%d) total_bytes=%d", data.Path, offset, end, total)
-	if len(evidence) > checkpointToolEvidenceMaxBytes {
+	return checkpointReadEvidence{Path: data.Path, Offset: offset, End: end, TotalBytes: total}, true
+}
+
+// checkpointPatchRecovery 保留已知补丁错误的有限恢复字段；未知字段、原文与候选代码不进入摘要。
+// data 必须先完整脱敏，next_action 仅作为历史工具反馈保留，不获得任务或权限优先级。
+func checkpointPatchRecovery(code string, raw json.RawMessage) string {
+	if code != tools.CodeInvalidPatchArguments && code != tools.CodePatchTextMismatch {
 		return ""
 	}
-	return evidence
+	var data struct {
+		Mode                string `json:"mode"`
+		Path                string `json:"path"`
+		ReplacementIndex    *int   `json:"replacement_index"`
+		ActualOccurrences   *int   `json:"actual_occurrences"`
+		ExpectedOccurrences *int   `json:"expected_occurrences"`
+		NextAction          string `json:"next_action"`
+	}
+	if json.Unmarshal(raw, &data) != nil || data.NextAction == "" {
+		return ""
+	}
+	parts := []string{}
+	if code == tools.CodeInvalidPatchArguments {
+		if data.Mode == "create" || data.Mode == "update" || data.Mode == "delete" {
+			parts = append(parts, "mode="+data.Mode)
+		}
+	} else {
+		if data.Path == "" || data.ReplacementIndex == nil || *data.ReplacementIndex < 0 || data.ActualOccurrences == nil || *data.ActualOccurrences < 0 || data.ExpectedOccurrences == nil || *data.ExpectedOccurrences < 1 {
+			return ""
+		}
+		parts = append(parts, fmt.Sprintf("path=%q replacement_index=%d actual_occurrences=%d expected_occurrences=%d", clipText(data.Path, checkpointSearchPreviewMaxBytes), *data.ReplacementIndex, *data.ActualOccurrences, *data.ExpectedOccurrences))
+	}
+	parts = append(parts, "next_action="+clipText(data.NextAction, checkpointRecoveryActionMaxBytes))
+	return "historical_patch_recovery: " + strings.Join(parts, " ")
 }
 
 // checkpointSearchLocations 保留有限条历史搜索位置和短预览，明确省略数；

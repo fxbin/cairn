@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
@@ -105,6 +106,22 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 		}
 	}
 	messages := loop.contextMessages(task, priorContext, checkpoint)
+	// 旧摘要可能丢失已触发的检查点正文。依据切点之前的 Journal 事实补齐消息
+	// 投影，不写第二个反馈事件；后续压缩与请求预算会计算这条固定提醒。
+	if throughSeq > 0 && !strings.Contains(checkpoint, decisionCheckpointSummary) {
+		for _, event := range events {
+			if event.Seq > throughSeq || event.Type != domain.EventVerificationFeedbackAppended {
+				continue
+			}
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && strings.HasPrefix(payload.Text, decisionCheckpointPrefix) {
+				messages = append(messages, ports.Message{Role: "user", Content: decisionCheckpointSummary})
+				break
+			}
+		}
+	}
 	for _, event := range events {
 		if event.Seq <= throughSeq {
 			continue

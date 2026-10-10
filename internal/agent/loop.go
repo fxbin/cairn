@@ -177,6 +177,13 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	usage := budgetUsageFromEvents(events)
 	malformedToolArgumentFailures := malformedToolArgumentsFailureCount(events)
 	usedTurns := openedTurnCount(events)
+	// 恢复可能停在已关闭轮次和反馈写入之间；安全边界补齐检查点，不能多等一次模型请求。
+	if usedTurns < loop.MaxTurns {
+		messages, err = loop.maybeDecisionCheckpoint(ctx, &projection, input, messages)
+		if err != nil {
+			return Result{RunID: input.RunID}, err
+		}
+	}
 	for turn := usedTurns; turn < loop.MaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, &projection, input, nil)
