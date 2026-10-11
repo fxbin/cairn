@@ -287,7 +287,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Run(runCtx, app.RunOptions{
-			Task: task, Workspace: console.input.Workspace, Config: console.input.Config, OnEvent: onEvent,
+			Task: task, Workspace: console.input.Workspace, StateDir: console.input.StateDir, Config: console.input.Config, OnEvent: onEvent,
 			SessionID: console.sessionID, PrevRunID: console.sessionPrev, RequireSessionTail: console.sessionTailRequired,
 		})
 		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})

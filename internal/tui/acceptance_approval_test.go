@@ -103,9 +103,38 @@ func TestTUIApprovalKeysDriveRealApproval(t *testing.T) {
 	if console.mode != consoleDone {
 		t.Fatalf("mode=%v want done after tui resume", console.mode)
 	}
+	if console.runErr != nil {
+		t.Fatalf("tui resume must succeed, got %v", console.runErr)
+	}
+	if console.result == nil || console.result.Result == nil || console.result.Result.State != string(domain.RunCompleted) {
+		t.Fatalf("tui result=%#v want completed", console.result)
+	}
 	if _, err := os.Stat(filepath.Join(workspaceRoot, "tui.txt")); err != nil {
 		t.Fatalf("approved write missing after tui resume: %v", err)
 	}
-	_ = domain.RunCompleted
-	_ = approvalReason(true)
+	// 事件链：审批理由与 granted 事件
+	inspected, err := service.Inspect(context.Background(), workspaceRoot, stateDir, configuration, console.result.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawGranted := false
+	sawReason := false
+	for _, event := range inspected.Events {
+		if event.Type != domain.EventApprovalGranted {
+			continue
+		}
+		sawGranted = true
+		var payload struct {
+			Actor string `json:"actor"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Actor == approvalReason(true) {
+			sawReason = true
+		}
+	}
+	if !sawGranted {
+		t.Fatalf("want approval_granted in inspect events")
+	}
+	if !sawReason {
+		t.Fatalf("want tui approval reason %q in granted event", approvalReason(true))
+	}
 }

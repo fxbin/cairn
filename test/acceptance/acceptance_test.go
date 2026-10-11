@@ -161,6 +161,32 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 	if len(newIDs) == 0 {
 		t.Fatal("docker container never appeared for this exec")
 	}
+	// 必须实际进入 started，排除仅 created 的假路径
+	started := false
+	for _, id := range newIDs {
+		out, err := dockerOutput(t, "inspect", "--format", "{{.State.Status}}", id)
+		if err != nil {
+			t.Fatalf("docker inspect start %s: %v %s", id, err, out)
+		}
+		status := strings.TrimSpace(out)
+		if status == "running" || status == "exited" {
+			started = true
+		}
+		if status == "created" {
+			// 稍候再查
+			time.Sleep(300 * time.Millisecond)
+			out2, err := dockerOutput(t, "inspect", "--format", "{{.State.Status}}", id)
+			if err != nil {
+				t.Fatalf("docker inspect retry %s: %v", id, err)
+			}
+			if strings.TrimSpace(out2) == "running" || strings.TrimSpace(out2) == "exited" {
+				started = true
+			}
+		}
+	}
+	if !started {
+		t.Fatal("docker container never started before cancel")
+	}
 	cancel()
 
 	select {

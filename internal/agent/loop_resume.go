@@ -224,7 +224,8 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	}
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalGranted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
-	}{Fingerprint: pending.Fingerprint})}); err != nil {
+		Actor       string `json:"actor"`
+	}{Fingerprint: pending.Fingerprint, Actor: approvalActor(approval.Reason)})}); err != nil {
 		return Result{}, err
 	}
 	if err := loop.appendResume(ctx, &projection, &input); err != nil {
@@ -1574,4 +1575,12 @@ func humanApprovalDenial(raw json.RawMessage) (bool, string, error) {
 	default:
 		return false, payload.Reason, nil
 	}
+}
+
+// approvalActor 归一审批留痕的 actor：空理由回落为 user，避免空 actor 字段。
+func approvalActor(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return "user"
+	}
+	return reason
 }
