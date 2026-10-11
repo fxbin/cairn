@@ -66,6 +66,7 @@ const transcriptWindowHeight = 15
 // 载（与 CLI 共用同一配置解析链），本界面不重复装载。
 type RunConsoleInput struct {
 	Workspace string
+	StateDir  string
 	Config    config.Config
 	Service   app.Service
 	// ReloadConfig 在向导提交新配置后由调用方提供热重载（重新走同一配置
@@ -307,7 +308,7 @@ func resolveApprovalCmd(console RunConsole, approve bool) tea.Cmd {
 	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Resume(runCtx, app.ResumeOptions{
-			RunID: waiting.RunID, Workspace: console.input.Workspace, Config: console.input.Config,
+			RunID: waiting.RunID, Workspace: console.input.Workspace, StateDir: console.input.StateDir, Config: console.input.Config,
 			Approval: ports.Approval{Fingerprint: waiting.Fingerprint, Approve: approve, Reason: approvalReason(approve)},
 			OnEvent:  onEvent,
 		})
@@ -330,7 +331,7 @@ func rewindFilesCmd(console RunConsole, runs []domain.RunID) tea.Cmd {
 	onEvent := operationEventSink(runCtx, generation, messages)
 	return func() tea.Msg {
 		result, err := service.Rewind(runCtx, app.RewindOptions{
-			Workspace: console.input.Workspace, Config: console.input.Config,
+			Workspace: console.input.Workspace, StateDir: console.input.StateDir, Config: console.input.Config,
 			Runs: runs, OnEvent: onEvent,
 		})
 		sendOperationMessage(console.rootCtx, messages, rewindFinishedMsg{generation: generation, result: &result, err: err})

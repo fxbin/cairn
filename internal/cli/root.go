@@ -1920,7 +1920,7 @@ func (command Command) bareCommand(ctx context.Context) int {
 		fmt.Fprintln(command.Stderr, "配置装载失败（可运行 cairn doctor 诊断）:", err)
 		return ExitUsage
 	}
-	consoleInput := tui.RunConsoleInput{Workspace: workspace, Config: configuration, Service: command.Service}
+	consoleInput := tui.RunConsoleInput{Workspace: workspace, StateDir: app.DefaultStateDir(), Config: configuration, Service: command.Service}
 	consoleInput.ReloadConfig = func() (config.Config, error) {
 		return command.loadConfig(workspace, "", config.Overrides{})
 	}
