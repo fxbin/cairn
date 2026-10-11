@@ -115,7 +115,8 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", "ancestor="+image)
+	labelFilter := "label=cairn.exec.id"
+	before, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", labelFilter)
 	if err != nil {
 		t.Fatalf("docker ps before: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 	var newIDs []string
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		out, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", "ancestor="+image)
+		out, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", labelFilter)
 		if err != nil {
 			t.Fatalf("docker ps during: %v", err)
 		}
@@ -221,7 +222,7 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 			}
 		}
 	}
-	final, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", "ancestor="+image)
+	final, err := dockerOutput(t, "ps", "--all", "--quiet", "--filter", labelFilter)
 	if err != nil {
 		t.Fatalf("docker ps after: %v", err)
 	}

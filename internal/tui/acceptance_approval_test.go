@@ -125,9 +125,10 @@ func TestTUIApprovalKeysDriveRealApproval(t *testing.T) {
 		}
 		sawGranted = true
 		var payload struct {
-			Actor string `json:"actor"`
+			Fingerprint string `json:"fingerprint"`
+			Actor       string `json:"actor"`
 		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.Actor == approvalReason(true) {
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.Actor == "user" && payload.Fingerprint == waiting.Fingerprint {
 			sawReason = true
 		}
 	}
@@ -135,6 +136,6 @@ func TestTUIApprovalKeysDriveRealApproval(t *testing.T) {
 		t.Fatalf("want approval_granted in inspect events")
 	}
 	if !sawReason {
-		t.Fatalf("want tui approval reason %q in granted event", approvalReason(true))
+		t.Fatalf("want granted actor=user and fingerprint match")
 	}
 }

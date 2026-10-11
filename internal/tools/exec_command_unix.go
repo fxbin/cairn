@@ -151,7 +151,7 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 	if relativeCWD != "." {
 		containerCWD = path.Join(containerCWD, filepath.ToSlash(relativeCWD))
 	}
-	command := []string{"run", "--rm", "--name", containerName}
+	command := []string{"run", "--rm", "--name", containerName, "--label", "cairn.exec.id=" + containerName}
 	// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
 	// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
 	command = append(command, "--user", strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()))

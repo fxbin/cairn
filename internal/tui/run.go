@@ -260,7 +260,7 @@ func loadSessionHistoryCmd(console RunConsole) tea.Cmd {
 	workspace := console.input.Workspace
 	configuration := console.input.Config
 	return func() tea.Msg {
-		items, err := service.ListRuns(ctx, workspace, "", configuration)
+		items, err := service.ListRuns(ctx, workspace, console.input.StateDir, configuration)
 		return sessionHistoryLoadedMsg{items: items, err: err}
 	}
 }
@@ -272,7 +272,7 @@ func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestI
 	workspace := console.input.Workspace
 	configuration := console.input.Config
 	return func() tea.Msg {
-		continuation, err := service.ResolveSessionContinuation(ctx, workspace, "", configuration, runID)
+		continuation, err := service.ResolveSessionContinuation(ctx, workspace, console.input.StateDir, configuration, runID)
 		return sessionContinuationLoadedMsg{continuation: continuation, requestID: requestID, err: err}
 	}
 }
@@ -895,7 +895,7 @@ func (console RunConsole) loadApprovalDetail(waiting *ports.WaitingApprovalError
 			workspace = current
 		}
 	}
-	inspected, err := console.input.Service.Inspect(console.rootCtx, workspace, "", console.input.Config, waiting.RunID, true)
+	inspected, err := console.input.Service.Inspect(console.rootCtx, workspace, console.input.StateDir, console.input.Config, waiting.RunID, true)
 	if err != nil {
 		return []string{dimStyle.Render("（参数预览不可用: " + err.Error() + "）")}
 	}
@@ -943,7 +943,7 @@ func (console RunConsole) patchApprovalDiff() ([]string, error) {
 	if console.waiting == nil {
 		return nil, errors.New("当前无待审批操作")
 	}
-	inspected, err := console.input.Service.Inspect(console.rootCtx, workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, console.waiting.RunID, true)
+	inspected, err := console.input.Service.Inspect(console.rootCtx, workspaceRootOrDefault(console.input.Workspace), console.input.StateDir, console.input.Config, console.waiting.RunID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1069,7 +1069,7 @@ func (console RunConsole) beforeSnapshotFor(proposal domain.Event) ([]byte, bool
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.PlannedBeforeRef == nil {
 			return nil, false
 		}
-		content, err := console.input.Service.ReadRunArtifact(workspaceRootOrDefault(console.input.Workspace), "", console.input.Config, *payload.PlannedBeforeRef)
+		content, err := console.input.Service.ReadRunArtifact(workspaceRootOrDefault(console.input.Workspace), console.input.StateDir, console.input.Config, *payload.PlannedBeforeRef)
 		if err != nil {
 			return nil, false
 		}
