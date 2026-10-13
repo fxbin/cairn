@@ -162,6 +162,17 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 	if len(newIDs) == 0 {
 		t.Fatal("docker container never appeared for this exec")
 	}
+	t.Logf("bound container ids via cairn.exec.id label: %v", newIDs)
+	for _, id := range newIDs {
+		out, err := dockerOutput(t, "inspect", "--format", "{{.Name}} {{index .Config.Labels \"cairn.exec.id\"}}", id)
+		if err != nil {
+			t.Fatalf("inspect label %s: %v", id, err)
+		}
+		t.Logf("identity %s -> %s", id, strings.TrimSpace(out))
+		if !strings.Contains(out, "cairn.exec.id") && !strings.Contains(out, "cairn-") {
+			t.Fatalf("container %s missing cairn.exec.id label: %s", id, out)
+		}
+	}
 	// 必须实际进入 started，排除仅 created 的假路径
 	started := false
 	for _, id := range newIDs {
