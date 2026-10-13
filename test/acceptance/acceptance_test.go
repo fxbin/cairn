@@ -163,14 +163,27 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 		t.Fatal("docker container never appeared for this exec")
 	}
 	t.Logf("bound container ids via cairn.exec.id label: %v", newIDs)
+	workspaceRoot := workspace.Root
 	for _, id := range newIDs {
-		out, err := dockerOutput(t, "inspect", "--format", "{{.Name}} {{index .Config.Labels \"cairn.exec.id\"}}", id)
+		out, err := dockerOutput(t, "inspect", "--format",
+			"{{.Name}}|{{index .Config.Labels \"cairn.exec.id\"}}|{{range .Mounts}}{{.Source}}=>{{.Destination}};{{end}}", id)
 		if err != nil {
 			t.Fatalf("inspect label %s: %v", id, err)
 		}
-		t.Logf("identity %s -> %s", id, strings.TrimSpace(out))
-		if !strings.Contains(out, "cairn.exec.id") && !strings.Contains(out, "cairn-") {
-			t.Fatalf("container %s missing cairn.exec.id label: %s", id, out)
+		parts := strings.Split(strings.TrimSpace(out), "|")
+		if len(parts) < 3 {
+			t.Fatalf("inspect format unexpected: %q", out)
+		}
+		name, label, mounts := parts[0], parts[1], parts[2]
+		t.Logf("identity %s name=%s label=%s mounts=%s", id, name, label, mounts)
+		if !strings.HasPrefix(label, "cairn-") {
+			t.Fatalf("container %s label=%q want cairn.exec.id=cairn-…", id, label)
+		}
+		if !strings.Contains(mounts, workspaceRoot+"=>/workspace") {
+			t.Fatalf("container %s not bound to acceptance workspace %s: %s", id, workspaceRoot, mounts)
+		}
+		if !strings.Contains(mounts, workspaceRoot) {
+			t.Fatalf("container %s mount missing workspace root: %s", id, mounts)
 		}
 	}
 	// 必须实际进入 started，排除仅 created 的假路径
