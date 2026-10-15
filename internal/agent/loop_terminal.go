@@ -30,11 +30,14 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 		return loop.persistBudgetExceeded(ctx, projection, input, "wall_time")
 	}
 	cause := context.Canceled
-	commitContext, cancel := loop.commitContext(ctx)
-	defer cancel()
 	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
+	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	commitContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCancelRequested, TurnID: turnID, Payload: mustJSON(struct {
 		Cause            string `json:"cause"`
 		ExpectedTerminal string `json:"expected_terminal"`
@@ -65,11 +68,14 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 // persistBudgetExceeded 将触发的预算维度及失败状态追加到事件日志。
 func (loop *Loop) persistBudgetExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, dimension string) (Result, error) {
 	cause := &ports.BudgetExceededError{Dimension: dimension}
-	commitContext, cancel := loop.commitContext(ctx)
-	defer cancel()
 	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
+	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	commitContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunCancelRequested, Payload: mustJSON(struct {
 		Cause            string `json:"cause"`
 		ExpectedTerminal string `json:"expected_terminal"`
@@ -307,12 +313,17 @@ func (loop *Loop) persistRunFailure(ctx context.Context, projection *domain.RunP
 	if cause == nil {
 		cause = errors.New(failure.Error)
 	}
+	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+		return Result{RunID: input.RunID}, err
+	}
+	commitContext, cancel := loop.commitContext(ctx)
+	defer cancel()
 	if turnID != nil {
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
+		if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {
 			return Result{RunID: input.RunID}, errors.Join(cause, err)
 		}
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); err != nil {
+	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventRunFailed, Payload: mustJSON(failure)}); err != nil {
 		return Result{RunID: input.RunID}, errors.Join(cause, err)
 	}
 	return Result{RunID: input.RunID}, cause
@@ -325,9 +336,12 @@ func (loop *Loop) failCurrentTurn(ctx context.Context, projection *domain.RunPro
 
 // persistLoopGuardExceeded 关闭当前轮次并以独立 loop_guard 分类持久化提前终止原因。
 func (loop *Loop) persistLoopGuardExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, reason string) error {
+	guardErr := &ports.LoopGuardExceededError{Reason: reason}
+	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+		return err
+	}
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
-	guardErr := &ports.LoopGuardExceededError{Reason: reason}
 	if projection.CurrentTurn != nil {
 		turnID := *projection.CurrentTurn
 		if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "failed"})}); err != nil {

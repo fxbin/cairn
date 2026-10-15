@@ -98,7 +98,7 @@ func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) erro
 		}
 		started := 0
 		for _, event := range events {
-			if event.Type == domain.EventOperationStarted {
+			if event.Type == domain.EventOperationStarted && !isMCPLifecyclePayload(event.Payload) {
 				started++
 			}
 		}

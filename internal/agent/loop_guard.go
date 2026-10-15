@@ -26,9 +26,10 @@ const (
 
 // openedTurnCount 从事件日志重建已经消耗的模型轮次，保证暂停或恢复不会重置硬上限。
 func openedTurnCount(events []domain.Event) int {
+	lifecycleOnly := mcpLifecycleOnlyTurns(events)
 	count := 0
 	for _, event := range events {
-		if event.Type == domain.EventTurnOpened {
+		if event.Type == domain.EventTurnOpened && (event.TurnID == nil || !lifecycleOnly[*event.TurnID]) {
 			count++
 		}
 	}
@@ -37,10 +38,14 @@ func openedTurnCount(events []domain.Event) int {
 
 // repeatedOperationFailureGuard 返回连续相同操作指纹失败达到阈值时的熔断原因。
 func repeatedOperationFailureGuard(events []domain.Event) string {
+	lifecycle := mcpLifecycleOperations(events)
 	fingerprints := make(map[domain.OperationID]string)
 	lastFingerprint := ""
 	consecutive := 0
 	for _, event := range events {
+		if event.OperationID != nil && lifecycle[*event.OperationID] {
+			continue
+		}
 		if event.Type == domain.EventPolicyDecided && event.OperationID != nil {
 			var payload struct {
 				Fingerprint string `json:"fingerprint"`
@@ -74,8 +79,12 @@ func repeatedOperationFailureGuard(events []domain.Event) string {
 
 // operationSignatureForTurn 摘要指定轮次内有序的操作指纹，供跨轮周期检测使用。
 func operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) string {
+	lifecycle := mcpLifecycleOperations(events)
 	fingerprints := make([]string, 0)
 	for _, event := range events {
+		if event.OperationID != nil && lifecycle[*event.OperationID] {
+			continue
+		}
 		if event.Type != domain.EventPolicyDecided || event.TurnID == nil || *event.TurnID != turnID {
 			continue
 		}
@@ -120,7 +129,7 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 			continue
 		}
 		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) != nil {
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.ToolName == tools.MCPQuiesceTool {
 			continue
 		}
 		candidate := payload.ToolName + "\x00" + string(payload.Arguments)

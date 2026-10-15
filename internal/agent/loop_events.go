@@ -10,6 +10,7 @@ import (
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 const malformedToolArgumentsErrorClass = "malformed_tool_arguments"
@@ -31,7 +32,7 @@ func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, 
 	if err := projection.Apply(event); err != nil {
 		return fmt.Errorf("apply prevalidated %s after sequence %d: %w", event.Type, projection.LastSeq, err)
 	}
-	if event.Type == domain.EventOperationStarted {
+	if event.Type == domain.EventOperationStarted && !isMCPLifecyclePayload(event.Payload) {
 		loop.startedOperations++
 	}
 	if loop.OnEvent != nil {
@@ -93,7 +94,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != tools.MCPQuiesceTool {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:
@@ -152,7 +153,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != tools.MCPQuiesceTool {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:
@@ -160,7 +161,11 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			if call, exists := proposals[*event.OperationID]; exists {
-				messages = append(messages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: string(event.Payload)})
+				content, err := loop.modelToolResultJSON(call.Name, event.Payload)
+				if err != nil {
+					return nil, err
+				}
+				messages = append(messages, ports.Message{Role: "tool", ToolCallID: call.ID, Content: content})
 			}
 		case domain.EventVerificationFeedbackAppended:
 			var payload struct {

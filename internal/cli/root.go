@@ -134,6 +134,8 @@ func (command Command) dispatch(ctx context.Context, args []string) int {
 		return command.checkProvider(ctx, args[1:])
 	case "provider":
 		return command.providerCommand(ctx, args[1:])
+	case "mcp":
+		return command.mcpCommand(ctx, args[1:])
 	case "init":
 		return command.initCommand(ctx, args[1:])
 	case "tui":
@@ -1969,6 +1971,9 @@ Usage:
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider list [--json]
+  cairn mcp list [--workspace <path>] [--config <path>] [--json]
+  cairn mcp login <server> [--workspace <path>] [--config <path>] [--timeout <duration>] [--json]
+  cairn mcp logout <server> [--workspace <path>] [--config <path>] [--json]
   cairn provider models [--query <name>] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--admission optional|required] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]

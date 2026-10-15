@@ -16,6 +16,7 @@ import (
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
+	mcpModelDeclarations           map[string]string
 	Journal                        ports.Journal
 	Provider                       ports.Provider
 	Tools                          *tools.Registry
@@ -155,6 +156,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	}
 	projection, err := domain.Replay(events)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := loop.restoreMCPResults(events); err != nil {
 		return Result{}, err
 	}
 	if ctx.Err() != nil {
@@ -349,7 +353,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
-			encoded, err := json.Marshal(toolResult)
+			encoded, err := json.Marshal(loop.Tools.ModelResult(call.Name, toolResult))
 			if err != nil {
 				return Result{}, err
 			}

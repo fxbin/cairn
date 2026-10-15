@@ -31,7 +31,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 
 - Event Journal 是运行事实源；TUI、记忆、遥测和合同投影不能替代它。Domain 不依赖 CLI、HTTP、SQLite 或文件系统；`--json` 的 stdout 仅输出 NDJSON。
 - 副作用顺序固定：提议 → Policy → 必要时审批 → `operation_started` → 结果或对账 → 关闭 Turn。写入和命令默认 `ask`；回退同样走完整授权链。
-- 工具由 `tools.NewRegistry` 静态注册。保持显式装配，不引入动态发现、插件、MCP、daemon/RPC 或 Team 实体。
+- 内置工具由 `tools.NewRegistry` 静态注册；MCP 客户端由配置和 Composition Root 显式装配，发现目录及工具暴露状态从成功的 Journal 结果投影。外部调用保持完整授权链，目录/schema 漂移失败关闭，不自动重试结果不确定的调用。保持窄边界，不引入普通插件、daemon/RPC 或 Team 实体。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
 - Docker 使用本地已有镜像，无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载；不可用时失败关闭，禁止回退宿主机。
@@ -43,6 +43,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 
 - 工作区配置为 `.agent/config.yaml`；用户级回退路径由 `config.UserConfigPath` 决定，避免硬编码平台目录。保留安全默认值 → Profile → YAML → 环境 → CLI 的解析顺序；显式配置路径与用户级回退行为以解析器为准。
 - 密钥只通过 `provider.api_key_env` 引用环境变量；本机 `keys.env` 使用 0600 权限，装载优先级为显式环境 → 工作区凭据 → 用户凭据。密钥不得进入 YAML、事件、制品、错误或提交。
+- MCP 的环境与 Bearer/客户端密钥只引用环境变量；OAuth 令牌使用用户配置根下的独立私有存储、0600 原子文件和服务器身份绑定。登录由显式命令发起；read-only/benchmark 不启用外部 MCP，`doctor` 和 `mcp list` 不连接服务器。
 - 新配置字段同步处理默认值、严格校验与测试。影响执行、权限、预算的字段加入 `fingerprintView`；展示/运维字段和 `Config.Resolution` 不进入指纹，Resolution 不参与 YAML 解码。
 - Profile 的具体预算以 `internal/config` 为准；提高预算必须显式并进入指纹。Preset 只组合已知能力，未知值失败关闭；read-only 必须禁写、禁 exec、禁验证命令，工具子集由 `readOnlySafeTools` 统一提供。
 - Provider 目录建议不等于能力验证；身份、协议、请求画像、探测证据和准入决定保持分离，变更时核对配置指纹与准入绑定。

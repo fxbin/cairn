@@ -86,6 +86,7 @@ func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.Too
 	if err != nil {
 		return policy.Decision{}, err
 	}
+	decision = loop.bindMCPDeclaration(call.Name, decision)
 	return freshApprovalDecision(projection, decision), nil
 }
 
@@ -106,11 +107,27 @@ func proposedToolCall(events []domain.Event, operationID domain.OperationID) (po
 
 // executeTool 在策略、审批和日志授权后执行一次模型提议的固定工具调用。
 func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, call ports.ToolCall) (tools.Result, error) {
-	if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) {
+	if call.ID == "" || call.Name == "" || call.Name == tools.MCPQuiesceTool || !json.Valid(call.Arguments) {
 		return tools.Result{}, errors.New("model returned invalid tool call")
+	}
+	if loop.Gate == nil {
+		return tools.Result{}, errors.New("policy gate is required")
 	}
 	if containsSensitiveToolCall(call) {
 		return tools.Result{}, errors.New("model tool arguments contain a secret-like value")
+	}
+	if loop.Tools.MCPNeedsQuiescence() {
+		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		decision = loop.bindMCPDeclaration(call.Name, decision)
+		decision = freshApprovalDecision(*projection, decision)
+		if decision.Effect == policy.Ask {
+			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+				return tools.Result{}, err
+			}
+		}
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
 		return tools.Result{}, err
@@ -127,6 +144,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, err
 	}
 	decision = freshApprovalDecision(*projection, decision)
+	decision = loop.bindMCPDeclaration(call.Name, decision)
 	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 		return tools.Result{}, err
 	}
@@ -162,7 +180,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return tools.Result{}, err
 	}
-	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
+	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
 		return result, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
@@ -181,6 +199,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return tools.Result{}, err
 	}
 	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
+		return tools.Result{}, err
+	}
+	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
 		return tools.Result{}, err
 	}
 	if cancelled {

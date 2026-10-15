@@ -60,6 +60,9 @@ func (err *verificationPersistenceError) Unwrap() error {
 
 // runVerification 创建并执行冻结验证计划，任何失败都会反馈给后续模型轮次。
 func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
+	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+		return err
+	}
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
 		return fmt.Errorf("load run before verification: %w", err)

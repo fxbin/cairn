@@ -69,6 +69,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 			return Result{}, fmt.Errorf("replay run after repairing tool results: %w", err)
 		}
 	}
+	if err := loop.restoreMCPResults(events); err != nil {
+		return Result{}, err
+	}
 	if result, stopped, budgetErr := loop.stopForPersistedResponseBudget(ctx, &projection, input, events); stopped {
 		return result, budgetErr
 	}
@@ -99,7 +102,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 		return Result{}, errors.New("run is not resumable")
 	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
-		return Result{}, errors.New("run has a dangling side-effect operation that requires reconciliation")
+		return Result{}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: projection.PendingOperation.ID, Reason: "run has a dangling side-effect operation that requires reconciliation"}
 	}
 	if projection.PendingOperation != nil {
 		if projection.CurrentTurn == nil {
@@ -315,7 +318,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err
 	}
-	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
+	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
@@ -334,6 +337,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 		return Result{}, err
 	}
 	if err := loop.appendToolResult(ctx, &projection, input, turnID, pending.OperationID, result); err != nil {
+		return Result{}, err
+	}
+	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {

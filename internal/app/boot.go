@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
+	"github.com/fxbin/cairn/internal/adapters/mcpclient"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
@@ -30,6 +31,7 @@ type Boot struct {
 	Provider      ports.Provider
 	ProviderCard  contract.ProviderCapabilityCard
 	Registry      *tools.Registry
+	MCP           tools.MCPCatalog
 	Gate          *policy.Gate
 	Verification  []agent.VerificationCommand
 	Loop          agent.Loop
@@ -107,7 +109,19 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Artifacts = artifacts
-	registry, err := tools.NewRegistry(presetTools(workspace, execTool, cfg.Preset)...)
+	var catalog tools.MCPCatalog
+	if cfg.MCP != nil && hasEnabledMCP(cfg.MCP) {
+		authDirectory, err := mcpclient.CredentialDirectory()
+		if err != nil {
+			return nil, bootAssemblyFailure(boot, errors.New("resolve MCP credential directory failed"))
+		}
+		catalog, err = mcpclient.New(*cfg.MCP, workspace, execTool, authDirectory)
+		if err != nil {
+			return nil, bootAssemblyFailure(boot, err)
+		}
+		boot.MCP = catalog
+	}
+	registry, err := tools.NewRegistryWithMCP(catalog, presetTools(workspace, execTool, cfg.Preset)...)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
 	}
@@ -118,6 +132,7 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Gate = gate
+	gate.MCPRegistry = registry
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
@@ -172,6 +187,11 @@ func (boot *Boot) Close() error {
 	}
 	boot.closed = true
 	var closeErrors []error
+	if boot.MCP != nil {
+		if err := boot.MCP.Close(); err != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close MCP: %w", err))
+		}
+	}
 	closeJournal := boot.closeJournal
 	if closeJournal == nil && boot.Journal != nil {
 		closeJournal = boot.Journal.Close
@@ -245,6 +265,7 @@ type CapabilityManifest struct {
 	Tools             []ToolCapability                 `json:"tools"`
 	Verification      VerificationView                 `json:"verification"`
 	ConfigFingerprint string                           `json:"config_fingerprint"`
+	MCP               []MCPDeclaration                 `json:"mcp,omitempty"`
 }
 
 // Manifest 返回当前装配的非敏感能力清单；由装配后的注册表与冻结验证命令构建。
@@ -280,5 +301,6 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 		Tools:             tools,
 		Verification:      VerificationView{Commands: len(verification), Fingerprint: fingerprint},
 		ConfigFingerprint: configuration.Fingerprint(),
+		MCP:               mcpDeclarations(configuration.MCP),
 	}
 }

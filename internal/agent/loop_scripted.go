@@ -75,6 +75,9 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 			return Result{}, fmt.Errorf("replay scripted run after repairing tool results: %w", err)
 		}
 	}
+	if err := loop.restoreMCPResults(events); err != nil {
+		return Result{}, err
+	}
 	verificationRepaired, err := loop.repairIncompleteVerification(ctx, &projection, input, events)
 	if err != nil {
 		return Result{RunID: input.RunID}, err
@@ -296,7 +299,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err
 	}
-	result := loop.Tools.Execute(ctx, call.Name, call.Arguments)
+	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
 	if result.Code == tools.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
@@ -316,6 +319,9 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	}
 	if err := loop.appendToolResult(ctx, projection, input, turnID, pending.OperationID, result); err != nil {
 		return Result{RunID: input.RunID}, err
+	}
+	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
+		return Result{}, err
 	}
 	if cancelled {
 		return loop.persistCancellation(ctx, projection, input, &turnID)

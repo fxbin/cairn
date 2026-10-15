@@ -1,4 +1,4 @@
-// Package tools 管理 Cairn 的固定工具注册表，刻意不提供动态发现或插件加载入口。
+// Package tools 管理 Cairn 的内置工具与显式装配的 MCP 客户端目录。
 package tools
 
 import (
@@ -49,6 +49,7 @@ type SideEffectTool interface {
 type Registry struct {
 	tools map[string]Tool
 	order []string
+	mcp   MCPCatalog
 }
 
 // NewRegistry 校验工具名称唯一性后创建不可动态扩展的注册表。
@@ -77,6 +78,9 @@ func (registry *Registry) Specs() []ports.ToolSpec {
 	for _, name := range registry.order {
 		specs = append(specs, registry.tools[name].Spec())
 	}
+	if registry.mcp != nil {
+		specs = append(specs, registry.mcp.Specs()...)
+	}
 	return specs
 }
 
@@ -96,6 +100,9 @@ func (registry *Registry) Fingerprint() (string, error) {
 func (registry *Registry) Execute(ctx context.Context, name string, arguments json.RawMessage) Result {
 	tool, exists := registry.tools[name]
 	if !exists {
+		if registry.mcp != nil {
+			return registry.mcp.Execute(ctx, name, arguments)
+		}
 		return Failure("unknown_tool", "unknown tool: "+name)
 	}
 	return tool.Execute(ctx, arguments)
@@ -105,6 +112,9 @@ func (registry *Registry) Execute(ctx context.Context, name string, arguments js
 func (registry *Registry) SideEffect(name string) SideEffectClass {
 	tool, exists := registry.tools[name]
 	if !exists {
+		if registry.mcp != nil {
+			return registry.mcp.SideEffect(name)
+		}
 		return SideEffectNone
 	}
 	if classified, ok := tool.(SideEffectTool); ok {

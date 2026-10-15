@@ -29,10 +29,12 @@ type Gate struct {
 	ExecMode       Effect
 	ProtectedPaths []string
 	Patch          tools.ApplyPatch
+	MCPRegistry    *tools.Registry
 }
 
 // Decision 是可持久化的策略结论及其审批绑定信息。
 type Decision struct {
+	MCPIdentity          string
 	Effect               Effect
 	RuleID               string
 	Fingerprint          string
@@ -115,8 +117,43 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 			WorkspaceObservation: observation,
 		}, nil
 	default:
+		if gate.MCPRegistry != nil {
+			proposal, found, err := gate.MCPRegistry.MCPProposal(toolName, raw)
+			if err != nil {
+				return Decision{Effect: Deny, RuleID: "invalid_mcp_call", Fingerprint: fingerprint(toolName, raw), Summary: "invalid or unavailable MCP tool"}, nil
+			}
+			if found {
+				return gate.decideMCP(proposal)
+			}
+		}
 		return Decision{Effect: Deny, RuleID: "unknown_tool", Fingerprint: fingerprint(toolName, raw), Summary: "tool is not allowed"}, nil
 	}
+}
+
+// decideMCP 将本地服务器权限、目录摘要和实参绑定到现有审批链；注解不授予权限。
+func (gate *Gate) decideMCP(proposal tools.MCPProposal) (Decision, error) {
+	effect, err := parseEffect(proposal.Effect, Ask)
+	if err != nil {
+		return Decision{}, err
+	}
+	if proposal.Stdio {
+		if gate.ExecMode == Deny {
+			effect = Deny
+		} else if gate.ExecMode == Ask && effect == Allow {
+			effect = Ask
+		}
+	}
+	observation := ""
+	if proposal.Stdio {
+		observation, err = gate.Patch.Workspace.Observation()
+		if err != nil {
+			return Decision{}, errors.New("observe workspace for MCP approval failed")
+		}
+	}
+	return Decision{MCPIdentity: proposal.EnvironmentDigest, Effect: effect, RuleID: "mcp_tool", Summary: proposal.Summary, WorkspaceObservation: observation, Fingerprint: fingerprint("mcp_call", struct {
+		Proposal             tools.MCPProposal `json:"proposal"`
+		WorkspaceObservation string            `json:"workspace_observation,omitempty"`
+	}{Proposal: proposal, WorkspaceObservation: observation})}, nil
 }
 
 // invalidPatchDecision 保持规划失败的拒绝和操作指纹，同时把参数、精确匹配及
