@@ -1330,7 +1330,7 @@ func (console RunConsole) View() string {
 		if len(console.lines) == 0 {
 			sections = append(sections, console.welcomeBlock())
 		}
-		if current := strings.TrimSpace(console.taskField.Value()); strings.HasPrefix(current, "/") {
+		if current := strings.TrimSpace(console.taskField.Value()); strings.HasPrefix(current, "/") && !strings.HasPrefix(current, "/skill:") {
 			if suggestions := commandSuggestions(current); len(suggestions) > 0 {
 				sections = append(sections, "", strings.Join(suggestions, "\n"))
 			} else {
@@ -1533,7 +1533,7 @@ func (console *RunConsole) showSessionHistory(loaded sessionHistoryLoadedMsg) {
 // runCommand 处理输入态的斜杠命令：大部分为纯界面操作，/sessions 异步调用
 // 只读应用层历史能力；返回 handled=false 表示输入不是命令，按普通任务处理。
 func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
-	if !strings.HasPrefix(task, "/") {
+	if !strings.HasPrefix(task, "/") || strings.HasPrefix(task, "/skill:") {
 		return false, nil
 	}
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
@@ -1541,6 +1541,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	case "/help", "/?":
 		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /history <run-id> 历史续链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
+		console.appendLine(dimStyle.Render("技能: 启用 skills.enabled 后，以 $名称 或 /skill:名称 加任务说明点名；cairn skills 管理本地技能"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
 		console.sessionOutputTokens += console.outputTokens

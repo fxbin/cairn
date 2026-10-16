@@ -121,7 +121,15 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		}
 		boot.MCP = catalog
 	}
-	registry, err := tools.NewRegistryWithMCP(catalog, presetTools(workspace, execTool, cfg.Preset)...)
+	available := presetTools(workspace, execTool, cfg.Preset)
+	skillTool, err := service.configuredSkillTool(workspace.Root, cfg)
+	if err != nil {
+		return nil, bootAssemblyFailure(boot, err)
+	}
+	if skillTool != nil {
+		available = append(available, skillTool)
+	}
+	registry, err := tools.NewRegistryWithMCP(catalog, available...)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
 	}
@@ -266,6 +274,7 @@ type CapabilityManifest struct {
 	Verification      VerificationView                 `json:"verification"`
 	ConfigFingerprint string                           `json:"config_fingerprint"`
 	MCP               []MCPDeclaration                 `json:"mcp,omitempty"`
+	Skills            *config.SkillsConfig             `json:"skills,omitempty"`
 }
 
 // Manifest 返回当前装配的非敏感能力清单；由装配后的注册表与冻结验证命令构建。
@@ -302,5 +311,6 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 		Verification:      VerificationView{Commands: len(verification), Fingerprint: fingerprint},
 		ConfigFingerprint: configuration.Fingerprint(),
 		MCP:               mcpDeclarations(configuration.MCP),
+		Skills:            configuration.Skills,
 	}
 }
