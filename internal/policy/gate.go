@@ -63,7 +63,7 @@ func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch)
 // 需要读取（如受写保护的配置文件）才能完成任务的场景不因此被阻断。
 func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error) {
 	switch toolName {
-	case "list_files", "read_file", "search_text":
+	case "list_files", "read_file", "search_text", "skill":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
 	case "apply_patch":
 		var proposed struct {

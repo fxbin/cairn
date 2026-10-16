@@ -161,6 +161,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if err := loop.restoreMCPResults(events); err != nil {
 		return Result{}, err
 	}
+	if err := loop.restoreSkillResults(events); err != nil {
+		return Result{}, err
+	}
 	if ctx.Err() != nil {
 		return loop.persistCancellation(ctx, &projection, input, projection.CurrentTurn)
 	}
@@ -388,6 +391,17 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, messages []ports.Message) ([]ports.Message, error) {
 	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return nil, err
+	}
+	if len(loop.Tools.ActiveSkills()) != 0 {
+		events, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		rebuilt, rebuildErr := loop.rebuildMessagesFromEvents(events, input.Task, true)
+		if rebuildErr != nil {
+			return nil, rebuildErr
+		}
+		messages = rebuilt
 	}
 	messages, err := loop.compactContextIfNeeded(ctx, projection, input, messages)
 	if err != nil {

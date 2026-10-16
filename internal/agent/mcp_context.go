@@ -108,9 +108,9 @@ func (loop *Loop) bindMCPDeclaration(name string, decision policy.Decision) poli
 	return decision
 }
 
-// modelToolResultJSON 为目录发现生成精简视图，普通工具保持既有回放内容。
+// modelToolResultJSON 为目录发现与技能加载生成精简视图，普通工具保持既有回放内容。
 func (loop *Loop) modelToolResultJSON(name string, raw json.RawMessage) (string, error) {
-	if name != "mcp_discover" && name != "tool_search" {
+	if name != "mcp_discover" && name != "tool_search" && name != "skill" {
 		return string(raw), nil
 	}
 	var result tools.Result

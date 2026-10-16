@@ -85,10 +85,7 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 		return nil, fmt.Errorf("rebuild context compaction history: %w", err)
 	}
 	priorContext := loop.PriorContext
-	historyStart := 2
-	if priorContext != "" {
-		historyStart++
-	}
+	historyStart := len(loop.contextMessages(input.Task, priorContext, ""))
 	task := history[historyStart-1].Content
 	// 固定提示超过预留阈值但仍在硬上限内时，没有历史可供压缩，不能添加
 	// 空检查点反而放大请求；真实超限仍失败关闭。
@@ -208,6 +205,7 @@ func (loop *Loop) contextMessages(task, priorContext, summary string) []ports.Me
 	if priorContext != "" {
 		messages = append(messages, ports.Message{Role: "user", Content: sessionContextBlock(priorContext)})
 	}
+	messages = append(messages, loop.skillContextMessages()...)
 	messages = append(messages, ports.Message{Role: "user", Content: task})
 	if summary != "" {
 		messages = append(messages, ports.Message{Role: "user", Content: contextCheckpointPrefix + summary})

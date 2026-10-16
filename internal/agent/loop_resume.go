@@ -72,6 +72,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.restoreMCPResults(events); err != nil {
 		return Result{}, err
 	}
+	if err := loop.restoreSkillResults(events); err != nil {
+		return Result{}, err
+	}
 	if result, stopped, budgetErr := loop.stopForPersistedResponseBudget(ctx, &projection, input, events); stopped {
 		return result, budgetErr
 	}
@@ -340,6 +343,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 		return Result{}, err
 	}
 	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
+		return Result{}, err
+	}
+	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {

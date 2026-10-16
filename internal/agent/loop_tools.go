@@ -204,6 +204,9 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
 		return tools.Result{}, err
 	}
+	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
+		return tools.Result{}, err
+	}
 	if cancelled {
 		return result, ctx.Err()
 	}

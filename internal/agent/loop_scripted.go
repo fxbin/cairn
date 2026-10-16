@@ -78,6 +78,9 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if err := loop.restoreMCPResults(events); err != nil {
 		return Result{}, err
 	}
+	if err := loop.restoreSkillResults(events); err != nil {
+		return Result{}, err
+	}
 	verificationRepaired, err := loop.repairIncompleteVerification(ctx, &projection, input, events)
 	if err != nil {
 		return Result{RunID: input.RunID}, err
@@ -321,6 +324,9 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		return Result{RunID: input.RunID}, err
 	}
 	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
+		return Result{}, err
+	}
+	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {
