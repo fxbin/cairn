@@ -89,6 +89,9 @@ func (registry *Registry) AcceptMCPResult(name string, result Result) error {
 
 // ModelResult 从目录证据生成精简的模型视图，Journal 仍保留完整发现快照。
 func (registry *Registry) ModelResult(name string, result Result) Result {
+	if name == "skill" {
+		return skillModelResult(result)
+	}
 	if registry.mcp == nil {
 		return result
 	}

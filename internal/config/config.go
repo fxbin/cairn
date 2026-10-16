@@ -45,6 +45,7 @@ type Config struct {
 	Cancellation CancellationConfig `yaml:"cancellation"`
 	Sandbox      SandboxConfig      `yaml:"sandbox"`
 	MCP          *MCPConfig         `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Skills       *SkillsConfig      `yaml:"skills,omitempty" json:"skills,omitempty"`
 	// Resolution 是解析过程生成的非敏感 Resolved Execution Plan（字段→值→来源），
 	// 只读派生事实：不参与 YAML 解码、不进入配置指纹（语义已由解析后的字段承载），
 	// 随冻结配置制品持久化，供诊断与可访问性视图使用。
@@ -539,6 +540,9 @@ func applyProfilePreset(config *Config, explicit *budgetOverlay, preset BudgetCo
 
 // Validate 验证配置版本、限额、时长、策略与验证命令的安全约束。
 func Validate(config Config) error {
+	if err := validateSkills(config.Skills, config.Preset); err != nil {
+		return err
+	}
 	if err := validateMCP(config.MCP, config.Preset); err != nil {
 		return err
 	}
@@ -904,6 +908,7 @@ type fingerprintView struct {
 	Pricing      PricingConfig                `json:"pricing"`
 	Sandbox      SandboxConfig                `json:"sandbox"`
 	MCP          *MCPConfig                   `json:"mcp,omitempty"`
+	Skills       *SkillsConfig                `json:"skills,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -947,6 +952,7 @@ func (config Config) Fingerprint() string {
 		Pricing:      config.Pricing,
 		Sandbox:      config.Sandbox,
 		MCP:          mcpFingerprint(config.MCP),
+		Skills:       skillsFingerprint(config.Skills),
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
