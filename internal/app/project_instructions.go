@@ -6,21 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 
 	"github.com/fxbin/cairn/internal/artifact"
-	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/userdir"
 )
 
 // freezeProjectInstructions 保存已脱敏的完整项目规约；没有有效文档时不生成引用，不改变旧运行合同。
 func freezeProjectInstructions(workspace tools.Workspace, store *artifact.Store, disableUser bool) (*artifact.Ref, error) {
 	userDirectory := ""
 	if !disableUser {
-		if name, err := config.UserConfigPath(); err == nil {
-			userDirectory = filepath.Dir(name)
+		if directory, err := userdir.Root(); err == nil {
+			userDirectory = directory
 		}
 	}
+
 	snapshot, err := tools.LoadProjectInstructionsWithUser(workspace, userDirectory)
 	if err != nil {
 		return nil, fmt.Errorf("load AGENTS.md project instructions: %w", err)

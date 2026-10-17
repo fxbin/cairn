@@ -9,16 +9,17 @@ import (
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/userdir"
 )
 
 // SkillStoreFor 解析原生安装目录；工作区目标先经过 Workspace.Resolve 防止逃逸。
 func (service Service) SkillStoreFor(workspace, scope string) (tools.SkillStore, error) {
 	if scope == "user" {
-		path, err := config.UserConfigPath()
+		path, err := userdir.Path("skills")
 		if err != nil {
 			return tools.SkillStore{}, errors.New("resolve user skill directory failed")
 		}
-		return tools.SkillStore{Root: filepath.Join(filepath.Dir(path), "skills")}, nil
+		return tools.SkillStore{Root: path}, nil
 	}
 	if scope != "workspace" {
 		return tools.SkillStore{}, errors.New("skill scope must be workspace or user")
@@ -40,7 +41,7 @@ func (service Service) Skills(workspace string, shared bool) (*tools.SkillCatalo
 	if err != nil {
 		return nil, err
 	}
-	user, err := service.SkillStoreFor(workspace, "user")
+	userRoot, err := userdir.Path("skills")
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +57,7 @@ func (service Service) Skills(workspace string, shared bool) (*tools.SkillCatalo
 		}
 		roots = append(roots, tools.SkillRoot{Path: path, Scope: "workspace-shared"})
 	}
-	roots = append(roots, tools.SkillRoot{Path: user.Root, Scope: "user"})
+	roots = append(roots, tools.SkillRoot{Path: userRoot, Scope: "user"})
 	if shared {
 		home, err := os.UserHomeDir()
 		if err != nil {

@@ -11,20 +11,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/fxbin/cairn/internal/userdir"
 )
 
 // KeysFileName 是工作区内凭据文件的固定相对路径段；文件位于 .agent/ 目
 // 录下，与配置文件同目录且同样被 Git 忽略。
 const KeysFileName = ".agent/keys.env"
 
-// UserKeysPath 返回用户级凭据文件路径（ADR-0016 装载链的第二层）：工作区
-// 凭据缺失时按同名变量补缺，永不覆盖工作区或显式导出的值。
+// UserKeysPath 返回 ~/.cairn/keys.env，供用户凭据读取与写入共用。
 func UserKeysPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "cairn", "keys.env"), nil
+	return userdir.Path("keys.env")
 }
 
 // keysFileRequiredPerm 是凭据文件的强制权限；更宽的权限意味着其他本地账

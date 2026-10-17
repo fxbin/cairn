@@ -17,6 +17,7 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/userdir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1022,29 +1023,23 @@ func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint
 // DefaultPath 返回工作区内的默认配置文件路径。
 func DefaultPath(workspace string) string { return filepath.Join(workspace, ".agent", "config.yaml") }
 
-// UserConfigPath 返回用户级配置文件路径（ADR-0016 回退层）：作为工作区配
-// 置缺失时的整文件回退目标，让一次配置对全部工作区可用。
+// UserConfigPath 返回 ~/.cairn/config.yaml，供用户配置读取与写入共用。
 func UserConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "cairn", "config.yaml"), nil
+	return userdir.Path("config.yaml")
 }
 
-// ResolveDefaultPath 解析无显式 --config 时的配置路径：工作区配置存在即用
-// 工作区，否则回退用户级；两者皆缺时返回工作区路径（调用方按不存在报
-// 错）。用户级路径不可解析（无 HOME 等）时同样返回工作区路径。
+// ResolveDefaultPath 在无显式 --config 时优先选工作区配置，再选用户配置；
+// 两者缺失时返回工作区目标，存在但不可用的来源交由装载入口报错。
 func ResolveDefaultPath(workspace string) string {
 	workspacePath := DefaultPath(workspace)
-	if _, err := os.Stat(workspacePath); err == nil {
+	if _, err := os.Lstat(workspacePath); !errors.Is(err, os.ErrNotExist) {
 		return workspacePath
 	}
 	userPath, err := UserConfigPath()
 	if err != nil {
 		return workspacePath
 	}
-	if _, err := os.Stat(userPath); err == nil {
+	if _, err := os.Lstat(userPath); !errors.Is(err, os.ErrNotExist) {
 		return userPath
 	}
 	return workspacePath

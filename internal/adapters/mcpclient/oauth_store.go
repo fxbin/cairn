@@ -20,6 +20,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/lock"
+	"github.com/fxbin/cairn/internal/userdir"
 	"golang.org/x/oauth2"
 )
 
@@ -42,13 +43,9 @@ type tokenRecord struct {
 	Token        *oauth2.Token    `json:"token"`
 }
 
-// CredentialDirectory 复用系统用户配置根，避免硬编码平台目录或使用工作区存令牌。
+// CredentialDirectory 返回 ~/.cairn/mcp-auth，令牌与工作区存储保持隔离。
 func CredentialDirectory() (string, error) {
-	configuration, err := config.UserConfigPath()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(filepath.Dir(configuration), "mcp-auth"), nil
+	return userdir.Path("mcp-auth")
 }
 
 // credentialIdentity 把令牌绑定到服务器名、URL 和 OAuth 客户端身份，阻止地址替换。

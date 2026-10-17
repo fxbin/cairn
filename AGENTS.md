@@ -33,7 +33,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 副作用顺序固定：提议 → Policy → 必要时审批 → `operation_started` → 结果或对账 → 关闭 Turn。写入和命令默认 `ask`；回退同样走完整授权链。
 - 内置工具由 `tools.NewRegistry` 静态注册；MCP 客户端由配置和 Composition Root 显式装配，发现目录及工具暴露状态从成功的 Journal 结果投影。外部调用保持完整授权链，目录/schema 漂移失败关闭，不自动重试结果不确定的调用。保持窄边界，不引入普通插件、daemon/RPC 或 Team 实体。
 - Skill 是本地 `SKILL.md` 内容包，由配置显式启用并通过固定 `skill` 工具按需读取；正文激活只来自成功的 Journal 回执，压缩与冷恢复保留历史正文，资源读取绑定来源与摘要。技能的 `allowed-tools`、hooks、模型或子代理声明不能授予权限或执行代码；脚本仍走工作区、Policy、审批和沙箱边界。管理命令只写原生目录，跨客户端共享目录仅作显式只读来源。
-- 用户全局 `AGENTS.md` 仅读取 `config.UserConfigPath` 同级文件，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
+- 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
 - Docker 使用本地已有镜像，无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载；不可用时失败关闭，禁止回退宿主机。
@@ -43,7 +43,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 
 ## 配置、凭据与合同变更
 
-- 工作区配置为 `.agent/config.yaml`；用户级回退路径由 `config.UserConfigPath` 决定，避免硬编码平台目录。保留安全默认值 → Profile → YAML → 环境 → CLI 的解析顺序；显式配置路径与用户级回退行为以解析器为准。
+- 工作区配置为 `.agent/config.yaml`；用户根由 `internal/userdir` 统一解析为 `~/.cairn`；配置、凭据、全局规约、原生 Skills 和 MCP OAuth 都由此派生。用户资源统一从该根读写，不搜索或迁移其他系统配置目录。用户配置路径由 `config.UserConfigPath` 决定。保留安全默认值 → Profile → YAML → 环境 → CLI 的解析顺序；显式配置路径与用户级回退行为以解析器为准。
 - 密钥只通过 `provider.api_key_env` 引用环境变量；本机 `keys.env` 使用 0600 权限，装载优先级为显式环境 → 工作区凭据 → 用户凭据。密钥不得进入 YAML、事件、制品、错误或提交。
 - MCP 的环境与 Bearer/客户端密钥只引用环境变量；OAuth 令牌使用用户配置根下的独立私有存储、0600 原子文件和服务器身份绑定。登录由显式命令发起；read-only/benchmark 不启用外部 MCP，`doctor` 和 `mcp list` 不连接服务器。
 - 新配置字段同步处理默认值、严格校验与测试。影响执行、权限、预算的字段加入 `fingerprintView`；展示/运维字段和 `Config.Resolution` 不进入指纹，Resolution 不参与 YAML 解码。

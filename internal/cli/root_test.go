@@ -290,9 +290,11 @@ execution_contract:
 }
 
 func TestResolveRequiresAuditableCLIArguments(t *testing.T) {
+	workspace := t.TempDir()
+	writeCapabilityConfig(t, workspace)
 	var stdout, stderr bytes.Buffer
 	command := Command{Stdout: &stdout, Stderr: &stderr}
-	exit := command.Run(context.Background(), []string{"resume", "--workspace", t.TempDir(), "--state-dir", t.TempDir(), "--resolve", "op-1=not_applied", "run-1"})
+	exit := command.Run(context.Background(), []string{"resume", "--workspace", workspace, "--state-dir", t.TempDir(), "--resolve", "op-1=not_applied", "run-1"})
 	if exit != ExitUsage || !strings.Contains(stderr.String(), "--resolve requires both --note and --evidence") {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
 	}
@@ -371,6 +373,7 @@ func TestHumanDiagnosticsExposeTheSameOperationalFacts(t *testing.T) {
 // 摘要呈现 Run 身份、工作区观察与验证进展，而不依赖重新执行模型或 verifier。
 func TestHumanInspectExposesReplayedRunIdentity(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeCapabilityConfig(t, workspace)
 	service := app.Service{NewProvider: func(config.Config) (ports.Provider, error) { return fakeProvider{}, nil }}
 	result, err := service.Run(context.Background(), app.RunOptions{Task: "inspect identity", Workspace: workspace, StateDir: stateDir, Config: withTestProvider(config.Defaults())})
 	if err != nil {
