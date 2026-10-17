@@ -50,6 +50,9 @@ func (loop *Loop) messagesFromEvents(events []domain.Event, fallbackTask string)
 // rebuildMessagesFromEvents 共用持久化消息投影；压缩重建额外保留纯文本响应，
 // 防止最终说明遭验证失败后丢失决策。普通恢复沿用不重复注入最终说明的行为。
 func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask string, includeTextOnlyResponses bool) ([]ports.Message, error) {
+	if err := loop.restoreProjectInstructions(events); err != nil {
+		return nil, err
+	}
 	task := fallbackTask
 	priorContext := loop.PriorContext
 	priorRef := loop.PriorContextRef

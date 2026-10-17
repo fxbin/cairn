@@ -1943,6 +1943,11 @@ func (command Command) usage() {
   cairn              交互界面（未配置时进入配置向导；已配置时进入单任务运行）
   cairn run <task>   非交互运行一个任务
 
+AGENTS.md 规约:
+  新运行自动读取 Cairn 用户配置目录及工作区内可见的 AGENTS.md；项目规则优先于用户全局规则。
+  子目录规则仅适用于所在目录及后代。
+  文件修改从下一次新运行生效；恢复运行沿用开始时的规约。
+
 Usage:
   cairn run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--base-url <url>] [--model <name>] [--api-key-env <name>] [--max-turns <n>] [--max-tool-calls <n>] [--max-input-tokens <n>] [--max-output-tokens <n>] [--max-wall-time <duration>] [--max-cost-usd <n>] [--trial-activation] [--json]
   cairn resume <run-id> [--approve <fingerprint> | --deny <fingerprint> | --resolve <op-id>=<verdict> --note <text> --evidence <ref> | --abort-run --reason <text>] [--trial-activation] [--json]

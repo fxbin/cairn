@@ -276,6 +276,8 @@ type RunCreatedPayload struct {
 	SessionID       string          `json:"session_id,omitempty"`
 	PrevRunID       RunID           `json:"prev_run_id,omitempty"`
 	PriorContextRef json.RawMessage `json:"prior_context_ref,omitempty"`
+	// ProjectInstructionsRef 绑定本次运行的 AGENTS.md 快照；缺省表示旧运行不加载文件规约。
+	ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref,omitempty"`
 }
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。

@@ -100,7 +100,7 @@ type EventDraft struct {
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
 		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "build": {}, "budget": {},
-		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {},
+		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {}, "project_instructions_ref": {},
 	},
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},
@@ -319,17 +319,18 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 	switch eventType {
 	case EventRunCreated:
 		var payload struct {
-			Task              string          `json:"task"`
-			TaskRef           json.RawMessage `json:"task_ref"`
-			Workspace         string          `json:"workspace"`
-			WorkspaceHash     *string         `json:"workspace_hash"`
-			ConfigRef         json.RawMessage `json:"config_ref"`
-			ConfigFingerprint *string         `json:"config_fingerprint"`
-			Build             *BuildIdentity  `json:"build"`
-			Budget            json.RawMessage `json:"budget"`
-			SessionID         *string         `json:"session_id"`
-			PrevRunID         *string         `json:"prev_run_id"`
-			PriorContextRef   json.RawMessage `json:"prior_context_ref"`
+			Task                   string          `json:"task"`
+			TaskRef                json.RawMessage `json:"task_ref"`
+			Workspace              string          `json:"workspace"`
+			WorkspaceHash          *string         `json:"workspace_hash"`
+			ConfigRef              json.RawMessage `json:"config_ref"`
+			ConfigFingerprint      *string         `json:"config_fingerprint"`
+			Build                  *BuildIdentity  `json:"build"`
+			Budget                 json.RawMessage `json:"budget"`
+			SessionID              *string         `json:"session_id"`
+			PrevRunID              *string         `json:"prev_run_id"`
+			PriorContextRef        json.RawMessage `json:"prior_context_ref"`
+			ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return fmt.Errorf("decode run_created payload semantics: %w", err)
@@ -351,7 +352,7 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 				return fmt.Errorf("%s build fingerprint: %w", eventType, err)
 			}
 		}
-		for _, field := range []string{"task_ref", "config_ref", "budget", "prior_context_ref"} {
+		for _, field := range []string{"task_ref", "config_ref", "budget", "prior_context_ref", "project_instructions_ref"} {
 			if err := validateOptionalPayloadObject(eventType, object, field); err != nil {
 				return err
 			}

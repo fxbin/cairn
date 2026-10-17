@@ -58,6 +58,8 @@ type RunOptions struct {
 	StateDir  string
 	Config    config.Config
 	OnEvent   EventSink
+	// DisableUserInstructions 供受控评测排除宿主用户规约；项目规约与历史快照仍保持原合同。
+	DisableUserInstructions bool
 	// 会话链关系（ADR-0018）：显式携带时写入创建事件并注入前情；空值时
 	// 行为与无会话场景完全一致。前情文本与制品引用由调用方成对提供，或
 	// 由应用层从上一 run 生成（前情卡服务）。
@@ -204,12 +206,17 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
+	projectInstructionsRef, err := freezeProjectInstructions(boot.Workspace, boot.Artifacts, options.DisableUserInstructions)
+	if err != nil {
+		return RunResult{}, err
+	}
 	runID := domain.NewRunID()
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
-		ConfigRef       artifact.Ref  `json:"config_ref"`
-		PriorContextRef *artifact.Ref `json:"prior_context_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef})})
+		ConfigRef              artifact.Ref  `json:"config_ref"`
+		PriorContextRef        *artifact.Ref `json:"prior_context_ref,omitempty"`
+		ProjectInstructionsRef *artifact.Ref `json:"project_instructions_ref,omitempty"`
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -1232,15 +1239,21 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 	root := manifestArtifactRoot(stateDir, workspaceHash)
 	for _, event := range events {
 		var payload struct {
-			ResultRef        *artifact.Ref   `json:"result_ref"`
-			PlanRef          *artifact.Ref   `json:"plan_ref"`
-			ConfigRef        *artifact.Ref   `json:"config_ref"`
-			EvidenceRef      *artifact.Ref   `json:"evidence_ref"`
-			PlannedBeforeRef *artifact.Ref   `json:"planned_before_ref"`
-			PriorContextRef  json.RawMessage `json:"prior_context_ref"`
+			ResultRef              *artifact.Ref   `json:"result_ref"`
+			PlanRef                *artifact.Ref   `json:"plan_ref"`
+			ConfigRef              *artifact.Ref   `json:"config_ref"`
+			EvidenceRef            *artifact.Ref   `json:"evidence_ref"`
+			PlannedBeforeRef       *artifact.Ref   `json:"planned_before_ref"`
+			PriorContextRef        json.RawMessage `json:"prior_context_ref"`
+			ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			continue
+		}
+		if len(payload.ProjectInstructionsRef) > 0 {
+			if _, err := tools.ReadProjectInstructions(&artifact.Store{Root: root}, payload.ProjectInstructionsRef); err != nil {
+				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
+			}
 		}
 		if len(payload.PriorContextRef) > 0 {
 			var reference artifact.Ref

@@ -387,7 +387,7 @@ func (runner Runner) qualifyAttempt(ctx context.Context, options RunOptions, rep
 func (runner Runner) runPreparedAttempt(ctx context.Context, prepared preparedAttempt, resultDirectory string) AttemptResult {
 	result := prepared.Result
 	agentStarted := runner.now()
-	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: prepared.Task.AgentPrompt(), Workspace: result.Workspace, StateDir: result.StateDir, Config: prepared.Configuration})
+	run, runErr := runner.Service.Run(ctx, app.RunOptions{Task: prepared.Task.AgentPrompt(), Workspace: result.Workspace, StateDir: result.StateDir, Config: prepared.Configuration, DisableUserInstructions: true})
 	result.AgentDurationMS = runner.now().Sub(agentStarted).Milliseconds()
 	completedTrusted := false
 	if run.ID != "" {

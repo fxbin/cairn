@@ -81,6 +81,9 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if err := loop.restoreSkillResults(events); err != nil {
 		return Result{}, err
 	}
+	if err := loop.restoreProjectInstructions(events); err != nil {
+		return Result{}, err
+	}
 	verificationRepaired, err := loop.repairIncompleteVerification(ctx, &projection, input, events)
 	if err != nil {
 		return Result{RunID: input.RunID}, err

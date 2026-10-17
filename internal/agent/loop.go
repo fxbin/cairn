@@ -17,6 +17,7 @@ import (
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
 	mcpModelDeclarations           map[string]string
+	projectInstructions            tools.ProjectInstructions
 	Journal                        ports.Journal
 	Provider                       ports.Provider
 	Tools                          *tools.Registry
@@ -162,6 +163,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		return Result{}, err
 	}
 	if err := loop.restoreSkillResults(events); err != nil {
+		return Result{}, err
+	}
+	if err := loop.restoreProjectInstructions(events); err != nil {
 		return Result{}, err
 	}
 	if ctx.Err() != nil {

@@ -75,6 +75,9 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.restoreSkillResults(events); err != nil {
 		return Result{}, err
 	}
+	if err := loop.restoreProjectInstructions(events); err != nil {
+		return Result{}, err
+	}
 	if result, stopped, budgetErr := loop.stopForPersistedResponseBudget(ctx, &projection, input, events); stopped {
 		return result, budgetErr
 	}

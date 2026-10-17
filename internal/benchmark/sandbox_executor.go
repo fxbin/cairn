@@ -902,10 +902,11 @@ func (executor SandboxExecutor) runSandboxAttempt(ctx context.Context, prepared 
 		return record, nil, nil
 	}
 	result, err := executor.Service.Run(ctx, app.RunOptions{
-		Task:      prepared.Task.AgentPrompt(),
-		Workspace: prepared.Result.Workspace,
-		StateDir:  prepared.Result.StateDir,
-		Config:    prepared.Configuration,
+		Task:                    prepared.Task.AgentPrompt(),
+		Workspace:               prepared.Result.Workspace,
+		StateDir:                prepared.Result.StateDir,
+		Config:                  prepared.Configuration,
+		DisableUserInstructions: true,
 	})
 	record.WallTimeMS = executor.now().Sub(record.StartedAt).Milliseconds()
 	// 错误分轨：Agent 自身预算终止（轮次/工具/token/墙钟/成本）携带完整事

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,19 @@ type Ref struct {
 // 关闭——制品引用的完整性承诺对读取侧与写入侧同等生效。不存在的引用返
 // 回错误，由调用方决定降级语义。
 func (store *Store) Open(ref Ref) ([]byte, error) {
+	return store.open(ref, 0)
+}
+
+// OpenBounded 在分配正文前约束实体大小，并对读取中增长的文件继续限额；既有 Open 的不限额读取语义不变。
+func (store *Store) OpenBounded(ref Ref, maximumBytes int64) ([]byte, error) {
+	if maximumBytes < 1 || maximumBytes == math.MaxInt64 || ref.Bytes < 0 || ref.Bytes > maximumBytes {
+		return nil, errors.New("invalid artifact read limit or reference size")
+	}
+	return store.open(ref, maximumBytes)
+}
+
+// open 共享内容寻址和摘要校验，只有调用方显式给出上限时才采用有界读取。
+func (store *Store) open(ref Ref, maximumBytes int64) ([]byte, error) {
 	if ref.SHA256 == "" {
 		return nil, errors.New("artifact ref without digest")
 	}
@@ -36,14 +50,49 @@ func (store *Store) Open(ref Ref) ([]byte, error) {
 	if len(hexDigest) != sha256.Size*2 {
 		return nil, fmt.Errorf("artifact ref digest has unexpected length")
 	}
+	if _, err := hex.DecodeString(hexDigest); err != nil {
+		return nil, errors.New("artifact ref digest is not hexadecimal")
+	}
 	path := filepath.Join(store.Root, "sha256", hexDigest[:2], hexDigest)
-	content, err := os.ReadFile(path)
+	var content []byte
+	var err error
+	if maximumBytes > 0 {
+		content, err = readBoundedArtifact(path, maximumBytes)
+	} else {
+		content, err = os.ReadFile(path)
+	}
 	if err != nil {
 		return nil, err
 	}
 	digest := sha256.Sum256(content)
 	if hex.EncodeToString(digest[:]) != hexDigest {
 		return nil, fmt.Errorf("artifact content hash mismatch at %s", path)
+	}
+	return content, nil
+}
+
+// readBoundedArtifact 拒绝非普通实体和已知超限大小，再用有限读取防止检查后的文件增长耗尽内存。
+func readBoundedArtifact(path string, maximumBytes int64) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("bounded artifact must be a regular file")
+	}
+	if info.Size() > maximumBytes {
+		return nil, errors.New("artifact exceeds read limit")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	content, readErr := io.ReadAll(io.LimitReader(file, maximumBytes+1))
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > maximumBytes {
+		return nil, errors.New("artifact exceeds read limit")
 	}
 	return content, nil
 }
