@@ -283,6 +283,9 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	}
 	var results []domain.RunProjection
 	for _, runID := range runIDs {
+		if runID == domain.QueueRunID {
+			continue
+		}
 		events, err := journal.Load(ctx, runID)
 		if err != nil {
 			return nil, err
@@ -327,6 +330,12 @@ func (journal *Journal) Check(ctx context.Context) error {
 		events, err := journal.Load(ctx, runID)
 		if err != nil {
 			return err
+		}
+		if runID == domain.QueueRunID {
+			if _, err := domain.ProjectQueue(events); err != nil {
+				return fmt.Errorf("check queue: %w", err)
+			}
+			continue
 		}
 		if _, err := domain.Replay(events); err != nil {
 			return fmt.Errorf("check run %s: %w", runID, err)

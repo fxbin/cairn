@@ -75,6 +75,9 @@ type RunOptions struct {
 	ForkSource *domain.SessionForkSource
 	// Steering 是安全点 steering 投递桥；nil 表示本次运行不接受补充输入。
 	Steering *agent.SteeringBridge
+	// PreassignedRunID 可选预分配 run 标识；队列确认用它保证 consumed{linked}
+	// 与 run_created 的跨崩溃一致性。空值时由系统生成。
+	PreassignedRunID domain.RunID
 	// RequireSessionTail 要求 PrevRunID 在创建事件前仍是其完整历史会话的
 	// 唯一终态链尾；历史选择器用它封闭“展示后状态已变化”的竞态。
 	RequireSessionTail bool
@@ -256,7 +259,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	runID := domain.NewRunID()
+	runID := options.PreassignedRunID
+	if runID == "" {
+		runID = domain.NewRunID()
+	}
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef              artifact.Ref  `json:"config_ref"`
@@ -413,6 +419,9 @@ func listRunHistory(ctx context.Context, journal interface {
 	for _, runID := range runIDs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if runID == domain.QueueRunID {
+			continue
 		}
 		events, loadErr := journal.Load(ctx, runID)
 		if loadErr != nil {
@@ -1596,6 +1605,13 @@ func checkArtifactReferences(ctx context.Context, journal *sqlite.Journal, state
 		events, err := journal.Load(ctx, runID)
 		if err != nil {
 			return err
+		}
+		if runID == domain.QueueRunID {
+			// 队列命名空间只校验内容制品引用，不做 run 冻结合同校验。
+			if err := checkRunArtifactReferences(events, stateDir, workspaceHash); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := checkRunArtifactReferences(events, stateDir, workspaceHash); err != nil {
 			return err

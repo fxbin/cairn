@@ -725,6 +725,9 @@ func (projection *RunProjection) Apply(event Event) error {
 		if projection.State != RunRunning {
 			return fmt.Errorf("%s is not legal for run state %s", event.Type, projection.State)
 		}
+	case EventQueueInputSubmitted, EventQueueInputConsumed, EventQueueInputCancelled:
+		// 队列事件属于 workspace 级 queue 命名空间，不得混入 run 链。
+		return fmt.Errorf("%s must not appear in a run event chain", event.Type)
 	default:
 		return fmt.Errorf("unhandled event type %q", event.Type)
 	}

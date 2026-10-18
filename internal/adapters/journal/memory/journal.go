@@ -78,7 +78,10 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	var runs []domain.RunProjection
-	for _, events := range journal.events {
+	for runID, events := range journal.events {
+		if runID == domain.QueueRunID {
+			continue
+		}
 		projection, err := domain.Replay(events)
 		if err != nil {
 			return nil, err
@@ -90,7 +93,7 @@ func (journal *Journal) NonTerminalRuns(ctx context.Context, workspaceHash strin
 	return runs, nil
 }
 
-// Check 对内存日志中的每条运行执行完整事件回放校验。
+// Check 对内存日志中的每条运行执行完整事件回放校验；队列命名空间走独立投影。
 func (journal *Journal) Check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -98,6 +101,12 @@ func (journal *Journal) Check(ctx context.Context) error {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	for runID, events := range journal.events {
+		if runID == domain.QueueRunID {
+			if _, err := domain.ProjectQueue(events); err != nil {
+				return fmt.Errorf("check queue: %w", err)
+			}
+			continue
+		}
 		if _, err := domain.Replay(events); err != nil {
 			return fmt.Errorf("check run %s: %w", runID, err)
 		}

@@ -65,6 +65,9 @@ const (
 	EventVerificationFinished         EventType = "verification_finished"
 	EventSteeringInputSubmitted       EventType = "steering_input_submitted"
 	EventSteeringInputConsumed        EventType = "steering_input_consumed"
+	EventQueueInputSubmitted          EventType = "queue_input_submitted"
+	EventQueueInputConsumed           EventType = "queue_input_consumed"
+	EventQueueInputCancelled          EventType = "queue_input_cancelled"
 )
 
 // Event 是已规范化、串入哈希链且可持久化的领域事件。
@@ -153,6 +156,10 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	// P3a 安全点 steering：输入经制品脱敏落盘，事件只带引用与幂等标识。
 	EventSteeringInputSubmitted: {"payload_version": {}, "input_id": {}, "content_ref": {}, "kind": {}},
 	EventSteeringInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}},
+	// P3b 持久后续队列：workspace 级 queue 命名空间，RunID 哨兵 "queue"。
+	EventQueueInputSubmitted: {"payload_version": {}, "input_id": {}, "content_ref": {}, "kind": {}},
+	EventQueueInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}, "target_run_id": {}},
+	EventQueueInputCancelled: {"payload_version": {}, "input_id": {}, "reason": {}},
 }
 
 // NewEvent 规范化草稿 payload，并生成带前序哈希的不可变事件。
@@ -934,6 +941,60 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 		}
 		if payload.Outcome == nil || !oneOf(*payload.Outcome, "applied", "rejected") {
 			return fmt.Errorf("%s outcome must be applied or rejected", eventType)
+		}
+	case EventQueueInputSubmitted:
+		var payload struct {
+			InputID    *string         `json:"input_id"`
+			ContentRef json.RawMessage `json:"content_ref"`
+			Kind       *string         `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode queue_input_submitted payload semantics: %w", err)
+		}
+		if payload.InputID == nil || strings.TrimSpace(*payload.InputID) == "" {
+			return fmt.Errorf("%s input_id must not be empty", eventType)
+		}
+		if err := validateOptionalPayloadObject(eventType, object, "content_ref"); err != nil {
+			return err
+		}
+		if payload.Kind != nil && !oneOf(*payload.Kind, "next_task") {
+			return fmt.Errorf("%s kind %q is invalid", eventType, *payload.Kind)
+		}
+	case EventQueueInputConsumed:
+		var payload struct {
+			InputID     *string         `json:"input_id"`
+			ContentRef  json.RawMessage `json:"content_ref"`
+			Outcome     *string         `json:"outcome"`
+			TargetRunID *string         `json:"target_run_id"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode queue_input_consumed payload semantics: %w", err)
+		}
+		if payload.InputID == nil || strings.TrimSpace(*payload.InputID) == "" {
+			return fmt.Errorf("%s input_id must not be empty", eventType)
+		}
+		if err := validateOptionalPayloadObject(eventType, object, "content_ref"); err != nil {
+			return err
+		}
+		if payload.Outcome == nil || !oneOf(*payload.Outcome, "linked") {
+			return fmt.Errorf("%s outcome must be linked", eventType)
+		}
+		if payload.TargetRunID == nil || strings.TrimSpace(*payload.TargetRunID) == "" {
+			return fmt.Errorf("%s target_run_id must not be empty", eventType)
+		}
+	case EventQueueInputCancelled:
+		var payload struct {
+			InputID *string `json:"input_id"`
+			Reason  *string `json:"reason"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode queue_input_cancelled payload semantics: %w", err)
+		}
+		if payload.InputID == nil || strings.TrimSpace(*payload.InputID) == "" {
+			return fmt.Errorf("%s input_id must not be empty", eventType)
+		}
+		if payload.Reason == nil || strings.TrimSpace(*payload.Reason) == "" {
+			return fmt.Errorf("%s reason must not be empty", eventType)
 		}
 	default:
 		return fmt.Errorf("event type %q has no payload semantic validator", eventType)
