@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
@@ -140,6 +141,12 @@ type sessionRunEntry struct {
 	summary string
 }
 
+// steeringReceipt 跟踪一次安全点 steering 的界面回执状态。
+type steeringReceipt struct {
+	id    string
+	state string // 待接收 / 已接收 / 已生效 / 无法应用
+}
+
 // rewindState 标记主界面正在执行工作区回退：审批续跑走 Resume 但结果按回退
 // 语义呈现，回退 run 不进入会话对话链；applied 累计本轮回退中反放成功的补
 // 丁数（来自已持久化事件，不是界面推测）。
@@ -192,14 +199,18 @@ type RunConsole struct {
 	// sessionForkSource 是已选定的跨会话分支来源锚点；下一任务创建新会话
 	// 根运行，与 sessionPrev 互斥。选择本身不创建运行。
 	sessionForkSource *domain.SessionForkSource
-	lastTask          string
-	wizard            *ConfigWizard
-	wizardGeneration  uint64
-	waiting           *ports.WaitingApprovalError
-	approvalDetail    []string
-	result            *app.RunResult
-	runErr            error
-	rewinding         *rewindState
+	// steering 是安全点 steering 投递桥；运行期间 /steer 经此投递补充指导。
+	steering *agent.SteeringBridge
+	// steeringStatus 跟踪本进程已投递 steering 的四态回执。
+	steeringStatus   []steeringReceipt
+	lastTask         string
+	wizard           *ConfigWizard
+	wizardGeneration uint64
+	waiting          *ports.WaitingApprovalError
+	approvalDetail   []string
+	result           *app.RunResult
+	runErr           error
+	rewinding        *rewindState
 }
 
 // NewRunConsole 构造运行主界面模型：内部根 context 承载消息泵生命周期，
@@ -331,6 +342,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 			Task: task, Workspace: console.input.Workspace, StateDir: console.input.StateDir, Config: console.input.Config, OnEvent: onEvent,
 			SessionID: console.sessionID, PrevRunID: console.sessionPrev, RequireSessionTail: console.sessionTailRequired,
 			ForkSource: console.sessionForkSource,
+			Steering:   console.steering,
 		})
 		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})
 		return nil
@@ -628,6 +640,9 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.mode = consoleRunning
 			console.beginOperation()
 			console.lastTask = task
+			// 安全点 steering：每次运行独立投递桥，运行结束后可继续观察回执。
+			console.steering = agent.NewSteeringBridge()
+			console.steeringStatus = nil
 			carryingPrior := false
 			carryingFork := console.sessionForkSource != nil
 			if console.sessionID == "" {
@@ -655,14 +670,19 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.cancelOperation()
 			return console, nil
 		case "enter":
+			text := strings.TrimSpace(console.queueField.Value())
+			console.queueField.Reset()
+			if text == "" {
+				return console, nil
+			}
+			if text == "/steer" || strings.HasPrefix(text, "/steer ") {
+				return console.submitSteering(text)
+			}
 			if !console.queuing {
 				return console, nil
 			}
-			if text := strings.TrimSpace(console.queueField.Value()); text != "" {
-				console.queue = append(console.queue, text)
-				console.appendLine(dimStyle.Render(fmt.Sprintf("✎ 已排队 %d 条（运行结束后 Enter 逐条预填）", len(console.queue))))
-			}
-			console.queueField.Reset()
+			console.queue = append(console.queue, text)
+			console.appendLine(dimStyle.Render(fmt.Sprintf("✎ 已排队 %d 条（运行结束后 Enter 逐条预填）", len(console.queue))))
 			return console, nil
 		default:
 			if !console.queuing {
@@ -913,6 +933,7 @@ func (console *RunConsole) applyEvent(event domain.Event) {
 	if len(console.transcript) > transcriptEventLimit {
 		console.transcript = console.transcript[len(console.transcript)-transcriptEventLimit:]
 	}
+	console.updateSteeringReceipt(event)
 	switch event.Type {
 	case domain.EventTurnOpened:
 		console.turn++
@@ -1408,7 +1429,14 @@ func (console RunConsole) View() string {
 		sections = append(sections, "", console.taskField.View(), dimStyle.Render("Enter 执行/提交 · Tab 补全命令 · Ctrl+J 换行 · Ctrl+O 事件 · Ctrl+C 退出"))
 	case consoleRunning:
 		if console.queuing {
-			sections = append(sections, "", console.queueField.View(), dimStyle.Render("Enter 入队（运行结束后预填）· Ctrl+J 换行"))
+			sections = append(sections, "", console.queueField.View(), dimStyle.Render("/steer <文本> 补充当前任务 · 其余 Enter 入队下一任务 · Ctrl+J 换行"))
+		}
+		if len(console.steeringStatus) > 0 {
+			parts := make([]string, 0, len(console.steeringStatus))
+			for _, receipt := range console.steeringStatus {
+				parts = append(parts, receipt.id+"="+receipt.state)
+			}
+			sections = append(sections, dimStyle.Render("补充输入: "+strings.Join(parts, " · ")))
 		}
 		sections = append(sections, "", console.statusLine())
 	case consoleApproval:
@@ -1557,6 +1585,70 @@ func commonPrefix(left, right string) string {
 	return left[:limit]
 }
 
+// submitSteering 投递一次安全点 steering：/steer <文本> 补充当前任务指导。
+// 界面立即显示「待接收」；Journal 持久化后由事件流推进为已接收/已生效。
+func (console RunConsole) submitSteering(command string) (tea.Model, tea.Cmd) {
+	if console.steering == nil {
+		console.appendLine(warnStyle.Render("当前没有接受补充输入的运行"))
+		return console, nil
+	}
+	_, remainder, _ := strings.Cut(command, " ")
+	content := strings.TrimSpace(remainder)
+	if content == "" {
+		console.appendLine(warnStyle.Render("用法: /steer <补充指导>（区分：排队输入是下一任务）"))
+		return console, nil
+	}
+	inputID := domain.NewID("steer")
+	if err := console.steering.Submit(inputID, content); err != nil {
+		console.appendLine(errStyle.Render("补充输入投递失败: " + err.Error()))
+		return console, nil
+	}
+	console.steeringStatus = append(console.steeringStatus, steeringReceipt{id: inputID, state: "待接收"})
+	console.appendLine(okStyle.Render(fmt.Sprintf("✎ 补充当前任务已投递（%s）· 状态: 待接收", inputID)))
+	console.appendLine(dimStyle.Render("安全点消费后生效；不改变本 run 的冻结权限/预算"))
+	return console, nil
+}
+
+// updateSteeringReceipt 按已持久化事件推进 steering 四态；只有 Journal 事实
+// 才能推进为已接收/已生效/无法应用。
+func (console *RunConsole) updateSteeringReceipt(event domain.Event) {
+	var inputID, outcome string
+	switch event.Type {
+	case domain.EventSteeringInputSubmitted:
+		var payload struct {
+			InputID string `json:"input_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return
+		}
+		inputID = payload.InputID
+		outcome = "已接收"
+	case domain.EventSteeringInputConsumed:
+		var payload struct {
+			InputID string `json:"input_id"`
+			Outcome string `json:"outcome"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			return
+		}
+		inputID = payload.InputID
+		if payload.Outcome == "applied" {
+			outcome = "已生效"
+		} else {
+			outcome = "无法应用"
+		}
+	default:
+		return
+	}
+	for index := range console.steeringStatus {
+		if console.steeringStatus[index].id == inputID {
+			console.steeringStatus[index].state = outcome
+			return
+		}
+	}
+	console.steeringStatus = append(console.steeringStatus, steeringReceipt{id: inputID, state: outcome})
+}
+
 // appendActiveSession 展示仅存在于当前进程的活跃链；该链仍是 /rewind 与
 // /rewind-files 的唯一可操作范围。
 func (console *RunConsole) appendActiveSession() {
@@ -1659,6 +1751,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	case "/help", "/?":
 		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /tree 会话树 · /history <run-id> 历史续链 · /fork <run-id> 从终态创建新分支 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
+		console.appendLine(dimStyle.Render("运行中: /steer <文本> 补充当前任务（安全点生效）· 其余输入排队为下一任务"))
 		console.appendLine(dimStyle.Render("技能: 启用 skills.enabled 后，以 $名称 或 /skill:名称 加任务说明点名；cairn skills 管理本地技能"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1714,6 +1807,12 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		}
 		console.appendLine(dimStyle.Render("正在校验分支来源…"))
 		return true, loadSessionForkCmd(*console, runID)
+	case "/steer":
+		if console.mode == consoleInput {
+			console.appendLine(warnStyle.Render("/steer 在运行中使用：/steer <文本> 补充当前任务指导（区分排队输入=下一任务）"))
+			return true, nil
+		}
+		return true, nil
 	case "/editor":
 		return true, console.openEditorCmd()
 	case "/rewind":

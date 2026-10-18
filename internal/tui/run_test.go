@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
@@ -557,6 +558,45 @@ func TestTreeCommandRendersForkMarkers(t *testing.T) {
 	joined := strings.Join(console.lines, "\n")
 	if !containsLine(console.lines, "分支自 run-a") || !containsLine(console.lines, "run-b") {
 		t.Fatalf("树投影应展示分支标记与子链: %s", joined)
+	}
+}
+
+// TestSteeringCommandSubmitsAndTracksReceipts 锁定 /steer：运行中投递补充指导，
+// 四态由已持久化事件推进，输入态提示用法。
+func TestSteeringCommandSubmitsAndTracksReceipts(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/steer 别动 testdata")
+	model, _ := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if !containsLine(console.lines, "运行中使用") {
+		t.Fatalf("输入态应提示运行中使用: %v", console.lines)
+	}
+
+	// 运行中投递。
+	console.mode = consoleRunning
+	console.steering = agent.NewSteeringBridge()
+	console.queuing = true
+	console.queueField.SetValue("/steer 只改 src/ 下文件")
+	model, _ = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if len(console.steeringStatus) != 1 || console.steeringStatus[0].state != "待接收" {
+		t.Fatalf("steeringStatus = %#v", console.steeringStatus)
+	}
+	if !containsLine(console.lines, "待接收") {
+		t.Fatalf("应显示待接收: %v", console.lines)
+	}
+
+	// Journal 事件推进四态。
+	submitted := domain.Event{Type: domain.EventSteeringInputSubmitted, Payload: []byte(`{"input_id":"` + console.steeringStatus[0].id + `","kind":"steer"}`)}
+	console.applyEvent(submitted)
+	if console.steeringStatus[0].state != "已接收" {
+		t.Fatalf("after submitted = %#v", console.steeringStatus)
+	}
+	consumed := domain.Event{Type: domain.EventSteeringInputConsumed, Payload: []byte(`{"input_id":"` + console.steeringStatus[0].id + `","outcome":"applied"}`)}
+	console.applyEvent(consumed)
+	if console.steeringStatus[0].state != "已生效" {
+		t.Fatalf("after consumed = %#v", console.steeringStatus)
 	}
 }
 
