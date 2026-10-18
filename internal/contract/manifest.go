@@ -35,6 +35,9 @@ const ProviderKindAnthropicMessages = "anthropic_messages"
 // ProviderKindOpenAIResponses 是 OpenAI Responses 线协议标识。
 const ProviderKindOpenAIResponses = "openai_responses"
 
+// ProviderKindGeminiGenerate 是 Gemini GenerateContent 线协议标识。
+const ProviderKindGeminiGenerate = "gemini_generate_content"
+
 // ProviderIdentity 定位一次运行实际使用的模型服务：线协议种类、端点、模型
 // 与运行期能力卡。BaseURL、Model 与 Card 来自冻结配置，Kind 来自事件中的
 // 真实模型请求。卡回放与 Boot 共用同一解析函数：仅显式能力声明产出卡；

@@ -22,11 +22,17 @@ const providerCardProtocolAnthropicMessages = "anthropic-messages"
 // providerCardProtocolOpenAIResponses 限定 OpenAI Responses 线协议。
 const providerCardProtocolOpenAIResponses = "openai-responses"
 
+// providerCardProtocolGeminiGenerate 限定 Gemini GenerateContent 线协议。
+const providerCardProtocolGeminiGenerate = "gemini-generate-content"
+
 // anthropicStopReasons 是 Anthropic Messages 线协议 stop_reason 闭合词表。
 var anthropicStopReasons = []string{"end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal", "model_context_window_exceeded"}
 
 // responsesStopReasons 是 OpenAI Responses 线协议 status/incomplete reason 词表。
 var responsesStopReasons = []string{"completed", "max_output_tokens", "max_messages", "content_filter", "steered"}
+
+// geminiStopReasons 是 Gemini GenerateContent 线协议 finishReason 词表。
+var geminiStopReasons = []string{"STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "OTHER"}
 
 // StopReasonContentFilter 等常量构成 OpenAI Chat Completions 线协议
 // finish_reason 的闭合词表单一来源；生产代码比较或列举终止原因时必须引用
@@ -81,6 +87,8 @@ func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclara
 		protocol = providerCardProtocolAnthropicMessages
 	case ProviderKindOpenAIResponses:
 		protocol = providerCardProtocolOpenAIResponses
+	case ProviderKindGeminiGenerate:
+		protocol = providerCardProtocolGeminiGenerate
 	default:
 		return ProviderCapabilityCard{}, fmt.Errorf("provider kind %q has no capability contract", kind)
 	}
@@ -128,6 +136,8 @@ func normalizedStopReasons(protocol string, reasons []string) []string {
 			return append([]string(nil), anthropicStopReasons...)
 		case providerCardProtocolOpenAIResponses:
 			return append([]string(nil), responsesStopReasons...)
+		case providerCardProtocolGeminiGenerate:
+			return append([]string(nil), geminiStopReasons...)
 		default:
 			return append([]string(nil), chatCompletionStopReasons...)
 		}

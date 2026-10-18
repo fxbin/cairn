@@ -18,6 +18,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages"
+	"github.com/fxbin/cairn/internal/adapters/provider/geminigen"
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
 	"github.com/fxbin/cairn/internal/adapters/provider/openairesponses"
 	"github.com/fxbin/cairn/internal/agent"
@@ -1488,6 +1489,20 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 			client.TemperatureMilli = generation.TemperatureMilli
 			client.TopPMilli = generation.TopPMilli
 			client.ToolChoice = generation.ToolChoice
+		}
+		return client, nil
+	case config.ProtocolGeminiGenerate:
+		client := geminigen.Client{
+			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			HTTPClient:   &http.Client{Timeout: timeout},
+			Requirements: geminigen.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
+		}
+		if generation := configuration.Provider.Generation; generation != nil {
+			if generation.MaxOutputTokens != nil {
+				client.MaxOutputTokens = *generation.MaxOutputTokens
+			}
+			client.TemperatureMilli = generation.TemperatureMilli
+			client.TopPMilli = generation.TopPMilli
 		}
 		return client, nil
 	default:

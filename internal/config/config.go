@@ -334,16 +334,20 @@ const ProtocolAnthropicMessages = "anthropic-messages"
 // ProtocolOpenAIResponses 是 OpenAI Responses 协议标识。
 const ProtocolOpenAIResponses = "openai-responses"
 
+// ProtocolGeminiGenerate 是 Gemini GenerateContent 协议标识。
+const ProtocolGeminiGenerate = "gemini-generate-content"
+
 // supportedProviderProtocols 是配置层接受的协议闭合集合。
 var supportedProviderProtocols = map[string]struct{}{
 	ProtocolOpenAIChatCompletions: {},
 	ProtocolAnthropicMessages:     {},
 	ProtocolOpenAIResponses:       {},
+	ProtocolGeminiGenerate:        {},
 }
 
 // supportedProviderProtocolList 返回受支持协议的稳定排序文案，供错误信息使用。
 func supportedProviderProtocolList() string {
-	return ProtocolOpenAIChatCompletions + ", " + ProtocolAnthropicMessages + ", " + ProtocolOpenAIResponses
+	return ProtocolOpenAIChatCompletions + ", " + ProtocolAnthropicMessages + ", " + ProtocolOpenAIResponses + ", " + ProtocolGeminiGenerate
 }
 
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段

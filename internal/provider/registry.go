@@ -36,6 +36,8 @@ func ProtocolFromKind(kind string) (string, error) {
 		return contract.ProtocolAnthropicMessages, nil
 	case contract.ProviderKindOpenAIResponses:
 		return contract.ProtocolOpenAIResponses, nil
+	case contract.ProviderKindGeminiGenerate:
+		return contract.ProtocolGeminiGenerate, nil
 	default:
 		return "", fmt.Errorf("provider kind %q has no protocol mapping", kind)
 	}
@@ -51,6 +53,8 @@ func KindFromProtocol(protocolID string) (string, error) {
 		return contract.ProviderKindAnthropicMessages, nil
 	case contract.ProtocolOpenAIResponses:
 		return contract.ProviderKindOpenAIResponses, nil
+	case contract.ProtocolGeminiGenerate:
+		return contract.ProviderKindGeminiGenerate, nil
 	default:
 		return "", fmt.Errorf("protocol %q has no provider kind mapping", protocolID)
 	}
