@@ -274,14 +274,27 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			response.Usage = &ports.Usage{PromptTokens: loop.estimatePromptTokens(messages), CompletionTokens: estimateResponseTokens(response)}
 			response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
 		}
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage, UsageEstimated: usageEstimated, StopReason: response.StopReason})}); err != nil {
+		// 连续性块（thinking 签名等）写入受保护制品，事件只带引用；正文不进普通事件。
+		var protocolBlocksRef *artifact.Ref
+		if len(response.ProtocolBlocks) > 0 && loop.Artifacts != nil {
+			encoded, err := json.Marshal(response.ProtocolBlocks)
+			if err != nil {
+				return Result{}, fmt.Errorf("encode protocol blocks: %w", err)
+			}
+			ref, err := loop.Artifacts.Put(encoded, "application/json")
+			if err != nil {
+				return Result{}, fmt.Errorf("store protocol blocks: %w", err)
+			}
+			protocolBlocksRef = &ref
+		}
+		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelResponseFinished, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelResponsePayload{Text: response.Text, ToolCalls: response.ToolCalls, Usage: response.Usage, UsageEstimated: usageEstimated, StopReason: response.StopReason, ProtocolBlocksRef: protocolBlocksRef})}); err != nil {
 			return Result{}, err
 		}
 		usage.add(response.Usage)
 		if exceeded := loop.responseBudgetExceeded(usage); exceeded != nil {
 			return loop.persistBudgetExceeded(ctx, &projection, input, exceeded.Dimension)
 		}
-		messages = append(messages, ports.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls})
+		messages = append(messages, ports.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls, ProtocolBlocks: response.ProtocolBlocks})
 		if len(response.ToolCalls) == 0 {
 			if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: mustJSON(domain.AssistantMessagePayload{Text: response.Text})}); err != nil {
 				return Result{}, err

@@ -115,7 +115,7 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventModelRequestStarted: {
 		"payload_version": {}, "provider": {}, "model": {}, "request_ref": {}, "retry_index": {},
 	},
-	EventModelResponseFinished: {"payload_version": {}, "text": {}, "tool_calls": {}, "usage": {}, "usage_estimated": {}, "stop_reason": {}, "response_ref": {}, "semantic_event_count": {}},
+	EventModelResponseFinished: {"payload_version": {}, "text": {}, "tool_calls": {}, "usage": {}, "usage_estimated": {}, "stop_reason": {}, "response_ref": {}, "semantic_event_count": {}, "protocol_blocks_ref": {}},
 	EventModelRequestFailed:    {"payload_version": {}, "error": {}, "error_class": {}, "retryable": {}, "semantic_event_count": {}, "reason_ref": {}},
 	EventToolCallProposed:      {"payload_version": {}, "call_id": {}, "tool_name": {}, "spec_version": {}, "arguments": {}, "arguments_ref": {}, "fingerprint": {}},
 	EventVerificationCommandProposed: {
@@ -545,6 +545,9 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 			return err
 		}
 		if err := validateOptionalPayloadObject(eventType, object, "response_ref"); err != nil {
+			return err
+		}
+		if err := validateOptionalPayloadObject(eventType, object, "protocol_blocks_ref"); err != nil {
 			return err
 		}
 		if _, err := validateOptionalPayloadInteger(eventType, object, "semantic_event_count", 0); err != nil {

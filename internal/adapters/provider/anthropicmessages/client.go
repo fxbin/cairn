@@ -376,7 +376,8 @@ type anthropicMessage struct {
 	Content []anthropicBlock `json:"content"`
 }
 
-// anthropicBlock 是消息内容块的最小闭合集合（text / tool_use / tool_result）。
+// anthropicBlock 是消息内容块的最小闭合集合（text / tool_use / tool_result /
+// thinking / redacted_thinking）。
 type anthropicBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -386,6 +387,9 @@ type anthropicBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 // anthropicTool 是工具声明。
@@ -411,13 +415,21 @@ func toAnthropicTools(specs []ports.ToolSpec) []anthropicTool {
 	return tools
 }
 
-// toAnthropicMessages 把端口消息转换为 Messages API 内容块序列。
+// toAnthropicMessages 把端口消息转换为 Messages API 内容块序列；连续性块
+// 原样回传，保持 thinking/redacted_thinking 的签名与顺序。
 func toAnthropicMessages(messages []ports.Message) []anthropicMessage {
 	converted := make([]anthropicMessage, 0, len(messages))
 	for _, message := range messages {
-		blocks := make([]anthropicBlock, 0, 2+len(message.ToolCalls))
+		blocks := make([]anthropicBlock, 0, 2+len(message.ToolCalls)+len(message.ProtocolBlocks))
+		for _, continuity := range message.ProtocolBlocks {
+			switch continuity.Type {
+			case "thinking":
+				blocks = append(blocks, anthropicBlock{Type: "thinking", Signature: continuity.Signature, Thinking: continuity.Thinking})
+			case "redacted_thinking":
+				blocks = append(blocks, anthropicBlock{Type: "redacted_thinking", Data: continuity.Data})
+			}
+		}
 		if message.ToolCallID != "" {
-			// 工具结果消息：content 进入 tool_result 块。
 			blocks = append(blocks, anthropicBlock{Type: "tool_result", ToolUseID: message.ToolCallID, Content: message.Content})
 		} else if message.Content != "" {
 			blocks = append(blocks, anthropicBlock{Type: "text", Text: message.Content})
@@ -485,6 +497,8 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 	var dataLines []string
 	toolCalls := map[string]*toolCallAccumulator{}
 	toolCallsByIndex := map[int]*toolCallAccumulator{}
+	protocolBlocks := []ports.ProtocolBlock{}
+	thinkingByIndex := map[int]*ports.ProtocolBlock{}
 	stopReason := ""
 	done := false
 	semantic := false
@@ -529,12 +543,22 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 				Type string `json:"type"`
 				ID   string `json:"id"`
 				Name string `json:"name"`
+				// redacted_thinking 的 data 在 content_block_start 一次给全。
+				Data      string `json:"data"`
+				Signature string `json:"signature"`
+				Thinking  string `json:"thinking"`
 			}
 			_ = json.Unmarshal(event.ContentBlock, &block)
 			switch block.Type {
 			case "text":
-			case "thinking", "redacted_thinking":
-				return semantic, &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("unsupported content block %q without continuity support", block.Type)}
+			case "thinking":
+				item := ports.ProtocolBlock{Type: "thinking", Signature: block.Signature, Thinking: block.Thinking}
+				protocolBlocks = append(protocolBlocks, item)
+				thinkingByIndex[event.Index] = &protocolBlocks[len(protocolBlocks)-1]
+			case "redacted_thinking":
+				item := ports.ProtocolBlock{Type: "redacted_thinking", Data: block.Data}
+				protocolBlocks = append(protocolBlocks, item)
+				thinkingByIndex[event.Index] = &protocolBlocks[len(protocolBlocks)-1]
 			case "tool_use":
 				accumulator := &toolCallAccumulator{id: block.ID, name: block.Name}
 				toolCalls[block.ID] = accumulator
@@ -547,6 +571,8 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 			var delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 			}
 			_ = json.Unmarshal(event.Delta, &delta)
@@ -561,8 +587,18 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 					return semantic, &ProviderError{Kind: "invalid_response", Cause: errors.New("input_json_delta without a tool_use block")}
 				}
 				target.frames = append(target.frames, delta.PartialJSON)
-			case "signature_delta", "thinking_delta":
-				return semantic, &ProviderError{Kind: "invalid_response", Cause: fmt.Errorf("unsupported delta %q without continuity support", delta.Type)}
+			case "thinking_delta":
+				target := thinkingByIndex[event.Index]
+				if target == nil {
+					return semantic, &ProviderError{Kind: "invalid_response", Cause: errors.New("thinking_delta without a thinking block")}
+				}
+				target.Thinking += delta.Thinking
+			case "signature_delta":
+				target := thinkingByIndex[event.Index]
+				if target == nil {
+					return semantic, &ProviderError{Kind: "invalid_response", Cause: errors.New("signature_delta without a thinking block")}
+				}
+				target.Signature += delta.Signature
 			default:
 			}
 		case "content_block_stop":
@@ -595,7 +631,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 					return semantic, err
 				}
 			}
-			if err := emitEvent(ports.ModelEvent{Kind: ports.Done, StopReason: stopReason}); err != nil {
+			if err := emitEvent(ports.ModelEvent{Kind: ports.Done, StopReason: stopReason, ProtocolBlocks: protocolBlocks}); err != nil {
 				return semantic, err
 			}
 			done = true

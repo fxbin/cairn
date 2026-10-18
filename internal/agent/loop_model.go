@@ -7,17 +7,20 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
 // modelResponsePayload 是写入 model_response_finished 事件的响应内容；
 // usage_estimated 标记 usage 为字节估算兜底而非提供方回报值。
+// protocol_blocks_ref 指向连续性块制品：thinking 正文不进入普通事件。
 type modelResponsePayload struct {
-	Text           string           `json:"text"`
-	ToolCalls      []ports.ToolCall `json:"tool_calls,omitempty"`
-	Usage          *ports.Usage     `json:"usage,omitempty"`
-	UsageEstimated bool             `json:"usage_estimated,omitempty"`
-	StopReason     string           `json:"stop_reason,omitempty"`
+	Text              string           `json:"text"`
+	ToolCalls         []ports.ToolCall `json:"tool_calls,omitempty"`
+	Usage             *ports.Usage     `json:"usage,omitempty"`
+	UsageEstimated    bool             `json:"usage_estimated,omitempty"`
+	StopReason        string           `json:"stop_reason,omitempty"`
+	ProtocolBlocksRef *artifact.Ref    `json:"protocol_blocks_ref,omitempty"`
 }
 
 // modelRequestPayload 是写入模型请求事件的可审计提供方信息。
@@ -36,10 +39,11 @@ type modelRequestFailedPayload struct {
 
 // collectedResponse 汇集一次流式模型响应的文本、工具调用与 token 用量。
 type collectedResponse struct {
-	Text       string
-	ToolCalls  []ports.ToolCall
-	Usage      *ports.Usage
-	StopReason string
+	Text           string
+	ToolCalls      []ports.ToolCall
+	Usage          *ports.Usage
+	StopReason     string
+	ProtocolBlocks []ports.ProtocolBlock
 }
 
 var errSensitiveToolArguments = errors.New("model tool arguments contain a secret-like value")
@@ -101,6 +105,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 			response.Usage = &usage
 		case ports.Done:
 			response.StopReason = event.StopReason
+			if len(event.ProtocolBlocks) > 0 {
+				response.ProtocolBlocks = append([]ports.ProtocolBlock(nil), event.ProtocolBlocks...)
+			}
 			done = true
 		default:
 			return fmt.Errorf("unknown provider event %q", event.Kind)

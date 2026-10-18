@@ -215,22 +215,79 @@ func TestClassifiesHTTPErrors(t *testing.T) {
 	}
 }
 
-// TestThinkingBlockFailsClosed 锁定未启用连续性时思考块失败关闭，不静默丢弃。
-func TestThinkingBlockFailsClosed(t *testing.T) {
+// TestThinkingBlockCapturedForContinuity 锁定 thinking 块被捕获为连续性块并
+// 在 Done 上返回，签名与正文完整，供上层受保护持久化后原样回传。
+func TestThinkingBlockCapturedForContinuity(t *testing.T) {
 	frames := strings.Join([]string{
 		"event: content_block_start",
-		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","signature":"sig","thinking":"hidden"}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","signature":"","thinking":""}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hidden plan"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}`,
+		"",
+		"event: message_delta",
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
 		"",
 	}, "\n")
 	server := sseServer(t, http.StatusOK, frames, nil)
+	events, emit := collectEvents(t)
 	client := Client{BaseURL: server.URL}
-	err := client.Stream(context.Background(), ports.ModelRequest{Model: "m"}, func(ports.ModelEvent) error { return nil })
-	var providerError *ProviderError
-	if !errors.As(err, &providerError) || providerError.Kind != "invalid_response" {
-		t.Fatalf("err = %v", err)
+	if err := client.Stream(context.Background(), ports.ModelRequest{Model: "m"}, emit); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "continuity") {
-		t.Fatalf("err = %v", err)
+	var blocks []ports.ProtocolBlock
+	for _, event := range *events {
+		if event.Kind == ports.Done {
+			blocks = event.ProtocolBlocks
+		}
+	}
+	if len(blocks) != 1 || blocks[0].Type != "thinking" || blocks[0].Thinking != "hidden plan" || blocks[0].Signature != "sig-abc" {
+		t.Fatalf("protocol blocks = %#v", blocks)
+	}
+}
+
+// TestThinkingRoundTripInRequest 锁定连续性块按原顺序回传到请求体。
+func TestThinkingRoundTripInRequest(t *testing.T) {
+	var captured []anthropicMessage
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload messageRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		captured = payload.Messages
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	client := Client{BaseURL: server.URL}
+	_ = client.Stream(context.Background(), ports.ModelRequest{
+		Model: "m",
+		Messages: []ports.Message{
+			{
+				Role: "assistant",
+				ProtocolBlocks: []ports.ProtocolBlock{
+					{Type: "thinking", Signature: "sig", Thinking: "plan"},
+					{Type: "redacted_thinking", Data: "opaque"},
+				},
+				ToolCalls: []ports.ToolCall{{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`)}},
+			},
+		},
+	}, func(ports.ModelEvent) error { return nil })
+	if len(captured) != 1 {
+		t.Fatalf("messages = %#v", captured)
+	}
+	blocks := captured[0].Content
+	if len(blocks) < 3 || blocks[0].Type != "thinking" || blocks[0].Signature != "sig" || blocks[1].Type != "redacted_thinking" || blocks[1].Data != "opaque" {
+		t.Fatalf("blocks = %#v", blocks)
+	}
+	if blocks[2].Type != "tool_use" {
+		t.Fatalf("blocks = %#v", blocks)
 	}
 }
 

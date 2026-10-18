@@ -149,7 +149,15 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				}
 			}
 			if complete {
-				messages = append(messages, ports.Message{Role: "assistant", Content: payload.Text, ToolCalls: payload.ToolCalls})
+				message := ports.Message{Role: "assistant", Content: payload.Text, ToolCalls: payload.ToolCalls}
+				if payload.ProtocolBlocksRef != nil && loop.Artifacts != nil {
+					blocks, err := loop.loadProtocolBlocks(payload.ProtocolBlocksRef)
+					if err != nil {
+						return nil, err
+					}
+					message.ProtocolBlocks = blocks
+				}
+				messages = append(messages, message)
 			}
 		case domain.EventToolCallProposed:
 			if event.OperationID == nil {
@@ -189,6 +197,23 @@ const sessionContextPrefix = "以下本会话前情供背景参考，由上一�
 // 终是独立的最新用户消息，前情只提供背景不改变任务语义。
 func sessionContextBlock(prior string) string {
 	return sessionContextPrefix + prior
+}
+
+// loadProtocolBlocks 从受保护制品读取连续性块；引用存在即属于可回放合同，
+// 摘要或格式错误必须失败关闭，不得静默丢弃签名。
+func (loop *Loop) loadProtocolBlocks(ref *artifact.Ref) ([]ports.ProtocolBlock, error) {
+	if ref == nil {
+		return nil, nil
+	}
+	content, err := loop.Artifacts.Open(*ref)
+	if err != nil {
+		return nil, fmt.Errorf("load protocol blocks: %w", err)
+	}
+	var blocks []ports.ProtocolBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil, fmt.Errorf("decode protocol blocks: %w", err)
+	}
+	return blocks, nil
 }
 
 // loadPriorContext 从制品库严格读取并校验前情卡；引用存在即属于可回放合同，

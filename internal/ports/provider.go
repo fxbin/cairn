@@ -38,6 +38,18 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	// ProtocolBlocks 保存协议要求原样回传的连续性块（如 thinking 签名）。
+	// 正文不进入普通事件；块本身只在请求装配阶段出现。
+	ProtocolBlocks []ProtocolBlock `json:"protocol_blocks,omitempty"`
+}
+
+// ProtocolBlock 是协议连续性块的最小闭合表示：thinking 带签名与正文，
+// redacted_thinking 带不透明 data。两者都必须原样回传。
+type ProtocolBlock struct {
+	Type      string `json:"type"`
+	Signature string `json:"signature,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 // ToolSpec 描述可供模型选择调用的固定工具及其 JSON schema。
@@ -78,4 +90,7 @@ type ModelEvent struct {
 	ToolCall   *ToolCall
 	Usage      *Usage
 	StopReason string
+	// ProtocolBlocks 仅在 Done 事件上携带本响应捕获的连续性块；
+	// 正文持久化责任在调用方（制品库），不得写入普通事件。
+	ProtocolBlocks []ProtocolBlock
 }
