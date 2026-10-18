@@ -85,6 +85,9 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 		Contents: toGeminiContents(request.Messages),
 		Tools:    toGeminiTools(request.Tools),
 	}
+	if system := extractGeminiSystem(request.Messages); system != "" {
+		payload.SystemInstruction = &content{Role: "system", Parts: []part{{Text: system}}}
+	}
 	if err := applyGeneration(&payload, client); err != nil {
 		return &ProviderError{Kind: "invalid_request", Cause: err}
 	}
@@ -317,9 +320,10 @@ func parseRetryAfter(value string) time.Duration {
 
 // generateRequest 是 Gemini GenerateContent 请求载荷（独立线协议）。
 type generateRequest struct {
-	Contents         []content         `json:"contents"`
-	Tools            []tool            `json:"tools,omitempty"`
-	GenerationConfig *generationConfig `json:"generationConfig,omitempty"`
+	Contents          []content         `json:"contents"`
+	Tools             []tool            `json:"tools,omitempty"`
+	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
+	SystemInstruction *content          `json:"systemInstruction,omitempty"`
 }
 
 // generationConfig 是显式生成参数。
@@ -382,17 +386,30 @@ func toGeminiTools(specs []ports.ToolSpec) []tool {
 	return []tool{{FunctionDeclarations: declarations}}
 }
 
-// toGeminiContents 把端口消息转换为 Gemini contents：user/model role，
-// 工具调用为 functionCall，工具结果为 functionResponse。
+// toGeminiContents 把端口消息转换为 Gemini contents：system 提取为
+// systemInstruction；assistant → model；工具回执以 user 角色携带
+// functionResponse，name 取前序 functionCall 的函数名（不是 call ID）。
 func toGeminiContents(messages []ports.Message) []content {
 	contents := make([]content, 0, len(messages))
+	// 建立 call ID → function name 关联，供工具回执映射。
+	callNames := map[string]string{}
 	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			callNames[call.ID] = call.Name
+		}
+	}
+	for _, message := range messages {
+		if message.Role == "system" {
+			continue
+		}
 		parts := make([]part, 0, 2+len(message.ToolCalls))
 		role := message.Role
 		switch {
-		case role == "tool" || message.ToolCallID != "":
-			// 工具结果：Gemini 要求 functionResponse 带 name；我们从 call 映射。
-			name := message.ToolCallID
+		case message.ToolCallID != "" || role == "tool":
+			name := callNames[message.ToolCallID]
+			if name == "" {
+				name = message.ToolCallID
+			}
 			response := json.RawMessage(`{}`)
 			if message.Content != "" {
 				if json.Valid([]byte(message.Content)) {
@@ -416,7 +433,12 @@ func toGeminiContents(messages []ports.Message) []content {
 			}
 			parts = append(parts, part{FunctionCall: &functionCall{Name: call.Name, Args: args}})
 		}
-		if role == "" {
+		switch role {
+		case "assistant", "model":
+			role = "model"
+		case "user", "":
+			role = "user"
+		default:
 			role = "user"
 		}
 		if len(parts) == 0 {
@@ -425,6 +447,16 @@ func toGeminiContents(messages []ports.Message) []content {
 		contents = append(contents, content{Role: role, Parts: parts})
 	}
 	return contents
+}
+
+// extractGeminiSystem 提取 system 提示供 systemInstruction 使用。
+func extractGeminiSystem(messages []ports.Message) string {
+	for _, message := range messages {
+		if message.Role == "system" && message.Content != "" {
+			return message.Content
+		}
+	}
+	return ""
 }
 
 // streamChunk 是 SSE data 帧中的 GenerateContentResponse 片段。

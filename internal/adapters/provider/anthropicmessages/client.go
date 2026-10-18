@@ -99,7 +99,9 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 		Tools:    toAnthropicTools(request.Tools),
 		Stream:   true,
 	}
-	if client.System != "" {
+	if system := extractSystemPrompt(request.Messages); system != "" {
+		payload.System = system
+	} else if client.System != "" {
 		payload.System = client.System
 	}
 	maxTokens := client.MaxTokens
@@ -116,6 +118,7 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 	}
 	usageSeen := false
 	stopReason := ""
+	var mergedUsage *ports.Usage
 	wrapped := func(event ports.ModelEvent) error {
 		switch event.Kind {
 		case ports.UsageEvent:
@@ -124,9 +127,27 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 				if err := validateUsageAccounting(event.Usage); err != nil {
 					return &ProviderError{Kind: "invalid_response", Cause: err}
 				}
+				// Anthropic 流在 message_start 与 message_delta 多次发 usage；
+				// 合并为单一最终计量，只向上发一次。
+				if mergedUsage == nil {
+					mergedUsage = &ports.Usage{PromptTokens: event.Usage.PromptTokens, CompletionTokens: event.Usage.CompletionTokens, TotalTokens: event.Usage.TotalTokens}
+				} else {
+					if event.Usage.PromptTokens > mergedUsage.PromptTokens {
+						mergedUsage.PromptTokens = event.Usage.PromptTokens
+					}
+					if event.Usage.CompletionTokens > mergedUsage.CompletionTokens {
+						mergedUsage.CompletionTokens = event.Usage.CompletionTokens
+					}
+					mergedUsage.TotalTokens = mergedUsage.PromptTokens + mergedUsage.CompletionTokens
+				}
 			}
 		case ports.Done:
 			stopReason = event.StopReason
+			if mergedUsage != nil {
+				if err := emit(ports.ModelEvent{Kind: ports.UsageEvent, Usage: mergedUsage}); err != nil {
+					return err
+				}
+			}
 		}
 		return emit(event)
 	}
@@ -415,11 +436,16 @@ func toAnthropicTools(specs []ports.ToolSpec) []anthropicTool {
 	return tools
 }
 
-// toAnthropicMessages 把端口消息转换为 Messages API 内容块序列；连续性块
-// 原样回传，保持 thinking/redacted_thinking 的签名与顺序。
+// toAnthropicMessages 把端口消息转换为 Messages API 内容块序列：system 提示
+// 由调用方提取到顶层；工具回执映射为 user 消息内的 tool_result 块；连续性
+// 块原样回传。角色只出现 user/assistant，符合 Messages 线协议。
 func toAnthropicMessages(messages []ports.Message) []anthropicMessage {
 	converted := make([]anthropicMessage, 0, len(messages))
 	for _, message := range messages {
+		if message.Role == "system" {
+			// system 由顶层字段承载，不进入 messages。
+			continue
+		}
 		blocks := make([]anthropicBlock, 0, 2+len(message.ToolCalls)+len(message.ProtocolBlocks))
 		for _, continuity := range message.ProtocolBlocks {
 			switch continuity.Type {
@@ -429,8 +455,11 @@ func toAnthropicMessages(messages []ports.Message) []anthropicMessage {
 				blocks = append(blocks, anthropicBlock{Type: "redacted_thinking", Data: continuity.Data})
 			}
 		}
-		if message.ToolCallID != "" {
+		role := message.Role
+		if message.ToolCallID != "" || role == "tool" {
+			// 工具结果必须以 user 角色回传 tool_result 块。
 			blocks = append(blocks, anthropicBlock{Type: "tool_result", ToolUseID: message.ToolCallID, Content: message.Content})
+			role = "user"
 		} else if message.Content != "" {
 			blocks = append(blocks, anthropicBlock{Type: "text", Text: message.Content})
 		}
@@ -440,14 +469,30 @@ func toAnthropicMessages(messages []ports.Message) []anthropicMessage {
 				input = json.RawMessage(`{}`)
 			}
 			blocks = append(blocks, anthropicBlock{Type: "tool_use", ID: call.ID, Name: call.Name, Input: input})
+			role = "assistant"
 		}
-		role := message.Role
 		if role == "" {
 			role = "user"
+		}
+		if role != "user" && role != "assistant" {
+			role = "user"
+		}
+		if len(blocks) == 0 {
+			continue
 		}
 		converted = append(converted, anthropicMessage{Role: role, Content: blocks})
 	}
 	return converted
+}
+
+// extractSystemPrompt 从端口消息提取系统提示（首个 system 消息）。
+func extractSystemPrompt(messages []ports.Message) string {
+	for _, message := range messages {
+		if message.Role == "system" && message.Content != "" {
+			return message.Content
+		}
+	}
+	return ""
 }
 
 // streamEvent 是 SSE data 帧的判别联合。

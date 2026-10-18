@@ -1129,6 +1129,7 @@ func providerSelectionFingerprintFor(config Config) providerSelectionFingerprint
 		ProviderID: config.Provider.ID,
 		Model:      config.Provider.Model,
 		BaseURL:    config.Provider.BaseURL,
+		Protocol:   config.Provider.Protocol,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("config v2 must derive a provider selection: %v", err))

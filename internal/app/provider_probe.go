@@ -277,6 +277,7 @@ func (service Service) persistProviderProbeEvidence(options CheckProviderOptions
 		ProviderID: configuration.Provider.ID,
 		Model:      configuration.Provider.Model,
 		BaseURL:    configuration.Provider.BaseURL,
+		Protocol:   configuration.Provider.Protocol,
 	})
 	if err != nil {
 		return "", err

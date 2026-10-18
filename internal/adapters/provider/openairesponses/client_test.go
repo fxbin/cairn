@@ -80,16 +80,17 @@ func TestStreamTextAndUsage(t *testing.T) {
 }
 
 // TestStreamAssemblesToolCalls 锁定 function_call 参数增量拼接与 call_id 标识。
+// 官方流：item.id=fc_…、call_id=call_…、delta.item_id=fc_…（两者不同）。
 func TestStreamAssemblesToolCalls(t *testing.T) {
 	frames := strings.Join([]string{
 		"event: response.output_item.added",
 		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch"}}`,
 		"",
 		"event: response.function_call_arguments.delta",
-		`data: {"type":"response.function_call_arguments.delta","item_id":"call_1","delta":"{\"path\":\"a.go\","}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"path\":\"a.go\","}`,
 		"",
 		"event: response.function_call_arguments.delta",
-		`data: {"type":"response.function_call_arguments.delta","item_id":"call_1","delta":"\"mode\":\"create\"}"}`,
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"mode\":\"create\"}"}`,
 		"",
 		"event: response.completed",
 		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":3,"output_tokens":7,"total_tokens":10}}}`,

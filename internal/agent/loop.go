@@ -17,13 +17,16 @@ import (
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
-	mcpModelDeclarations           map[string]string
-	projectInstructions            tools.ProjectInstructions
-	Journal                        ports.Journal
-	Provider                       ports.Provider
-	Tools                          *tools.Registry
-	Gate                           *policy.Gate
-	Model                          string
+	mcpModelDeclarations map[string]string
+	projectInstructions  tools.ProjectInstructions
+	Journal              ports.Journal
+	Provider             ports.Provider
+	Tools                *tools.Registry
+	Gate                 *policy.Gate
+	Model                string
+	// ProviderKind 是历史 ProviderKind 词表值，写入 model_request_started；
+	// 由配置 effective protocol 经闭合映射派生，不再硬编码。
+	ProviderKind                   string
 	ConfigFingerprint              string
 	MaxTurns                       int
 	MaxToolCalls                   int
@@ -269,6 +272,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		return Result{}, err
 	}
 	loop.steeringConsumed = steeringConsumedFromEvents(events)
+	loop.requeueUnconsumedSteering(events)
 	messages, err = loop.compactContextIfNeeded(ctx, &projection, input, messages)
 	if err != nil {
 		return Result{}, err
@@ -303,7 +307,11 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			return loop.persistCancellation(ctx, &projection, input, &turnID)
 		}
 		attemptID := domain.NewAttemptID()
-		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestPayload{Provider: "openai_compatible", Model: loop.Model})}); err != nil {
+		providerKind := loop.ProviderKind
+		if providerKind == "" {
+			providerKind = "openai_compatible"
+		}
+		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventModelRequestStarted, TurnID: &turnID, AttemptID: &attemptID, Payload: mustJSON(modelRequestPayload{Provider: providerKind, Model: loop.Model})}); err != nil {
 			return Result{}, err
 		}
 		response, err := loop.callModel(ctx, messages)
@@ -588,6 +596,42 @@ func steeringConsumedFromEvents(events []domain.Event) map[string]struct{} {
 		}
 	}
 	return consumed
+}
+
+// requeueUnconsumedSteering 把已提交但未消费的 steering 输入重新投递回收件箱，
+// 冷恢复后仍能在安全点生效；正文从制品解引用，损坏则跳过并留待对账。
+func (loop *Loop) requeueUnconsumedSteering(events []domain.Event) {
+	if loop.steeringInbox == nil {
+		loop.steeringInbox = make(chan SteeringRequest, 64)
+	}
+	for _, event := range events {
+		if event.Type != domain.EventSteeringInputSubmitted {
+			continue
+		}
+		var payload struct {
+			InputID    string          `json:"input_id"`
+			ContentRef json.RawMessage `json:"content_ref"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.InputID == "" {
+			continue
+		}
+		if _, consumed := loop.steeringConsumed[payload.InputID]; consumed {
+			continue
+		}
+		content := ""
+		if len(payload.ContentRef) > 0 && loop.Artifacts != nil {
+			var ref artifact.Ref
+			if json.Unmarshal(payload.ContentRef, &ref) == nil {
+				if restored, err := loop.Artifacts.Open(ref); err == nil {
+					content = string(restored)
+				}
+			}
+		}
+		select {
+		case loop.steeringInbox <- SteeringRequest{InputID: payload.InputID, Content: content}:
+		default:
+		}
+	}
 }
 
 // closeTurnAndCompact 写入继续轮次的关闭事件，并在需要时生成上下文检查点。

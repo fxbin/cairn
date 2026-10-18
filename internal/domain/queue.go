@@ -40,11 +40,20 @@ type QueueProjection struct {
 }
 
 // ProjectQueue 从 queue 命名空间事件重建队列投影；顺序敏感，后事件覆盖先事件。
+// 先完整校验事件链（序号/哈希/schema）再投影，与 run 链同级完整性保护。
 func ProjectQueue(events []Event) (QueueProjection, error) {
+	if len(events) > 0 {
+		if err := VerifyChain(events); err != nil {
+			return QueueProjection{}, fmt.Errorf("queue event chain: %w", err)
+		}
+	}
 	projection := QueueProjection{Items: make(map[string]*QueueItem)}
 	for _, event := range events {
 		if event.RunID != QueueRunID {
 			return QueueProjection{}, fmt.Errorf("queue projection received non-queue event from run %s", event.RunID)
+		}
+		if event.WorkspaceHash == "" {
+			return QueueProjection{}, fmt.Errorf("queue event missing workspace hash")
 		}
 		switch event.Type {
 		case EventQueueInputSubmitted:

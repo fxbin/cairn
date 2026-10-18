@@ -413,7 +413,8 @@ type streamEvent struct {
 
 // toolCallAccumulator 累积一个 function_call 的增量参数。
 type toolCallAccumulator struct {
-	id     string
+	id     string // item id (fc_...)
+	callID string // call id (call_...) 供工具调用与回执
 	name   string
 	frames []string
 }
@@ -482,13 +483,11 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 			}
 			_ = json.Unmarshal(event.Item, &item)
 			if item.Type == "function_call" {
-				id := item.CallID
-				if id == "" {
-					id = item.ID
-				}
-				if _, exists := toolCalls[id]; !exists {
-					toolCalls[id] = &toolCallAccumulator{id: id, name: item.Name}
-					toolOrder = append(toolOrder, id)
+				// 官方流：item.id=fc_…、call_id=call_…、delta.item_id=fc_…
+				// 以 item.id 为增量键，call_id 单独保留供工具调用标识。
+				if _, exists := toolCalls[item.ID]; !exists {
+					toolCalls[item.ID] = &toolCallAccumulator{id: item.ID, callID: item.CallID, name: item.Name}
+					toolOrder = append(toolOrder, item.ID)
 				}
 			}
 		case "response.output_text.delta":
@@ -551,7 +550,11 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 				if !json.Valid([]byte(raw)) {
 					return semantic, &ProviderError{Kind: "invalid_response", Cause: ports.ErrMalformedToolCallArguments}
 				}
-				calls = append(calls, ports.ToolCall{ID: item.id, Name: item.name, Arguments: json.RawMessage(raw)})
+				callID := item.callID
+				if callID == "" {
+					callID = item.id
+				}
+				calls = append(calls, ports.ToolCall{ID: callID, Name: item.name, Arguments: json.RawMessage(raw)})
 			}
 			for _, call := range calls {
 				call := call

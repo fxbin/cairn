@@ -1532,6 +1532,19 @@ func resolveProviderCardForProtocol(protocol, model string, declared *contract.P
 	return contract.ResolveProviderCard(kind, model, declared)
 }
 
+// providerKindForProtocol 把 effective protocol 映射为历史 ProviderKind；
+// 缺省协议回退 Chat Completions，未知协议失败关闭。
+func providerKindForProtocol(protocol string) string {
+	if protocol == "" {
+		protocol = config.ProtocolOpenAIChatCompletions
+	}
+	kind, err := provider.KindFromProtocol(protocol)
+	if err != nil {
+		return ""
+	}
+	return kind
+}
+
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。
 func workspaceFor(root string, configuration config.Config) (tools.Workspace, string, error) {
 	if root == "" {
@@ -1636,6 +1649,8 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 			PlannedBeforeRef       *artifact.Ref   `json:"planned_before_ref"`
 			PriorContextRef        json.RawMessage `json:"prior_context_ref"`
 			ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref"`
+			ContentRef             json.RawMessage `json:"content_ref"`
+			ProtocolBlocksRef      json.RawMessage `json:"protocol_blocks_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			continue
@@ -1645,10 +1660,17 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
 			}
 		}
-		if len(payload.PriorContextRef) > 0 {
+		for name, raw := range map[string]json.RawMessage{
+			"prior_context_ref":   payload.PriorContextRef,
+			"content_ref":         payload.ContentRef,
+			"protocol_blocks_ref": payload.ProtocolBlocksRef,
+		} {
+			if len(raw) == 0 {
+				continue
+			}
 			var reference artifact.Ref
-			if string(payload.PriorContextRef) == "null" || json.Unmarshal(payload.PriorContextRef, &reference) != nil {
-				return fmt.Errorf("run %s event %d: invalid prior context ref", event.RunID, event.Seq)
+			if string(raw) == "null" || json.Unmarshal(raw, &reference) != nil {
+				return fmt.Errorf("run %s event %d: invalid %s", event.RunID, event.Seq, name)
 			}
 			if err := checkArtifactReference(root, reference); err != nil {
 				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
@@ -1832,7 +1854,8 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 	loop := agent.Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate,
 		Model: configuration.Provider.Model, ConfigFingerprint: configuration.Fingerprint(),
-		MaxTurns: configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls,
+		ProviderKind: providerKindForProtocol(configuration.Provider.Protocol),
+		MaxTurns:     configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls,
 		MaxInputTokens: configuration.Budget.MaxInputTokens, MaxOutputTokens: configuration.Budget.MaxOutputTokens,
 		MaxCostUSD: configuration.Budget.MaxCostUSD, InputTokenUSD: configuration.Pricing.InputTokenUSD,
 		OutputTokenUSD:     configuration.Pricing.OutputTokenUSD,
@@ -1898,7 +1921,7 @@ func runReachedTerminal(journal *sqlite.Journal, runID domain.RunID) bool {
 func checkAdmissionGate(stateDir, workspaceHash string, configuration config.Config) (AdmissionHealth, error) {
 	status := AdmissionHealth{Mode: configuration.Provider.Admission}
 	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
-		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL},
+		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL, Protocol: configuration.Provider.Protocol},
 		Capability:    config.ProviderCapabilityDeclaration(configuration),
 		Generation:    config.ProviderGenerationDeclaration(configuration),
 		CredentialRef: configuration.Provider.APIKeyEnv,

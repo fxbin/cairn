@@ -185,6 +185,32 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 			if json.Unmarshal(event.Payload, &payload) == nil && payload.Text != "" {
 				messages = append(messages, ports.Message{Role: "user", Content: payload.Text})
 			}
+		case domain.EventSteeringInputConsumed:
+			// 已生效 steering 按事件顺序重建为用户补充指导；正文从受保护制品
+			// 严格解引用，缺失或损坏失败关闭。
+			var payload struct {
+				InputID    string          `json:"input_id"`
+				ContentRef json.RawMessage `json:"content_ref"`
+				Outcome    string          `json:"outcome"`
+			}
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			if payload.Outcome != "applied" {
+				continue
+			}
+			if len(payload.ContentRef) == 0 {
+				return nil, fmt.Errorf("steering input %s missing content ref", payload.InputID)
+			}
+			var ref artifact.Ref
+			if err := json.Unmarshal(payload.ContentRef, &ref); err != nil {
+				return nil, fmt.Errorf("steering input %s content ref: %w", payload.InputID, err)
+			}
+			content, err := loop.loadPriorContext(&ref)
+			if err != nil {
+				return nil, fmt.Errorf("steering input %s content: %w", payload.InputID, err)
+			}
+			messages = append(messages, ports.Message{Role: "user", Content: "[用户补充当前任务指导]\n" + content})
 		}
 	}
 	return messages, nil

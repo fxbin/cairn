@@ -98,16 +98,19 @@ func ValidateProviderID(providerID string) error {
 
 // SelectionFacts 是解析 ProviderSelection 所需的全部显式身份事实：ProviderID
 // 缺省按 custom 语义处理；Model 与 BaseURL 由调用方保证已通过配置校验。
+// Protocol 是 effective 线协议标识（来自配置 protocol/use 预设）；设置时
+// 优先于注册表默认协议，必须属于已知协议词表。
 type SelectionFacts struct {
 	ProviderID string
 	Model      string
 	BaseURL    string
+	Protocol   string
 }
 
-// ResolveSelection 由身份事实派生 ProviderSelection：协议来自静态注册表而
-// 不是配置输入；model_ref 是派生值（provider_id + "/" + model，解析按第一个
-// 斜杠分割）；endpoint_digest 复用无凭据规范化基地址摘要。任何事实缺失或
-// 非法都在此失败关闭。
+// ResolveSelection 由身份事实派生 ProviderSelection：协议优先取显式
+// Protocol，否则回退静态注册表；model_ref 是派生值（provider_id + "/" + model，
+// 解析按第一个斜杠分割）；endpoint_digest 复用无凭据规范化基地址摘要。
+// 任何事实缺失或非法都在此失败关闭。
 func ResolveSelection(facts SelectionFacts) (contract.ProviderSelection, error) {
 	providerID := facts.ProviderID
 	if providerID == "" {
@@ -116,6 +119,13 @@ func ResolveSelection(facts SelectionFacts) (contract.ProviderSelection, error) 
 	definition, err := Lookup(providerID)
 	if err != nil {
 		return contract.ProviderSelection{}, err
+	}
+	protocolID := definition.ProtocolID
+	if facts.Protocol != "" {
+		if _, err := KindFromProtocol(facts.Protocol); err != nil {
+			return contract.ProviderSelection{}, fmt.Errorf("protocol %q is not a known line protocol", facts.Protocol)
+		}
+		protocolID = facts.Protocol
 	}
 	if facts.Model == "" {
 		return contract.ProviderSelection{}, errors.New("provider selection requires a model")
@@ -127,7 +137,7 @@ func ResolveSelection(facts SelectionFacts) (contract.ProviderSelection, error) 
 	return contract.ProviderSelection{
 		SchemaVersion:  providerSelectionSchemaVersion,
 		ProviderID:     providerID,
-		ProtocolID:     definition.ProtocolID,
+		ProtocolID:     protocolID,
 		ModelRef:       providerID + "/" + facts.Model,
 		EndpointDigest: digest,
 	}, nil

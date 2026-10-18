@@ -16,12 +16,21 @@ import (
 
 // TestQueueProjectionThreeStates 锁定 pending → linked/cancelled 三态与顺序约束。
 func TestQueueProjectionThreeStates(t *testing.T) {
-	events := []domain.Event{
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputSubmitted, Payload: json.RawMessage(`{"input_id":"q1","content_ref":{"sha256":"sha256:a"}}`)},
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputSubmitted, Payload: json.RawMessage(`{"input_id":"q2","content_ref":{"sha256":"sha256:b"}}`)},
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputConsumed, Payload: json.RawMessage(`{"input_id":"q1","outcome":"linked","target_run_id":"run-q1"}`)},
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputCancelled, Payload: json.RawMessage(`{"input_id":"q2","reason":"user_request"}`)},
+	mustQueueEvent := func(t *testing.T, seq uint64, prev string, eventType domain.EventType, payload string) domain.Event {
+		t.Helper()
+		event, err := domain.NewEvent(domain.EventDraft{
+			RunID: domain.QueueRunID, WorkspaceHash: "wh", Type: eventType, Payload: json.RawMessage(payload),
+		}, seq, prev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return event
 	}
+	e1 := mustQueueEvent(t, 1, domain.GenesisHash, domain.EventQueueInputSubmitted, `{"input_id":"q1","content_ref":{"sha256":"sha256:a"}}`)
+	e2 := mustQueueEvent(t, 2, e1.EventHash, domain.EventQueueInputSubmitted, `{"input_id":"q2","content_ref":{"sha256":"sha256:b"}}`)
+	e3 := mustQueueEvent(t, 3, e2.EventHash, domain.EventQueueInputConsumed, `{"input_id":"q1","outcome":"linked","target_run_id":"run-q1"}`)
+	e4 := mustQueueEvent(t, 4, e3.EventHash, domain.EventQueueInputCancelled, `{"input_id":"q2","reason":"user_request"}`)
+	events := []domain.Event{e1, e2, e3, e4}
 	projection, err := domain.ProjectQueue(events)
 	if err != nil {
 		t.Fatal(err)
@@ -36,16 +45,24 @@ func TestQueueProjectionThreeStates(t *testing.T) {
 
 // TestQueueProjectionRejectsIllegalOrder 锁定未提交先消费、重复终结失败关闭。
 func TestQueueProjectionRejectsIllegalOrder(t *testing.T) {
-	if _, err := domain.ProjectQueue([]domain.Event{
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputConsumed, Payload: json.RawMessage(`{"input_id":"x","outcome":"linked","target_run_id":"r"}`)},
-	}); err == nil {
+	mustQueueEvent := func(t *testing.T, seq uint64, prev string, eventType domain.EventType, payload string) domain.Event {
+		t.Helper()
+		event, err := domain.NewEvent(domain.EventDraft{
+			RunID: domain.QueueRunID, WorkspaceHash: "wh", Type: eventType, Payload: json.RawMessage(payload),
+		}, seq, prev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return event
+	}
+	e1 := mustQueueEvent(t, 1, domain.GenesisHash, domain.EventQueueInputConsumed, `{"input_id":"x","outcome":"linked","target_run_id":"r"}`)
+	if _, err := domain.ProjectQueue([]domain.Event{e1}); err == nil {
 		t.Fatal("consume before submit must fail")
 	}
-	if _, err := domain.ProjectQueue([]domain.Event{
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputSubmitted, Payload: json.RawMessage(`{"input_id":"x"}`)},
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputCancelled, Payload: json.RawMessage(`{"input_id":"x","reason":"r"}`)},
-		{RunID: domain.QueueRunID, Type: domain.EventQueueInputConsumed, Payload: json.RawMessage(`{"input_id":"x","outcome":"linked","target_run_id":"r"}`)},
-	}); err == nil {
+	s1 := mustQueueEvent(t, 1, domain.GenesisHash, domain.EventQueueInputSubmitted, `{"input_id":"x"}`)
+	c1 := mustQueueEvent(t, 2, s1.EventHash, domain.EventQueueInputCancelled, `{"input_id":"x","reason":"r"}`)
+	c2 := mustQueueEvent(t, 3, c1.EventHash, domain.EventQueueInputConsumed, `{"input_id":"x","outcome":"linked","target_run_id":"r"}`)
+	if _, err := domain.ProjectQueue([]domain.Event{s1, c1, c2}); err == nil {
 		t.Fatal("resolve twice must fail")
 	}
 }

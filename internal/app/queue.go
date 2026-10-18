@@ -10,12 +10,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"sync"
 
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 )
+
+// queueWriteMu 串行化队列状态检查与追加，避免并发 confirm/cancel 交错出
+// cancelled → linked 等非法业务序列。
+var queueWriteMu sync.Mutex
 
 // QueueSubmitOptions 描述一次后续任务入队输入。
 type QueueSubmitOptions struct {
@@ -60,6 +66,8 @@ func (service Service) SubmitQueueInput(ctx context.Context, options QueueSubmit
 	if options.Content == "" {
 		return QueueItemView{}, errors.New("queue input content is required")
 	}
+	queueWriteMu.Lock()
+	defer queueWriteMu.Unlock()
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
 		return QueueItemView{}, err
@@ -107,6 +115,8 @@ func (service Service) CancelQueueInput(ctx context.Context, options QueueCancel
 	if options.InputID == "" || options.Reason == "" {
 		return QueueItemView{}, errors.New("queue input id and reason are required")
 	}
+	queueWriteMu.Lock()
+	defer queueWriteMu.Unlock()
 	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
 		return QueueItemView{}, err
@@ -144,7 +154,7 @@ func (service Service) CancelQueueInput(ctx context.Context, options QueueCancel
 	return QueueItemView{InputID: options.InputID, State: domain.QueueItemCancelled, Reason: options.Reason}, nil
 }
 
-// ListQueue 只读列出队列项投影。
+// ListQueue 只读列出队列项投影；存储/完整性错误上抛，仅不存在时返回空。
 func (service Service) ListQueue(ctx context.Context, workspacePath, stateDir string, configuration config.Config) ([]QueueItemView, error) {
 	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
@@ -152,7 +162,10 @@ func (service Service) ListQueue(ctx context.Context, workspacePath, stateDir st
 	}
 	journal, err := openReadOnlyJournalContext(ctx, stateDir, workspaceHash)
 	if err != nil {
-		return []QueueItemView{}, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return []QueueItemView{}, nil
+		}
+		return nil, err
 	}
 	defer journal.Close()
 	projection, err := loadQueueProjection(ctx, journal)
@@ -173,71 +186,76 @@ func (service Service) ListQueue(ctx context.Context, workspacePath, stateDir st
 }
 
 // ConfirmQueueInput 确认启动待消费输入：写 queue_input_consumed{linked} 并以
-// 预分配 runID 创建新 run。幂等：已 linked 直接回传目标 run 标识。崩溃于
-// consumed 与 run_created 之间时目标 run 可能缺失，由后续对账处理；
-// input_id 已 consumed 不重复投递内容。
+// 预分配 runID 创建新 run。幂等：已 linked 且目标 run 存在则直接回传；
+// linked 而目标缺失则对账重建。状态检查与 consumed 追加在互斥内完成。
 func (service Service) ConfirmQueueInput(ctx context.Context, options QueueConfirmOptions) (RunResult, error) {
 	if options.InputID == "" {
 		return RunResult{}, errors.New("queue input id is required")
 	}
-	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	content, runID, err := service.reserveQueueLink(ctx, options)
 	if err != nil {
 		return RunResult{}, err
+	}
+	if content == "" {
+		// 已 linked 且目标存在：runID 即目标，直接回传。
+		return RunResult{ID: runID}, nil
+	}
+	return service.Run(ctx, RunOptions{
+		Task: content, Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config,
+		PreassignedRunID: runID,
+	})
+}
+
+// reserveQueueLink 在互斥内完成队列状态检查与 consumed 追加；返回待执行
+// 正文与预分配 runID。content 为空表示幂等命中已存在目标。
+func (service Service) reserveQueueLink(ctx context.Context, options QueueConfirmOptions) (string, domain.RunID, error) {
+	queueWriteMu.Lock()
+	defer queueWriteMu.Unlock()
+	_, workspaceHash, err := workspaceFor(options.Workspace, options.Config)
+	if err != nil {
+		return "", "", err
 	}
 	journal, err := openJournal(options.StateDir, workspaceHash)
 	if err != nil {
-		return RunResult{}, err
+		return "", "", err
 	}
+	defer journal.Close()
 	projection, err := loadQueueProjection(ctx, journal)
 	if err != nil {
-		_ = journal.Close()
-		return RunResult{}, err
+		return "", "", err
 	}
 	item, exists := projection.Items[options.InputID]
 	if !exists {
-		_ = journal.Close()
-		return RunResult{}, fmt.Errorf("queue input %s not found", options.InputID)
+		return "", "", fmt.Errorf("queue input %s not found", options.InputID)
 	}
 	if item.State == domain.QueueItemLinked {
-		// 幂等：已关联则直接续看目标 run，不重复创建。
-		_ = journal.Close()
-		return RunResult{ID: item.TargetRunID}, nil
+		if item.TargetRunID != "" {
+			runEvents, loadErr := journal.Load(ctx, item.TargetRunID)
+			if loadErr == nil && len(runEvents) > 0 {
+				return "", item.TargetRunID, nil
+			}
+		}
+		content, contentErr := loadQueueContent(journal, options.StateDir, workspaceHash, options.Config, item)
+		if contentErr != nil {
+			return "", "", contentErr
+		}
+		runID := item.TargetRunID
+		if runID == "" {
+			runID = domain.NewRunID()
+		}
+		return content, runID, nil
 	}
 	if item.State != domain.QueueItemPending {
-		_ = journal.Close()
-		return RunResult{}, fmt.Errorf("queue input %s is already %s", options.InputID, item.State)
+		return "", "", fmt.Errorf("queue input %s is already %s", options.InputID, item.State)
 	}
-	content := ""
-	if len(item.ContentRef) > 0 {
-		var ref artifact.Ref
-		if err := json.Unmarshal(item.ContentRef, &ref); err != nil {
-			_ = journal.Close()
-			return RunResult{}, fmt.Errorf("decode queue content ref: %w", err)
-		}
-		artifacts, artErr := openArtifactStore(options.StateDir, workspaceHash, options.Config.Output)
-		if artErr != nil {
-			_ = journal.Close()
-			return RunResult{}, artErr
-		}
-		opened, openErr := artifacts.Open(ref)
-		if openErr != nil {
-			_ = journal.Close()
-			return RunResult{}, fmt.Errorf("open queue content: %w", openErr)
-		}
-		content = string(opened)
+	content, contentErr := loadQueueContent(journal, options.StateDir, workspaceHash, options.Config, item)
+	if contentErr != nil {
+		return "", "", contentErr
 	}
-	if content == "" {
-		_ = journal.Close()
-		return RunResult{}, fmt.Errorf("queue input %s has no content", options.InputID)
-	}
-	// 事务顺序：consumed{linked, target_run_id} 先写，再以同一预分配 runID
-	// 创建 run；input_id 已 consumed 不重复投递内容。崩溃于两步之间的
-	// 目标 run 缺口由后续对账处理。
 	runID := domain.NewRunID()
 	nextSeq, err := queueNextSeq(ctx, journal)
 	if err != nil {
-		_ = journal.Close()
-		return RunResult{}, err
+		return "", "", err
 	}
 	if _, err := journal.Append(ctx, nextSeq, domain.EventDraft{
 		EventID: domain.NewID("evt"), RunID: domain.QueueRunID, WorkspaceHash: workspaceHash,
@@ -248,26 +266,48 @@ func (service Service) ConfirmQueueInput(ctx context.Context, options QueueConfi
 			TargetRunID domain.RunID `json:"target_run_id"`
 		}{InputID: options.InputID, Outcome: "linked", TargetRunID: runID}),
 	}); err != nil {
-		_ = journal.Close()
-		return RunResult{}, err
+		return "", "", err
 	}
-	// 显式关闭后再交由 service.Run 自己装配日志。
-	if err := journal.Close(); err != nil {
-		return RunResult{}, err
-	}
-	return service.Run(ctx, RunOptions{
-		Task: content, Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config,
-		PreassignedRunID: runID,
-	})
+	return content, runID, nil
 }
 
-// loadQueueProjection 从 queue 命名空间事件重建投影。
+// loadQueueContent 从制品引用读取队列正文。
+func loadQueueContent(journal interface {
+	Load(ctx context.Context, runID domain.RunID) ([]domain.Event, error)
+}, stateDir, workspaceHash string, configuration config.Config, item *domain.QueueItem) (string, error) {
+	if len(item.ContentRef) == 0 {
+		return "", fmt.Errorf("queue input %s has no content", item.InputID)
+	}
+	var ref artifact.Ref
+	if err := json.Unmarshal(item.ContentRef, &ref); err != nil {
+		return "", fmt.Errorf("decode queue content ref: %w", err)
+	}
+	artifacts, err := openArtifactStore(stateDir, workspaceHash, configuration.Output)
+	if err != nil {
+		return "", err
+	}
+	opened, err := artifacts.Open(ref)
+	if err != nil {
+		return "", fmt.Errorf("open queue content: %w", err)
+	}
+	content := string(opened)
+	if content == "" {
+		return "", fmt.Errorf("queue input %s has empty content", item.InputID)
+	}
+	return content, nil
+}
+
+// loadQueueProjection 从 queue 命名空间事件重建投影；不存在时返回空投影，
+// 其余存储/完整性错误向上抛出。
 func loadQueueProjection(ctx context.Context, journal interface {
 	Load(ctx context.Context, runID domain.RunID) ([]domain.Event, error)
 }) (domain.QueueProjection, error) {
 	events, err := journal.Load(ctx, domain.QueueRunID)
 	if err != nil {
-		return domain.QueueProjection{Items: map[string]*domain.QueueItem{}}, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return domain.QueueProjection{Items: map[string]*domain.QueueItem{}}, nil
+		}
+		return domain.QueueProjection{}, fmt.Errorf("load queue namespace: %w", err)
 	}
 	if len(events) == 0 {
 		return domain.QueueProjection{Items: map[string]*domain.QueueItem{}}, nil

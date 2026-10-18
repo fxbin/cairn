@@ -472,7 +472,7 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 // 同指纹，供 admit/status 与配置绑定对齐（与 run 前门使用同一组装路径）。
 func resolvedProfileForConfig(configuration config.Config) (contract.ResolvedProviderProfile, string, error) {
 	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
-		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL},
+		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL, Protocol: configuration.Provider.Protocol},
 		Capability:    config.ProviderCapabilityDeclaration(configuration),
 		Generation:    config.ProviderGenerationDeclaration(configuration),
 		CredentialRef: configuration.Provider.APIKeyEnv,

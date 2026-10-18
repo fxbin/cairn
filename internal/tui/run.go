@@ -128,9 +128,10 @@ type sessionTreeLoadedMsg struct {
 // sessionForkLoadedMsg 承载分支来源校验结果；成功时只记录来源锚点，首次
 // 新任务才创建分支，不在选择阶段留下幽灵运行。
 type sessionForkLoadedMsg struct {
-	anchor   app.SessionForkAnchor
-	sourceID domain.RunID
-	err      error
+	anchor    app.SessionForkAnchor
+	sourceID  domain.RunID
+	requestID uint64
+	err       error
 }
 
 // sessionRunEntry 是会话链内的单个运行记录：运行标识与终态结论，供
@@ -218,6 +219,7 @@ type RunConsole struct {
 	steering *agent.SteeringBridge
 	// steeringStatus 跟踪本进程已投递 steering 的四态回执。
 	steeringStatus   []steeringReceipt
+	forkRequest      uint64
 	lastTask         string
 	wizard           *ConfigWizard
 	wizardGeneration uint64
@@ -333,14 +335,14 @@ func loadSessionTreeCmd(console RunConsole) tea.Cmd {
 }
 
 // loadSessionForkCmd 异步校验分支来源并返回创建锚点；不创建运行。
-func loadSessionForkCmd(console RunConsole, runID domain.RunID) tea.Cmd {
+func loadSessionForkCmd(console RunConsole, runID domain.RunID, requestID uint64) tea.Cmd {
 	service := console.input.Service
 	ctx := console.rootCtx
 	workspace := console.input.Workspace
 	configuration := console.input.Config
 	return func() tea.Msg {
 		anchor, err := service.ResolveSessionFork(ctx, workspace, console.input.StateDir, configuration, runID)
-		return sessionForkLoadedMsg{anchor: anchor, sourceID: runID, err: err}
+		return sessionForkLoadedMsg{anchor: anchor, sourceID: runID, requestID: requestID, err: err}
 	}
 }
 
@@ -484,6 +486,9 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return console, nil
 	}
 	if loaded, isFork := msg.(sessionForkLoadedMsg); isFork {
+		if loaded.requestID != console.forkRequest || console.mode != consoleInput {
+			return console, nil
+		}
 		if loaded.err != nil {
 			console.appendLine(errStyle.Render("分支来源校验失败: " + loaded.err.Error()))
 			return console, nil
@@ -1655,14 +1660,10 @@ func (console *RunConsole) queueCommand(remainder string) (bool, tea.Cmd) {
 			console.appendLine(warnStyle.Render("用法: /queue confirm <input-id>（确认后启动为新 run）"))
 			return true, nil
 		}
-		console.appendLine(dimStyle.Render("正在确认启动…"))
-		return true, func() tea.Msg {
-			result, err := service.ConfirmQueueInput(ctx, app.QueueConfirmOptions{
-				Workspace: workspace, StateDir: stateDir, Config: configuration, InputID: args,
-			})
-			item := app.QueueItemView{InputID: args, State: domain.QueueItemLinked, TargetRunID: result.ID}
-			return queueActionDoneMsg{action: "confirm", item: item, runID: result.ID, err: err}
-		}
+		console.beginOperation()
+		console.mode = consoleRunning
+		console.appendLine(okStyle.Render(fmt.Sprintf("▶ 队列任务 %s 启动中（Ctrl+C 取消）", args)))
+		return true, queueConfirmRunCmd(*console, args)
 	case "cancel":
 		id, reason, _ := strings.Cut(args, " ")
 		id = strings.TrimSpace(id)
@@ -1712,6 +1713,35 @@ func (console *RunConsole) showQueueList(loaded queueListLoadedMsg) {
 	}
 	console.appendLine(strings.Join(lines, "\n"))
 }
+
+// queueConfirmRunCmd 把队列确认后的目标 run 接入正常运行生命周期：事件
+// 泵、审批等待、取消与结果收束复用 startRunCmd 通道。
+func queueConfirmRunCmd(console RunConsole, inputID string) tea.Cmd {
+	service := console.input.Service
+	runCtx := console.operationContext()
+	generation := console.operationGeneration
+	messages := console.messages
+	onEvent := operationEventSink(runCtx, generation, messages)
+	workspace := console.input.Workspace
+	stateDir := console.input.StateDir
+	configuration := console.input.Config
+	return func() tea.Msg {
+		result, err := service.ConfirmQueueInput(ctxBackground(), app.QueueConfirmOptions{
+			Workspace: workspace, StateDir: stateDir, Config: configuration, InputID: inputID,
+		})
+		// 写入 OnEvent 不适用于 Confirm 内部创建的 run（它自己装配）；
+		// 结果经 runFinishedMsg 走正常收束。
+		_ = onEvent
+		sendOperationMessage(console.rootCtx, messages, queueActionDoneMsg{action: "confirm", item: app.QueueItemView{InputID: inputID, State: domain.QueueItemLinked, TargetRunID: result.ID}, runID: result.ID, err: err})
+		if err == nil && result.ID != "" {
+			sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: nil})
+		}
+		return nil
+	}
+}
+
+// ctxBackground 为队列确认提供独立上下文（与操作取消解耦，确认本身不取消）。
+func ctxBackground() context.Context { return context.Background() }
 
 // submitSteering 投递一次安全点 steering：/steer <文本> 补充当前任务指导。
 // 界面立即显示「待接收」；Journal 持久化后由事件流推进为已接收/已生效。
@@ -1934,8 +1964,9 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 			console.appendLine(warnStyle.Render("用法: /fork <run-id>（先用 /tree 查看可分支的终态 run；选定后下一任务创建新会话分支）"))
 			return true, nil
 		}
+		console.forkRequest++
 		console.appendLine(dimStyle.Render("正在校验分支来源…"))
-		return true, loadSessionForkCmd(*console, runID)
+		return true, loadSessionForkCmd(*console, runID, console.forkRequest)
 	case "/steer":
 		if console.mode == consoleInput {
 			console.appendLine(warnStyle.Render("/steer 在运行中使用：/steer <文本> 补充当前任务指导（区分排队输入=下一任务）"))

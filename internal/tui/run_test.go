@@ -499,13 +499,13 @@ func TestForkCommandSelectsSourceWithoutCreatingRun(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("选点应发起来源校验命令")
 	}
-	// 直接消费校验结果消息，模拟异步完成。
+	// 直接消费校验结果消息，模拟异步完成；requestID 与 /fork 递增后代次一致。
 	model, _ = console.Update(sessionForkLoadedMsg{anchor: app.SessionForkAnchor{
 		Source:          domain.SessionForkSource{RunID: "run-src", WorkspaceHash: "sha256:abc", LastSeq: 3, LastEventHash: "sha256:def"},
 		SourceSessionID: "session-old",
 		SourceState:     domain.RunCompleted,
 		SourceTask:      "old task",
-	}, sourceID: "run-src"})
+	}, sourceID: "run-src", requestID: console.forkRequest})
 	console = model.(RunConsole)
 	if console.sessionForkSource == nil || console.sessionForkSource.RunID != "run-src" {
 		t.Fatalf("应记录来源锚点: %#v", console.sessionForkSource)
