@@ -73,6 +73,8 @@ type RunOptions struct {
 	// ForkSource 指定从历史终态 run 创建新会话分支；与 PrevRunID 互斥。
 	// 设置时生成（或沿用未占用的）新 SessionID，根运行写入独立来源锚点。
 	ForkSource *domain.SessionForkSource
+	// Steering 是安全点 steering 投递桥；nil 表示本次运行不接受补充输入。
+	Steering *agent.SteeringBridge
 	// RequireSessionTail 要求 PrevRunID 在创建事件前仍是其完整历史会话的
 	// 唯一终态链尾；历史选择器用它封闭“展示后状态已变化”的竞态。
 	RequireSessionTail bool
@@ -281,6 +283,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer cancelRun()
+	boot.Loop.AdoptSteering(options.Steering)
 	result, err := boot.Loop.Run(runContext, agent.RunInput{RunID: runID, Task: options.Task, WorkspaceHash: boot.WorkspaceHash, SessionID: sessionID, PrevRunID: options.PrevRunID, PriorContext: priorContext, PriorContextRef: priorContextRef})
 	if wallBudgetExpired(runContext) && !runReachedTerminal(boot.Journal, runID) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)

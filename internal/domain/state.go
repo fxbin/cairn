@@ -719,6 +719,12 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 	case EventVerificationFeedbackAppended:
 		// 验证反馈仅补充模型上下文；终态判定只依赖 verification_finished。
+	case EventSteeringInputSubmitted, EventSteeringInputConsumed:
+		// 安全点 steering 输入/消费只补充审计证据与模型上下文，不改变运行终态；
+		// 幂等标识与内容引用由 payload schema 保证，恢复按事件流重放。
+		if projection.State != RunRunning {
+			return fmt.Errorf("%s is not legal for run state %s", event.Type, projection.State)
+		}
 	default:
 		return fmt.Errorf("unhandled event type %q", event.Type)
 	}
