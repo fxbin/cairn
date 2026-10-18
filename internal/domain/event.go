@@ -100,7 +100,7 @@ type EventDraft struct {
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
 		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "build": {}, "budget": {},
-		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {}, "project_instructions_ref": {},
+		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {}, "project_instructions_ref": {}, "fork_source": {},
 	},
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},
@@ -319,18 +319,19 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 	switch eventType {
 	case EventRunCreated:
 		var payload struct {
-			Task                   string          `json:"task"`
-			TaskRef                json.RawMessage `json:"task_ref"`
-			Workspace              string          `json:"workspace"`
-			WorkspaceHash          *string         `json:"workspace_hash"`
-			ConfigRef              json.RawMessage `json:"config_ref"`
-			ConfigFingerprint      *string         `json:"config_fingerprint"`
-			Build                  *BuildIdentity  `json:"build"`
-			Budget                 json.RawMessage `json:"budget"`
-			SessionID              *string         `json:"session_id"`
-			PrevRunID              *string         `json:"prev_run_id"`
-			PriorContextRef        json.RawMessage `json:"prior_context_ref"`
-			ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref"`
+			Task                   string             `json:"task"`
+			TaskRef                json.RawMessage    `json:"task_ref"`
+			Workspace              string             `json:"workspace"`
+			WorkspaceHash          *string            `json:"workspace_hash"`
+			ConfigRef              json.RawMessage    `json:"config_ref"`
+			ConfigFingerprint      *string            `json:"config_fingerprint"`
+			Build                  *BuildIdentity     `json:"build"`
+			Budget                 json.RawMessage    `json:"budget"`
+			SessionID              *string            `json:"session_id"`
+			PrevRunID              *string            `json:"prev_run_id"`
+			PriorContextRef        json.RawMessage    `json:"prior_context_ref"`
+			ProjectInstructionsRef json.RawMessage    `json:"project_instructions_ref"`
+			ForkSource             *SessionForkSource `json:"fork_source"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return fmt.Errorf("decode run_created payload semantics: %w", err)
@@ -356,6 +357,14 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 			if err := validateOptionalPayloadObject(eventType, object, field); err != nil {
 				return err
 			}
+		}
+		// fork_source 与 prev_run_id 互斥：跨会话来源边只允许出现在新分支根，
+		// 不得用跨 session 的 prev_run_id 冒充分支。
+		if payload.ForkSource != nil && payload.PrevRunID != nil && strings.TrimSpace(*payload.PrevRunID) != "" {
+			return fmt.Errorf("%s fork_source is mutually exclusive with prev_run_id", eventType)
+		}
+		if err := validateSessionForkSource(eventType, object, payload.ForkSource); err != nil {
+			return err
 		}
 	case EventRunStarted:
 		for _, field := range []string{"invocation", "invocation_id"} {
@@ -1177,6 +1186,31 @@ func validateToolResultObject(eventType EventType, object map[string]json.RawMes
 		}
 	}
 	return *ok, nil
+}
+
+// validateSessionForkSource 校验 run_created 的可选 fork_source 锚点：字段
+// 一旦出现必须完整，绑定来源 run、工作区身份与事件边界摘要；与 prev_run_id
+// 的互斥在调用方已判定。
+func validateSessionForkSource(eventType EventType, object map[string]json.RawMessage, source *SessionForkSource) error {
+	if _, exists := object["fork_source"]; !exists {
+		return nil
+	}
+	if source == nil {
+		return fmt.Errorf("%s fork_source must be an object", eventType)
+	}
+	if strings.TrimSpace(string(source.RunID)) == "" {
+		return fmt.Errorf("%s fork_source run_id must not be empty", eventType)
+	}
+	if err := validateDigest(source.WorkspaceHash); err != nil {
+		return fmt.Errorf("%s fork_source workspace_hash: %w", eventType, err)
+	}
+	if source.LastSeq == 0 {
+		return fmt.Errorf("%s fork_source last_seq must be positive", eventType)
+	}
+	if err := validateDigest(source.LastEventHash); err != nil {
+		return fmt.Errorf("%s fork_source last_event_hash: %w", eventType, err)
+	}
+	return nil
 }
 
 // validateDigest 接受正式十六进制摘要及历史测试/迁移使用的短安全占位值。

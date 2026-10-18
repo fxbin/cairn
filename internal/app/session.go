@@ -144,8 +144,9 @@ func stateText(state string) string {
 
 // resolveSessionContext 装配本次运行的会话链关系。显式前情总是重新写入
 // 内容寻址制品库并返回规范引用；仅有引用时必须完整读取校验。仅给出前置
-// 运行且没有显式前情时，从其事件投影前情卡并持久化。调用方必须先完成
-// 前置运行的制品引用与 v2 冻结合同校验。
+// 运行且没有显式前情时，从其事件投影前情卡并持久化。跨会话分支根给出
+// fork_source 时，生成新会话标识并从来源终态 run 投影前情卡。调用方必须
+// 先完成前置运行或来源的制品引用与 v2 冻结合同校验。
 func (service Service) resolveSessionContext(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, options RunOptions) (string, string, *artifact.Ref, error) {
 	sessionID := options.SessionID
 	priorContext := options.PriorContext
@@ -174,19 +175,32 @@ func (service Service) resolveSessionContext(ctx context.Context, journal ports.
 		}
 		priorContext = string(content)
 	}
-	if options.PrevRunID == "" {
+	if options.PrevRunID == "" && options.ForkSource == nil {
 		return sessionID, priorContext, priorContextRef, nil
 	}
-	previous, err := journal.Load(ctx, options.PrevRunID)
+	sourceRunID := options.PrevRunID
+	isFork := options.ForkSource != nil
+	if isFork {
+		sourceRunID = options.ForkSource.RunID
+	}
+	previous, err := journal.Load(ctx, sourceRunID)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("load prior run %s for session context: %w", options.PrevRunID, err)
+		return "", "", nil, fmt.Errorf("load prior run %s for session context: %w", sourceRunID, err)
 	}
 	if len(previous) == 0 || previous[0].Type != domain.EventRunCreated {
-		return "", "", nil, fmt.Errorf("prior run %s carries no replayable events", options.PrevRunID)
+		return "", "", nil, fmt.Errorf("prior run %s carries no replayable events", sourceRunID)
 	}
 	var createdPayload domain.RunCreatedPayload
-	if json.Unmarshal(previous[0].Payload, &createdPayload) == nil && sessionID == "" {
+	if json.Unmarshal(previous[0].Payload, &createdPayload) == nil && sessionID == "" && !isFork {
 		sessionID = createdPayload.SessionID
+	}
+	if isFork {
+		// 跨会话分支必须使用全新会话标识，不得沿用来源 session。
+		if sessionID == "" {
+			sessionID = domain.NewID("session")
+		} else if sessionID == createdPayload.SessionID {
+			return "", "", nil, fmt.Errorf("fork must open a new session, not reuse %s", sessionID)
+		}
 	}
 	if sessionID == "" {
 		sessionID = domain.NewID("session")
@@ -194,7 +208,7 @@ func (service Service) resolveSessionContext(ctx context.Context, journal ports.
 	if priorContext == "" {
 		card := PriorContextCard(previous)
 		if strings.TrimSpace(card) == "" {
-			return "", "", nil, fmt.Errorf("prior run %s projects an empty context card", options.PrevRunID)
+			return "", "", nil, fmt.Errorf("prior run %s projects an empty context card", sourceRunID)
 		}
 		ref, err := artifacts.Put([]byte(card), "text/plain")
 		if err != nil {

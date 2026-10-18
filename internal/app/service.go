@@ -67,6 +67,9 @@ type RunOptions struct {
 	PrevRunID       domain.RunID
 	PriorContext    string
 	PriorContextRef *artifact.Ref
+	// ForkSource 指定从历史终态 run 创建新会话分支；与 PrevRunID 互斥。
+	// 设置时生成（或沿用未占用的）新 SessionID，根运行写入独立来源锚点。
+	ForkSource *domain.SessionForkSource
 	// RequireSessionTail 要求 PrevRunID 在创建事件前仍是其完整历史会话的
 	// 唯一终态链尾；历史选择器用它封闭“展示后状态已变化”的竞态。
 	RequireSessionTail bool
@@ -126,14 +129,16 @@ type InspectResult struct {
 // RunHistoryItem 是会话选择器使用的只读运行摘要，不暴露工作区路径、审批
 // 指纹或操作细节；时间与会话关系均来自事件回放。
 type RunHistoryItem struct {
-	ID        domain.RunID    `json:"run_id"`
-	SessionID string          `json:"session_id,omitempty"`
-	PrevRunID domain.RunID    `json:"prev_run_id,omitempty"`
-	Task      string          `json:"task"`
-	State     domain.RunState `json:"state"`
-	Phase     string          `json:"phase"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID        domain.RunID `json:"run_id"`
+	SessionID string       `json:"session_id,omitempty"`
+	PrevRunID domain.RunID `json:"prev_run_id,omitempty"`
+	// ForkSource 是新会话分支根指向的历史终态 run 锚点；仅根运行可携带。
+	ForkSource *domain.SessionForkSource `json:"fork_source,omitempty"`
+	Task       string                    `json:"task"`
+	State      domain.RunState           `json:"state"`
+	Phase      string                    `json:"phase"`
+	CreatedAt  time.Time                 `json:"created_at"`
+	UpdatedAt  time.Time                 `json:"updated_at"`
 }
 
 // SessionContinuation 是历史会话选择器返回的下一次运行锚点；它只恢复会话
@@ -143,11 +148,45 @@ type SessionContinuation struct {
 	PrevRunID domain.RunID `json:"prev_run_id"`
 }
 
+// SessionForkAnchor 是已校验的分支创建锚点：只提供创建新会话根运行所需的
+// 来源引用，不授予历史回退能力，也不在选择阶段留下幽灵运行。
+type SessionForkAnchor struct {
+	Source          domain.SessionForkSource `json:"source"`
+	SourceSessionID string                   `json:"source_session_id"`
+	SourceState     domain.RunState          `json:"source_state"`
+	SourceTask      string                   `json:"source_task"`
+}
+
+// SessionTreeNode 是会话树投影中的单个 run 节点；Children 只含同 session 内
+// 经 prev_run_id 的直接后继，跨 session 分支由 ForkSource 边表达。
+type SessionTreeNode struct {
+	ID         domain.RunID              `json:"run_id"`
+	SessionID  string                    `json:"session_id,omitempty"`
+	PrevRunID  domain.RunID              `json:"prev_run_id,omitempty"`
+	ForkSource *domain.SessionForkSource `json:"fork_source,omitempty"`
+	Task       string                    `json:"task"`
+	State      domain.RunState           `json:"state"`
+	Phase      string                    `json:"phase"`
+	CreatedAt  time.Time                 `json:"created_at"`
+	UpdatedAt  time.Time                 `json:"updated_at"`
+	Children   []domain.RunID            `json:"children,omitempty"`
+}
+
+// SessionTree 是当前工作区的只读会话树投影；节点按 run 标识索引，Roots 按
+// 创建时间升序排列各 session 根。索引可重建，事实源仍是 Event Journal。
+type SessionTree struct {
+	Nodes map[domain.RunID]SessionTreeNode `json:"nodes"`
+	Roots []domain.RunID                   `json:"roots"`
+}
+
 // Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
+	}
+	if options.ForkSource != nil && options.PrevRunID != "" {
+		return RunResult{}, fmt.Errorf("%w: fork_source is mutually exclusive with prev_run_id", ErrSessionContinuation)
 	}
 	build, err := currentBuildIdentity()
 	if err != nil {
@@ -185,6 +224,8 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	if options.RequireSessionTail {
+		// RequireSessionTail 只服务同 session 续链：缺少前驱时失败关闭，
+		// 不因 fork_source 或空值静默跳过唯一链尾门禁。
 		continuation, err := resolveSessionContinuation(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash, options.PrevRunID)
 		if err != nil {
 			return RunResult{}, err
@@ -216,7 +257,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		ConfigRef              artifact.Ref  `json:"config_ref"`
 		PriorContextRef        *artifact.Ref `json:"prior_context_ref,omitempty"`
 		ProjectInstructionsRef *artifact.Ref `json:"project_instructions_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -387,7 +428,7 @@ func listRunHistory(ctx context.Context, journal interface {
 		if projection.WorkspaceHash != workspaceHash {
 			return nil, fmt.Errorf("%w: run %s belongs to workspace %s", ErrStateCorrupt, runID, projection.WorkspaceHash)
 		}
-		items = append(items, RunHistoryItem{ID: projection.ID, SessionID: projection.SessionID, PrevRunID: projection.PrevRunID, Task: projection.Task, State: projection.State, Phase: projection.Phase(), CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt})
+		items = append(items, RunHistoryItem{ID: projection.ID, SessionID: projection.SessionID, PrevRunID: projection.PrevRunID, ForkSource: projection.ForkSource, Task: projection.Task, State: projection.State, Phase: projection.Phase(), CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt})
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -397,11 +438,18 @@ func listRunHistory(ctx context.Context, journal interface {
 
 // validateSessionLink 校验所有新 Run 的会话边：前驱必须存在于当前工作区、
 // 已终结且会话标识一致；同一会话不得创建第二个根。显式回退仍可从合法的
-// 历史中间节点分叉，不受唯一链尾门禁约束。
+// 历史中间节点分叉，不受唯一链尾门禁约束。跨会话分支只能通过 fork_source
+// 指向已终结来源 run，且只允许出现在新会话根上。
 func validateSessionLink(ctx context.Context, journal interface {
 	ports.Journal
 	ports.RunLister
 }, stateDir, workspaceHash string, options RunOptions) error {
+	if options.ForkSource != nil && options.PrevRunID != "" {
+		return fmt.Errorf("%w: fork_source is mutually exclusive with prev_run_id", ErrSessionContinuation)
+	}
+	if options.ForkSource != nil {
+		return validateSessionForkSource(ctx, journal, stateDir, workspaceHash, options)
+	}
 	if options.PrevRunID != "" {
 		events, err := journal.Load(ctx, options.PrevRunID)
 		if err != nil {
@@ -490,8 +538,121 @@ func validateSessionAncestors(ctx context.Context, journal ports.Journal, stateD
 	return nil
 }
 
+// validateSessionForkSource 校验跨会话分支根的来源锚点：来源必须存在于当前
+// 工作区、已终结、制品与冻结合同完整、事件边界与锚点一致，且其祖先链无环、
+// 无跨会话冒充边。SessionID 若显式给出则必须尚未占用。
+func validateSessionForkSource(ctx context.Context, journal interface {
+	ports.Journal
+	ports.RunLister
+}, stateDir, workspaceHash string, options RunOptions) error {
+	source := options.ForkSource
+	if source == nil {
+		return fmt.Errorf("%w: fork source is required", ErrSessionContinuation)
+	}
+	if source.RunID == "" {
+		return fmt.Errorf("%w: fork source run ID is required", ErrSessionContinuation)
+	}
+	if source.WorkspaceHash != workspaceHash {
+		return fmt.Errorf("%w: fork source %s belongs to another workspace", ErrSessionContinuation, source.RunID)
+	}
+	events, err := journal.Load(ctx, source.RunID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: load fork source %s: %v", ErrStateCorrupt, source.RunID, err)
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("%w: fork source %s not found", ErrSessionContinuation, source.RunID)
+	}
+	if err := checkSessionRunContract(events, stateDir, workspaceHash, source.RunID); err != nil {
+		return err
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		return fmt.Errorf("%w: replay fork source %s: %v", ErrStateCorrupt, source.RunID, err)
+	}
+	if projection.WorkspaceHash != workspaceHash {
+		return fmt.Errorf("%w: fork source %s belongs to another workspace", ErrSessionContinuation, source.RunID)
+	}
+	if !projection.Terminal() {
+		return fmt.Errorf("%w: fork source %s is not terminal", ErrSessionContinuation, source.RunID)
+	}
+	if projection.SessionID == "" {
+		return fmt.Errorf("%w: fork source %s has no session identity", ErrSessionContinuation, source.RunID)
+	}
+	last := events[len(events)-1]
+	if last.Seq != source.LastSeq || "sha256:"+last.EventHash != source.LastEventHash {
+		return fmt.Errorf("%w: fork source %s event boundary mismatch", ErrSessionContinuation, source.RunID)
+	}
+	if err := validateSessionAncestryAcyclic(ctx, journal, stateDir, workspaceHash, source.RunID); err != nil {
+		return err
+	}
+	if options.SessionID != "" {
+		items, listErr := listRunHistory(ctx, journal, workspaceHash)
+		if listErr != nil {
+			return listErr
+		}
+		for _, item := range items {
+			if item.SessionID == options.SessionID {
+				return fmt.Errorf("%w: session %s already has a root", ErrSessionContinuation, options.SessionID)
+			}
+		}
+	}
+	return nil
+}
+
+// validateSessionAncestryAcyclic 沿 prev_run_id 与会话根的 fork_source 回溯
+// 完整祖先图，拒绝环、缺失节点和同时携带两种边的冒充记录。
+func validateSessionAncestryAcyclic(ctx context.Context, journal ports.Journal, stateDir, workspaceHash string, start domain.RunID) error {
+	visited := map[domain.RunID]struct{}{}
+	current := start
+	for current != "" {
+		if _, duplicate := visited[current]; duplicate {
+			return fmt.Errorf("%w: session ancestry contains a cycle at run %s", ErrStateCorrupt, current)
+		}
+		visited[current] = struct{}{}
+		events, err := journal.Load(ctx, current)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("%w: load ancestry run %s: %v", ErrStateCorrupt, current, err)
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("%w: ancestry references missing run %s", ErrStateCorrupt, current)
+		}
+		if err := checkSessionRunContract(events, stateDir, workspaceHash, current); err != nil {
+			return err
+		}
+		projection, err := domain.Replay(events)
+		if err != nil {
+			return fmt.Errorf("%w: replay ancestry run %s: %v", ErrStateCorrupt, current, err)
+		}
+		if projection.WorkspaceHash != workspaceHash {
+			return fmt.Errorf("%w: ancestry run %s belongs to another workspace", ErrStateCorrupt, current)
+		}
+		if projection.PrevRunID != "" && projection.ForkSource != nil {
+			return fmt.Errorf("%w: run %s carries both prev_run_id and fork_source", ErrStateCorrupt, current)
+		}
+		if projection.PrevRunID != "" {
+			current = projection.PrevRunID
+			continue
+		}
+		if projection.ForkSource != nil {
+			if projection.ForkSource.WorkspaceHash != workspaceHash {
+				return fmt.Errorf("%w: ancestry fork source of %s belongs to another workspace", ErrStateCorrupt, current)
+			}
+			current = projection.ForkSource.RunID
+			continue
+		}
+		current = ""
+	}
+	return nil
+}
+
 // ResolveSessionContinuation 只读验证指定历史运行是否为当前工作区某条完整
-// 会话链的唯一终态链尾。返回值仅供下一次 Run 续链，不恢复历史回退列表。
+// 会话链的唯一终态链尾。返回值仅供下一次 Run 续链，不恢复历史回退能力。
 func (service Service) ResolveSessionContinuation(ctx context.Context, workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (SessionContinuation, error) {
 	if runID == "" {
 		return SessionContinuation{}, fmt.Errorf("%w: run ID is required", ErrSessionContinuation)
@@ -601,6 +762,149 @@ func resolveSessionContinuation(ctx context.Context, journal interface {
 		return SessionContinuation{}, fmt.Errorf("%w: run %s is not the unique session tail", ErrSessionContinuation, runID)
 	}
 	return SessionContinuation{SessionID: selected.SessionID, PrevRunID: selected.ID}, nil
+}
+
+// ResolveSessionFork 只读验证指定历史运行能否作为新会话分支的来源，并返回
+// 创建锚点。它不创建运行、不修改工作区，也不授予历史回退能力。
+func (service Service) ResolveSessionFork(ctx context.Context, workspacePath, stateDir string, configuration config.Config, runID domain.RunID) (SessionForkAnchor, error) {
+	if runID == "" {
+		return SessionForkAnchor{}, fmt.Errorf("%w: run ID is required", ErrSessionContinuation)
+	}
+	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return SessionForkAnchor{}, err
+	}
+	journal, err := openReadOnlyJournalContext(ctx, stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SessionForkAnchor{}, fmt.Errorf("%w: run %s not found", ErrSessionContinuation, runID)
+		}
+		if ctx.Err() != nil {
+			return SessionForkAnchor{}, ctx.Err()
+		}
+		if sqlite.IsStateCorruptError(err) {
+			return SessionForkAnchor{}, fmt.Errorf("%w: open run journal: %w", ErrStateCorrupt, err)
+		}
+		return SessionForkAnchor{}, err
+	}
+	defer journal.Close()
+	events, err := journal.Load(ctx, runID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return SessionForkAnchor{}, ctx.Err()
+		}
+		return SessionForkAnchor{}, fmt.Errorf("%w: load fork source %s: %v", ErrStateCorrupt, runID, err)
+	}
+	if len(events) == 0 {
+		return SessionForkAnchor{}, fmt.Errorf("%w: run %s not found", ErrSessionContinuation, runID)
+	}
+	if err := checkSessionRunContract(events, stateDir, workspaceHash, runID); err != nil {
+		return SessionForkAnchor{}, err
+	}
+	projection, err := domain.Replay(events)
+	if err != nil {
+		return SessionForkAnchor{}, fmt.Errorf("%w: replay fork source %s: %v", ErrStateCorrupt, runID, err)
+	}
+	if projection.WorkspaceHash != workspaceHash {
+		return SessionForkAnchor{}, fmt.Errorf("%w: run %s belongs to another workspace", ErrSessionContinuation, runID)
+	}
+	if !projection.Terminal() {
+		return SessionForkAnchor{}, fmt.Errorf("%w: run %s is not terminal", ErrSessionContinuation, runID)
+	}
+	if projection.SessionID == "" {
+		return SessionForkAnchor{}, fmt.Errorf("%w: run %s has no session identity", ErrSessionContinuation, runID)
+	}
+	last := events[len(events)-1]
+	if err := validateSessionAncestryAcyclic(ctx, journal, stateDir, workspaceHash, runID); err != nil {
+		return SessionForkAnchor{}, err
+	}
+	return SessionForkAnchor{
+		Source: domain.SessionForkSource{
+			RunID:         projection.ID,
+			WorkspaceHash: projection.WorkspaceHash,
+			LastSeq:       last.Seq,
+			LastEventHash: "sha256:" + last.EventHash,
+		},
+		SourceSessionID: projection.SessionID,
+		SourceState:     projection.State,
+		SourceTask:      projection.Task,
+	}, nil
+}
+
+// ListSessionTree 只读投影当前工作区的会话树：同 session 内 prev_run_id 形成
+// 兄弟/子链，跨 session 的 fork_source 形成分支边。索引可重建，不启动模型、
+// 不连接外部 MCP、不写工作区。
+func (service Service) ListSessionTree(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (SessionTree, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionTree{}, err
+	}
+	_, workspaceHash, err := workspaceFor(workspacePath, configuration)
+	if err != nil {
+		return SessionTree{}, err
+	}
+	journal, err := openReadOnlyJournalContext(ctx, stateDir, workspaceHash)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SessionTree{Nodes: map[domain.RunID]SessionTreeNode{}}, nil
+		}
+		if ctx.Err() != nil {
+			return SessionTree{}, ctx.Err()
+		}
+		if sqlite.IsStateCorruptError(err) {
+			return SessionTree{}, fmt.Errorf("%w: open run journal: %w", ErrStateCorrupt, err)
+		}
+		return SessionTree{}, err
+	}
+	defer journal.Close()
+	return buildSessionTree(ctx, journal, workspaceHash)
+}
+
+// buildSessionTree 从已打开日志回放全部运行并组装会话树投影。
+func buildSessionTree(ctx context.Context, journal interface {
+	ports.Journal
+	ports.RunLister
+}, workspaceHash string) (SessionTree, error) {
+	items, err := listRunHistory(ctx, journal, workspaceHash)
+	if err != nil {
+		return SessionTree{}, err
+	}
+	tree := SessionTree{Nodes: make(map[domain.RunID]SessionTreeNode, len(items))}
+	for _, item := range items {
+		tree.Nodes[item.ID] = SessionTreeNode{
+			ID: item.ID, SessionID: item.SessionID, PrevRunID: item.PrevRunID, ForkSource: item.ForkSource,
+			Task: item.Task, State: item.State, Phase: item.Phase, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+		}
+	}
+	children := make(map[domain.RunID][]domain.RunID)
+	for _, item := range items {
+		if item.PrevRunID == "" {
+			continue
+		}
+		if _, exists := tree.Nodes[item.PrevRunID]; !exists {
+			return SessionTree{}, fmt.Errorf("%w: session %s references missing run %s", ErrStateCorrupt, item.SessionID, item.PrevRunID)
+		}
+		children[item.PrevRunID] = append(children[item.PrevRunID], item.ID)
+	}
+	for id, node := range tree.Nodes {
+		node.Children = children[id]
+		tree.Nodes[id] = node
+	}
+	roots := make([]domain.RunID, 0)
+	for _, item := range items {
+		if item.PrevRunID == "" {
+			roots = append(roots, item.ID)
+		}
+	}
+	sort.Slice(roots, func(left, right int) bool {
+		leftNode := tree.Nodes[roots[left]]
+		rightNode := tree.Nodes[roots[right]]
+		if leftNode.CreatedAt.Equal(rightNode.CreatedAt) {
+			return leftNode.ID < rightNode.ID
+		}
+		return leftNode.CreatedAt.Before(rightNode.CreatedAt)
+	})
+	tree.Roots = roots
+	return tree, nil
 }
 
 // checkSessionRunContract 在历史运行进入会话链或前情投影前校验全部制品引用

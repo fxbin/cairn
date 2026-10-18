@@ -118,6 +118,20 @@ type sessionContinuationLoadedMsg struct {
 	err          error
 }
 
+// sessionTreeLoadedMsg 承载只读会话树投影；只驱动展示与分支选择，不写工作区。
+type sessionTreeLoadedMsg struct {
+	tree app.SessionTree
+	err  error
+}
+
+// sessionForkLoadedMsg 承载分支来源校验结果；成功时只记录来源锚点，首次
+// 新任务才创建分支，不在选择阶段留下幽灵运行。
+type sessionForkLoadedMsg struct {
+	anchor   app.SessionForkAnchor
+	sourceID domain.RunID
+	err      error
+}
+
 // sessionRunEntry 是会话链内的单个运行记录：运行标识与终态结论，供
 // /sessions 展示当前链。
 type sessionRunEntry struct {
@@ -175,14 +189,17 @@ type RunConsole struct {
 	sessionRuns         []sessionRunEntry
 	sessionTailRequired bool
 	continuationRequest uint64
-	lastTask            string
-	wizard              *ConfigWizard
-	wizardGeneration    uint64
-	waiting             *ports.WaitingApprovalError
-	approvalDetail      []string
-	result              *app.RunResult
-	runErr              error
-	rewinding           *rewindState
+	// sessionForkSource 是已选定的跨会话分支来源锚点；下一任务创建新会话
+	// 根运行，与 sessionPrev 互斥。选择本身不创建运行。
+	sessionForkSource *domain.SessionForkSource
+	lastTask          string
+	wizard            *ConfigWizard
+	wizardGeneration  uint64
+	waiting           *ports.WaitingApprovalError
+	approvalDetail    []string
+	result            *app.RunResult
+	runErr            error
+	rewinding         *rewindState
 }
 
 // NewRunConsole 构造运行主界面模型：内部根 context 承载消息泵生命周期，
@@ -277,6 +294,30 @@ func loadSessionContinuationCmd(console RunConsole, runID domain.RunID, requestI
 	}
 }
 
+// loadSessionTreeCmd 异步读取只读会话树投影，供 /tree 展示与 /fork 选择。
+func loadSessionTreeCmd(console RunConsole) tea.Cmd {
+	service := console.input.Service
+	ctx := console.rootCtx
+	workspace := console.input.Workspace
+	configuration := console.input.Config
+	return func() tea.Msg {
+		tree, err := service.ListSessionTree(ctx, workspace, console.input.StateDir, configuration)
+		return sessionTreeLoadedMsg{tree: tree, err: err}
+	}
+}
+
+// loadSessionForkCmd 异步校验分支来源并返回创建锚点；不创建运行。
+func loadSessionForkCmd(console RunConsole, runID domain.RunID) tea.Cmd {
+	service := console.input.Service
+	ctx := console.rootCtx
+	workspace := console.input.Workspace
+	configuration := console.input.Config
+	return func() tea.Msg {
+		anchor, err := service.ResolveSessionFork(ctx, workspace, console.input.StateDir, configuration, runID)
+		return sessionForkLoadedMsg{anchor: anchor, sourceID: runID, err: err}
+	}
+}
+
 // startRunCmd 发起一次运行：事件回调把已持久化事件写入通道，最终结果经
 // runFinishedMsg 回到事件循环。
 func startRunCmd(console RunConsole, task string) tea.Cmd {
@@ -289,6 +330,7 @@ func startRunCmd(console RunConsole, task string) tea.Cmd {
 		result, err := service.Run(runCtx, app.RunOptions{
 			Task: task, Workspace: console.input.Workspace, StateDir: console.input.StateDir, Config: console.input.Config, OnEvent: onEvent,
 			SessionID: console.sessionID, PrevRunID: console.sessionPrev, RequireSessionTail: console.sessionTailRequired,
+			ForkSource: console.sessionForkSource,
 		})
 		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})
 		return nil
@@ -405,8 +447,28 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.sessionPrev = loaded.continuation.PrevRunID
 		console.sessionRuns = nil
 		console.sessionTailRequired = true
+		console.sessionForkSource = nil
 		console.appendLine(okStyle.Render(fmt.Sprintf("已选择历史会话 %s 的链尾 %s；下一任务将携带其前情", console.sessionID, console.sessionPrev)))
 		console.appendLine(dimStyle.Render("历史运行保持只读，不进入 /rewind 或 /rewind-files 范围"))
+		return console, nil
+	}
+	if loaded, isTree := msg.(sessionTreeLoadedMsg); isTree {
+		console.showSessionTree(loaded)
+		return console, nil
+	}
+	if loaded, isFork := msg.(sessionForkLoadedMsg); isFork {
+		if loaded.err != nil {
+			console.appendLine(errStyle.Render("分支来源校验失败: " + loaded.err.Error()))
+			return console, nil
+		}
+		source := loaded.anchor.Source
+		console.sessionForkSource = &source
+		console.sessionID = domain.NewID("session")
+		console.sessionPrev = ""
+		console.sessionRuns = nil
+		console.sessionTailRequired = false
+		console.appendLine(okStyle.Render(fmt.Sprintf("已选择分支来源 %s（会话 %s）；下一任务将创建新会话分支", source.RunID, loaded.anchor.SourceSessionID)))
+		console.appendLine(dimStyle.Render("分支不继承历史审批；选择时不修改文件；/rewind-files 不作用于历史分支"))
 		return console, nil
 	}
 	if relayed, ok := msg.(wizardRelayMsg); ok {
@@ -567,13 +629,16 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.beginOperation()
 			console.lastTask = task
 			carryingPrior := false
+			carryingFork := console.sessionForkSource != nil
 			if console.sessionID == "" {
 				console.sessionID = domain.NewID("session")
 			} else if console.sessionPrev != "" {
 				carryingPrior = true
 			}
 			console.resetRun()
-			if carryingPrior {
+			if carryingFork {
+				console.appendLine(dimStyle.Render("已选择分支来源，本任务将创建新会话分支（/new 可取消）"))
+			} else if carryingPrior {
 				console.appendLine(dimStyle.Render("已携带上一任务前情（/new 可断开会话）"))
 			}
 			console.appendLine(okStyle.Render("▶ 任务已提交，运行中（Ctrl+C 取消）"))
@@ -671,6 +736,9 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
 		console.sessionPrev = finished.result.ID
 		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText(), summary: firstLineClip(console.lastTask, 48)})
+		// 分支根运行创建后转为同会话续链；来源锚点只作用于首次新任务。
+		console.sessionForkSource = nil
+		console.sessionTailRequired = false
 	}
 	console.appendLine(console.verdictLine())
 	if console.result != nil && console.result.ID != "" {
@@ -1524,10 +1592,60 @@ func (console *RunConsole) showSessionHistory(loaded sessionHistoryLoadedMsg) {
 		if session == "" {
 			session = "未分组"
 		}
+		relation := ""
+		if item.PrevRunID != "" {
+			relation = " ← " + string(item.PrevRunID)
+		}
+		if item.ForkSource != nil {
+			relation = " ⇢ 分支自 " + string(item.ForkSource.RunID)
+		}
 		task := firstLineClip(item.Task, 48)
-		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d. %s · %s · 会话 %s · %s", index+1, item.ID, item.Phase, session, task)))
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %d. %s · %s · 会话 %s · %s%s", index+1, item.ID, item.Phase, session, task, relation)))
 	}
 	console.appendLine(strings.Join(lines, "\n"))
+}
+
+// showSessionTree 展示只读会话树投影；跨 session 的 fork_source 以分支标记
+// 呈现，同 session 分叉如实展示，不静默选支。
+func (console *RunConsole) showSessionTree(loaded sessionTreeLoadedMsg) {
+	lines := []string{itemStyle.Render("会话树（只读投影，事实源为事件日志）")}
+	if loaded.err != nil {
+		lines = append(lines, errStyle.Render("  读取失败: "+loaded.err.Error()))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	if len(loaded.tree.Roots) == 0 {
+		lines = append(lines, dimStyle.Render("  暂无会话"))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	visited := make(map[domain.RunID]bool)
+	for _, root := range loaded.tree.Roots {
+		console.appendSessionTreeNode(&lines, loaded.tree, root, "  ", visited)
+	}
+	console.appendLine(strings.Join(lines, "\n"))
+}
+
+// appendSessionTreeNode 递归追加树节点行；visited 防止损坏图导致无限递归。
+func (console *RunConsole) appendSessionTreeNode(lines *[]string, tree app.SessionTree, id domain.RunID, prefix string, visited map[domain.RunID]bool) {
+	if visited[id] {
+		*lines = append(*lines, dimStyle.Render(prefix+string(id)+" …（环）"))
+		return
+	}
+	visited[id] = true
+	node, exists := tree.Nodes[id]
+	if !exists {
+		*lines = append(*lines, warnStyle.Render(prefix+string(id)+" （缺失）"))
+		return
+	}
+	marker := ""
+	if node.ForkSource != nil {
+		marker = fmt.Sprintf(" [分支自 %s]", node.ForkSource.RunID)
+	}
+	*lines = append(*lines, dimStyle.Render(fmt.Sprintf("%s%s · %s · %s%s", prefix, node.ID, node.Phase, firstLineClip(node.Task, 40), marker)))
+	for _, child := range node.Children {
+		console.appendSessionTreeNode(lines, tree, child, prefix+"  ", visited)
+	}
 }
 
 // runCommand 处理输入态的斜杠命令：大部分为纯界面操作，/sessions 异步调用
@@ -1539,7 +1657,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /history <run-id> 历史续链 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
+		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /tree 会话树 · /history <run-id> 历史续链 · /fork <run-id> 从终态创建新分支 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 		console.appendLine(dimStyle.Render("技能: 启用 skills.enabled 后，以 $名称 或 /skill:名称 加任务说明点名；cairn skills 管理本地技能"))
 	case "/new":
@@ -1549,11 +1667,12 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.transcript = nil
 		console.turn, console.toolCalls = 0, 0
 		console.promptTokens, console.outputTokens = 0, 0
-		if console.sessionID != "" {
+		if console.sessionID != "" || console.sessionForkSource != nil {
 			console.sessionID = ""
 			console.sessionPrev = ""
 			console.sessionRuns = nil
 			console.sessionTailRequired = false
+			console.sessionForkSource = nil
 			console.appendLine(dimStyle.Render("已断开会话链并清屏（新任务不带前情；完整历史在事件日志）"))
 			return true, nil
 		}
@@ -1576,14 +1695,25 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendActiveSession()
 		console.appendLine(dimStyle.Render("正在读取当前工作区持久化历史…"))
 		return true, loadSessionHistoryCmd(*console)
+	case "/tree":
+		console.appendLine(dimStyle.Render("正在读取会话树…"))
+		return true, loadSessionTreeCmd(*console)
 	case "/history":
 		runID := domain.RunID(strings.TrimSpace(remainder))
 		if runID == "" {
-			console.appendLine(warnStyle.Render("用法: /history <run-id>（先用 /sessions 查看历史）"))
+			console.appendLine(warnStyle.Render("用法: /history <run-id>（先用 /tree 或 /sessions 查看历史）"))
 			return true, nil
 		}
 		console.appendLine(dimStyle.Render("正在验证历史会话链尾…"))
 		return true, loadSessionContinuationCmd(*console, runID, console.continuationRequest)
+	case "/fork":
+		runID := domain.RunID(strings.TrimSpace(remainder))
+		if runID == "" {
+			console.appendLine(warnStyle.Render("用法: /fork <run-id>（先用 /tree 查看可分支的终态 run；选定后下一任务创建新会话分支）"))
+			return true, nil
+		}
+		console.appendLine(dimStyle.Render("正在校验分支来源…"))
+		return true, loadSessionForkCmd(*console, runID)
 	case "/editor":
 		return true, console.openEditorCmd()
 	case "/rewind":

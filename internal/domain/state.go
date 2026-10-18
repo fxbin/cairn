@@ -31,6 +31,7 @@ type RunProjection struct {
 	Build                    *BuildIdentity `json:"build,omitempty"`
 	SessionID                string
 	PrevRunID                RunID
+	ForkSource               *SessionForkSource
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	WorkspaceObservation     string
@@ -118,12 +119,20 @@ func (projection RunProjection) clone() RunProjection {
 		value := *source
 		return &value
 	}
+	copyForkSource := func(source *SessionForkSource) *SessionForkSource {
+		if source == nil {
+			return nil
+		}
+		value := *source
+		return &value
+	}
 	candidate := projection
 	candidate.CurrentTurn = copyTurn(projection.CurrentTurn)
 	candidate.PendingApproval = copyApproval(projection.PendingApproval)
 	candidate.PendingOperation = copyOperation(projection.PendingOperation)
 	candidate.unfinishedVerification = copyTurn(projection.unfinishedVerification)
 	candidate.Build = copyBuild(projection.Build)
+	candidate.ForkSource = copyForkSource(projection.ForkSource)
 	if projection.operationFingerprints != nil {
 		candidate.operationFingerprints = make(map[OperationID]string, len(projection.operationFingerprints))
 		for id, fingerprint := range projection.operationFingerprints {
@@ -263,6 +272,20 @@ func (identity *BuildIdentity) Validate() error {
 	return nil
 }
 
+// SessionForkSource 是跨会话分支根对历史终态 run 的来源锚点。它只允许出现在
+// 新会话根运行的 run_created 上，与同 session 的 prev_run_id 互斥；锚点绑定
+// 来源 run 标识、事件边界与工作区身份，创建前必须重新校验一致。
+type SessionForkSource struct {
+	// RunID 是被分支的历史终态 run。
+	RunID RunID `json:"run_id"`
+	// WorkspaceHash 是来源 run 的工作区身份摘要。
+	WorkspaceHash string `json:"workspace_hash"`
+	// LastSeq 是来源 run 末事件序号，界定事件边界。
+	LastSeq uint64 `json:"last_seq"`
+	// LastEventHash 是来源 run 末事件哈希链摘要，使用 sha256: 前缀规范形式。
+	LastEventHash string `json:"last_event_hash"`
+}
+
 // RunCreatedPayload 是 run_created 事件的可回放业务字段。ConfigFingerprint 与
 // Build 均为可选字段，使旧 Run 在升级后仍可完整回放。
 type RunCreatedPayload struct {
@@ -278,6 +301,9 @@ type RunCreatedPayload struct {
 	PriorContextRef json.RawMessage `json:"prior_context_ref,omitempty"`
 	// ProjectInstructionsRef 绑定本次运行的 AGENTS.md 快照；缺省表示旧运行不加载文件规约。
 	ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref,omitempty"`
+	// ForkSource 绑定新会话分支根指向的历史终态 run；与 PrevRunID 互斥，
+	// 只允许出现在新 session 的根运行上。
+	ForkSource *SessionForkSource `json:"fork_source,omitempty"`
 }
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。
@@ -367,6 +393,10 @@ func (projection *RunProjection) Apply(event Event) error {
 		projection.ConfigFingerprint = payload.ConfigFingerprint
 		projection.SessionID = payload.SessionID
 		projection.PrevRunID = payload.PrevRunID
+		if payload.ForkSource != nil {
+			source := *payload.ForkSource
+			projection.ForkSource = &source
+		}
 		projection.CreatedAt = event.OccurredAt
 		if payload.Build != nil {
 			build := *payload.Build

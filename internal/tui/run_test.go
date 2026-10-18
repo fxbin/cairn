@@ -479,6 +479,87 @@ func containsLine(lines []string, keyword string) bool {
 	return false
 }
 
+// TestForkCommandSelectsSourceWithoutCreatingRun 锁定 /fork：无参给出用法，
+// 选点后只记录来源锚点并预建新会话标识，不在选择阶段创建运行。
+func TestForkCommandSelectsSourceWithoutCreatingRun(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/fork")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd != nil || !containsLine(console.lines, "用法: /fork") {
+		t.Fatalf("无参应提示用法且不发起命令: cmd=%v lines=%v", cmd, console.lines)
+	}
+
+	console.lines = nil
+	console.taskField.SetValue("/fork run-src")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("选点应发起来源校验命令")
+	}
+	// 直接消费校验结果消息，模拟异步完成。
+	model, _ = console.Update(sessionForkLoadedMsg{anchor: app.SessionForkAnchor{
+		Source:          domain.SessionForkSource{RunID: "run-src", WorkspaceHash: "sha256:abc", LastSeq: 3, LastEventHash: "sha256:def"},
+		SourceSessionID: "session-old",
+		SourceState:     domain.RunCompleted,
+		SourceTask:      "old task",
+	}, sourceID: "run-src"})
+	console = model.(RunConsole)
+	if console.sessionForkSource == nil || console.sessionForkSource.RunID != "run-src" {
+		t.Fatalf("应记录来源锚点: %#v", console.sessionForkSource)
+	}
+	if console.sessionID == "" || console.sessionID == "session-old" || console.sessionPrev != "" {
+		t.Fatalf("应预建新会话标识且不带前驱: id=%q prev=%q", console.sessionID, console.sessionPrev)
+	}
+	if !containsLine(console.lines, "分支不继承历史审批") {
+		t.Fatalf("应提示权限隔离: %v", console.lines)
+	}
+
+	// 提交任务后来源锚点随运行捕获；终态后转为同会话续链。
+	console.mode = consoleInput
+	console.taskField.SetValue("分支任务")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if console.mode != consoleRunning || cmd == nil {
+		t.Fatal("分支任务应发起运行")
+	}
+	if !containsLine(console.lines, "新会话分支") {
+		t.Fatalf("应提示创建新分支: %v", console.lines)
+	}
+	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-d", Response: "ok"}})
+	console = model.(RunConsole)
+	if console.sessionForkSource != nil {
+		t.Fatal("终态后应清除来源锚点，后续任务走同会话续链")
+	}
+	if console.sessionPrev != "run-d" {
+		t.Fatalf("终态后链尾应为新分支根，得到 %q", console.sessionPrev)
+	}
+}
+
+// TestTreeCommandRendersForkMarkers 锁定 /tree 只读投影展示分支来源标记。
+func TestTreeCommandRendersForkMarkers(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+	console.taskField.SetValue("/tree")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("/tree 应发起只读树投影命令")
+	}
+	tree := app.SessionTree{Nodes: map[domain.RunID]app.SessionTreeNode{
+		"run-a": {ID: "run-a", SessionID: "session-a", Task: "A", Phase: "completed", Children: []domain.RunID{"run-b"}},
+		"run-b": {ID: "run-b", SessionID: "session-a", PrevRunID: "run-a", Task: "B", Phase: "completed"},
+		"run-d": {ID: "run-d", SessionID: "session-d", Task: "D", Phase: "completed", ForkSource: &domain.SessionForkSource{RunID: "run-a"}},
+	}, Roots: []domain.RunID{"run-a", "run-d"}}
+	model, _ = console.Update(sessionTreeLoadedMsg{tree: tree})
+	console = model.(RunConsole)
+	joined := strings.Join(console.lines, "\n")
+	if !containsLine(console.lines, "分支自 run-a") || !containsLine(console.lines, "run-b") {
+		t.Fatalf("树投影应展示分支标记与子链: %s", joined)
+	}
+}
+
 // TestExpandTaskReferences 锁定 @ 引用展开：合法引用附加内容块、去重、越
 // 界与缺失失败关闭、无引用原文返回、超长截断标注。
 func TestExpandTaskReferences(t *testing.T) {

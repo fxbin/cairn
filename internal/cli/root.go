@@ -138,6 +138,8 @@ func (command Command) dispatch(ctx context.Context, args []string) int {
 		return command.mcpCommand(ctx, args[1:])
 	case "skills", "skill":
 		return command.skillsCommand(ctx, args[1:])
+	case "session":
+		return command.sessionCommand(ctx, args[1:])
 	case "init":
 		return command.initCommand(ctx, args[1:])
 	case "tui":
@@ -1985,6 +1987,10 @@ Usage:
   cairn skills show <name> [--workspace <path>] [--shared] [--json]
   cairn skills install <local-directory> [--workspace <path>] [--scope workspace|user] [--json]
   cairn skills remove|enable|disable <name> [--workspace <path>] [--scope workspace|user] [--json]
+  cairn session list|tree [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn session show <run-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn session fork --from <run-id> <task> [run flags] [--json]
+  cairn session continue [--from <run-id>] <task> [run flags] [--json]
   cairn provider models [--query <name>] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--admission optional|required] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
