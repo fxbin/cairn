@@ -600,6 +600,65 @@ func TestSteeringCommandSubmitsAndTracksReceipts(t *testing.T) {
 	}
 }
 
+// TestQueueCommandDispatch 锁定 /queue 列表、入队、确认、取消的分发与回执。
+func TestQueueCommandDispatch(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+	console.mode = consoleInput
+
+	// 用法。
+	console.taskField.SetValue("/queue nope")
+	model, cmd := console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd != nil || !containsLine(console.lines, "用法: /queue") {
+		t.Fatalf("unknown subcommand should show usage: %v", console.lines)
+	}
+
+	// 列表异步命令。
+	console.lines = nil
+	console.taskField.SetValue("/queue list")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("queue list should dispatch")
+	}
+	model, _ = console.Update(queueListLoadedMsg{items: []app.QueueItemView{
+		{InputID: "q1", State: domain.QueueItemPending},
+		{InputID: "q2", State: domain.QueueItemLinked, TargetRunID: "run-x"},
+	}})
+	console = model.(RunConsole)
+	if !containsLine(console.lines, "q1") || !containsLine(console.lines, "run-x") {
+		t.Fatalf("queue list render: %v", console.lines)
+	}
+
+	// 入队回执。
+	console.lines = nil
+	console.taskField.SetValue("/queue add 补文档")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("queue add should dispatch")
+	}
+	model, _ = console.Update(queueActionDoneMsg{action: "add", item: app.QueueItemView{InputID: "q-new", State: domain.QueueItemPending}})
+	console = model.(RunConsole)
+	if !containsLine(console.lines, "已入队") || !containsLine(console.lines, "q-new") {
+		t.Fatalf("queue add receipt: %v", console.lines)
+	}
+
+	// 确认回执。
+	console.lines = nil
+	console.taskField.SetValue("/queue confirm q-new")
+	model, cmd = console.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	console = model.(RunConsole)
+	if cmd == nil {
+		t.Fatal("queue confirm should dispatch")
+	}
+	model, _ = console.Update(queueActionDoneMsg{action: "confirm", item: app.QueueItemView{InputID: "q-new", State: domain.QueueItemLinked, TargetRunID: "run-q"}, runID: "run-q"})
+	console = model.(RunConsole)
+	if !containsLine(console.lines, "已确认启动") || !containsLine(console.lines, "run-q") {
+		t.Fatalf("queue confirm receipt: %v", console.lines)
+	}
+}
+
 // TestExpandTaskReferences 锁定 @ 引用展开：合法引用附加内容块、去重、越
 // 界与缺失失败关闭、无引用原文返回、超长截断标注。
 func TestExpandTaskReferences(t *testing.T) {

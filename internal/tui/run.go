@@ -147,6 +147,21 @@ type steeringReceipt struct {
 	state string // 待接收 / 已接收 / 已生效 / 无法应用
 }
 
+// queueListLoadedMsg 承载只读队列投影结果。
+type queueListLoadedMsg struct {
+	items []app.QueueItemView
+	err   error
+}
+
+// queueActionDoneMsg 承载入队/确认/取消的结果回执。
+type queueActionDoneMsg struct {
+	action  string
+	item    app.QueueItemView
+	runID   domain.RunID
+	message string
+	err     error
+}
+
 // rewindState 标记主界面正在执行工作区回退：审批续跑走 Resume 但结果按回退
 // 语义呈现，回退 run 不进入会话对话链；applied 累计本轮回退中反放成功的补
 // 丁数（来自已持久化事件，不是界面推测）。
@@ -481,6 +496,25 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.sessionTailRequired = false
 		console.appendLine(okStyle.Render(fmt.Sprintf("已选择分支来源 %s（会话 %s）；下一任务将创建新会话分支", source.RunID, loaded.anchor.SourceSessionID)))
 		console.appendLine(dimStyle.Render("分支不继承历史审批；选择时不修改文件；/rewind-files 不作用于历史分支"))
+		return console, nil
+	}
+	if loaded, isQueueList := msg.(queueListLoadedMsg); isQueueList {
+		console.showQueueList(loaded)
+		return console, nil
+	}
+	if done, isQueueAction := msg.(queueActionDoneMsg); isQueueAction {
+		if done.err != nil {
+			console.appendLine(errStyle.Render("队列操作失败: " + done.err.Error()))
+			return console, nil
+		}
+		switch done.action {
+		case "add":
+			console.appendLine(okStyle.Render(fmt.Sprintf("已入队 %s（待确认；/queue confirm %s 启动）", done.item.InputID, done.item.InputID)))
+		case "confirm":
+			console.appendLine(okStyle.Render(fmt.Sprintf("已确认启动 %s → run %s", done.item.InputID, done.runID)))
+		case "cancel":
+			console.appendLine(okStyle.Render(fmt.Sprintf("已取消 %s（%s）", done.item.InputID, done.item.Reason)))
+		}
 		return console, nil
 	}
 	if relayed, ok := msg.(wizardRelayMsg); ok {
@@ -1585,6 +1619,100 @@ func commonPrefix(left, right string) string {
 	return left[:limit]
 }
 
+// queueCommand 处理 /queue 子命令：list 只读投影，add 入队，confirm 确认启动
+// 新 run，cancel 取消待消费输入。所有写操作经 App 层 Journal 命名空间。
+func (console *RunConsole) queueCommand(remainder string) (bool, tea.Cmd) {
+	sub, args, _ := strings.Cut(strings.TrimSpace(remainder), " ")
+	args = strings.TrimSpace(args)
+	service := console.input.Service
+	ctx := console.rootCtx
+	workspace := console.input.Workspace
+	stateDir := console.input.StateDir
+	configuration := console.input.Config
+	switch sub {
+	case "", "list":
+		console.appendLine(dimStyle.Render("正在读取队列…"))
+		return true, func() tea.Msg {
+			items, err := service.ListQueue(ctx, workspace, stateDir, configuration)
+			return queueListLoadedMsg{items: items, err: err}
+		}
+	case "add":
+		if args == "" {
+			console.appendLine(warnStyle.Render("用法: /queue add <下一任务>（持久入队，确认后才启动）"))
+			return true, nil
+		}
+		inputID := domain.NewID("queue")
+		console.appendLine(dimStyle.Render("正在入队…"))
+		return true, func() tea.Msg {
+			item, err := service.SubmitQueueInput(ctx, app.QueueSubmitOptions{
+				Workspace: workspace, StateDir: stateDir, Config: configuration,
+				InputID: inputID, Content: args,
+			})
+			return queueActionDoneMsg{action: "add", item: item, err: err}
+		}
+	case "confirm":
+		if args == "" {
+			console.appendLine(warnStyle.Render("用法: /queue confirm <input-id>（确认后启动为新 run）"))
+			return true, nil
+		}
+		console.appendLine(dimStyle.Render("正在确认启动…"))
+		return true, func() tea.Msg {
+			result, err := service.ConfirmQueueInput(ctx, app.QueueConfirmOptions{
+				Workspace: workspace, StateDir: stateDir, Config: configuration, InputID: args,
+			})
+			item := app.QueueItemView{InputID: args, State: domain.QueueItemLinked, TargetRunID: result.ID}
+			return queueActionDoneMsg{action: "confirm", item: item, runID: result.ID, err: err}
+		}
+	case "cancel":
+		id, reason, _ := strings.Cut(args, " ")
+		id = strings.TrimSpace(id)
+		reason = strings.TrimSpace(reason)
+		if id == "" {
+			console.appendLine(warnStyle.Render("用法: /queue cancel <input-id> [原因]"))
+			return true, nil
+		}
+		if reason == "" {
+			reason = "user_request"
+		}
+		return true, func() tea.Msg {
+			item, err := service.CancelQueueInput(ctx, app.QueueCancelOptions{
+				Workspace: workspace, StateDir: stateDir, Config: configuration,
+				InputID: id, Reason: reason,
+			})
+			return queueActionDoneMsg{action: "cancel", item: item, err: err}
+		}
+	default:
+		console.appendLine(warnStyle.Render("用法: /queue [list] | /queue add <任务> | /queue confirm <id> | /queue cancel <id> [原因]"))
+		return true, nil
+	}
+}
+
+// showQueueList 展示只读队列投影；索引可重建，事实源是 Journal。
+func (console *RunConsole) showQueueList(loaded queueListLoadedMsg) {
+	lines := []string{itemStyle.Render("后续任务队列（Journal 投影）")}
+	if loaded.err != nil {
+		lines = append(lines, errStyle.Render("  读取失败: "+loaded.err.Error()))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	if len(loaded.items) == 0 {
+		lines = append(lines, dimStyle.Render("  队列为空（/queue add <任务> 入队）"))
+		console.appendLine(strings.Join(lines, "\n"))
+		return
+	}
+	for _, item := range loaded.items {
+		detail := string(item.State)
+		if item.TargetRunID != "" {
+			detail += " → " + string(item.TargetRunID)
+		}
+		if item.Reason != "" {
+			detail += "（" + item.Reason + "）"
+		}
+		lines = append(lines, dimStyle.Render(fmt.Sprintf("  %s · %s", item.InputID, detail)))
+	}
+	console.appendLine(strings.Join(lines, "\n"))
+}
+
 // submitSteering 投递一次安全点 steering：/steer <文本> 补充当前任务指导。
 // 界面立即显示「待接收」；Journal 持久化后由事件流推进为已接收/已生效。
 func (console RunConsole) submitSteering(command string) (tea.Model, tea.Cmd) {
@@ -1752,6 +1880,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /tree 会话树 · /history <run-id> 历史续链 · /fork <run-id> 从终态创建新分支 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
 		console.appendLine(dimStyle.Render("运行中: /steer <文本> 补充当前任务（安全点生效）· 其余输入排队为下一任务"))
+		console.appendLine(dimStyle.Render("队列: /queue add <任务> 持久入队 · /queue confirm <id> 确认启动 · /queue cancel <id> · /queue 列表"))
 		console.appendLine(dimStyle.Render("技能: 启用 skills.enabled 后，以 $名称 或 /skill:名称 加任务说明点名；cairn skills 管理本地技能"))
 	case "/new":
 		console.sessionPromptTokens += console.promptTokens
@@ -1813,6 +1942,8 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 			return true, nil
 		}
 		return true, nil
+	case "/queue":
+		return console.queueCommand(remainder)
 	case "/editor":
 		return true, console.openEditorCmd()
 	case "/rewind":
