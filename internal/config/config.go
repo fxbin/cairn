@@ -88,8 +88,8 @@ func resolveProviderConnection(cfg *Config, overlay providerOverlay, recorder *r
 	if cfg.Provider.Protocol == "" {
 		cfg.Provider.Protocol = ProtocolOpenAIChatCompletions
 	}
-	if cfg.Provider.Protocol != ProtocolOpenAIChatCompletions {
-		return fmt.Errorf("provider.protocol %q is unsupported (supported: %s)", cfg.Provider.Protocol, ProtocolOpenAIChatCompletions)
+	if _, supported := supportedProviderProtocols[cfg.Provider.Protocol]; !supported {
+		return fmt.Errorf("provider.protocol %q is unsupported (supported: %s)", cfg.Provider.Protocol, supportedProviderProtocolList())
 	}
 	for name, preset := range cfg.Provider.Presets {
 		if strings.TrimSpace(name) == "" {
@@ -102,8 +102,8 @@ func resolveProviderConnection(cfg *Config, overlay providerOverlay, recorder *r
 		if protocol == "" {
 			protocol = ProtocolOpenAIChatCompletions
 		}
-		if protocol != ProtocolOpenAIChatCompletions {
-			return fmt.Errorf("provider.presets.%s.protocol %q is unsupported (supported: %s)", name, protocol, ProtocolOpenAIChatCompletions)
+		if _, supported := supportedProviderProtocols[protocol]; !supported {
+			return fmt.Errorf("provider.presets.%s.protocol %q is unsupported (supported: %s)", name, protocol, supportedProviderProtocolList())
 		}
 		if preset.BaseURL == "" || preset.Model == "" || preset.APIKeyEnv == "" {
 			return fmt.Errorf("provider.presets.%s requires base_url, model and api_key_env", name)
@@ -327,6 +327,20 @@ type ProviderPreset struct {
 
 // ProtocolOpenAIChatCompletions 是配置层缺省协议标识，与 contract 常量同值。
 const ProtocolOpenAIChatCompletions = "openai-chat-completions"
+
+// ProtocolAnthropicMessages 是 Anthropic Messages 协议标识。
+const ProtocolAnthropicMessages = "anthropic-messages"
+
+// supportedProviderProtocols 是配置层接受的协议闭合集合。
+var supportedProviderProtocols = map[string]struct{}{
+	ProtocolOpenAIChatCompletions: {},
+	ProtocolAnthropicMessages:     {},
+}
+
+// supportedProviderProtocolList 返回受支持协议的稳定排序文案，供错误信息使用。
+func supportedProviderProtocolList() string {
+	return ProtocolOpenAIChatCompletions + ", " + ProtocolAnthropicMessages
+}
 
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段
 // 只有显式值或未声明两态，显式值必须原样序列化进模型请求，未声明字段在

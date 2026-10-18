@@ -13,8 +13,14 @@ const providerCardSchemaVersion = 1
 // 代码，配置是唯一来源。
 const ProviderCardSourceConfig = "config"
 
-// providerCardProtocolChatCompletions 限定当前唯一生产线协议。
+// providerCardProtocolChatCompletions 限定 Chat Completions 线协议。
 const providerCardProtocolChatCompletions = "openai-chat-completions"
+
+// providerCardProtocolAnthropicMessages 限定 Anthropic Messages 线协议。
+const providerCardProtocolAnthropicMessages = "anthropic-messages"
+
+// anthropicStopReasons 是 Anthropic Messages 线协议 stop_reason 闭合词表。
+var anthropicStopReasons = []string{"end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal", "model_context_window_exceeded"}
 
 // StopReasonContentFilter 等常量构成 OpenAI Chat Completions 线协议
 // finish_reason 的闭合词表单一来源；生产代码比较或列举终止原因时必须引用
@@ -61,7 +67,13 @@ type ProviderCapabilityCard struct {
 // 模型能力不由编译期目录承载，未声明一律要求显式配置，不做静默降级或
 // 网络目录查询。
 func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclaration) (ProviderCapabilityCard, error) {
-	if kind != ProviderKindOpenAICompatible {
+	protocol := ""
+	switch kind {
+	case ProviderKindOpenAICompatible:
+		protocol = providerCardProtocolChatCompletions
+	case ProviderKindAnthropicMessages:
+		protocol = providerCardProtocolAnthropicMessages
+	default:
 		return ProviderCapabilityCard{}, fmt.Errorf("provider kind %q has no capability contract", kind)
 	}
 	if model == "" {
@@ -69,17 +81,17 @@ func ResolveProviderCard(kind, model string, declared *ProviderCapabilityDeclara
 	}
 	if declared != nil {
 		if !declared.ToolCalls || !declared.StreamingUsage {
-			return ProviderCapabilityCard{}, errors.New("provider.capability must declare tool_calls and streaming_usage as true: the openai_compatible execution path requires both")
+			return ProviderCapabilityCard{}, errors.New("provider.capability must declare tool_calls and streaming_usage as true: the production execution path requires both")
 		}
 		if declared.ContextWindowTokens < 0 || declared.MaxOutputTokens < 0 {
 			return ProviderCapabilityCard{}, errors.New("provider.capability token limits must not be negative")
 		}
 		card := ProviderCapabilityCard{
 			SchemaVersion: providerCardSchemaVersion, ProviderKind: kind, Model: model,
-			Protocol:  providerCardProtocolChatCompletions,
+			Protocol:  protocol,
 			ToolCalls: declared.ToolCalls, StreamingUsage: declared.StreamingUsage,
 			ContextWindowTokens: declared.ContextWindowTokens, MaxOutputTokens: declared.MaxOutputTokens,
-			StopReasons: normalizedStopReasons(declared.StopReasons), Source: ProviderCardSourceConfig,
+			StopReasons: normalizedStopReasons(protocol, declared.StopReasons), Source: ProviderCardSourceConfig,
 		}
 		return card, nil
 	}
@@ -98,11 +110,17 @@ func (card ProviderCapabilityCard) ValidateBudget(maxPromptTokens, maxOutputToke
 	return nil
 }
 
-// normalizedStopReasons 规范化声明的停止原因集合；空声明回退到协议标准集合，
-// 去重并按字典序稳定，保证相同声明得到相同卡。
-func normalizedStopReasons(reasons []string) []string {
+// normalizedStopReasons 规范化声明的停止原因集合；空声明按协议回退到该协议
+// 的标准词表，去重并按字典序稳定，保证相同声明得到相同卡。协议词表分流
+// 防止 anthropic 能力卡误用 OpenAI finish_reason。
+func normalizedStopReasons(protocol string, reasons []string) []string {
 	if len(reasons) == 0 {
-		return append([]string(nil), chatCompletionStopReasons...)
+		switch protocol {
+		case providerCardProtocolAnthropicMessages:
+			return append([]string(nil), anthropicStopReasons...)
+		default:
+			return append([]string(nil), chatCompletionStopReasons...)
+		}
 	}
 	unique := make(map[string]struct{}, len(reasons))
 	for _, reason := range reasons {

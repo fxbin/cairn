@@ -211,7 +211,7 @@ func TestCapabilityManifestIsSingleProjection(t *testing.T) {
 }
 
 // TestCompositionRootDependencyDirection 锁定依赖方向：Domain 不依赖任何内部
-// 基础设施包；app 作为组合根只允许引用 sqlite 与 openaicompat 两个适配器，
+// 基础设施包；app 作为组合根只允许引用已列入白名单的适配器，
 // 且不得反向依赖 CLI。
 func TestCompositionRootDependencyDirection(t *testing.T) {
 	collectImports := func(packageDir string) []string {
@@ -241,10 +241,11 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 		}
 	}
 	allowedAdapters := map[string]bool{
-		"github.com/fxbin/cairn/internal/adapters/mcpclient":             true,
-		"github.com/fxbin/cairn/internal/adapters/journal/sqlite":        true,
-		"github.com/fxbin/cairn/internal/adapters/memstore/sqlite":       true,
-		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat": true,
+		"github.com/fxbin/cairn/internal/adapters/mcpclient":                  true,
+		"github.com/fxbin/cairn/internal/adapters/journal/sqlite":             true,
+		"github.com/fxbin/cairn/internal/adapters/memstore/sqlite":            true,
+		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat":      true,
+		"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages": true,
 	}
 	for _, imported := range collectImports(".") {
 		if strings.HasPrefix(imported, "github.com/fxbin/cairn/internal/adapters/") && !allowedAdapters[imported] {

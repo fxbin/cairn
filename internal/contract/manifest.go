@@ -26,8 +26,11 @@ const frozenRunConfigSchemaVersion = 1
 // frozenRunConfigProjectionPrefix 隔离冻结配置投影摘要与其他 sha256 指纹域。
 const frozenRunConfigProjectionPrefix = "cairn-frozen-run-config-projection-v1"
 
-// ProviderKindOpenAICompatible 是当前唯一生产 Provider 线协议标识。
+// ProviderKindOpenAICompatible 是历史 Provider 线协议标识。
 const ProviderKindOpenAICompatible = "openai_compatible"
+
+// ProviderKindAnthropicMessages 是 Anthropic Messages 线协议标识。
+const ProviderKindAnthropicMessages = "anthropic_messages"
 
 // ProviderIdentity 定位一次运行实际使用的模型服务：线协议种类、端点、模型
 // 与运行期能力卡。BaseURL、Model 与 Card 来自冻结配置，Kind 来自事件中的

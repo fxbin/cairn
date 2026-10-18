@@ -26,6 +26,10 @@ const providerProfileSchemaVersion = 1
 // 保留原义，映射关系由 internal/provider 的闭合函数承载。
 const ProtocolOpenAIChatCompletions = "openai-chat-completions"
 
+// ProtocolAnthropicMessages 是 Anthropic Messages 线协议标识；适配器冻结
+// anthropic-version 2023-06-01。
+const ProtocolAnthropicMessages = "anthropic-messages"
+
 // ProviderIDCustom 表示"用户显式 base_url + model + api_key_env"的注册表
 // 成员；它既是静态注册表的具名成员，也是 provider.id 缺省时的归一值。
 const ProviderIDCustom = "custom"

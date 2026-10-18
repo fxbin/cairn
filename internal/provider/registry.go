@@ -27,22 +27,29 @@ var staticDefinitions = map[string]contract.ProviderDefinition{
 }
 
 // ProtocolFromKind 把历史 ProviderKind 映射为规范 ProtocolID；映射是闭合
-// 函数，首版唯一条目为 openai_compatible → openai-chat-completions，未知值
-// 失败关闭，永不重新解释历史字面值。
+// 函数，未知值失败关闭，永不重新解释历史字面值。
 func ProtocolFromKind(kind string) (string, error) {
-	if kind == contract.ProviderKindOpenAICompatible {
+	switch kind {
+	case contract.ProviderKindOpenAICompatible:
 		return contract.ProtocolOpenAIChatCompletions, nil
+	case contract.ProviderKindAnthropicMessages:
+		return contract.ProtocolAnthropicMessages, nil
+	default:
+		return "", fmt.Errorf("provider kind %q has no protocol mapping", kind)
 	}
-	return "", fmt.Errorf("provider kind %q has no protocol mapping", kind)
 }
 
 // KindFromProtocol 把规范 ProtocolID 反向映射为历史 ProviderKind；供事件
 // payload 写入等只允许历史词表的边界使用，未知值失败关闭。
 func KindFromProtocol(protocolID string) (string, error) {
-	if protocolID == contract.ProtocolOpenAIChatCompletions {
+	switch protocolID {
+	case contract.ProtocolOpenAIChatCompletions:
 		return contract.ProviderKindOpenAICompatible, nil
+	case contract.ProtocolAnthropicMessages:
+		return contract.ProviderKindAnthropicMessages, nil
+	default:
+		return "", fmt.Errorf("protocol %q has no provider kind mapping", protocolID)
 	}
-	return "", fmt.Errorf("protocol %q has no provider kind mapping", protocolID)
 }
 
 // Lookup 返回静态注册表中的 ProviderDefinition；未知 ProviderID 失败关闭，

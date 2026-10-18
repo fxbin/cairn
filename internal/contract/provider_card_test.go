@@ -30,7 +30,7 @@ func TestResolveProviderCardRejectsUnsupportedCapabilities(t *testing.T) {
 	if _, err := ResolveProviderCard(ProviderKindOpenAICompatible, "", nil); err == nil {
 		t.Fatal("empty model must be rejected")
 	}
-	if _, err := ResolveProviderCard("anthropic_messages", "m", nil); err == nil {
+	if _, err := ResolveProviderCard("gemini_native", "m", &ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true}); err == nil {
 		t.Fatal("unknown provider kind must be rejected")
 	}
 	for name, declaration := range map[string]*ProviderCapabilityDeclaration{
@@ -40,6 +40,27 @@ func TestResolveProviderCardRejectsUnsupportedCapabilities(t *testing.T) {
 	} {
 		if _, err := ResolveProviderCard(ProviderKindOpenAICompatible, "m", declaration); err == nil {
 			t.Fatalf("expected rejection for %s", name)
+		}
+	}
+}
+
+// TestResolveProviderCardAnthropicDefaultStopReasons 锁定 anthropic 空声明
+// 回退到 Anthropic 词表，不得混用 OpenAI finish_reason。
+func TestResolveProviderCardAnthropicDefaultStopReasons(t *testing.T) {
+	card, err := ResolveProviderCard(ProviderKindAnthropicMessages, "claude-sonnet-5", &ProviderCapabilityDeclaration{ToolCalls: true, StreamingUsage: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Protocol != "anthropic-messages" {
+		t.Fatalf("protocol = %q", card.Protocol)
+	}
+	joined := strings.Join(card.StopReasons, ",")
+	if !strings.Contains(joined, "end_turn") || !strings.Contains(joined, "tool_use") {
+		t.Fatalf("stop reasons = %v", card.StopReasons)
+	}
+	for _, reason := range card.StopReasons {
+		if reason == "stop" || reason == "length" || reason == "tool_calls" {
+			t.Fatalf("anthropic card must not carry OpenAI finish_reason %q: %v", reason, card.StopReasons)
 		}
 	}
 }

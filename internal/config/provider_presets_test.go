@@ -91,7 +91,7 @@ func TestProviderUseRejectsInvalidSelection(t *testing.T) {
 		},
 		{
 			name: "预设未知协议",
-			body: "version: 2\nprovider:\n  use: work\n  presets:\n    work:\n      protocol: anthropic-messages\n      base_url: https://x.test/v1\n      model: m\n      api_key_env: K\n",
+			body: "version: 2\nprovider:\n  use: work\n  presets:\n    work:\n      protocol: gemini-native\n      base_url: https://x.test/v1\n      model: m\n      api_key_env: K\n",
 			want: "unsupported",
 		},
 	}
@@ -114,5 +114,17 @@ func TestLegacyInlineProviderStillLoads(t *testing.T) {
 	}
 	if configuration.Provider.Model != "legacy-model" || configuration.Provider.Use != "" || configuration.Provider.Protocol != ProtocolOpenAIChatCompletions {
 		t.Fatalf("legacy provider = %+v", configuration.Provider)
+	}
+}
+
+// TestAnthropicMessagesProtocolAccepted 锁定 anthropic-messages 为受支持协议。
+func TestAnthropicMessagesProtocolAccepted(t *testing.T) {
+	body := "version: 2\nprovider:\n  protocol: anthropic-messages\n  base_url: https://api.anthropic.com\n  model: claude-sonnet-5\n  api_key_env: ANTHROPIC_KEY\n  request_timeout: 60s\n  admission: optional\n  capability:\n    tool_calls: true\n    streaming_usage: true\n    stop_reasons: [end_turn, tool_use, max_tokens]\n"
+	configuration, err := Load(writePresetsConfig(t, body), Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Provider.Protocol != ProtocolAnthropicMessages {
+		t.Fatalf("protocol = %q", configuration.Provider.Protocol)
 	}
 }

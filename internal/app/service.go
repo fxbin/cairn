@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
+	"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages"
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
@@ -1456,6 +1457,21 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 			if generation.MaxOutputTokens != nil {
 				client.Generation.MaxOutputTokens = *generation.MaxOutputTokens
 			}
+		}
+		return client, nil
+	case config.ProtocolAnthropicMessages:
+		client := anthropicmessages.Client{
+			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			HTTPClient:   &http.Client{Timeout: timeout},
+			Requirements: anthropicmessages.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
+		}
+		if generation := configuration.Provider.Generation; generation != nil {
+			if generation.MaxOutputTokens != nil {
+				client.MaxTokens = *generation.MaxOutputTokens
+			}
+			client.TemperatureMilli = generation.TemperatureMilli
+			client.TopPMilli = generation.TopPMilli
+			client.ToolChoice = generation.ToolChoice
 		}
 		return client, nil
 	default:
