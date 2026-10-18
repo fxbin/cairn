@@ -30,6 +30,9 @@ const ProtocolOpenAIChatCompletions = "openai-chat-completions"
 // anthropic-version 2023-06-01。
 const ProtocolAnthropicMessages = "anthropic-messages"
 
+// ProtocolOpenAIResponses 是 OpenAI Responses 线协议标识。
+const ProtocolOpenAIResponses = "openai-responses"
+
 // ProviderIDCustom 表示"用户显式 base_url + model + api_key_env"的注册表
 // 成员；它既是静态注册表的具名成员，也是 provider.id 缺省时的归一值。
 const ProviderIDCustom = "custom"

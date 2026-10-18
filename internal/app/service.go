@@ -19,6 +19,7 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages"
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
+	"github.com/fxbin/cairn/internal/adapters/provider/openairesponses"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
@@ -1468,6 +1469,21 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 		if generation := configuration.Provider.Generation; generation != nil {
 			if generation.MaxOutputTokens != nil {
 				client.MaxTokens = *generation.MaxOutputTokens
+			}
+			client.TemperatureMilli = generation.TemperatureMilli
+			client.TopPMilli = generation.TopPMilli
+			client.ToolChoice = generation.ToolChoice
+		}
+		return client, nil
+	case config.ProtocolOpenAIResponses:
+		client := openairesponses.Client{
+			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			HTTPClient:   &http.Client{Timeout: timeout},
+			Requirements: openairesponses.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
+		}
+		if generation := configuration.Provider.Generation; generation != nil {
+			if generation.MaxOutputTokens != nil {
+				client.MaxOutputTokens = *generation.MaxOutputTokens
 			}
 			client.TemperatureMilli = generation.TemperatureMilli
 			client.TopPMilli = generation.TopPMilli

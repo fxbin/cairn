@@ -331,15 +331,19 @@ const ProtocolOpenAIChatCompletions = "openai-chat-completions"
 // ProtocolAnthropicMessages 是 Anthropic Messages 协议标识。
 const ProtocolAnthropicMessages = "anthropic-messages"
 
+// ProtocolOpenAIResponses 是 OpenAI Responses 协议标识。
+const ProtocolOpenAIResponses = "openai-responses"
+
 // supportedProviderProtocols 是配置层接受的协议闭合集合。
 var supportedProviderProtocols = map[string]struct{}{
 	ProtocolOpenAIChatCompletions: {},
 	ProtocolAnthropicMessages:     {},
+	ProtocolOpenAIResponses:       {},
 }
 
 // supportedProviderProtocolList 返回受支持协议的稳定排序文案，供错误信息使用。
 func supportedProviderProtocolList() string {
-	return ProtocolOpenAIChatCompletions + ", " + ProtocolAnthropicMessages
+	return ProtocolOpenAIChatCompletions + ", " + ProtocolAnthropicMessages + ", " + ProtocolOpenAIResponses
 }
 
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段

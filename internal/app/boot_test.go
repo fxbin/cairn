@@ -246,6 +246,7 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 		"github.com/fxbin/cairn/internal/adapters/memstore/sqlite":            true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat":      true,
 		"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages": true,
+		"github.com/fxbin/cairn/internal/adapters/provider/openairesponses":   true,
 	}
 	for _, imported := range collectImports(".") {
 		if strings.HasPrefix(imported, "github.com/fxbin/cairn/internal/adapters/") && !allowedAdapters[imported] {
