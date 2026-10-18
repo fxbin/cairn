@@ -52,7 +52,11 @@ func resolveProviderCard(configuration config.Config) (contract.ProviderCapabili
 			StopReasons: capability.StopReasons,
 		}
 	}
-	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, declared)
+	protocol := configuration.Provider.Protocol
+	if protocol == "" {
+		protocol = config.ProtocolOpenAIChatCompletions
+	}
+	card, err := resolveProviderCardForProtocol(protocol, configuration.Provider.Model, declared)
 	if err != nil {
 		return contract.ProviderCapabilityCard{}, err
 	}

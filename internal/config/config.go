@@ -76,6 +76,87 @@ const (
 	PresetBenchmark = "benchmark"
 )
 
+// resolveProviderConnection 解析 provider.use 与 presets：use 设置时必须命中
+// 已命名预设且不得与内联连接字段并存，预设投影为有效连接；协议字段缺省
+// openai-chat-completions，未知协议失败关闭。调用方在 Validate 前执行，
+// 使指纹、准入与客户端装配读取同一有效连接。overlay 提供 YAML 显式在场
+// 事实，避免 Defaults 预填误判互斥。
+func resolveProviderConnection(cfg *Config, overlay providerOverlay, recorder *resolutionRecorder) error {
+	if overlay.Protocol != nil {
+		cfg.Provider.Protocol = *overlay.Protocol
+	}
+	if cfg.Provider.Protocol == "" {
+		cfg.Provider.Protocol = ProtocolOpenAIChatCompletions
+	}
+	if cfg.Provider.Protocol != ProtocolOpenAIChatCompletions {
+		return fmt.Errorf("provider.protocol %q is unsupported (supported: %s)", cfg.Provider.Protocol, ProtocolOpenAIChatCompletions)
+	}
+	for name, preset := range cfg.Provider.Presets {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("provider.presets name must not be empty")
+		}
+		if strings.TrimSpace(name) == "use" || strings.TrimSpace(name) == "presets" {
+			return fmt.Errorf("provider.presets name %q is reserved", name)
+		}
+		protocol := preset.Protocol
+		if protocol == "" {
+			protocol = ProtocolOpenAIChatCompletions
+		}
+		if protocol != ProtocolOpenAIChatCompletions {
+			return fmt.Errorf("provider.presets.%s.protocol %q is unsupported (supported: %s)", name, protocol, ProtocolOpenAIChatCompletions)
+		}
+		if preset.BaseURL == "" || preset.Model == "" || preset.APIKeyEnv == "" {
+			return fmt.Errorf("provider.presets.%s requires base_url, model and api_key_env", name)
+		}
+	}
+	if overlay.Use == nil || *overlay.Use == "" {
+		if overlay.Protocol == nil {
+			recorder.record("provider.protocol", cfg.Provider.Protocol, "default")
+		}
+		return nil
+	}
+	cfg.Provider.Use = *overlay.Use
+	preset, exists := cfg.Provider.Presets[cfg.Provider.Use]
+	if !exists {
+		return fmt.Errorf("provider.use %q does not match any provider.presets entry", cfg.Provider.Use)
+	}
+	// use 与内联连接字段互斥：避免出现“看似生效实则被预设覆盖”的歧义。
+	if overlay.hasInlineConnection() {
+		return errors.New("provider.use is mutually exclusive with inline provider connection fields")
+	}
+	protocol := preset.Protocol
+	if protocol == "" {
+		protocol = ProtocolOpenAIChatCompletions
+	}
+	requestTimeout := preset.RequestTimeout
+	if requestTimeout == "" {
+		requestTimeout = "120s"
+	}
+	admission := preset.Admission
+	if admission == "" {
+		admission = ProviderAdmissionRequired
+	}
+	providerID := preset.ID
+	if providerID == "" {
+		providerID = contract.ProviderIDCustom
+	}
+	cfg.Provider.Protocol = protocol
+	cfg.Provider.BaseURL = preset.BaseURL
+	cfg.Provider.Model = preset.Model
+	cfg.Provider.APIKeyEnv = preset.APIKeyEnv
+	cfg.Provider.RequestTimeout = requestTimeout
+	cfg.Provider.ID = providerID
+	cfg.Provider.Admission = admission
+	cfg.Provider.Capability = preset.Capability
+	cfg.Provider.Generation = preset.Generation
+	recorder.record("provider.use", cfg.Provider.Use, "yaml")
+	recorder.record("provider.protocol", cfg.Provider.Protocol, "preset:"+cfg.Provider.Use)
+	recorder.record("provider.base_url", cfg.Provider.BaseURL, "preset:"+cfg.Provider.Use)
+	recorder.record("provider.model", cfg.Provider.Model, "preset:"+cfg.Provider.Use)
+	recorder.record("provider.api_key_env", cfg.Provider.APIKeyEnv, "preset:"+cfg.Provider.Use)
+	return nil
+}
+
 // normalizePreset 归一化并应用静态 Preset 的组合语义：read-only 强制写入与
 // 执行策略为 deny 并记录来源（Preset 即组合，显式 allow 配置被组合覆盖且在
 // Resolution 中可见）；benchmark 复用 coding 工具集，其冻结配置、Docker 与
@@ -122,11 +203,21 @@ type budgetOverlay struct {
 
 // providerOverlay 探测 Provider 关键字段的显式设置，用于来源记录。
 type providerOverlay struct {
-	BaseURL   *string `yaml:"base_url"`
-	Model     *string `yaml:"model"`
-	APIKeyEnv *string `yaml:"api_key_env"`
-	ID        *string `yaml:"id"`
-	Admission *string `yaml:"admission"`
+	BaseURL        *string `yaml:"base_url"`
+	Model          *string `yaml:"model"`
+	APIKeyEnv      *string `yaml:"api_key_env"`
+	RequestTimeout *string `yaml:"request_timeout"`
+	ID             *string `yaml:"id"`
+	Admission      *string `yaml:"admission"`
+	Use            *string `yaml:"use"`
+	Protocol       *string `yaml:"protocol"`
+}
+
+// hasInlineConnection 报告 YAML 是否显式声明了内联连接字段；用于 provider.use
+// 与内联字段互斥判定，不受 Defaults 预填影响。
+func (overlay providerOverlay) hasInlineConnection() bool {
+	return overlay.BaseURL != nil || overlay.Model != nil || overlay.APIKeyEnv != nil ||
+		overlay.RequestTimeout != nil || overlay.ID != nil || overlay.Admission != nil
 }
 
 // profileProbe 是宽松解码的目标：确认配置版本显式在场，并提取 Profile 名称
@@ -202,8 +293,28 @@ const (
 	ProviderAdmissionRequired = "required"
 )
 
-// ProviderConfig 汇集提供方连接、身份与准入事实。
+// ProviderConfig 汇集提供方连接、身份与准入事实。Protocol 绑定静态协议
+// 标识（缺省 openai-chat-completions）；Use 选择 Presets 中的已命名连接预设，
+// 设置时预设投影为有效连接，与内联连接字段互斥。保留单 provider 内联块
+// 可读：未设置 Use 时行为与旧配置完全一致。
 type ProviderConfig struct {
+	BaseURL        string                    `yaml:"base_url"`
+	Model          string                    `yaml:"model"`
+	APIKeyEnv      string                    `yaml:"api_key_env"`
+	RequestTimeout string                    `yaml:"request_timeout"`
+	ID             string                    `yaml:"id"`
+	Admission      string                    `yaml:"admission"`
+	Protocol       string                    `yaml:"protocol"`
+	Use            string                    `yaml:"use"`
+	Presets        map[string]ProviderPreset `yaml:"presets"`
+	Capability     *ProviderCapabilityConfig `yaml:"capability"`
+	Generation     *ProviderGenerationConfig `yaml:"generation"`
+}
+
+// ProviderPreset 是一份可复用的已命名连接预设；字段语义与内联 ProviderConfig
+// 连接段一致，Protocol 缺省时沿用 openai-chat-completions。
+type ProviderPreset struct {
+	Protocol       string                    `yaml:"protocol"`
 	BaseURL        string                    `yaml:"base_url"`
 	Model          string                    `yaml:"model"`
 	APIKeyEnv      string                    `yaml:"api_key_env"`
@@ -213,6 +324,9 @@ type ProviderConfig struct {
 	Capability     *ProviderCapabilityConfig `yaml:"capability"`
 	Generation     *ProviderGenerationConfig `yaml:"generation"`
 }
+
+// ProtocolOpenAIChatCompletions 是配置层缺省协议标识，与 contract 常量同值。
+const ProtocolOpenAIChatCompletions = "openai-chat-completions"
 
 // ProviderGenerationConfig 是 provider.generation 显式生成参数块：每个字段
 // 只有显式值或未声明两态，显式值必须原样序列化进模型请求，未声明字段在
@@ -413,6 +527,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 	config.Profile = ProfileDefault
 	recorder := &resolutionRecorder{}
 	presetSource := "default"
+	var providerOverlayFact providerOverlay
 	recorder.record("profile", ProfileDefault, "default")
 	recorder.record("provider.base_url", config.Provider.BaseURL, "default")
 	recorder.record("provider.model", config.Provider.Model, "default")
@@ -448,6 +563,7 @@ func Load(path string, overrides Overrides) (Config, error) {
 			if err := decoder.Decode(&config); err != nil {
 				return Config{}, fmt.Errorf("parse config: %w", err)
 			}
+			providerOverlayFact = probe.Provider
 			// 命名 Profile 的预算预设仅填充 YAML 缺省字段，显式值按优先级
 			// 保留并标记来源。
 			if probe.Preset != nil {
@@ -484,6 +600,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 		}
 	}
 	recordProviderGenerationResolution(config.Provider.Generation, recorder)
+	if err := resolveProviderConnection(&config, providerOverlayFact, recorder); err != nil {
+		return Config{}, err
+	}
 	if err := normalizePreset(&config, recorder, presetSource); err != nil {
 		return Config{}, err
 	}

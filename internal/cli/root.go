@@ -1980,6 +1980,8 @@ Usage:
   cairn benchmark run --local-config <path> [--task <id>] [--attempts <n>] [--manifest <path>] [--config <path>] [--prepare-timeout <duration>] [--prepare-proxy <url>] [--results-dir <path>] [--workspaces-dir <path>] [--state-dir <path>] [--private-dir <path>]
   cairn check-provider [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider list [--json]
+  cairn provider presets [--workspace <path>] [--config <path>] [--json]
+  cairn provider use <name> [--workspace <path>] [--config <path>] [--json]
   cairn mcp list [--workspace <path>] [--config <path>] [--json]
   cairn mcp login <server> [--workspace <path>] [--config <path>] [--timeout <duration>] [--json]
   cairn mcp logout <server> [--workspace <path>] [--config <path>] [--json]

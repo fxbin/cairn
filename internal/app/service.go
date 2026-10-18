@@ -1429,28 +1429,48 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	if err != nil {
 		return nil, err
 	}
-	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration))
+	protocol := configuration.Provider.Protocol
+	if protocol == "" {
+		protocol = config.ProtocolOpenAIChatCompletions
+	}
+	card, err := resolveProviderCardForProtocol(protocol, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration))
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider card for stream requirements: %w", err)
 	}
-	client := openaicompat.Client{
-		BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
-		HTTPClient: &http.Client{Timeout: timeout},
-		Requirements: openaicompat.Requirements{
-			RequireUsage:       card.StreamingUsage,
-			AllowedStopReasons: append([]string(nil), card.StopReasons...),
-		},
-	}
-	if generation := configuration.Provider.Generation; generation != nil {
-		client.Generation = &openaicompat.GenerationOptions{
-			TemperatureMilli: generation.TemperatureMilli,
-			TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+	// 协议静态分派：未知协议失败关闭，不做自动降级或故障转移。
+	switch protocol {
+	case config.ProtocolOpenAIChatCompletions:
+		client := openaicompat.Client{
+			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			HTTPClient: &http.Client{Timeout: timeout},
+			Requirements: openaicompat.Requirements{
+				RequireUsage:       card.StreamingUsage,
+				AllowedStopReasons: append([]string(nil), card.StopReasons...),
+			},
 		}
-		if generation.MaxOutputTokens != nil {
-			client.Generation.MaxOutputTokens = *generation.MaxOutputTokens
+		if generation := configuration.Provider.Generation; generation != nil {
+			client.Generation = &openaicompat.GenerationOptions{
+				TemperatureMilli: generation.TemperatureMilli,
+				TopPMilli:        generation.TopPMilli, ReasoningEffort: generation.ReasoningEffort, ToolChoice: generation.ToolChoice,
+			}
+			if generation.MaxOutputTokens != nil {
+				client.Generation.MaxOutputTokens = *generation.MaxOutputTokens
+			}
 		}
+		return client, nil
+	default:
+		return nil, fmt.Errorf("provider protocol %q is not supported", protocol)
 	}
-	return client, nil
+}
+
+// resolveProviderCardForProtocol 按规范协议标识解析能力卡；协议与历史
+// ProviderKind 的映射闭合，未知协议失败关闭。
+func resolveProviderCardForProtocol(protocol, model string, declared *contract.ProviderCapabilityDeclaration) (contract.ProviderCapabilityCard, error) {
+	kind, err := provider.KindFromProtocol(protocol)
+	if err != nil {
+		return contract.ProviderCapabilityCard{}, err
+	}
+	return contract.ResolveProviderCard(kind, model, declared)
 }
 
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。
