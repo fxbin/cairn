@@ -11,17 +11,43 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 
+	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// queueWriteMu 串行化队列状态检查与追加，避免并发 confirm/cancel 交错出
-// cancelled → linked 等非法业务序列。
+// queueWriteMu 串行化进程内队列状态检查与追加。
 var queueWriteMu sync.Mutex
+
+// queueFileLock 在队列命名空间写入期间持有跨进程排他文件锁，覆盖多 CLI/TUI
+// 进程并发 confirm/cancel 的交错。
+func queueFileLock(stateDir, workspaceHash string) (func(), error) {
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	lockPath := filepath.Join(stateDir, "workspaces", workspaceHash, "queue.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("acquire queue lock: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
+}
 
 // QueueSubmitOptions 描述一次后续任务入队输入。
 type QueueSubmitOptions struct {
@@ -72,6 +98,11 @@ func (service Service) SubmitQueueInput(ctx context.Context, options QueueSubmit
 	if err != nil {
 		return QueueItemView{}, err
 	}
+	unlock, err := queueFileLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return QueueItemView{}, err
+	}
+	defer unlock()
 	journal, err := openJournal(options.StateDir, workspaceHash)
 	if err != nil {
 		return QueueItemView{}, err
@@ -121,6 +152,11 @@ func (service Service) CancelQueueInput(ctx context.Context, options QueueCancel
 	if err != nil {
 		return QueueItemView{}, err
 	}
+	unlock, err := queueFileLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return QueueItemView{}, err
+	}
+	defer unlock()
 	journal, err := openJournal(options.StateDir, workspaceHash)
 	if err != nil {
 		return QueueItemView{}, err
@@ -185,10 +221,15 @@ func (service Service) ListQueue(ctx context.Context, workspacePath, stateDir st
 	return views, nil
 }
 
-// ConfirmQueueInput 确认启动待消费输入：写 queue_input_consumed{linked} 并以
-// 预分配 runID 创建新 run。幂等：已 linked 且目标 run 存在则直接回传；
-// linked 而目标缺失则对账重建。状态检查与 consumed 追加在互斥内完成。
+// ConfirmQueueInput 确认启动待消费输入。
 func (service Service) ConfirmQueueInput(ctx context.Context, options QueueConfirmOptions) (RunResult, error) {
+	return service.ConfirmQueueInputWithEvents(ctx, options, nil, nil)
+}
+
+// ConfirmQueueInputWithEvents 确认启动待消费输入，并把目标 run 接入事件泵
+// 与 steering 桥；写 queue_input_consumed{linked} 后以预分配 runID 创建新 run。
+// 幂等：已 linked 且目标 run 存在则直接回传；linked 而目标缺失则对账重建。
+func (service Service) ConfirmQueueInputWithEvents(ctx context.Context, options QueueConfirmOptions, onEvent EventSink, steering *agent.SteeringBridge) (RunResult, error) {
 	if options.InputID == "" {
 		return RunResult{}, errors.New("queue input id is required")
 	}
@@ -197,17 +238,16 @@ func (service Service) ConfirmQueueInput(ctx context.Context, options QueueConfi
 		return RunResult{}, err
 	}
 	if content == "" {
-		// 已 linked 且目标存在：runID 即目标，直接回传。
 		return RunResult{ID: runID}, nil
 	}
 	return service.Run(ctx, RunOptions{
 		Task: content, Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config,
-		PreassignedRunID: runID,
+		PreassignedRunID: runID, OnEvent: onEvent, Steering: steering,
 	})
 }
 
-// reserveQueueLink 在互斥内完成队列状态检查与 consumed 追加；返回待执行
-// 正文与预分配 runID。content 为空表示幂等命中已存在目标。
+// reserveQueueLink 在互斥与跨进程锁内完成队列状态检查与 consumed 追加；
+// 返回待执行正文与预分配 runID。content 为空表示幂等命中已存在目标。
 func (service Service) reserveQueueLink(ctx context.Context, options QueueConfirmOptions) (string, domain.RunID, error) {
 	queueWriteMu.Lock()
 	defer queueWriteMu.Unlock()
@@ -215,6 +255,11 @@ func (service Service) reserveQueueLink(ctx context.Context, options QueueConfir
 	if err != nil {
 		return "", "", err
 	}
+	unlock, err := queueFileLock(options.StateDir, workspaceHash)
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
 	journal, err := openJournal(options.StateDir, workspaceHash)
 	if err != nil {
 		return "", "", err

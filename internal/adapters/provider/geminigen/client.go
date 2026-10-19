@@ -483,9 +483,11 @@ type toolCallAccumulator struct {
 }
 
 // decodeStream 解析 Gemini SSE 事件，拼接工具调用并转发端口事件。
+// 工具调用 ID 含流级唯一前缀，避免跨轮 call_0 冲突导致函数名映射覆盖。
 func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEvent) error) (bool, error) {
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	streamPrefix := fmt.Sprintf("g%d", time.Now().UnixNano()%1e9)
 	var dataLines []string
 	toolCalls := []*toolCallAccumulator{}
 	toolIndex := 0
@@ -521,7 +523,7 @@ func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEv
 						args = json.RawMessage(`{}`)
 					}
 					toolCalls = append(toolCalls, &toolCallAccumulator{
-						id:   fmt.Sprintf("call_%d", toolIndex),
+						id:   fmt.Sprintf("call_%s_%d", streamPrefix, toolIndex),
 						name: block.FunctionCall.Name,
 						args: args,
 					})

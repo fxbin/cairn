@@ -29,7 +29,16 @@ const frozenRunConfigProjectionPrefix = "cairn-frozen-run-config-projection-v1"
 // ProviderKindOpenAICompatible 是历史 Provider 线协议标识。
 const ProviderKindOpenAICompatible = "openai_compatible"
 
-// ProviderKindAnthropicMessages 是 Anthropic Messages 线协议标识。
+// validFrozenProviderKind 判断冻结配置允许的 ProviderKind 闭合集合。
+func validFrozenProviderKind(kind string) bool {
+	switch kind {
+	case ProviderKindOpenAICompatible, ProviderKindAnthropicMessages, ProviderKindOpenAIResponses, ProviderKindGeminiGenerate:
+		return true
+	default:
+		return false
+	}
+}
+
 const ProviderKindAnthropicMessages = "anthropic_messages"
 
 // ProviderKindOpenAIResponses 是 OpenAI Responses 线协议标识。
@@ -282,7 +291,7 @@ func validateFrozenConfigView(view frozenConfigView) error {
 	default:
 		return fmt.Errorf("contract: frozen config preset %q is unsupported", view.Preset)
 	}
-	if view.Provider.Kind != ProviderKindOpenAICompatible {
+	if !validFrozenProviderKind(view.Provider.Kind) {
 		return fmt.Errorf("contract: frozen config provider kind %q is unsupported", view.Provider.Kind)
 	}
 	if view.Provider.BaseURL == "" || view.Provider.Model == "" {
@@ -311,7 +320,7 @@ func validateFrozenConfigView(view frozenConfigView) error {
 	}
 	if view.Provider.Capability != nil {
 		capability := view.Provider.Capability
-		_, err := ResolveProviderCard(ProviderKindOpenAICompatible, view.Provider.Model, &ProviderCapabilityDeclaration{
+		_, err := ResolveProviderCard(view.Provider.Kind, view.Provider.Model, &ProviderCapabilityDeclaration{
 			ToolCalls: capability.ToolCalls, StreamingUsage: capability.StreamingUsage,
 			ContextWindowTokens: capability.ContextWindowTokens, MaxOutputTokens: capability.MaxOutputTokens,
 			StopReasons: capability.StopReasons,
@@ -449,7 +458,7 @@ func manifestProviderSelection(view frozenConfigView) *ProviderSelection {
 // 时的 resolveProviderCard 使用同一解析函数，保证回放视图与装配视图不漂移。
 func manifestCapabilityCard(manifest RunManifest, view frozenConfigView) *ProviderCapabilityCard {
 	declared := view.Provider.Capability
-	card, err := ResolveProviderCard(ProviderKindOpenAICompatible, manifest.Provider.Model, &ProviderCapabilityDeclaration{
+	card, err := ResolveProviderCard(view.Provider.Kind, manifest.Provider.Model, &ProviderCapabilityDeclaration{
 		ToolCalls: declared.ToolCalls, StreamingUsage: declared.StreamingUsage,
 		ContextWindowTokens: declared.ContextWindowTokens, MaxOutputTokens: declared.MaxOutputTokens,
 		StopReasons: declared.StopReasons,

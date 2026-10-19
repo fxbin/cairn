@@ -54,7 +54,7 @@ func marshalFrozenRunConfig(configuration config.Config, configFingerprint strin
 		Preset:        preset,
 		Profile:       profile,
 		Provider: contract.FrozenProviderProjection{
-			Kind: contract.ProviderKindOpenAICompatible, BaseURL: configuration.Provider.BaseURL,
+			Kind: providerKindForProtocol(configuration.Provider.Protocol), BaseURL: configuration.Provider.BaseURL,
 			Model: configuration.Provider.Model, ID: providerID, Admission: admission, Capability: capability,
 		},
 		Policy: contract.PolicyIdentity{

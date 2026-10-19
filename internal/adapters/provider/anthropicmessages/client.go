@@ -128,7 +128,7 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 					return &ProviderError{Kind: "invalid_response", Cause: err}
 				}
 				// Anthropic 流在 message_start 与 message_delta 多次发 usage；
-				// 合并为单一最终计量，只向上发一次。
+				// 合并为单一最终计量，中间帧不上抛。
 				if mergedUsage == nil {
 					mergedUsage = &ports.Usage{PromptTokens: event.Usage.PromptTokens, CompletionTokens: event.Usage.CompletionTokens, TotalTokens: event.Usage.TotalTokens}
 				} else {
@@ -141,6 +141,8 @@ func (client Client) Stream(ctx context.Context, request ports.ModelRequest, emi
 					mergedUsage.TotalTokens = mergedUsage.PromptTokens + mergedUsage.CompletionTokens
 				}
 			}
+			// 抑制中间 usage，只在 Done 时发一次最终计量。
+			return nil
 		case ports.Done:
 			stopReason = event.StopReason
 			if mergedUsage != nil {

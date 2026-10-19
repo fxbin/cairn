@@ -479,6 +479,7 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		console.sessionForkSource = nil
 		console.appendLine(okStyle.Render(fmt.Sprintf("已选择历史会话 %s 的链尾 %s；下一任务将携带其前情", console.sessionID, console.sessionPrev)))
 		console.appendLine(dimStyle.Render("历史运行保持只读，不进入 /rewind 或 /rewind-files 范围"))
+		console.forkRequest++
 		return console, nil
 	}
 	if loaded, isTree := msg.(sessionTreeLoadedMsg); isTree {
@@ -1714,8 +1715,8 @@ func (console *RunConsole) showQueueList(loaded queueListLoadedMsg) {
 	console.appendLine(strings.Join(lines, "\n"))
 }
 
-// queueConfirmRunCmd 把队列确认后的目标 run 接入正常运行生命周期：事件
-// 泵、审批等待、取消与结果收束复用 startRunCmd 通道。
+// queueConfirmRunCmd 把队列确认后的目标 run 接入正常运行生命周期：操作
+// 上下文、事件泵、审批等待、取消与结果收束复用 startRunCmd 通道。
 func queueConfirmRunCmd(console RunConsole, inputID string) tea.Cmd {
 	service := console.input.Service
 	runCtx := console.operationContext()
@@ -1725,23 +1726,16 @@ func queueConfirmRunCmd(console RunConsole, inputID string) tea.Cmd {
 	workspace := console.input.Workspace
 	stateDir := console.input.StateDir
 	configuration := console.input.Config
+	steering := console.steering
 	return func() tea.Msg {
-		result, err := service.ConfirmQueueInput(ctxBackground(), app.QueueConfirmOptions{
+		result, err := service.ConfirmQueueInputWithEvents(runCtx, app.QueueConfirmOptions{
 			Workspace: workspace, StateDir: stateDir, Config: configuration, InputID: inputID,
-		})
-		// 写入 OnEvent 不适用于 Confirm 内部创建的 run（它自己装配）；
-		// 结果经 runFinishedMsg 走正常收束。
-		_ = onEvent
+		}, onEvent, steering)
 		sendOperationMessage(console.rootCtx, messages, queueActionDoneMsg{action: "confirm", item: app.QueueItemView{InputID: inputID, State: domain.QueueItemLinked, TargetRunID: result.ID}, runID: result.ID, err: err})
-		if err == nil && result.ID != "" {
-			sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: nil})
-		}
+		sendOperationMessage(console.rootCtx, messages, runFinishedMsg{generation: generation, result: &result, err: err})
 		return nil
 	}
 }
-
-// ctxBackground 为队列确认提供独立上下文（与操作取消解耦，确认本身不取消）。
-func ctxBackground() context.Context { return context.Background() }
 
 // submitSteering 投递一次安全点 steering：/steer <文本> 补充当前任务指导。
 // 界面立即显示「待接收」；Journal 持久化后由事件流推进为已接收/已生效。
@@ -1919,6 +1913,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.transcript = nil
 		console.turn, console.toolCalls = 0, 0
 		console.promptTokens, console.outputTokens = 0, 0
+		console.forkRequest++
 		if console.sessionID != "" || console.sessionForkSource != nil {
 			console.sessionID = ""
 			console.sessionPrev = ""
