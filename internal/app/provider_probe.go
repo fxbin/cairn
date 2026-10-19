@@ -78,7 +78,11 @@ type CheckProviderOptions struct {
 // Evidence 错误里，不改变探测结论。
 func (service Service) CheckProvider(ctx context.Context, options CheckProviderOptions) (ProviderProbeResult, error) {
 	configuration := options.Config
-	result := ProviderProbeResult{Result: ProviderProbeFail, ProviderKind: contract.ProviderKindOpenAICompatible}
+	providerKind := providerKindForProtocol(configuration.Provider.Protocol)
+	if providerKind == "" {
+		providerKind = contract.ProviderKindOpenAICompatible
+	}
+	result := ProviderProbeResult{Result: ProviderProbeFail, ProviderKind: providerKind}
 	if configuration.Provider.BaseURL == "" || configuration.Provider.Model == "" {
 		result.Error = "provider.base_url and provider.model must be configured"
 		return result, nil
@@ -88,7 +92,7 @@ func (service Service) CheckProvider(ctx context.Context, options CheckProviderO
 		result.Error = err.Error()
 		return result, nil
 	}
-	profile, err := contract.ResolveProviderRequestProfile(contract.ProviderKindOpenAICompatible, contract.ProviderRequestDeclaration{
+	profile, err := contract.ResolveProviderRequestProfile(providerKind, contract.ProviderRequestDeclaration{
 		BaseURL:    configuration.Provider.BaseURL,
 		Model:      configuration.Provider.Model,
 		Capability: config.ProviderCapabilityDeclaration(configuration),
@@ -98,7 +102,7 @@ func (service Service) CheckProvider(ctx context.Context, options CheckProviderO
 		result.Error = err.Error()
 		return result, nil
 	}
-	if _, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration)); err != nil {
+	if _, err := contract.ResolveProviderCard(providerKind, configuration.Provider.Model, config.ProviderCapabilityDeclaration(configuration)); err != nil {
 		result.Error = err.Error()
 		return result, nil
 	}

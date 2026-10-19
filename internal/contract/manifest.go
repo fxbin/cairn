@@ -438,19 +438,39 @@ func ManifestFromRun(events []domain.Event, task TaskSpec, frozenConfig json.Raw
 }
 
 // manifestProviderSelection 由冻结配置视图派生 ProviderSelection 身份投影：
-// protocol_id 取当前唯一注册协议，model_ref 是派生值，endpoint_digest 复用
-// 无凭据规范化摘要。派生失败时保持 nil，不伪造身份。
+// protocol_id 由 provider Kind 闭合映射，model_ref 是派生值，endpoint_digest
+// 复用无凭据规范化摘要。派生失败时保持 nil，不伪造身份。
 func manifestProviderSelection(view frozenConfigView) *ProviderSelection {
 	digest, err := BaseURLIdentityDigest(view.Provider.BaseURL)
 	if err != nil || view.Provider.Model == "" {
 		return nil
 	}
+	protocolID, ok := protocolIDForKind(view.Provider.Kind)
+	if !ok {
+		return nil
+	}
 	return &ProviderSelection{
 		SchemaVersion:  1,
 		ProviderID:     view.Provider.ID,
-		ProtocolID:     ProtocolOpenAIChatCompletions,
+		ProtocolID:     protocolID,
 		ModelRef:       view.Provider.ID + "/" + view.Provider.Model,
 		EndpointDigest: digest,
+	}
+}
+
+// protocolIDForKind 把历史 ProviderKind 映射为规范协议标识；闭合词表。
+func protocolIDForKind(kind string) (string, bool) {
+	switch kind {
+	case ProviderKindOpenAICompatible:
+		return ProtocolOpenAIChatCompletions, true
+	case ProviderKindAnthropicMessages:
+		return ProtocolAnthropicMessages, true
+	case ProviderKindOpenAIResponses:
+		return ProtocolOpenAIResponses, true
+	case ProviderKindGeminiGenerate:
+		return ProtocolGeminiGenerate, true
+	default:
+		return "", false
 	}
 }
 

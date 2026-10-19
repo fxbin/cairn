@@ -88,7 +88,10 @@ type RunOptions struct {
 type RunResult struct {
 	ID       domain.RunID
 	Response string
-	Result   *contract.Result
+	// SessionID 是本次运行的会话标识；空值表示无会话（如队列任务），
+	// 调用方不得将其接入当前会话续链。
+	SessionID string
+	Result    *contract.Result
 }
 
 // ResumeOptions 描述恢复既有运行与可选审批决定所需的输入。
@@ -313,7 +316,15 @@ func contractResultOrNil(result contract.Result, err error) *contract.Result {
 // 失败说明持久化状态无法形成有效产品合同，必须以 ErrStateCorrupt 失败关闭。
 func projectedRunOutcome(journal *sqlite.Journal, stateDir, workspaceHash string, runID domain.RunID, response string, runErr error) (RunResult, error) {
 	result, projectionErr := projectRunResult(context.Background(), journal, stateDir, workspaceHash, runID)
-	outcome := RunResult{ID: runID, Response: response, Result: contractResultOrNil(result, projectionErr)}
+	sessionID := ""
+	if projectionErr == nil {
+		if events, loadErr := journal.Load(context.Background(), runID); loadErr == nil {
+			if projection, replayErr := domain.Replay(events); replayErr == nil {
+				sessionID = projection.SessionID
+			}
+		}
+	}
+	outcome := RunResult{ID: runID, Response: response, SessionID: sessionID, Result: contractResultOrNil(result, projectionErr)}
 	if runErr != nil {
 		return outcome, runErr
 	}

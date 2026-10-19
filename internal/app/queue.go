@@ -25,8 +25,8 @@ import (
 // queueWriteMu 串行化进程内队列状态检查与追加。
 var queueWriteMu sync.Mutex
 
-// queueFileLock 在队列命名空间写入期间持有跨进程排他文件锁，覆盖多 CLI/TUI
-// 进程并发 confirm/cancel 的交错。
+// queueFileLock 在队列命名空间写入期间持有跨进程排他文件锁；非阻塞获取，
+// 被占用时返回错误而非无限等待，避免取消无法结束确认流程。
 func queueFileLock(stateDir, workspaceHash string) (func(), error) {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
@@ -39,9 +39,9 @@ func queueFileLock(stateDir, workspaceHash string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("acquire queue lock: %w", err)
+		return nil, fmt.Errorf("queue lock is held by another process: %w", err)
 	}
 	return func() {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)

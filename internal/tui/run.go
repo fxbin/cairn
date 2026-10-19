@@ -664,6 +664,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return console, nil
 			}
 			console.continuationRequest++
+			console.forkRequest++
 			if handled, cmd := console.runCommand(task); handled {
 				console.taskField.Reset()
 				return console, cmd
@@ -794,11 +795,14 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.runErr = finished.err
 	console.stopWait = true
 	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
-		console.sessionPrev = finished.result.ID
-		console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText(), summary: firstLineClip(console.lastTask, 48)})
-		// 分支根运行创建后转为同会话续链；来源锚点只作用于首次新任务。
-		console.sessionForkSource = nil
-		console.sessionTailRequired = false
+		// 只有属于当前会话的运行才接入续链；队列任务等无会话运行不得污染链尾。
+		if finished.result.SessionID == "" || finished.result.SessionID == console.sessionID {
+			console.sessionPrev = finished.result.ID
+			console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText(), summary: firstLineClip(console.lastTask, 48)})
+			// 分支根运行创建后转为同会话续链；来源锚点只作用于首次新任务。
+			console.sessionForkSource = nil
+			console.sessionTailRequired = false
+		}
 	}
 	console.appendLine(console.verdictLine())
 	if console.result != nil && console.result.ID != "" {

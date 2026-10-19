@@ -38,7 +38,14 @@ func ResolveResolvedProfile(facts ResolvedFacts) (contract.ResolvedProviderProfi
 	}
 	// 当前唯一注册协议对应历史 ProviderKind；协议集合扩充时此处必须改为
 	// 显式映射，不得静默假定。
-	card, err := contract.ResolveProviderCard(contract.ProviderKindOpenAICompatible, facts.Selection.Model, facts.Capability)
+	kind, err := KindFromProtocol(facts.Selection.Protocol)
+	if facts.Selection.Protocol == "" {
+		kind, err = KindFromProtocol("openai-chat-completions")
+	}
+	if err != nil {
+		return contract.ResolvedProviderProfile{}, err
+	}
+	card, err := contract.ResolveProviderCard(kind, facts.Selection.Model, facts.Capability)
 	if err != nil {
 		return contract.ResolvedProviderProfile{}, err
 	}

@@ -21,10 +21,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fxbin/cairn/internal/ports"
 )
+
+// geminiStreamCounter 是进程内流级唯一计数器，配合时间戳生成工具调用 ID 前缀。
+var geminiStreamCounter int64
 
 // Client 将 Gemini streamGenerateContent SSE 响应适配为 Provider 端口。
 type Client struct {
@@ -487,7 +491,8 @@ type toolCallAccumulator struct {
 func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEvent) error) (bool, error) {
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	streamPrefix := fmt.Sprintf("g%d", time.Now().UnixNano()%1e9)
+	// 流级唯一前缀：纳秒 + 进程内原子计数，保证跨轮调用 ID 不冲突。
+	streamPrefix := fmt.Sprintf("g%d", atomic.AddInt64(&geminiStreamCounter, 1))
 	var dataLines []string
 	toolCalls := []*toolCallAccumulator{}
 	toolIndex := 0
