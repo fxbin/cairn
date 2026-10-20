@@ -491,8 +491,9 @@ type toolCallAccumulator struct {
 func decodeStream(ctx context.Context, source io.Reader, emit func(ports.ModelEvent) error) (bool, error) {
 	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
-	// 流级唯一前缀：纳秒 + 进程内原子计数，保证跨轮调用 ID 不冲突。
-	streamPrefix := fmt.Sprintf("g%d", atomic.AddInt64(&geminiStreamCounter, 1))
+	// 流级唯一前缀：纳秒时间戳 + 进程内计数 + 随机分量，保证跨进程/跨轮
+	// 调用 ID 不冲突（计数器单独会在新进程重置）。
+	streamPrefix := fmt.Sprintf("g%x-%d-%d", time.Now().UnixNano(), os.Getpid(), atomic.AddInt64(&geminiStreamCounter, 1))
 	var dataLines []string
 	toolCalls := []*toolCallAccumulator{}
 	toolIndex := 0

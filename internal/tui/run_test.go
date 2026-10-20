@@ -441,7 +441,7 @@ func TestSessionChainCarriesPriorRun(t *testing.T) {
 	}
 
 	console.mode = consoleRunning
-	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-1", Response: "ok", Result: nil}})
+	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-1", Response: "ok", SessionID: console.sessionID, Result: nil}})
 	console = model.(RunConsole)
 	if console.sessionPrev != "run-1" || len(console.sessionRuns) != 1 {
 		t.Fatalf("终态应记录链尾，得到 prev=%q runs=%v", console.sessionPrev, console.sessionRuns)
@@ -528,7 +528,7 @@ func TestForkCommandSelectsSourceWithoutCreatingRun(t *testing.T) {
 	if !containsLine(console.lines, "新会话分支") {
 		t.Fatalf("应提示创建新分支: %v", console.lines)
 	}
-	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-d", Response: "ok"}})
+	model, _ = console.receiveResult(runFinishedMsg{result: &app.RunResult{ID: "run-d", Response: "ok", SessionID: console.sessionID}})
 	console = model.(RunConsole)
 	if console.sessionForkSource != nil {
 		t.Fatal("终态后应清除来源锚点，后续任务走同会话续链")

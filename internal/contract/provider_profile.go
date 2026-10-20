@@ -146,7 +146,7 @@ type ProviderRequestProfile struct {
 // 失败关闭（未知能力不可评测），基地址必须通过无凭据规范化校验后才允许
 // 进入身份摘要，生成参数在契约层再次做闭合区间校验以防御直接构造调用。
 func ResolveProviderRequestProfile(kind string, declaration ProviderRequestDeclaration) (ProviderRequestProfile, error) {
-	if kind != ProviderKindOpenAICompatible {
+	if !validFrozenProviderKind(kind) {
 		return ProviderRequestProfile{}, fmt.Errorf("provider kind %q has no request profile contract", kind)
 	}
 	if declaration.Model == "" {
@@ -250,7 +250,7 @@ func (profile ProviderRequestProfile) Validate() error {
 	if profile.SchemaVersion != providerProfileSchemaVersion {
 		return fmt.Errorf("request profile schema_version %d is not supported", profile.SchemaVersion)
 	}
-	if profile.ProviderKind != ProviderKindOpenAICompatible {
+	if !validFrozenProviderKind(profile.ProviderKind) {
 		return fmt.Errorf("request profile provider kind %q is unsupported", profile.ProviderKind)
 	}
 	if profile.Model == "" {

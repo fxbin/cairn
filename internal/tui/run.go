@@ -795,8 +795,8 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 	console.runErr = finished.err
 	console.stopWait = true
 	if console.sessionID != "" && finished.result != nil && finished.result.ID != "" {
-		// 只有属于当前会话的运行才接入续链；队列任务等无会话运行不得污染链尾。
-		if finished.result.SessionID == "" || finished.result.SessionID == console.sessionID {
+		// 只有非空且精确匹配当前会话的运行才推进链尾；队列等无会话运行不得续链。
+		if finished.result.SessionID != "" && finished.result.SessionID == console.sessionID {
 			console.sessionPrev = finished.result.ID
 			console.sessionRuns = append(console.sessionRuns, sessionRunEntry{id: finished.result.ID, verdict: console.verdictText(), summary: firstLineClip(console.lastTask, 48)})
 			// 分支根运行创建后转为同会话续链；来源锚点只作用于首次新任务。
