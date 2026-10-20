@@ -392,16 +392,18 @@ func toGeminiTools(specs []ports.ToolSpec) []tool {
 
 // toGeminiContents 把端口消息转换为 Gemini contents：system 提取为
 // systemInstruction；assistant → model；工具回执以 user 角色携带
-// functionResponse，name 取前序 functionCall 的函数名（不是 call ID）。
+// functionResponse。历史可能含重复 call ID（旧版跨轮 call_0），按出现顺序
+// FIFO 匹配函数名，无法确定时回退 call ID 本身。
 func toGeminiContents(messages []ports.Message) []content {
 	contents := make([]content, 0, len(messages))
-	// 建立 call ID → function name 关联，供工具回执映射。
-	callNames := map[string]string{}
+	// 每个 call ID 的函数名队列：同 ID 多次出现时按顺序消费，不被后者覆盖。
+	callNameQueues := map[string][]string{}
 	for _, message := range messages {
 		for _, call := range message.ToolCalls {
-			callNames[call.ID] = call.Name
+			callNameQueues[call.ID] = append(callNameQueues[call.ID], call.Name)
 		}
 	}
+	consumed := map[string]int{}
 	for _, message := range messages {
 		if message.Role == "system" {
 			continue
@@ -410,9 +412,13 @@ func toGeminiContents(messages []ports.Message) []content {
 		role := message.Role
 		switch {
 		case message.ToolCallID != "" || role == "tool":
-			name := callNames[message.ToolCallID]
-			if name == "" {
-				name = message.ToolCallID
+			name := message.ToolCallID
+			if queue := callNameQueues[message.ToolCallID]; len(queue) > 0 {
+				index := consumed[message.ToolCallID]
+				if index < len(queue) {
+					name = queue[index]
+					consumed[message.ToolCallID] = index + 1
+				}
 			}
 			response := json.RawMessage(`{}`)
 			if message.Content != "" {

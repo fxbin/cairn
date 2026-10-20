@@ -142,3 +142,43 @@ func TestHTTPErrorClassification(t *testing.T) {
 	}
 	_ = providerError
 }
+
+// TestToolResultMatchesDuplicateCallIDsByOrder 锁定旧历史重复 call ID（如跨轮
+// call_0）按出现顺序 FIFO 匹配函数名，不被后者覆盖。
+func TestToolResultMatchesDuplicateCallIDsByOrder(t *testing.T) {
+	var captured []content
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload generateRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		captured = payload.Contents
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n"))
+	}))
+	t.Cleanup(server.Close)
+	client := Client{BaseURL: server.URL}
+	// 旧历史：两轮都是 call_0，但函数名不同。
+	_ = client.Stream(context.Background(), ports.ModelRequest{
+		Model: "gemini-2.5-pro",
+		Messages: []ports.Message{
+			{Role: "user", Content: "task 1"},
+			{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "call_0", Name: "apply_patch", Arguments: json.RawMessage(`{}`)}}},
+			{Role: "tool", ToolCallID: "call_0", Content: `{"ok":true}`},
+			{Role: "user", Content: "task 2"},
+			{Role: "assistant", ToolCalls: []ports.ToolCall{{ID: "call_0", Name: "read_file", Arguments: json.RawMessage(`{}`)}}},
+			{Role: "tool", ToolCallID: "call_0", Content: `{"ok":true}`},
+		},
+	}, func(ports.ModelEvent) error { return nil })
+	var names []string
+	for _, c := range captured {
+		for _, p := range c.Parts {
+			if p.FunctionResponse != nil {
+				names = append(names, p.FunctionResponse.Name)
+			}
+		}
+	}
+	if len(names) != 2 || names[0] != "apply_patch" || names[1] != "read_file" {
+		t.Fatalf("functionResponse names = %v, want [apply_patch read_file]", names)
+	}
+}
