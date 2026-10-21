@@ -3,32 +3,10 @@ import type { ChatBlock } from "../desktop/chatBlocks";
 import type { ErrorBody } from "../desktop/types";
 
 function formatTime(iso: string): string {
-  if (!iso) {
-    return "";
-  }
+  if (!iso) return "";
   const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
+  if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-}
-
-/** 简易 Markdown 子集：段落、代码块、行内代码、粗体。不执行 HTML。 */
-export function AssistantBody({ text }: { text: string }) {
-  const parts = useMemo(() => splitBlocks(text), [text]);
-  return (
-    <div className="msg-body">
-      {parts.map((part, index) =>
-        part.type === "code" ? (
-          <pre key={index}>
-            <code>{part.text}</code>
-          </pre>
-        ) : (
-          <p key={index}>{renderInline(part.text)}</p>
-        ),
-      )}
-    </div>
-  );
 }
 
 function splitBlocks(text: string): Array<{ type: "p" | "code"; text: string }> {
@@ -47,37 +25,63 @@ function splitBlocks(text: string): Array<{ type: "p" | "code"; text: string }> 
 
 function renderInline(text: string) {
   const nodes: Array<string | JSX.Element> = [];
-  const regex = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  const regex = /`([^`]+)`|\*\*([^*]+)\*\*|\*\*?\*([^*]+)\*\*?/g;
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text))) {
-    if (match.index > last) {
-      nodes.push(text.slice(last, match.index));
-    }
-    if (match[1] != null) {
-      nodes.push(<code key={`${match.index}-c`}>{match[1]}</code>);
-    } else if (match[2] != null) {
-      nodes.push(<strong key={`${match.index}-b`}>{match[2]}</strong>);
-    }
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    if (match[1] != null) nodes.push(<code key={`${match.index}-c`}>{match[1]}</code>);
+    else if (match[2] != null) nodes.push(<strong key={`${match.index}-b`}>{match[2]}</strong>);
+    else if (match[3] != null) nodes.push(<em key={`${match.index}-i`}>{match[3]}</em>);
     last = match.index + match[0].length;
   }
-  if (last < text.length) {
-    nodes.push(text.slice(last));
-  }
+  if (last < text.length) nodes.push(text.slice(last));
   return nodes;
 }
 
+export function AssistantBody({ text }: { text: string }) {
+  const parts = useMemo(() => splitBlocks(text), [text]);
+  return (
+    <div className="msg-body">
+      {parts.map((part, index) =>
+        part.type === "code" ? (
+          <pre key={index}>
+            <code>{part.text}</code>
+          </pre>
+        ) : (
+          <p key={index}>{renderInline(part.text)}</p>
+        ),
+      )}
+    </div>
+  );
+}
+
+function toolGlyph(name: string, status: string): string {
+  if (status === "failed") return "!";
+  if (status === "ok") return "✓";
+  const n = name.toLowerCase();
+  if (n.includes("read") || n.includes("file")) return "¶";
+  if (n.includes("exec") || n.includes("command") || n.includes("run")) return "›_";
+  if (n.includes("patch") || n.includes("write") || n.includes("edit")) return "✎";
+  if (n.includes("search") || n.includes("grep") || n.includes("glob")) return "⌕";
+  if (n.includes("list") || n.includes("dir")) return "☰";
+  return "⚙";
+}
+
 function ToolCard({ block }: { block: Extract<ChatBlock, { kind: "tool" }> }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(block.status === "failed");
   return (
     <div className="tool-card" data-status={block.status}>
       <button type="button" className="tool-card-header" onClick={() => setOpen((v) => !v)}>
-        <span className="tool-icon">{block.status === "failed" ? "!" : block.status === "ok" ? "✓" : "…"}</span>
+        <span className="tool-icon">{toolGlyph(block.name, block.status)}</span>
         <span className="tool-name">{block.name}</span>
         <span className="tool-summary">{block.summary}</span>
         <span className="tool-meta">
-          <span>{block.status === "running" ? "执行中" : block.status === "ok" ? "成功" : "失败"}</span>
+          <span>
+            {block.status === "running" ? "执行中" : block.status === "ok" ? "成功" : "失败"}
+          </span>
           <span>{formatTime(block.at)}</span>
+          <span>{open ? "收起" : "展开"}</span>
         </span>
       </button>
       {open && block.detail && <div className="tool-card-body">{block.detail}</div>}
@@ -103,8 +107,15 @@ function ApprovalCard({
         {block.operationId ? ` · 操作 ${block.operationId}` : ""}
       </div>
       {block.resolved ? (
-        <div className="muted" style={{ fontSize: 12, fontWeight: 600 }}>
-          {block.resolved === "approved" ? "已允许" : "已拒绝"}
+        <div
+          className="muted"
+          style={{
+            fontSize: 12.5,
+            fontWeight: 700,
+            color: block.resolved === "approved" ? "var(--c-success)" : "var(--c-danger)",
+          }}
+        >
+          {block.resolved === "approved" ? "✓ 已允许并继续" : "✗ 已拒绝"}
         </div>
       ) : (
         <div className="approval-actions">
@@ -120,7 +131,6 @@ function ApprovalCard({
   );
 }
 
-/** 对话主时间线。 */
 export function ChatTranscript({
   blocks,
   loading,
@@ -136,9 +146,7 @@ export function ChatTranscript({
   const [stick, setStick] = useState(true);
 
   useEffect(() => {
-    if (!stick || !scrollRef.current) {
-      return;
-    }
+    if (!stick || !scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [blocks, stick]);
 
@@ -146,7 +154,8 @@ export function ChatTranscript({
     return (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="empty-hero">
-          <div className="muted">加载会话…</div>
+          <div className="orb">C</div>
+          <h2>加载会话…</h2>
         </div>
       </div>
     );
@@ -156,11 +165,12 @@ export function ChatTranscript({
     return (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="empty-hero">
+          <div className="orb">C</div>
           <h2>今天想改点什么？</h2>
-          <p>描述目标，Cairn 会规划步骤、执行工具，并在有副作用时请你确认。</p>
+          <p>描述目标即可。Cairn 会规划步骤、执行工具，并在有副作用时请你确认。</p>
           <div className="suggestion-row">
             {[
-              "梳理这个仓库的模块边界并写进 AGENTS.md 草稿",
+              "梳理仓库模块边界并给出重构建议",
               "跑一遍测试并总结失败原因",
               "给登录流程补一个回归测试",
               "解释 Event Journal 的哈希链设计",
@@ -181,7 +191,7 @@ export function ChatTranscript({
       ref={scrollRef}
       onScroll={(event) => {
         const el = event.currentTarget;
-        setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 48);
+        setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 56);
       }}
     >
       <div className="transcript">
@@ -210,9 +220,7 @@ export function ChatTranscript({
               </div>
             );
           }
-          if (block.kind === "tool") {
-            return <ToolCard key={block.id} block={block} />;
-          }
+          if (block.kind === "tool") return <ToolCard key={block.id} block={block} />;
           if (block.kind === "approval") {
             return <ApprovalCard key={block.id} block={block} onDecide={onDecide} />;
           }

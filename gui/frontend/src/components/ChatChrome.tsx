@@ -189,6 +189,10 @@ export function ThreadSidebar({
             >
               <div className="thread-item-title">{thread.title}</div>
               <div className="thread-item-meta">
+                <span
+                  className="thread-dot"
+                  data-state={thread.waiting_approval ? "waiting_approval" : thread.state}
+                />
                 <span>{thread.waiting_approval ? "待审批" : thread.phase || thread.state}</span>
                 <span>{new Date(thread.updated_at).toLocaleDateString("zh-CN")}</span>
               </div>
@@ -210,8 +214,9 @@ export function ThreadSidebar({
       </div>
       <div className="sidebar-footer">
         <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath} data-testid="workspace-chip">
-          <span>⌂</span>
+          <span className="ws-icon">⌂</span>
           <span className="path">{workspaceLabel || "选择工作区"}</span>
+          <span className="muted" style={{ fontSize: 11 }}>更换</span>
         </button>
       </div>
     </aside>

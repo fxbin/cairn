@@ -11,7 +11,70 @@ import type {
 
 export type RailTab = "files" | "changes" | "queue" | "details";
 
-/** 右侧检查栏：文件 / 改动 / 队列 / 详情（渐进披露）。 */
+function DiffView({ text }: { text: string }) {
+  if (!text.trim()) {
+    return <div className="empty-sm">无差异</div>;
+  }
+  return (
+    <div className="mono-block" style={{ padding: 8 }}>
+      {text.split("\n").map((line, index) => {
+        const kind = line.startsWith("+") && !line.startsWith("+++")
+          ? "add"
+          : line.startsWith("-") && !line.startsWith("---")
+            ? "del"
+            : line.startsWith("@@")
+              ? "hunk"
+              : "meta";
+        return (
+          <span className="diff-line" data-kind={kind} key={index}>
+            {line || " "}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function FileTree({
+  node,
+  depth = 0,
+  onFile,
+}: {
+  node: FileNode;
+  depth?: number;
+  onFile: (relative: string) => void;
+}) {
+  if (!node.children?.length) return null;
+  return (
+    <div>
+      {node.children.slice(0, 300).map((child) => (
+        <div key={child.relative || child.name} style={{ marginLeft: depth * 6 }}>
+          <button
+            type="button"
+            className="tree-row"
+            disabled={child.kind === "blocked"}
+            onClick={() => {
+              if (child.kind === "file") onFile(child.relative);
+            }}
+          >
+            <div className="tree-name">
+              <span style={{ opacity: 0.7, width: 14, textAlign: "center" }}>
+                {child.kind === "dir" ? "▸" : child.kind === "blocked" ? "⛔" : "·"}
+              </span>
+              <span>{child.name}</span>
+              {child.reason ? <span className="muted">({child.reason})</span> : null}
+            </div>
+          </button>
+          {child.kind === "dir" && (
+            <FileTree node={child} depth={depth + 1} onFile={onFile} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 右侧检查栏。 */
 export function InspectorRail({
   tab,
   onTab,
@@ -35,11 +98,10 @@ export function InspectorRail({
   const [evidence, setEvidence] = useState<EvidenceView | null>(null);
   const [diffPath, setDiffPath] = useState("");
   const [diff, setDiff] = useState("");
+  const [preview, setPreview] = useState("");
 
   const load = useCallback(async () => {
-    if (!workspace?.path || !workspace.exists) {
-      return;
-    }
+    if (!workspace?.path || !workspace.exists) return;
     try {
       const [treeResult, changeResult, queueResult] = await Promise.all([
         desktop.listFileTree(workspace.path),
@@ -59,49 +121,35 @@ export function InspectorRail({
           : { code: "internal", message: String(error) },
       );
     }
-  }, [workspace?.path, workspace?.exists, runId, onError]);
-
-  useEffect(() => {
-    void load();
-    // onError 由父级稳定引用，避免 effect 风暴
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace?.path, workspace?.exists, runId, tab]);
 
-  const renderTree = (node: FileNode, depth = 0): JSX.Element | null => {
-    if (!node.children?.length) {
-      return null;
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const openDiff = async (relative: string) => {
+    if (!workspace?.path) return;
+    try {
+      const text = await desktop.diffFile(workspace.path, relative);
+      setDiff(text);
+      setDiffPath(relative);
+      setPreview("");
+    } catch {
+      setDiff("");
     }
-    return (
-      <div key={node.relative || "root"}>
-        {node.children.slice(0, 200).map((child) => (
-          <div key={child.relative || child.name} style={{ marginLeft: depth * 10 }}>
-            <button
-              type="button"
-              className="thread-item"
-              style={{ padding: "6px 8px" }}
-              onClick={() => {
-                if (child.kind === "file" && workspace?.path) {
-                  void desktop
-                    .diffFile(workspace.path, child.relative)
-                    .then((text) => {
-                      setDiff(text);
-                      setDiffPath(child.relative);
-                    })
-                    .catch(() => setDiff(""));
-                }
-              }}
-            >
-              <div className="thread-item-title" style={{ fontWeight: 450 }}>
-                {child.kind === "dir" ? "📁 " : child.kind === "blocked" ? "⛔ " : "· "}
-                {child.name}
-                {child.reason ? ` (${child.reason})` : ""}
-              </div>
-            </button>
-            {child.kind === "dir" && renderTree(child, depth + 1)}
-          </div>
-        ))}
-      </div>
-    );
+  };
+
+  const openPreview = async (relative: string) => {
+    if (!workspace?.path) return;
+    try {
+      const p = await desktop.previewFile(workspace.path, relative);
+      setPreview((p.text || p.reason || "（空）") + "");
+      setDiffPath(relative);
+      setDiff("");
+    } catch {
+      setPreview("无法预览");
+    }
   };
 
   return (
@@ -115,7 +163,12 @@ export function InspectorRail({
             ["details", "详情"],
           ] as const
         ).map(([id, label]) => (
-          <button key={id} type="button" className={`rail-tab ${tab === id ? "active" : ""}`} onClick={() => onTab(id)}>
+          <button
+            key={id}
+            type="button"
+            className={`rail-tab ${tab === id ? "active" : ""}`}
+            onClick={() => onTab(id)}
+          >
             {label}
           </button>
         ))}
@@ -124,47 +177,34 @@ export function InspectorRail({
         {tab === "files" && (
           <div className="rail-section">
             <h3>工作区</h3>
-            <div className="muted" style={{ marginBottom: 8 }}>
+            <div className="muted" style={{ marginBottom: 10, fontSize: 11.5 }}>
               {workspace?.path || "未选择"}
             </div>
-            <div className="list-card">{tree ? renderTree(tree) : <div className="muted">加载中…</div>}</div>
-            {diff && (
+            {tree ? <FileTree node={tree} onFile={(rel) => void openPreview(rel)} /> : <div className="empty-sm">加载中…</div>}
+            {preview && (
               <div className="rail-section">
-                <h3>Diff · {diffPath}</h3>
-                <div className="mono-block">{diff.slice(0, 12000) || "（无差异）"}</div>
+                <h3>预览 · {diffPath}</h3>
+                <div className="mono-block">{preview.slice(0, 12000)}</div>
               </div>
             )}
           </div>
         )}
+
         {tab === "changes" && (
           <div className="rail-section">
             <h3>改动</h3>
             {!changes || changes.entries.length === 0 ? (
-              <div className="muted">工作区无改动。</div>
+              <div className="empty-sm">工作区无改动</div>
             ) : (
               changes.entries.map((entry) => (
                 <div className="list-card" key={entry.relative}>
                   <div className="title">{entry.relative}</div>
                   <div className="meta">
-                    {entry.status} · 归属 {entry.agent_owned ? "Agent" : "未确认"} · {entry.evidence || "无证据"}
+                    {entry.status} · 归属 {entry.agent_owned ? "Agent" : "未确认"} ·{" "}
+                    {entry.evidence || "无证据"}
                   </div>
-                  <div className="btn-row" style={{ marginTop: 8 }}>
-                    <button
-                      type="button"
-                      className="btn-sm"
-                      onClick={() => {
-                        if (!workspace?.path) {
-                          return;
-                        }
-                        void desktop
-                          .diffFile(workspace.path, entry.relative)
-                          .then((text) => {
-                            setDiff(text);
-                            setDiffPath(entry.relative);
-                          })
-                          .catch(() => undefined);
-                      }}
-                    >
+                  <div className="btn-row" style={{ marginTop: 10 }}>
+                    <button type="button" className="btn-sm" onClick={() => void openDiff(entry.relative)}>
                       Diff
                     </button>
                   </div>
@@ -174,16 +214,17 @@ export function InspectorRail({
             {diff && (
               <div className="rail-section">
                 <h3>Diff · {diffPath}</h3>
-                <div className="mono-block">{diff.slice(0, 12000)}</div>
+                <DiffView text={diff} />
               </div>
             )}
           </div>
         )}
+
         {tab === "queue" && (
           <div className="rail-section">
             <h3>后续队列</h3>
             {queue.length === 0 ? (
-              <div className="muted">队列为空。可在 composer 提交任务后入队。</div>
+              <div className="empty-sm">队列为空 · 在输入框 ⌘/Ctrl+Enter 入队</div>
             ) : (
               queue.map((item) => (
                 <div className="list-card" key={item.input_id}>
@@ -197,32 +238,62 @@ export function InspectorRail({
             )}
           </div>
         )}
+
         {tab === "details" && (
           <div className="rail-section">
             <h3>运行状态</h3>
             <div className="list-card">
-              <div className="meta">{statusLabel}</div>
+              <div className="title" style={{ fontSize: 13 }}>
+                {statusLabel}
+              </div>
+              <div className="meta">{runId ? `run ${runId}` : "未选择运行"}</div>
             </div>
+
             <h3>完成证据</h3>
             {evidence ? (
               <div className="list-card">
                 <div className="title">
                   {evidence.state} · {evidence.outcome}
-                  {evidence.trusted ? " · 可信" : " · 非可信"}
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      color: evidence.trusted ? "var(--c-success)" : "var(--c-warning)",
+                      fontWeight: 700,
+                      fontSize: 11,
+                    }}
+                  >
+                    {evidence.trusted ? "可信" : "非可信"}
+                  </span>
                 </div>
-                <div className="meta">
+                <div className="meta" style={{ marginBottom: 8 }}>
                   验证 OK：{evidence.verification.verification_ok ? "是" : "否"}
                   {evidence.failure_class ? ` · ${evidence.failure_class}` : ""}
                 </div>
-                <div className="meta">
-                  turns {evidence.metrics.turns} · tools {evidence.metrics.tool_calls} · in{" "}
-                  {evidence.metrics.input_tokens || "—"} · out {evidence.metrics.output_tokens || "—"}
-                  {evidence.metrics.usage_estimated ? "（估算）" : ""}
+                <div className="meta">用量（未知显示为 —）</div>
+                <div
+                  className="meta"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 6,
+                    marginTop: 6,
+                  }}
+                >
+                  <span>turns {evidence.metrics.turns || "—"}</span>
+                  <span>tools {evidence.metrics.tool_calls || "—"}</span>
+                  <span>in {evidence.metrics.input_tokens || "—"}</span>
+                  <span>out {evidence.metrics.output_tokens || "—"}</span>
                 </div>
+                {evidence.metrics.usage_estimated && (
+                  <div className="meta" style={{ marginTop: 4 }}>
+                    * token 为估算
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="muted">选择运行后显示。</div>
+              <div className="empty-sm">选择运行后显示</div>
             )}
+
             <h3>恢复</h3>
             <div className="btn-row">
               <button
@@ -231,9 +302,7 @@ export function InspectorRail({
                 disabled={!runId}
                 data-testid="abort-run"
                 onClick={() => {
-                  if (!runId || !workspace?.path) {
-                    return;
-                  }
+                  if (!runId || !workspace?.path) return;
                   void desktop
                     .abortRun({ workspace: workspace.path, run_id: runId, reason: "user abort" })
                     .then(() => {
@@ -252,6 +321,7 @@ export function InspectorRail({
                 Abort 收尾
               </button>
             </div>
+
             <h3>对账</h3>
             <ResolveForm
               workspacePath={workspace?.path || ""}
@@ -287,7 +357,7 @@ function ResolveForm({
   const [busy, setBusy] = useState(false);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <input
         className="input-sm"
         placeholder="operation_id"
@@ -313,9 +383,7 @@ function ResolveForm({
         disabled={!runId || !operationId.trim() || busy}
         data-testid="resolve-submit"
         onClick={() => {
-          if (!runId || !workspacePath) {
-            return;
-          }
+          if (!runId || !workspacePath) return;
           setBusy(true);
           void desktop
             .resolveReconcile({
