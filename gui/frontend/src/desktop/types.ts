@@ -116,6 +116,8 @@ export interface CancelRequest {
 export interface WorkspaceRequest {
   workspace: string;
   state_dir?: string;
+  query?: string;
+  include_archived?: boolean;
 }
 
 export interface InspectRequest {

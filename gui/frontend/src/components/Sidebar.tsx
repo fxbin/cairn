@@ -1,4 +1,6 @@
-import type { RecentProject, RunHistoryView, WorkspaceStatus } from "../desktop/types";
+import { useState } from "react";
+import { desktop } from "../desktop/client";
+import type { ErrorBody, RecentProject, RunHistoryView, WorkspaceStatus } from "../desktop/types";
 
 /** 项目/会话侧栏：最近项目、工作区状态与运行列表。 */
 export function Sidebar({
@@ -11,6 +13,7 @@ export function Sidebar({
   onWorkspaceChange,
   onSelectRun,
   onRefresh,
+  onError,
 }: {
   workspace: WorkspaceStatus | null;
   recent: RecentProject[];
@@ -21,15 +24,58 @@ export function Sidebar({
   onWorkspaceChange: (path: string) => void;
   onSelectRun: (runId: string) => void;
   onRefresh: () => void;
+  onError?: (error: ErrorBody) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [picking, setPicking] = useState(false);
+
+  const pickDirectory = async () => {
+    setPicking(true);
+    try {
+      const path = await desktop.pickDirectory("选择工作区", workspacePath);
+      if (path) {
+        onWorkspaceChange(path);
+      }
+    } catch (error) {
+      onError?.(
+        error && typeof error === "object" && "body" in error
+          ? (error as { body: ErrorBody }).body
+          : { code: "internal", message: String(error) },
+      );
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const filteredRuns = runs.filter((run) => {
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      return true;
+    }
+    return `${run.title}\n${run.task}\n${run.run_id}\n${run.session_id || ""}`
+      .toLowerCase()
+      .includes(q);
+  });
+
   return (
     <aside className="flex w-72 shrink-0 flex-col gap-3 border-r border-[var(--c-border)] bg-[var(--c-bg-elevated)] p-3">
       <div>
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold">项目</h2>
-          <button type="button" className="btn" onClick={onRefresh} disabled={loading || !workspacePath}>
-            刷新
-          </button>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void pickDirectory()}
+              disabled={picking}
+              data-testid="pick-workspace"
+            >
+              选择目录
+            </button>
+            <button type="button" className="btn" onClick={onRefresh} disabled={loading || !workspacePath}>
+              刷新
+            </button>
+          </div>
         </div>
         <label className="muted mb-1 block text-xs" htmlFor="workspace-path">
           工作区路径
@@ -79,16 +125,26 @@ export function Sidebar({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <h3 className="muted mb-2 text-xs font-semibold uppercase tracking-wide">会话 / 运行</h3>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="muted text-xs font-semibold uppercase tracking-wide">会话 / 运行</h3>
+        </div>
+        <input
+          className="input mb-2"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="搜索会话"
+          aria-label="搜索会话"
+          data-testid="session-search"
+        />
         <div className="scroll-y min-h-0 flex-1 space-y-1" data-testid="run-list">
           {loading && <div className="muted text-xs">加载中…</div>}
-          {!loading && runs.length === 0 && (
+          {!loading && filteredRuns.length === 0 && (
             <div className="muted text-xs" data-testid="empty-runs">
-              暂无运行历史。在右侧输入任务以开始。
+              {query ? "没有匹配的会话。" : "暂无运行历史。在右侧输入任务以开始。"}
             </div>
           )}
           {!loading &&
-            runs.map((run) => (
+            filteredRuns.map((run) => (
               <button
                 key={run.run_id}
                 type="button"

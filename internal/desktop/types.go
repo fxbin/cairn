@@ -149,6 +149,10 @@ type CancelRequest struct {
 type WorkspaceRequest struct {
 	Workspace string `json:"workspace"`
 	StateDir  string `json:"state_dir,omitempty"`
+	// Query 可选：按标题/任务/run 标识过滤历史列表。
+	Query string `json:"query,omitempty"`
+	// IncludeArchived 是否包含已归档会话展示项。
+	IncludeArchived bool `json:"include_archived,omitempty"`
 }
 
 // InspectRequest 查询运行投影。

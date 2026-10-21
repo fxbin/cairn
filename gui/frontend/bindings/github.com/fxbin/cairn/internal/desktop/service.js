@@ -156,6 +156,16 @@ export function ObserveWorkspace(workspace) {
 }
 
 /**
+ * PickDirectory 打开原生目录选择对话框。
+ * @param {string} title
+ * @param {string} defaultPath
+ * @returns {$CancellablePromise<string>}
+ */
+export function PickDirectory(title, defaultPath) {
+    return $Call.ByID(3991434703, title, defaultPath);
+}
+
+/**
  * RememberProject 记录最近项目。
  * @param {string} workspace
  * @returns {$CancellablePromise<$models.OKResult>}

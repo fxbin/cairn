@@ -61,6 +61,8 @@ export const desktop = {
   health: (): Promise<HealthResult> => call(() => DesktopAPI.Health()),
   observeWorkspace: (workspace: string): Promise<WorkspaceStatus> =>
     call(() => DesktopAPI.ObserveWorkspace(workspace)),
+  pickDirectory: (title: string, defaultPath = ""): Promise<string> =>
+    call(() => DesktopAPI.PickDirectory(title, defaultPath)),
   listRecentProjects: (includeArchived = false): Promise<RecentProject[]> =>
     call(() => DesktopAPI.ListRecentProjects(includeArchived)),
   rememberProject: (workspace: string): Promise<OKResult> =>

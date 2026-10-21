@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -12,13 +13,17 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
+// DirectoryPicker 由桌面入口注入原生目录选择对话框；desktop 包不依赖 Wails。
+type DirectoryPicker func(title, defaultPath string) (string, error)
+
 // API 是绑定到 Wails 的桌面服务：全部入参校验，只读与运行动作均经 app.Service。
 // 前端通过统一 bindings 调用，不直接访问 Journal 或宿主 shell。
-// 注意：事件出口由桌面入口注入，不导出为前端可调用方法。
+// 注意：事件出口与目录对话框由桌面入口注入，不导出为前端可调用方法。
 type API struct {
 	service    app.Service
 	controller *RunController
 	prefs      *PrefsStore
+	picker     DirectoryPicker
 }
 
 // NewAPI 组装桌面服务；prefs 为 nil 时偏好读写返回错误。
@@ -33,6 +38,26 @@ func NewAPI(service app.Service, prefs *PrefsStore, emit Emitter) *API {
 // AttachEmitter 由桌面入口在窗口重建后更新事件出口；不导出到前端 bindings。
 func (api *API) AttachEmitter(emit Emitter) {
 	api.controller.SetEmitter(emit)
+}
+
+// AttachDirectoryPicker 注入原生目录选择器；不导出到前端 bindings。
+func (api *API) AttachDirectoryPicker(picker DirectoryPicker) {
+	api.picker = picker
+}
+
+// PickDirectory 打开原生目录选择并返回绝对路径；未注入对话框时失败关闭。
+func (api *API) PickDirectory(_ context.Context, title, defaultPath string) (string, error) {
+	if api.picker == nil {
+		return "", errInvalid("directory picker is unavailable in this runtime")
+	}
+	path, err := api.picker(title, defaultPath)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", errInvalid("no directory selected")
+	}
+	return filepath.Abs(path)
 }
 
 // Health 返回桥接可用性与只读环境摘要。
@@ -122,11 +147,20 @@ func (api *API) ListRuns(_ context.Context, request WorkspaceRequest) ([]RunHist
 		}
 	}
 	out := make([]RunHistoryView, 0, len(items))
+	query := strings.TrimSpace(strings.ToLower(request.Query))
 	for _, item := range items {
+		meta, hasMeta := metaByID[item.SessionID]
+		if hasMeta && meta.Archived && !request.IncludeArchived {
+			continue
+		}
 		view := RunHistoryView{RunHistoryItem: item, Title: firstLine(item.Task)}
-		if meta, ok := metaByID[item.SessionID]; ok {
-			if meta.Title != "" {
-				view.Title = meta.Title
+		if hasMeta && meta.Title != "" {
+			view.Title = meta.Title
+		}
+		if query != "" {
+			haystack := strings.ToLower(view.Title + "\n" + item.Task + "\n" + string(item.ID) + "\n" + item.SessionID)
+			if !strings.Contains(haystack, query) {
+				continue
 			}
 		}
 		out = append(out, view)

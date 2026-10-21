@@ -47,6 +47,21 @@ func main() {
 		wailsApp.Event.Emit(runEventName, event)
 	})
 
+	// 原生目录选择：仅返回用户选中的目录，不授予任意文件读写。
+	api.AttachDirectoryPicker(func(title, defaultPath string) (string, error) {
+		picker := wailsApp.Dialog.OpenFile().
+			CanChooseFiles(false).
+			CanChooseDirectories(true).
+			CanCreateDirectories(true)
+		if title != "" {
+			picker = picker.SetTitle(title)
+		}
+		if defaultPath != "" {
+			picker = picker.SetDirectory(defaultPath)
+		}
+		return picker.PromptForSingleSelection()
+	})
+
 	window := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Cairn",
 		Width:     1280,

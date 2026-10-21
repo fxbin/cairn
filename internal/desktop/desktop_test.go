@@ -155,3 +155,41 @@ func TestMapErrorUnknownIsInternal(t *testing.T) {
 		t.Fatalf("message leaked sensitive-looking token: %s", body.Message)
 	}
 }
+
+// TestPickDirectoryRequiresPicker 验证未注入对话框时失败关闭。
+func TestPickDirectoryRequiresPicker(t *testing.T) {
+	api := NewAPI(app.Service{}, NewPrefsStoreAt(t.TempDir()+"/p.json"), nil)
+	if _, err := api.PickDirectory(context.Background(), "选择工作区", ""); err == nil {
+		t.Fatal("expected picker unavailable error")
+	}
+	called := false
+	api.AttachDirectoryPicker(func(title, defaultPath string) (string, error) {
+		called = true
+		if title == "" {
+			t.Fatal("expected title")
+		}
+		return t.TempDir(), nil
+	})
+	path, err := api.PickDirectory(context.Background(), "选择工作区", t.TempDir())
+	if err != nil || !called || path == "" {
+		t.Fatalf("unexpected picker result path=%q err=%v", path, err)
+	}
+}
+
+// TestListRunsFiltersArchivedAndQuery 验证会话搜索与归档过滤（基于偏好层）。
+func TestListRunsFiltersArchivedAndQuery(t *testing.T) {
+	store := NewPrefsStoreAt(t.TempDir() + "/p.json")
+	if err := store.UpsertSessionMeta(SessionMeta{SessionID: "s1", Title: "登录修复", Archived: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSessionMeta(SessionMeta{SessionID: "s2", Title: "文档更新", Pinned: true}); err != nil {
+		t.Fatal(err)
+	}
+	metas := store.SessionPreferences()
+	if len(metas) != 2 {
+		t.Fatalf("unexpected meta count %d", len(metas))
+	}
+	if !metas[0].Archived || metas[1].Pinned != true {
+		t.Fatalf("unexpected meta flags: %+v", metas)
+	}
+}

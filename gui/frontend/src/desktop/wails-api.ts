@@ -24,6 +24,7 @@ import type {
 interface DesktopBindings {
   Health(): Promise<HealthResult>;
   ObserveWorkspace(workspace: string): Promise<WorkspaceStatus>;
+  PickDirectory(title: string, defaultPath: string): Promise<string>;
   ListRecentProjects(includeArchived: boolean): Promise<RecentProject[]>;
   RememberProject(workspace: string): Promise<OKResult>;
   ArchiveProject(workspace: string, archived: boolean): Promise<OKResult>;

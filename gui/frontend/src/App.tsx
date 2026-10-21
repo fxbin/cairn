@@ -181,6 +181,7 @@ export default function App() {
             dispatch({ type: "resetStream" });
           }}
           onRefresh={() => void refreshAll(workspacePath)}
+          onError={(error) => dispatch({ type: "error", error })}
         />
         <main className="flex min-w-0 flex-1 flex-col gap-3 p-3">
           <TaskWorkspace

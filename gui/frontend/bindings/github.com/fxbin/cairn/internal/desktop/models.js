@@ -949,6 +949,22 @@ export class WorkspaceRequest {
              */
             this["state_dir"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * Query 可选：按标题/任务/run 标识过滤历史列表。
+             * @member
+             * @type {string | undefined}
+             */
+            this["query"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * IncludeArchived 是否包含已归档会话展示项。
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["include_archived"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

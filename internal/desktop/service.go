@@ -28,6 +28,11 @@ func (service *Service) ObserveWorkspace(ctx context.Context, workspace string) 
 	return service.api.ObserveWorkspace(ctx, workspace)
 }
 
+// PickDirectory 打开原生目录选择对话框。
+func (service *Service) PickDirectory(ctx context.Context, title, defaultPath string) (string, error) {
+	return service.api.PickDirectory(ctx, title, defaultPath)
+}
+
 // ListRecentProjects 列出最近项目。
 func (service *Service) ListRecentProjects(ctx context.Context, includeArchived bool) ([]RecentProject, error) {
 	return service.api.ListRecentProjects(ctx, includeArchived)
