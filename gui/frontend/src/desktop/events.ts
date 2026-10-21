@@ -1,44 +1,44 @@
 /**
- * 运行流事件订阅。桌面用 Wails Events，浏览器验收用 bridge 回调。
+ * 运行流事件订阅。
+ * 桌面使用 @wailsio/runtime 的模块化 Events API；演示桥使用显式订阅钩子。
  */
+import { Events as WailsEvents } from "@wailsio/runtime";
 import type { StreamEvent } from "./types";
+import { detectDemoBridge, detectWailsRuntime } from "./wails-api";
 
 export const STREAM_EVENT_NAME = "cairn:stream";
 
 type Handler = (event: StreamEvent) => void;
 
-export function subscribeStream(handler: Handler): () => void {
-  const win = window as unknown as {
-    runtime?: { Events?: { On: (name: string, cb: (payload: unknown) => void) => void; Off: (name: string, cb: (payload: unknown) => void) => unknown } };
-    __CAIRN_SUBSCRIBE__?: (fn: Handler) => void;
-  };
+interface DemoSubscribeWindow {
+  __CAIRN_SUBSCRIBE__?: (fn: Handler) => () => void | void;
+}
 
-  if (win.runtime?.Events) {
-    const wrapped = (payload: unknown) => {
-      const event = extractStreamEvent(payload);
+/**
+ * subscribeStream 订阅运行流事件，返回可重复调用的取消订阅函数。
+ * 桌面路径使用 Wails Events.On 的清理句柄；无后端时失败关闭。
+ */
+export function subscribeStream(handler: Handler): () => void {
+  if (detectWailsRuntime()) {
+    return WailsEvents.On(STREAM_EVENT_NAME, (ev: { data?: unknown }) => {
+      const event = extractStreamEvent(ev);
       if (event) {
         handler(event);
       }
-    };
-    win.runtime.Events.On(STREAM_EVENT_NAME, wrapped);
-    return () => {
-      void win.runtime!.Events!.Off(STREAM_EVENT_NAME, wrapped);
-    };
+    });
   }
 
-  if (win.__CAIRN_SUBSCRIBE__) {
-    win.__CAIRN_SUBSCRIBE__(handler);
+  const win = window as unknown as DemoSubscribeWindow;
+  if (detectDemoBridge() && typeof win.__CAIRN_SUBSCRIBE__ === "function") {
+    const result = win.__CAIRN_SUBSCRIBE__(handler);
+    if (typeof result === "function") {
+      return result;
+    }
     return () => undefined;
   }
 
-  // 延迟：bridge 可能稍后注入
-  const timer = window.setInterval(() => {
-    if (win.__CAIRN_SUBSCRIBE__) {
-      win.__CAIRN_SUBSCRIBE__(handler);
-      window.clearInterval(timer);
-    }
-  }, 50);
-  return () => window.clearInterval(timer);
+  // 无 Wails 且无演示桥：不自动注入假事件源。
+  throw new Error("event stream unavailable: requires Wails runtime or an explicit demo bridge");
 }
 
 function extractStreamEvent(payload: unknown): StreamEvent | null {

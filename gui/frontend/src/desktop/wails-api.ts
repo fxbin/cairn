@@ -1,6 +1,6 @@
 /**
  * 对 Wails 生成 bindings 的薄封装。
- * 桌面 WebView 使用真实 bindings；浏览器验收使用 window.__CAIRN_BRIDGE__。
+ * 桌面 WebView 只使用真实 bindings；模拟桥仅允许显式演示/测试入口启用。
  */
 // @ts-ignore 生成的 JS bindings 无独立声明文件
 import * as RawAPI from "../../bindings/github.com/fxbin/cairn/internal/desktop/service.js";
@@ -28,7 +28,7 @@ import type {
   WorkspaceRequest,
   WorkspaceStatus,
 } from "./types";
-import { bindBrowserBridge } from "./browserBridge";
+import { bindBrowserBridge, isDemoBridgeActive } from "./browserBridge";
 
 interface DesktopBindings {
   Health(): Promise<HealthResult>;
@@ -63,31 +63,122 @@ interface DesktopBindings {
   OpenPathInEditor(path: string): Promise<OKResult>;
 }
 
-function inWailsRuntime(): boolean {
-  return typeof window !== "undefined" && Boolean((window as unknown as { runtime?: unknown }).runtime);
+/** 后端连接模式：真实 Wails、显式演示桥、或不可用。 */
+export type BridgeMode = "wails" | "demo" | "unavailable";
+
+interface WailsGlobals {
+  _wails?: { dispatchWailsEvent?: unknown };
+  wails?: { invokeAsync?: unknown };
+  __CAIRN_HOST__?: "wails" | string;
+  __CAIRN_BRIDGE__?: DesktopBindings;
+  __CAIRN_FORCE_DEMO__?: boolean;
 }
 
-function bridge(): DesktopBindings {
-  const existing = (window as unknown as { __CAIRN_BRIDGE__?: DesktopBindings }).__CAIRN_BRIDGE__;
-  if (existing) {
-    return existing;
+function hostWindow(): (Window & typeof globalThis & WailsGlobals) | null {
+  return typeof window === "undefined" ? null : (window as Window & typeof globalThis & WailsGlobals);
+}
+
+/**
+ * detectWailsRuntime 判断是否运行在真实 Wails WebView。
+ * 不能仅凭 window._wails：@wailsio/runtime 在纯浏览器也会写入该对象。
+ * 采用宿主注入标记 __CAIRN_HOST__ 或原生 invokeAsync 桥作为真实信号。
+ */
+export function detectWailsRuntime(): boolean {
+  const win = hostWindow();
+  if (!win) {
+    return false;
   }
-  return bindBrowserBridge() as unknown as DesktopBindings;
+  if (win.__CAIRN_HOST__ === "wails") {
+    return true;
+  }
+  return typeof win.wails?.invokeAsync === "function";
+}
+
+/**
+ * detectDemoBridge 判断是否显式启用了演示/测试桥。
+ * 仅接受预注入的 __CAIRN_BRIDGE__/__CAIRN_FORCE_DEMO__，
+ * 或 URL 查询参数 cairn-demo=1。生产桌面包不得静默落到模拟后端。
+ */
+export function detectDemoBridge(): boolean {
+  const win = hostWindow();
+  if (!win) {
+    return false;
+  }
+  if (win.__CAIRN_BRIDGE__ || win.__CAIRN_FORCE_DEMO__) {
+    return true;
+  }
+  try {
+    const params = new URLSearchParams(win.location?.search || "");
+    return params.get("cairn-demo") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** bridgeMode 返回当前后端连接模式，供 UI 标识演示身份。 */
+export function bridgeMode(): BridgeMode {
+  if (detectWailsRuntime()) {
+    return "wails";
+  }
+  if (detectDemoBridge()) {
+    return "demo";
+  }
+  return "unavailable";
+}
+
+/** BridgeUnavailableError 表示缺少真实桌面后端且未显式启用演示桥。 */
+export class BridgeUnavailableError extends Error {
+  readonly code = "bridge_unavailable";
+  constructor(method: string) {
+    super(`desktop bridge unavailable: ${method} requires Wails runtime or an explicit demo bridge (?cairn-demo=1)`);
+    this.name = "BridgeUnavailableError";
+  }
+}
+
+function failClosed(method: string): Promise<never> {
+  return Promise.reject(new BridgeUnavailableError(method));
+}
+
+let cachedDemo: DesktopBindings | null = null;
+
+function resolveBindings(): DesktopBindings {
+  const raw = RawAPI as unknown as Record<string, unknown>;
+  const hasRaw = typeof raw.Health === "function";
+  if (detectWailsRuntime() && hasRaw) {
+    return raw as unknown as DesktopBindings;
+  }
+  if (detectDemoBridge()) {
+    if (!cachedDemo) {
+      const win = hostWindow();
+      if (win?.__CAIRN_BRIDGE__) {
+        cachedDemo = win.__CAIRN_BRIDGE__;
+      } else {
+        cachedDemo = bindBrowserBridge() as unknown as DesktopBindings;
+      }
+    }
+    return cachedDemo;
+  }
+  return new Proxy({} as DesktopBindings, {
+    get(_target, prop: string) {
+      return () => failClosed(String(prop));
+    },
+  });
 }
 
 const impl: DesktopBindings = new Proxy({} as DesktopBindings, {
   get(_target, prop: string) {
-    const fallback = bridge() as unknown as Record<string, unknown>;
-    const raw = (RawAPI as unknown as Record<string, unknown>)[prop];
-    if (inWailsRuntime() && typeof raw === "function") {
-      return raw.bind(RawAPI);
-    }
-    const fn = fallback[prop];
+    const bindings = resolveBindings() as unknown as Record<string, unknown>;
+    const fn = bindings[prop];
     if (typeof fn === "function") {
-      return fn.bind(fallback);
+      return fn.bind(bindings);
     }
-    return raw;
+    return () => failClosed(String(prop));
   },
 });
 
 export const Bindings = impl;
+
+/** demoBridgeActive 供 UI 显示演示身份条。 */
+export function demoBridgeActive(): boolean {
+  return bridgeMode() === "demo" || isDemoBridgeActive();
+}

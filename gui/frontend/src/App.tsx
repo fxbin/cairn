@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { desktop, DesktopError } from "./desktop/client";
+import { bridgeMode, demoBridgeActive } from "./desktop/wails-api";
 import { buildChatBlocks, type ChatBlock } from "./desktop/chatBlocks";
 import type {
   ErrorBody,
@@ -486,6 +487,22 @@ export default function App() {
       />
 
       <main className="main-column">
+        {demoBridgeActive() && (
+          <div className="error-banner" role="status" data-testid="demo-banner" data-mode="demo">
+            <span>
+              演示后端：当前显示模拟会话与固定用量，不代表真实 Journal 运行。
+              <span className="muted"> · bridge=demo</span>
+            </span>
+          </div>
+        )}
+        {!demoBridgeActive() && bridgeMode() === "unavailable" && (
+          <div className="error-banner" role="alert" data-testid="bridge-unavailable-banner">
+            <span>
+              桌面后端不可用：需要 Wails 运行时或显式演示入口（?cairn-demo=1）。
+              <span className="muted"> · bridge=unavailable</span>
+            </span>
+          </div>
+        )}
         {state.error && (
           <div className="error-banner" role="alert" data-testid="error-banner">
             <span>

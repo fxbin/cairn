@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/desktop"
@@ -76,7 +77,11 @@ func main() {
 		BackgroundColour: application.NewRGB(15, 17, 21),
 		URL:              "/",
 	})
-	_ = window
+
+	// 注入宿主标记，供前端区分真实 Wails 与演示桥；不授予额外权限。
+	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+		window.ExecJS(`window.__CAIRN_HOST__ = "wails";`)
+	})
 
 	if err := wailsApp.Run(); err != nil {
 		log.Println("cairn gui failed:", err)

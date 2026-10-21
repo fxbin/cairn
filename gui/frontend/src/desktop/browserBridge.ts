@@ -398,15 +398,26 @@ export function createBrowserBridge() {
   };
 }
 
+/** isDemoBridgeActive 表示模拟桥是否已被显式安装。 */
+export function isDemoBridgeActive(): boolean {
+  return typeof window !== "undefined" && Boolean((window as unknown as { __CAIRN_BRIDGE__?: unknown }).__CAIRN_BRIDGE__);
+}
+
 export function bindBrowserBridge() {
   const bridge = createBrowserBridge();
   const hook = (window as unknown as { __CAIRN_BRIDGE_HOOK__?: (b: unknown) => void }).__CAIRN_BRIDGE_HOOK__;
   if (hook) hook(bridge);
   (window as unknown as { __CAIRN_BRIDGE__?: unknown }).__CAIRN_BRIDGE__ = bridge;
-  (window as unknown as { __CAIRN_SUBSCRIBE__?: (fn: (e: StreamEvent) => void) => void }).__CAIRN_SUBSCRIBE__ = (
+  (window as unknown as { __CAIRN_SUBSCRIBE__?: (fn: (e: StreamEvent) => void) => () => void }).__CAIRN_SUBSCRIBE__ = (
     fn: (e: StreamEvent) => void,
   ) => {
     handlers.push(fn);
+    return () => {
+      const idx = handlers.indexOf(fn);
+      if (idx >= 0) {
+        handlers.splice(idx, 1);
+      }
+    };
   };
   return bridge;
 }
