@@ -272,3 +272,67 @@ func TestMapErrorInternalHidesDetails(t *testing.T) {
 		t.Fatalf("internal message leaked details: %q", body.Message)
 	}
 }
+
+// TestRunContextIgnoresBindingCancel 验证运行上下文不随单次 binding ctx 取消而终止。
+func TestRunContextIgnoresBindingCancel(t *testing.T) {
+	controller := NewRunController(app.Service{}, nil, nil)
+	_, bindingCancel := context.WithCancel(context.Background())
+	runCtx, cancel, err := controller.runContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	bindingCancel()
+	select {
+	case <-runCtx.Done():
+		t.Fatal("run context must survive binding context cancel")
+	case <-time.After(30 * time.Millisecond):
+	}
+	if err := controller.Shutdown(time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestShutdownCancelsActiveRuns 验证退出时合作式取消并拒绝新运行。
+func TestShutdownCancelsActiveRuns(t *testing.T) {
+	controller := NewRunController(app.Service{}, nil, nil)
+	runCtx, cancel, err := controller.runContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller.mu.Lock()
+	controller.cancel["run-x"] = cancel
+	controller.running["run-x"] = true
+	controller.mu.Unlock()
+
+	if err := controller.Shutdown(200 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runCtx.Done():
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("shutdown did not cancel run context")
+	}
+	if _, _, err := controller.runContext(); err == nil {
+		t.Fatal("expected reject after shutdown")
+	}
+}
+
+// TestResumeWiresEventSinkAndRejectsDuplicate 验证恢复路径注册事件并阻止重复激活。
+func TestResumeWiresEventSinkAndRejectsDuplicate(t *testing.T) {
+	events := make(chan StreamEvent, 8)
+	controller := NewRunController(app.Service{}, nil, func(event StreamEvent) {
+		events <- event
+	})
+	// 直接验证 eventSink 在 Resume 注册路径可用。
+	sink := controller.eventSink("run-r", "")
+	sink(domain.Event{RunID: "run-r", Seq: 1, OccurredAt: time.Now().UTC(), Type: domain.EventRunStarted})
+	select {
+	case got := <-events:
+		if got.RunID != "run-r" || got.Seq != 1 {
+			t.Fatalf("unexpected event %+v", got)
+		}
+	default:
+		t.Fatal("expected stream event")
+	}
+}

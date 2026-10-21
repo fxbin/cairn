@@ -173,28 +173,83 @@ func (store *PrefsStore) UpsertSessionMeta(meta SessionMeta) error {
 	return store.save()
 }
 
+// defaultShutdownTimeout 是退出时等待运行收尾的上限。
+const defaultShutdownTimeout = 8 * time.Second
+
 // RunController 管理异步运行与事件推送。
+// 运行上下文绑定应用生命周期，而不是单次 binding 调用寿命；
+// 用户取消与退出收尾仍走显式 cancel/Shutdown，不丢失 Journal 合同。
 type RunController struct {
-	mu      sync.Mutex
-	service app.Service
-	emit    Emitter
-	prefs   *PrefsStore
-	cancel  map[string]context.CancelFunc
-	session map[string]string
-	lastSeq map[string]uint64
-	running map[string]bool
+	mu       sync.Mutex
+	service  app.Service
+	emit     Emitter
+	prefs    *PrefsStore
+	cancel   map[string]context.CancelFunc
+	session  map[string]string
+	lastSeq  map[string]uint64
+	running  map[string]bool
+	baseCtx  context.Context
+	baseStop context.CancelFunc
+	wg       sync.WaitGroup
+	closing  bool
 }
 
 // NewRunController 创建控制器；emit 可为 nil。
+// 控制器自带应用级上下文，后台运行不再绑定 binding ctx。
 func NewRunController(service app.Service, prefs *PrefsStore, emit Emitter) *RunController {
+	baseCtx, baseStop := context.WithCancel(context.Background())
 	return &RunController{
-		service: service,
-		emit:    emit,
-		prefs:   prefs,
-		cancel:  map[string]context.CancelFunc{},
-		session: map[string]string{},
-		lastSeq: map[string]uint64{},
-		running: map[string]bool{},
+		service:  service,
+		emit:     emit,
+		prefs:    prefs,
+		cancel:   map[string]context.CancelFunc{},
+		session:  map[string]string{},
+		lastSeq:  map[string]uint64{},
+		running:  map[string]bool{},
+		baseCtx:  baseCtx,
+		baseStop: baseStop,
+	}
+}
+
+// runContext 返回绑定应用生命周期的运行上下文。
+// 不传入 binding ctx，避免 Wails 在方法返回时取消后台任务。
+func (controller *RunController) runContext() (context.Context, context.CancelFunc, error) {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if controller.closing {
+		return nil, nil, errInvalid("desktop controller is shutting down")
+	}
+	ctx, cancel := context.WithCancel(controller.baseCtx)
+	return ctx, cancel, nil
+}
+
+// Shutdown 有界停止全部运行：先合作式取消，再等待退出或超时。
+func (controller *RunController) Shutdown(timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultShutdownTimeout
+	}
+	controller.mu.Lock()
+	controller.closing = true
+	cancels := make([]context.CancelFunc, 0, len(controller.cancel))
+	for _, cancel := range controller.cancel {
+		cancels = append(cancels, cancel)
+	}
+	controller.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	controller.baseStop()
+
+	done := make(chan struct{})
+	go func() {
+		controller.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return errInvalid("shutdown timed out waiting for runs")
 	}
 }
 
@@ -269,11 +324,18 @@ func (controller *RunController) StartRun(ctx context.Context, request StartRunR
 	if request.PrevRunID != "" {
 		options.PrevRunID = domain.RunID(request.PrevRunID)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel, err := controller.runContext()
+	if err != nil {
+		return StartRunAck{}, err
+	}
 	if controller.prefs != nil {
-		_ = controller.prefs.TouchProject(workspace)
+		if touchErr := controller.prefs.TouchProject(workspace); touchErr != nil {
+			cancel()
+			return StartRunAck{}, touchErr
+		}
 	}
 	ack := StartRunAck{SessionID: request.SessionID, State: "starting"}
+	controller.wg.Add(1)
 	go controller.execute(runCtx, cancel, options, request.SessionID)
 	return ack, nil
 }
@@ -298,7 +360,10 @@ func (controller *RunController) ResumeRun(ctx context.Context, request ResumeRe
 		Config:    configuration,
 		Approval:  portsApproval(request),
 	}
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel, err := controller.runContext()
+	if err != nil {
+		return StartRunAck{}, err
+	}
 	controller.mu.Lock()
 	if controller.running[request.RunID] {
 		controller.mu.Unlock()
@@ -309,7 +374,9 @@ func (controller *RunController) ResumeRun(ctx context.Context, request ResumeRe
 	controller.running[request.RunID] = true
 	controller.mu.Unlock()
 
+	controller.wg.Add(1)
 	go func() {
+		defer controller.wg.Done()
 		defer func() {
 			controller.mu.Lock()
 			delete(controller.cancel, request.RunID)
@@ -317,6 +384,8 @@ func (controller *RunController) ResumeRun(ctx context.Context, request ResumeRe
 			controller.mu.Unlock()
 			cancel()
 		}()
+		// Resume 路径必须持续推送工具/审批事件，与 Start 共用 eventSink。
+		options.OnEvent = controller.eventSink(request.RunID, "")
 		outcome, runErr := controller.service.Resume(runCtx, options)
 		controller.finish(request.RunID, outcome, runErr)
 	}()
@@ -383,6 +452,7 @@ func (controller *RunController) ResolveReconcile(ctx context.Context, request R
 }
 
 func (controller *RunController) execute(ctx context.Context, cancel context.CancelFunc, options app.RunOptions, sessionHint string) {
+	defer controller.wg.Done()
 	var registerMu sync.Mutex
 	registered := false
 	cleanup := func(runID string) {

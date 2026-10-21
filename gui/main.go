@@ -8,6 +8,7 @@ import (
 	"embed"
 	"log"
 	"os"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -81,6 +82,13 @@ func main() {
 	// 注入宿主标记，供前端区分真实 Wails 与演示桥；不授予额外权限。
 	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		window.ExecJS(`window.__CAIRN_HOST__ = "wails";`)
+	})
+
+	// 退出有界收尾：取消运行并等待 Journal 对齐，不留下失控任务。
+	wailsApp.OnShutdown(func() {
+		if err := api.Shutdown(5 * time.Second); err != nil {
+			log.Println("shutdown:", err)
+		}
 	})
 
 	if err := wailsApp.Run(); err != nil {

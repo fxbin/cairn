@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
@@ -392,4 +393,9 @@ func firstLine(text string) string {
 		return strings.TrimSpace(text[:idx])
 	}
 	return text
+}
+
+// Shutdown 有界收尾异步运行，供桌面退出钩子调用。
+func (api *API) Shutdown(timeout time.Duration) error {
+	return api.controller.Shutdown(timeout)
 }
