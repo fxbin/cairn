@@ -16,7 +16,9 @@ export function FilesPanel({
   const [tree, setTree] = useState<FileNode | null>(null);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [changes, setChanges] = useState<ChangeSet | null>(null);
-  const [tab, setTab] = useState<"tree" | "changes" | "preview">("tree");
+  const [diff, setDiff] = useState<string>("");
+  const [diffPath, setDiffPath] = useState<string>("");
+  const [tab, setTab] = useState<"tree" | "changes" | "preview" | "diff">("tree");
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -55,6 +57,24 @@ export function FilesPanel({
       const result = await desktop.previewFile(workspace.path, relative);
       setPreview(result);
       setTab("preview");
+    } catch (err) {
+      const body =
+        err && typeof err === "object" && "body" in err
+          ? (err as { body: ErrorBody }).body
+          : { code: "internal", message: String(err) };
+      setError(body.message);
+    }
+  };
+
+  const openDiff = async (relative: string) => {
+    if (!workspace?.path) {
+      return;
+    }
+    try {
+      const text = await desktop.diffFile(workspace.path, relative);
+      setDiff(text);
+      setDiffPath(relative);
+      setTab("diff");
     } catch (err) {
       const body =
         err && typeof err === "object" && "body" in err
@@ -104,6 +124,7 @@ export function FilesPanel({
               ["tree", "文件树"],
               ["changes", "改动"],
               ["preview", "预览"],
+              ["diff", "Diff"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -146,6 +167,13 @@ export function FilesPanel({
                   <div className="muted">
                     归属：{entry.agent_owned ? "Agent 改动" : "未确认"} · 证据：{entry.evidence || "无"}
                   </div>
+                  <button
+                    type="button"
+                    className="btn mt-1"
+                    onClick={() => void openDiff(entry.relative)}
+                  >
+                    查看 Diff
+                  </button>
                 </li>
               ))}
             </ul>
@@ -168,6 +196,17 @@ export function FilesPanel({
                 {preview.binary ? " · 二进制" : ""}
               </div>
               <pre className="whitespace-pre-wrap rounded bg-[var(--c-bg)] p-2">{preview.text || preview.reason || "（空）"}</pre>
+            </>
+          )}
+        </div>
+      )}
+      {workspace?.exists && tab === "diff" && (
+        <div className="scroll-y min-h-0 flex-1 text-xs" data-testid="file-diff">
+          {!diff && <div className="muted">从改动列表选择文件以查看 Diff。</div>}
+          {diff && (
+            <>
+              <div className="muted mb-1">{diffPath}</div>
+              <pre className="whitespace-pre-wrap rounded bg-[var(--c-bg)] p-2 font-mono">{diff}</pre>
             </>
           )}
         </div>
