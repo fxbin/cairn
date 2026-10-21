@@ -65,7 +65,18 @@ export function TaskWorkspace({
         className="input min-h-[96px] resize-y"
         value={task}
         onChange={(event) => setTask(event.target.value)}
-        placeholder="描述任务。支持多行与粘贴；中文输入法选词时不会误发送。"
+        onKeyDown={(event) => {
+          // 中文输入法组合选词不触发发送；仅确认后的 Ctrl/Cmd+Enter 提交。
+          if (
+            event.key === "Enter" &&
+            (event.metaKey || event.ctrlKey) &&
+            !event.nativeEvent.isComposing
+          ) {
+            event.preventDefault();
+            void submit();
+          }
+        }}
+        placeholder="描述任务。支持多行与粘贴；Ctrl/Cmd+Enter 提交。"
         aria-label="任务输入"
         data-testid="task-input"
       />
