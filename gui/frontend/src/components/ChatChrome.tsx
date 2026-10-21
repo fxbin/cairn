@@ -1,24 +1,30 @@
 import { useEffect, useRef } from "react";
 
-/** 底部 Composer：多行输入、IME 安全、模型选择、发送/停止。 */
+/** 底部 Composer：多行输入、IME 安全、模型/模式、发送/停止/入队。 */
 export function Composer({
   value,
   onChange,
   onSubmit,
   onStop,
+  onQueue,
   running,
   model,
   onModelChange,
+  readOnly,
   disabled,
+  placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  onQueue: () => void;
   running: boolean;
   model: string;
   onModelChange: (value: string) => void;
+  readOnly: boolean;
   disabled?: boolean;
+  placeholder?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -45,8 +51,14 @@ export function Composer({
                 onSubmit();
               }
             }
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              if (value.trim() && !disabled) {
+                onQueue();
+              }
+            }
           }}
-          placeholder="向 Cairn 描述任务…（Enter 发送，Shift+Enter 换行）"
+          placeholder={placeholder || "向 Cairn 描述任务…（Enter 发送，⌘/Ctrl+Enter 入队，Shift+Enter 换行）"}
           aria-label="任务输入"
           data-testid="composer-input"
           rows={2}
@@ -63,7 +75,27 @@ export function Composer({
             <option value="glm-5.2">glm-5.2</option>
             <option value="mimo-v2.6-flash">mimo-v2.6-flash</option>
           </select>
+          <button
+            type="button"
+            className={`btn-sm ${readOnly ? "primary" : ""}`}
+            onClick={() => onModelChange(model)}
+            style={{ display: "none" }}
+            data-read-only={readOnly ? "1" : "0"}
+          />
+          <span className="muted" style={{ fontSize: 11 }} data-testid="mode-label">
+            {readOnly ? "只读" : "可写"}
+          </span>
           <span className="spacer" />
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={disabled || !value.trim() || running}
+            onClick={onQueue}
+            data-testid="composer-queue"
+            title="加入后续队列，不打断当前任务"
+          >
+            入队
+          </button>
           {running ? (
             <button type="button" className="btn-send" style={{ background: "var(--c-danger)" }} onClick={onStop} data-testid="composer-stop">
               停止
@@ -81,7 +113,7 @@ export function Composer({
           )}
         </div>
       </div>
-      <div className="composer-hint">Cairn 会写入 Event Journal；有副作用时会在对话中请求你的批准。</div>
+      <div className="composer-hint">副作用会先请求批准；运行事实写入 Event Journal。</div>
     </div>
   );
 }
@@ -94,6 +126,7 @@ export function ThreadSidebar({
   onQuery,
   onSelect,
   onNew,
+  onContext,
   workspacePath,
   onPickWorkspace,
   workspaceLabel,
@@ -104,12 +137,14 @@ export function ThreadSidebar({
     phase?: string;
     state: string;
     updated_at: string;
+    waiting_approval?: boolean;
   }>;
   activeId: string | null;
   query: string;
   onQuery: (value: string) => void;
   onSelect: (runId: string) => void;
   onNew: () => void;
+  onContext: (runId: string, title: string) => void;
   workspacePath: string;
   onPickWorkspace: () => void;
   workspaceLabel: string;
@@ -140,24 +175,41 @@ export function ThreadSidebar({
       </div>
       <div className="sidebar-section-title">最近</div>
       <div className="thread-list" data-testid="thread-list">
-        {threads.length === 0 && <div className="muted" style={{ padding: "8px 12px", fontSize: 12 }}>暂无会话</div>}
+        {threads.length === 0 && (
+          <div className="muted" style={{ padding: "8px 12px", fontSize: 12 }}>
+            暂无会话
+          </div>
+        )}
         {threads.map((thread) => (
-          <button
-            key={thread.run_id}
-            type="button"
-            className={`thread-item ${thread.run_id === activeId ? "active" : ""}`}
-            onClick={() => onSelect(thread.run_id)}
-          >
-            <div className="thread-item-title">{thread.title}</div>
-            <div className="thread-item-meta">
-              <span>{thread.phase || thread.state}</span>
-              <span>{new Date(thread.updated_at).toLocaleDateString("zh-CN")}</span>
-            </div>
-          </button>
+          <div key={thread.run_id} className="thread-item-wrap">
+            <button
+              type="button"
+              className={`thread-item ${thread.run_id === activeId ? "active" : ""}`}
+              onClick={() => onSelect(thread.run_id)}
+            >
+              <div className="thread-item-title">{thread.title}</div>
+              <div className="thread-item-meta">
+                <span>{thread.waiting_approval ? "待审批" : thread.phase || thread.state}</span>
+                <span>{new Date(thread.updated_at).toLocaleDateString("zh-CN")}</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              className="thread-more"
+              aria-label="会话操作"
+              onClick={(event) => {
+                event.stopPropagation();
+                onContext(thread.run_id, thread.title);
+              }}
+              data-testid={`thread-more-${thread.run_id}`}
+            >
+              ⋯
+            </button>
+          </div>
         ))}
       </div>
       <div className="sidebar-footer">
-        <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath}>
+        <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath} data-testid="workspace-chip">
           <span>⌂</span>
           <span className="path">{workspaceLabel || "选择工作区"}</span>
         </button>

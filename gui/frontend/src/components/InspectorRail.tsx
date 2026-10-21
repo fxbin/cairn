@@ -19,6 +19,7 @@ export function InspectorRail({
   runId,
   statusLabel,
   onError,
+  onRefreshThreads,
 }: {
   tab: RailTab;
   onTab: (tab: RailTab) => void;
@@ -26,6 +27,7 @@ export function InspectorRail({
   runId: string | null;
   statusLabel: string;
   onError: (error: ErrorBody) => void;
+  onRefreshThreads: () => void;
 }) {
   const [tree, setTree] = useState<FileNode | null>(null);
   const [changes, setChanges] = useState<ChangeSet | null>(null);
@@ -227,13 +229,17 @@ export function InspectorRail({
                 type="button"
                 className="btn-sm danger"
                 disabled={!runId}
+                data-testid="abort-run"
                 onClick={() => {
                   if (!runId || !workspace?.path) {
                     return;
                   }
                   void desktop
                     .abortRun({ workspace: workspace.path, run_id: runId, reason: "user abort" })
-                    .then(() => load())
+                    .then(() => {
+                      onRefreshThreads();
+                      return load();
+                    })
                     .catch((error) =>
                       onError(
                         error && typeof error === "object" && "body" in error
@@ -246,9 +252,93 @@ export function InspectorRail({
                 Abort 收尾
               </button>
             </div>
+            <h3>对账</h3>
+            <ResolveForm
+              workspacePath={workspace?.path || ""}
+              runId={runId}
+              onError={onError}
+              onDone={() => {
+                onRefreshThreads();
+                void load();
+              }}
+            />
           </div>
         )}
       </div>
     </aside>
+  );
+}
+
+function ResolveForm({
+  workspacePath,
+  runId,
+  onError,
+  onDone,
+}: {
+  workspacePath: string;
+  runId: string | null;
+  onError: (error: ErrorBody) => void;
+  onDone: () => void;
+}) {
+  const [operationId, setOperationId] = useState("");
+  const [verdict, setVerdict] = useState("committed");
+  const [note, setNote] = useState("");
+  const [evidence, setEvidence] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <input
+        className="input-sm"
+        placeholder="operation_id"
+        value={operationId}
+        onChange={(event) => setOperationId(event.target.value)}
+        data-testid="resolve-op"
+      />
+      <select className="input-sm" value={verdict} onChange={(event) => setVerdict(event.target.value)}>
+        <option value="committed">已提交</option>
+        <option value="rolled_back">已回滚</option>
+        <option value="unknown">不确定</option>
+      </select>
+      <input className="input-sm" placeholder="说明" value={note} onChange={(event) => setNote(event.target.value)} />
+      <input
+        className="input-sm"
+        placeholder="证据引用"
+        value={evidence}
+        onChange={(event) => setEvidence(event.target.value)}
+      />
+      <button
+        type="button"
+        className="btn-sm"
+        disabled={!runId || !operationId.trim() || busy}
+        data-testid="resolve-submit"
+        onClick={() => {
+          if (!runId || !workspacePath) {
+            return;
+          }
+          setBusy(true);
+          void desktop
+            .resolveReconcile({
+              workspace: workspacePath,
+              run_id: runId,
+              operation_id: operationId.trim(),
+              verdict,
+              note,
+              evidence,
+            })
+            .then(() => onDone())
+            .catch((error) =>
+              onError(
+                error && typeof error === "object" && "body" in error
+                  ? (error as { body: ErrorBody }).body
+                  : { code: "internal", message: String(error) },
+              ),
+            )
+            .finally(() => setBusy(false));
+        }}
+      >
+        提交对账
+      </button>
+    </div>
   );
 }

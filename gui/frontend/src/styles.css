@@ -908,6 +908,95 @@ a {
   gap: 12px;
 }
 
+.thread-item-wrap {
+  position: relative;
+}
+
+.thread-more {
+  position: absolute;
+  right: 8px;
+  top: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  opacity: 0;
+}
+
+.thread-item-wrap:hover .thread-more {
+  opacity: 1;
+}
+
+.thread-more:hover {
+  background: var(--c-bg-hover);
+  color: var(--c-text);
+}
+
+/* 抽屉 */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+}
+
+.drawer {
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(80vh, 720px);
+  background: var(--c-bg-elevated);
+  border: 1px solid var(--c-border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.drawer-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.drawer-body {
+  padding: 16px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.field > span:first-child {
+  font-weight: 600;
+  color: var(--c-text-secondary);
+}
+
+.queue-inline {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.optimistic {
+  opacity: 0.85;
+}
+
 .muted {
   color: var(--c-text-muted);
 }
