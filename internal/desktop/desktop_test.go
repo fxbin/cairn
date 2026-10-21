@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -334,5 +335,48 @@ func TestResumeWiresEventSinkAndRejectsDuplicate(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected stream event")
+	}
+}
+
+// TestApplyModeReadOnlyUsesCorePreset 验证 GUI 只读模式复用核心 Preset 合同，
+// 而不是仅局部改写 Policy。
+func TestApplyModeReadOnlyUsesCorePreset(t *testing.T) {
+	configuration := config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "demo-model"
+	configuration.Verification.Commands = []config.VerificationCommand{{Argv: []string{"go", "test", "./..."}}}
+	if err := applyMode(&configuration, "read-only"); err == nil {
+		t.Fatal("expected verification commands rejected under read-only")
+	}
+
+	configuration = config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "demo-model"
+	configuration.Skills = &config.SkillsConfig{Enabled: true}
+	if err := applyMode(&configuration, "read-only"); err == nil {
+		t.Fatal("expected skills rejected under read-only")
+	}
+
+	configuration = config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "demo-model"
+	if err := applyMode(&configuration, "read-only"); err != nil {
+		t.Fatalf("unexpected read-only apply error: %v", err)
+	}
+	if configuration.Preset != config.PresetReadOnly {
+		t.Fatalf("preset not applied: %q", configuration.Preset)
+	}
+	if configuration.Policy.Write != "deny" || configuration.Policy.Exec != "deny" {
+		t.Fatalf("policy not denied: %+v", configuration.Policy)
+	}
+
+	configuration = config.Defaults()
+	configuration.Provider.BaseURL = "https://example.invalid/v1"
+	configuration.Provider.Model = "demo-model"
+	if err := applyMode(&configuration, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Preset != config.PresetCoding {
+		t.Fatalf("default mode should keep coding preset, got %q", configuration.Preset)
 	}
 }

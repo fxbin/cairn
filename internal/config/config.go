@@ -190,6 +190,20 @@ func normalizePreset(cfg *Config, recorder *resolutionRecorder, presetSource str
 	}
 }
 
+// ApplyPreset 在已装载配置上应用静态 Preset 组合语义并重新校验。
+// 桌面/GUI 切换模式必须走此入口，禁止局部改写 Policy 模拟只读。
+func ApplyPreset(cfg *Config, preset string) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	cfg.Preset = strings.TrimSpace(preset)
+	recorder := &resolutionRecorder{}
+	if err := normalizePreset(cfg, recorder, "runtime:preset"); err != nil {
+		return err
+	}
+	return Validate(*cfg)
+}
+
 // budgetOverlay 以指针字段探测 YAML 中哪些预算与 Provider 关键字段被显式设置，
 // 用于区分"字段缺省（可被命名 Profile 预设填充）"与"用户显式覆盖（优先于 Profile）"。
 type budgetOverlay struct {

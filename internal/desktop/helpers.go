@@ -100,13 +100,18 @@ func validateMode(mode string) error {
 }
 
 // applyMode 将已校验的工作模式落到配置。
+// read-only 复用核心 Preset 合同（工具子集、策略、Skills/MCP/验证命令拒绝），
+// 禁止只改 Policy 开关模拟只读。
 func applyMode(configuration *config.Config, mode string) error {
 	if err := validateMode(mode); err != nil {
 		return err
 	}
-	if strings.TrimSpace(mode) == "read-only" {
-		configuration.Policy.Write = "deny"
-		configuration.Policy.Exec = "deny"
+	normalized := strings.TrimSpace(mode)
+	if normalized == "" || normalized == "default" {
+		return nil
+	}
+	if normalized == "read-only" {
+		return config.ApplyPreset(configuration, config.PresetReadOnly)
 	}
 	return nil
 }
