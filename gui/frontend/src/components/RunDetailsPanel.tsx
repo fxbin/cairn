@@ -47,7 +47,7 @@ export function RunDetailsPanel({
     } finally {
       setLoading(false);
     }
-  }, [workspacePath, selectedRun?.run_id, onError]);
+  }, [workspacePath, selectedRun?.run_id]);
 
   useEffect(() => {
     void loadDetail();

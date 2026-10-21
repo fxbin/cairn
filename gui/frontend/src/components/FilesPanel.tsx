@@ -41,7 +41,7 @@ export function FilesPanel({
       setError(body.message);
       onError(body);
     }
-  }, [workspace?.exists, workspace?.path, onError]);
+  }, [workspace?.exists, workspace?.path]);
 
   useEffect(() => {
     void load();

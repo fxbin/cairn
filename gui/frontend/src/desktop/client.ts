@@ -5,15 +5,23 @@ import { Bindings as DesktopAPI } from "./wails-api";
 import type {
   AbortRequest,
   CancelRequest,
+  ChangeSet,
   ErrorBody,
+  EvidenceView,
+  FileNode,
+  FilePreview,
   HealthResult,
   InspectRequest,
   OKResult,
+  QueueActionRequest,
+  QueueItem,
+  QueueSubmitRequest,
   RecentProject,
   ResolveRequest,
   ResumeRequest,
   RunDetail,
   RunHistoryView,
+  SessionTreeView,
   StartRunAck,
   StartRunRequest,
   StreamEvent,
@@ -37,10 +45,6 @@ function toErrorBody(error: unknown): ErrorBody {
     const anyErr = error as Record<string, unknown>;
     if (typeof anyErr.code === "string" && typeof anyErr.message === "string") {
       return anyErr as unknown as ErrorBody;
-    }
-    if (typeof anyErr.Error === "function") {
-      // Wails 可能包装为 { Error(): string }
-      return { code: "internal", message: String((anyErr.Error as () => string)()) };
     }
     if (typeof anyErr.message === "string") {
       return { code: "internal", message: anyErr.message };
@@ -77,6 +81,8 @@ export const desktop = {
     call(() => DesktopAPI.SetSessionFlags(sessionId, pinned, archived)),
   inspectRun: (request: InspectRequest): Promise<RunDetail> =>
     call(() => DesktopAPI.InspectRun(request)),
+  evidence: (request: InspectRequest): Promise<EvidenceView> =>
+    call(() => DesktopAPI.Evidence(request)),
   startRun: (request: StartRunRequest): Promise<StartRunAck> =>
     call(() => DesktopAPI.StartRun(request)),
   resumeRun: (request: ResumeRequest): Promise<StartRunAck> =>
@@ -87,17 +93,27 @@ export const desktop = {
     call(() => DesktopAPI.ResolveReconcile(request)),
   cancelRun: (request: CancelRequest): Promise<OKResult> =>
     call(() => DesktopAPI.CancelRun(request)),
+  listQueue: (request: WorkspaceRequest): Promise<QueueItem[]> =>
+    call(() => DesktopAPI.ListQueue({ workspace: request.workspace, state_dir: request.state_dir })),
+  submitQueue: (request: QueueSubmitRequest): Promise<QueueItem> =>
+    call(() => DesktopAPI.SubmitQueue(request)),
+  confirmQueue: (request: QueueActionRequest): Promise<StartRunAck> =>
+    call(() => DesktopAPI.ConfirmQueue(request)),
+  cancelQueue: (request: QueueActionRequest): Promise<QueueItem> =>
+    call(() => DesktopAPI.CancelQueue(request)),
+  sessionTree: (request: WorkspaceRequest): Promise<SessionTreeView> =>
+    call(() => DesktopAPI.SessionTree({ workspace: request.workspace, state_dir: request.state_dir })),
   doctor: (request: WorkspaceRequest): Promise<unknown> =>
     call(() => DesktopAPI.Doctor(request)),
   mcpStatus: (request: WorkspaceRequest): Promise<unknown> =>
     call(() => DesktopAPI.MCPStatus(request)),
   listSkills: (request: WorkspaceRequest): Promise<unknown> =>
     call(() => DesktopAPI.ListSkills(request)),
-  listFileTree: (workspace: string): Promise<import("./types").FileNode> =>
+  listFileTree: (workspace: string): Promise<FileNode> =>
     call(() => DesktopAPI.ListFileTree(workspace)),
-  previewFile: (workspace: string, relative: string): Promise<import("./types").FilePreview> =>
+  previewFile: (workspace: string, relative: string): Promise<FilePreview> =>
     call(() => DesktopAPI.PreviewFile(workspace, relative)),
-  listChanges: (workspace: string): Promise<import("./types").ChangeSet> =>
+  listChanges: (workspace: string): Promise<ChangeSet> =>
     call(() => DesktopAPI.ListChanges(workspace)),
   diffFile: (workspace: string, relative: string): Promise<string> =>
     call(() => DesktopAPI.DiffFile(workspace, relative)),

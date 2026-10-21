@@ -137,3 +137,33 @@ func (service *Service) DiffFile(ctx context.Context, workspace, relative string
 func (service *Service) OpenPathInEditor(ctx context.Context, path string) (OKResult, error) {
 	return service.api.OpenPathInEditor(ctx, path)
 }
+
+// ListQueue 列出后续队列。
+func (service *Service) ListQueue(ctx context.Context, request QueueRequest) ([]QueueItem, error) {
+	return service.api.ListQueue(ctx, request)
+}
+
+// SubmitQueue 提交后续任务。
+func (service *Service) SubmitQueue(ctx context.Context, request QueueSubmitRequest) (QueueItem, error) {
+	return service.api.SubmitQueue(ctx, request)
+}
+
+// ConfirmQueue 确认启动队列项。
+func (service *Service) ConfirmQueue(ctx context.Context, request QueueActionRequest) (StartRunAck, error) {
+	return service.api.ConfirmQueue(ctx, request)
+}
+
+// CancelQueue 取消队列项。
+func (service *Service) CancelQueue(ctx context.Context, request QueueActionRequest) (QueueItem, error) {
+	return service.api.CancelQueue(ctx, request)
+}
+
+// SessionTree 查询会话树。
+func (service *Service) SessionTree(ctx context.Context, request SessionTreeRequest) (SessionTreeView, error) {
+	return service.api.SessionTree(ctx, request)
+}
+
+// Evidence 查询完成证据。
+func (service *Service) Evidence(ctx context.Context, request InspectRequest) (EvidenceView, error) {
+	return service.api.Evidence(ctx, request)
+}

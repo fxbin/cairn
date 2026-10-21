@@ -13,11 +13,17 @@ const desktopMock = vi.hoisted(() => ({
   renameSession: vi.fn(),
   setSessionFlags: vi.fn(),
   inspectRun: vi.fn(),
+  evidence: vi.fn(),
   startRun: vi.fn(),
   resumeRun: vi.fn(),
   abortRun: vi.fn(),
   resolveReconcile: vi.fn(),
   cancelRun: vi.fn(),
+  listQueue: vi.fn(),
+  submitQueue: vi.fn(),
+  confirmQueue: vi.fn(),
+  cancelQueue: vi.fn(),
+  sessionTree: vi.fn(),
   doctor: vi.fn(),
   mcpStatus: vi.fn(),
   listSkills: vi.fn(),
@@ -41,60 +47,32 @@ vi.mock("../desktop/client", () => ({
 }));
 
 import App from "../App";
-import type { HealthResult, RecentProject, RunHistoryView, WorkspaceStatus } from "../desktop/types";
-
-const health: HealthResult = {
-  ok: true,
-  app_name: "Cairn",
-  version: "0.1.0",
-  go_version: "go1.26.4",
-};
-
-const workspace: WorkspaceStatus = {
-  path: "/tmp/demo",
-  exists: true,
-  is_workspace: true,
-  has_agent_dir: true,
-  has_config: true,
-  dirty: false,
-  state_dir: "/tmp/state",
-  config_path: "/tmp/demo/.agent/config.yaml",
-  config_loaded: true,
-};
-
-const recent: RecentProject[] = [
-  {
-    path: "/tmp/demo",
-    name: "demo",
-    last_used: new Date().toISOString(),
-    pinned: false,
-    archived: false,
-  },
-];
-
-const runs: RunHistoryView[] = [
-  {
-    run_id: "run-1",
-    session_id: "s1",
-    task: "修复登录问题\n细节",
-    state: "completed",
-    phase: "completed",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    title: "修复登录问题",
-    waiting_approval: false,
-    waiting_reconcile: false,
-  },
-];
 
 describe("App shell", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    desktopMock.health.mockResolvedValue(health);
-    desktopMock.observeWorkspace.mockResolvedValue(workspace);
-    desktopMock.listRecentProjects.mockResolvedValue(recent);
+    desktopMock.health.mockResolvedValue({ ok: true, app_name: "Cairn", version: "0.1.0", go_version: "go1.26.4" });
+    desktopMock.observeWorkspace.mockResolvedValue({
+      path: "/tmp/demo", exists: true, is_workspace: true, has_agent_dir: true, has_config: true,
+      dirty: false, state_dir: "/tmp/state", config_path: "/tmp/demo/.agent/config.yaml", config_loaded: true,
+    });
+    desktopMock.listRecentProjects.mockResolvedValue([
+      { path: "/tmp/demo", name: "demo", last_used: new Date().toISOString(), pinned: false, archived: false },
+    ]);
     desktopMock.rememberProject.mockResolvedValue({ ok: true });
-    desktopMock.listRuns.mockResolvedValue(runs);
+    desktopMock.listRuns.mockResolvedValue([{
+      run_id: "run-1", session_id: "s1", task: "修复登录问题", state: "completed", phase: "completed",
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      title: "修复登录问题", waiting_approval: false, waiting_reconcile: false,
+    }]);
+    desktopMock.inspectRun.mockResolvedValue({ run_id: "run-1", state: "completed", summary: {}, events: [] });
+    desktopMock.evidence.mockResolvedValue({ state: "completed", outcome: "ok", trusted: false, verification: { verification_ok: false } });
+    desktopMock.listQueue.mockResolvedValue([]);
+    desktopMock.listFileTree.mockResolvedValue({ name: "root", relative: ".", path: "/tmp/demo", kind: "dir", children: [] });
+    desktopMock.listChanges.mockResolvedValue({ root: "/tmp/demo", entries: [], added: 0, deleted: 0, modified: 0, untracked: 0 });
+    desktopMock.doctor.mockResolvedValue({ ready: true });
+    desktopMock.mcpStatus.mockResolvedValue([]);
+    desktopMock.listSkills.mockResolvedValue([]);
     desktopMock.onStream.mockReturnValue(() => undefined);
   });
 
@@ -112,8 +90,7 @@ describe("App shell", () => {
     desktopMock.startRun.mockResolvedValue({ run_id: "run-2", state: "starting" });
     render(<App />);
     await waitFor(() => expect(desktopMock.listRuns).toHaveBeenCalled());
-    const input = screen.getByTestId("task-input");
-    await userEvent.type(input, "写一个测试");
+    await userEvent.type(screen.getByTestId("task-input"), "写一个测试");
     await userEvent.click(screen.getByTestId("task-submit"));
     await waitFor(() => {
       expect(desktopMock.startRun).toHaveBeenCalledWith(

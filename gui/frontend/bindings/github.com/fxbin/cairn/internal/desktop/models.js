@@ -238,6 +238,83 @@ export class ChangeSet {
 }
 
 /**
+ * EvidenceView 是完成证据投影。
+ */
+export class EvidenceView {
+    /**
+     * Creates a new EvidenceView instance.
+     * @param {Partial<EvidenceView>} [$$source = {}] - The source object to create the EvidenceView.
+     */
+    constructor($$source = {}) {
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["state"] = "";
+        }
+        if (!("outcome" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["outcome"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["failure_class"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["stop_reason"] = undefined;
+        }
+        if (!("trusted" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["trusted"] = false;
+        }
+        if (!("verification" in $$source)) {
+            /**
+             * @member
+             * @type {{"verification_seq"?: number, "verification_ok": boolean}}
+             */
+            this["verification"] = {, "verification_ok": false};
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {{ [_ in string]?: any } | undefined}
+             */
+            this["metrics"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EvidenceView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {EvidenceView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("metrics" in $$parsedSource) {
+            $$parsedSource["metrics"] = $$createField6_0($$parsedSource["metrics"]);
+        }
+        return new EvidenceView(/** @type {Partial<EvidenceView>} */($$parsedSource));
+    }
+}
+
+/**
  * FileNode 是有界文件树节点。
  */
 export class FileNode {
@@ -306,7 +383,7 @@ export class FileNode {
      * @returns {FileNode}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType3;
+        const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField5_0($$parsedSource["children"]);
@@ -534,6 +611,207 @@ export class OKResult {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new OKResult(/** @type {Partial<OKResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * QueueActionRequest 确认或取消队列项。
+ */
+export class QueueActionRequest {
+    /**
+     * Creates a new QueueActionRequest instance.
+     * @param {Partial<QueueActionRequest>} [$$source = {}] - The source object to create the QueueActionRequest.
+     */
+    constructor($$source = {}) {
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["state_dir"] = undefined;
+        }
+        if (!("input_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["input_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["reason"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueActionRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {QueueActionRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueActionRequest(/** @type {Partial<QueueActionRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * QueueItem 是队列项视图。
+ */
+export class QueueItem {
+    /**
+     * Creates a new QueueItem instance.
+     * @param {Partial<QueueItem>} [$$source = {}] - The source object to create the QueueItem.
+     */
+    constructor($$source = {}) {
+        if (!("input_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["input_id"] = "";
+        }
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["state"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["target_run_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["reason"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["content"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueItem instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {QueueItem}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueItem(/** @type {Partial<QueueItem>} */($$parsedSource));
+    }
+}
+
+/**
+ * QueueRequest 是队列操作的公共定位参数。
+ */
+export class QueueRequest {
+    /**
+     * Creates a new QueueRequest instance.
+     * @param {Partial<QueueRequest>} [$$source = {}] - The source object to create the QueueRequest.
+     */
+    constructor($$source = {}) {
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["state_dir"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {QueueRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueRequest(/** @type {Partial<QueueRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * QueueSubmitRequest 向后续队列提交任务。
+ */
+export class QueueSubmitRequest {
+    /**
+     * Creates a new QueueSubmitRequest instance.
+     * @param {Partial<QueueSubmitRequest>} [$$source = {}] - The source object to create the QueueSubmitRequest.
+     */
+    constructor($$source = {}) {
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["state_dir"] = undefined;
+        }
+        if (!("content" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["content"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["input_id"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new QueueSubmitRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {QueueSubmitRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new QueueSubmitRequest(/** @type {Partial<QueueSubmitRequest>} */($$parsedSource));
     }
 }
 
@@ -810,9 +1088,9 @@ export class RunDetail {
      * @returns {RunDetail}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType4;
-        const $$createField6_0 = $$createType6;
-        const $$createField7_0 = $$createType8;
+        const $$createField5_0 = $$createType5;
+        const $$createField6_0 = $$createType7;
+        const $$createField7_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField5_0($$parsedSource["summary"]);
@@ -934,7 +1212,7 @@ export class RunHistoryView {
      * @returns {RunHistoryView}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType10;
+        const $$createField3_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("fork_source" in $$parsedSource) {
             $$parsedSource["fork_source"] = $$createField3_0($$parsedSource["fork_source"]);
@@ -1027,6 +1305,167 @@ export class RunStatusView {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new RunStatusView(/** @type {Partial<RunStatusView>} */($$parsedSource));
+    }
+}
+
+/**
+ * SessionNode 是会话树节点。
+ */
+export class SessionNode {
+    /**
+     * Creates a new SessionNode instance.
+     * @param {Partial<SessionNode>} [$$source = {}] - The source object to create the SessionNode.
+     */
+    constructor($$source = {}) {
+        if (!("run_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["run_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["session_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["prev_run_id"] = undefined;
+        }
+        if (!("task" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["task"] = "";
+        }
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["state"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["phase"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["children"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SessionNode instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SessionNode}
+     */
+    static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("children" in $$parsedSource) {
+            $$parsedSource["children"] = $$createField6_0($$parsedSource["children"]);
+        }
+        return new SessionNode(/** @type {Partial<SessionNode>} */($$parsedSource));
+    }
+}
+
+/**
+ * SessionTreeRequest 查询会话树。
+ */
+export class SessionTreeRequest {
+    /**
+     * Creates a new SessionTreeRequest instance.
+     * @param {Partial<SessionTreeRequest>} [$$source = {}] - The source object to create the SessionTreeRequest.
+     */
+    constructor($$source = {}) {
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["state_dir"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SessionTreeRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SessionTreeRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SessionTreeRequest(/** @type {Partial<SessionTreeRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * SessionTreeView 是会话树投影。
+ */
+export class SessionTreeView {
+    /**
+     * Creates a new SessionTreeView instance.
+     * @param {Partial<SessionTreeView>} [$$source = {}] - The source object to create the SessionTreeView.
+     */
+    constructor($$source = {}) {
+        if (!("nodes" in $$source)) {
+            /**
+             * @member
+             * @type {{ [_ in string]?: SessionNode }}
+             */
+            this["nodes"] = {};
+        }
+        if (!("roots" in $$source)) {
+            /**
+             * @member
+             * @type {string[]}
+             */
+            this["roots"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SessionTreeView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SessionTreeView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType14;
+        const $$createField1_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("nodes" in $$parsedSource) {
+            $$parsedSource["nodes"] = $$createField0_0($$parsedSource["nodes"]);
+        }
+        if ("roots" in $$parsedSource) {
+            $$parsedSource["roots"] = $$createField1_0($$parsedSource["roots"]);
+        }
+        return new SessionTreeView(/** @type {Partial<SessionTreeView>} */($$parsedSource));
     }
 }
 
@@ -1408,12 +1847,16 @@ export class WorkspaceStatus {
 // Private type creation functions
 const $$createType0 = ChangeEntry.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = FileNode.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = app$0.RunSummary.createFrom;
-const $$createType5 = contract$0.RunManifest.createFrom;
-const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = domain$0.Event.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = domain$0.SessionForkSource.createFrom;
-const $$createType10 = $Create.Nullable($$createType9);
+const $$createType2 = $Create.Map($Create.Any, $Create.Any);
+const $$createType3 = FileNode.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = app$0.RunSummary.createFrom;
+const $$createType6 = contract$0.RunManifest.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = domain$0.Event.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = domain$0.SessionForkSource.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = $Create.Array($Create.Any);
+const $$createType13 = SessionNode.createFrom;
+const $$createType14 = $Create.Map($Create.Any, $$createType13);

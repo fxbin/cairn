@@ -47,6 +47,17 @@ export function ArchiveProject(workspace, archived) {
 }
 
 /**
+ * CancelQueue 取消队列项。
+ * @param {$models.QueueActionRequest} request
+ * @returns {$CancellablePromise<$models.QueueItem>}
+ */
+export function CancelQueue(request) {
+    return $Call.ByID(2391958742, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
  * CancelRun 取消运行。
  * @param {$models.CancelRequest} request
  * @returns {$CancellablePromise<$models.OKResult>}
@@ -54,6 +65,17 @@ export function ArchiveProject(workspace, archived) {
 export function CancelRun(request) {
     return $Call.ByID(4063657784, request).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
+    }));
+}
+
+/**
+ * ConfirmQueue 确认启动队列项。
+ * @param {$models.QueueActionRequest} request
+ * @returns {$CancellablePromise<$models.StartRunAck>}
+ */
+export function ConfirmQueue(request) {
+    return $Call.ByID(3454361042, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
     }));
 }
 
@@ -74,7 +96,18 @@ export function DiffFile(workspace, relative) {
  */
 export function Doctor(request) {
     return $Call.ByID(1447377086, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * Evidence 查询完成证据。
+ * @param {$models.InspectRequest} request
+ * @returns {$CancellablePromise<$models.EvidenceView>}
+ */
+export function Evidence(request) {
+    return $Call.ByID(2486562304, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
     }));
 }
 
@@ -85,7 +118,7 @@ export function Doctor(request) {
  */
 export function EvidenceFor(request) {
     return $Call.ByID(951439119, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType6($result);
     }));
 }
 
@@ -95,7 +128,7 @@ export function EvidenceFor(request) {
  */
 export function Health() {
     return $Call.ByID(2840875795).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType7($result);
     }));
 }
 
@@ -106,7 +139,7 @@ export function Health() {
  */
 export function InspectRun(request) {
     return $Call.ByID(3239440932, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType8($result);
     }));
 }
 
@@ -117,7 +150,7 @@ export function InspectRun(request) {
  */
 export function ListChanges(workspace) {
     return $Call.ByID(191662946, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType6($result);
+        return $$createType9($result);
     }));
 }
 
@@ -128,7 +161,18 @@ export function ListChanges(workspace) {
  */
 export function ListFileTree(workspace) {
     return $Call.ByID(3785902983, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType10($result);
+    }));
+}
+
+/**
+ * ListQueue 列出后续队列。
+ * @param {$models.QueueRequest} request
+ * @returns {$CancellablePromise<$models.QueueItem[]>}
+ */
+export function ListQueue(request) {
+    return $Call.ByID(567820144, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType11($result);
     }));
 }
 
@@ -139,7 +183,7 @@ export function ListFileTree(workspace) {
  */
 export function ListRecentProjects(includeArchived) {
     return $Call.ByID(1329332028, includeArchived).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType13($result);
     }));
 }
 
@@ -150,7 +194,7 @@ export function ListRecentProjects(includeArchived) {
  */
 export function ListRuns(request) {
     return $Call.ByID(1060138195, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType15($result);
     }));
 }
 
@@ -161,7 +205,7 @@ export function ListRuns(request) {
  */
 export function ListSkills(request) {
     return $Call.ByID(932558951, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType17($result);
     }));
 }
 
@@ -172,7 +216,7 @@ export function ListSkills(request) {
  */
 export function MCPStatus(request) {
     return $Call.ByID(1296566745, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType19($result);
     }));
 }
 
@@ -183,7 +227,7 @@ export function MCPStatus(request) {
  */
 export function ObserveWorkspace(workspace) {
     return $Call.ByID(2552225000, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType16($result);
+        return $$createType20($result);
     }));
 }
 
@@ -216,7 +260,7 @@ export function PickDirectory(title, defaultPath) {
  */
 export function PreviewFile(workspace, relative) {
     return $Call.ByID(1345408917, workspace, relative).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType21($result);
     }));
 }
 
@@ -261,7 +305,18 @@ export function ResolveReconcile(request) {
  */
 export function ResumeRun(request) {
     return $Call.ByID(1028452847, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * SessionTree 查询会话树。
+ * @param {$models.SessionTreeRequest} request
+ * @returns {$CancellablePromise<$models.SessionTreeView>}
+ */
+export function SessionTree(request) {
+    return $Call.ByID(3197663295, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType22($result);
     }));
 }
 
@@ -285,27 +340,42 @@ export function SetSessionFlags(sessionID, pinned, archived) {
  */
 export function StartRun(request) {
     return $Call.ByID(2128220020, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType18($result);
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * SubmitQueue 提交后续任务。
+ * @param {$models.QueueSubmitRequest} request
+ * @returns {$CancellablePromise<$models.QueueItem>}
+ */
+export function SubmitQueue(request) {
+    return $Call.ByID(2403668916, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
     }));
 }
 
 // Private type creation functions
 const $$createType0 = $models.RunStatusView.createFrom;
 const $$createType1 = $models.OKResult.createFrom;
-const $$createType2 = app$0.DoctorReport.createFrom;
-const $$createType3 = contract$0.Result.createFrom;
-const $$createType4 = $models.HealthResult.createFrom;
-const $$createType5 = $models.RunDetail.createFrom;
-const $$createType6 = $models.ChangeSet.createFrom;
-const $$createType7 = $models.FileNode.createFrom;
-const $$createType8 = $models.RecentProject.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = $models.RunHistoryView.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $models.SkillSummary.createFrom;
+const $$createType2 = $models.QueueItem.createFrom;
+const $$createType3 = $models.StartRunAck.createFrom;
+const $$createType4 = app$0.DoctorReport.createFrom;
+const $$createType5 = $models.EvidenceView.createFrom;
+const $$createType6 = contract$0.Result.createFrom;
+const $$createType7 = $models.HealthResult.createFrom;
+const $$createType8 = $models.RunDetail.createFrom;
+const $$createType9 = $models.ChangeSet.createFrom;
+const $$createType10 = $models.FileNode.createFrom;
+const $$createType11 = $Create.Array($$createType2);
+const $$createType12 = $models.RecentProject.createFrom;
 const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = app$0.MCPServerStatus.createFrom;
+const $$createType14 = $models.RunHistoryView.createFrom;
 const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $models.WorkspaceStatus.createFrom;
-const $$createType17 = $models.FilePreview.createFrom;
-const $$createType18 = $models.StartRunAck.createFrom;
+const $$createType16 = $models.SkillSummary.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = app$0.MCPServerStatus.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = $models.WorkspaceStatus.createFrom;
+const $$createType21 = $models.FilePreview.createFrom;
+const $$createType22 = $models.SessionTreeView.createFrom;

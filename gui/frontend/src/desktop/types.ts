@@ -204,6 +204,53 @@ export interface ChangeSet {
   untracked: number;
 }
 
+export interface QueueItem {
+  input_id: string;
+  state: string;
+  target_run_id?: string;
+  reason?: string;
+  content?: string;
+}
+
+export interface QueueSubmitRequest {
+  workspace: string;
+  state_dir?: string;
+  content: string;
+  input_id?: string;
+}
+
+export interface QueueActionRequest {
+  workspace: string;
+  state_dir?: string;
+  input_id: string;
+  reason?: string;
+}
+
+export interface SessionNode {
+  run_id: string;
+  session_id?: string;
+  prev_run_id?: string;
+  task: string;
+  state: string;
+  phase?: string;
+  children?: string[];
+}
+
+export interface SessionTreeView {
+  nodes: Record<string, SessionNode>;
+  roots: string[];
+}
+
+export interface EvidenceView {
+  state: string;
+  outcome: string;
+  failure_class?: string;
+  stop_reason?: string;
+  trusted: boolean;
+  verification: { verification_seq?: number; verification_ok: boolean };
+  metrics?: Record<string, number | boolean>;
+}
+
 export interface RunSummary {
   // 与 app.RunSummary 对齐的宽松投影；未知字段在桥接层省略。
   [key: string]: unknown;

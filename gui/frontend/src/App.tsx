@@ -17,6 +17,7 @@ import { TaskWorkspace } from "./components/TaskWorkspace";
 import { ApprovalPanel } from "./components/ApprovalPanel";
 import { FilesPanel } from "./components/FilesPanel";
 import { RunDetailsPanel } from "./components/RunDetailsPanel";
+import { QueueEvidencePanel } from "./components/QueueEvidencePanel";
 import { StatusBar } from "./components/StatusBar";
 import { ErrorBanner } from "./components/ErrorBanner";
 
@@ -216,6 +217,11 @@ export default function App() {
                 streamEvents={state.streamEvents}
                 panel={state.panel}
                 onPanel={(panel) => dispatch({ type: "panel", panel })}
+                onError={(error) => dispatch({ type: "error", error })}
+              />
+              <QueueEvidencePanel
+                workspacePath={workspacePath}
+                runId={selectedRun?.run_id ?? null}
                 onError={(error) => dispatch({ type: "error", error })}
               />
             </div>

@@ -8,16 +8,21 @@ import type {
   AbortRequest,
   CancelRequest,
   ChangeSet,
+  EvidenceView,
   FileNode,
   FilePreview,
   HealthResult,
   InspectRequest,
   OKResult,
+  QueueActionRequest,
+  QueueItem,
+  QueueSubmitRequest,
   RecentProject,
   ResolveRequest,
   ResumeRequest,
   RunDetail,
   RunHistoryView,
+  SessionTreeView,
   StartRunAck,
   StartRunRequest,
   WorkspaceRequest,
@@ -35,12 +40,18 @@ interface DesktopBindings {
   RenameSession(sessionID: string, title: string): Promise<OKResult>;
   SetSessionFlags(sessionID: string, pinned: boolean, archived: boolean): Promise<OKResult>;
   InspectRun(request: InspectRequest): Promise<RunDetail>;
+  Evidence(request: InspectRequest): Promise<EvidenceView>;
   EvidenceFor(request: InspectRequest): Promise<unknown>;
   StartRun(request: StartRunRequest): Promise<StartRunAck>;
   ResumeRun(request: ResumeRequest): Promise<StartRunAck>;
   AbortRun(request: AbortRequest): Promise<unknown>;
   ResolveReconcile(request: ResolveRequest): Promise<unknown>;
   CancelRun(request: CancelRequest): Promise<OKResult>;
+  ListQueue(request: WorkspaceRequest): Promise<QueueItem[]>;
+  SubmitQueue(request: QueueSubmitRequest): Promise<QueueItem>;
+  ConfirmQueue(request: QueueActionRequest): Promise<StartRunAck>;
+  CancelQueue(request: QueueActionRequest): Promise<QueueItem>;
+  SessionTree(request: WorkspaceRequest): Promise<SessionTreeView>;
   Doctor(request: WorkspaceRequest): Promise<unknown>;
   MCPStatus(request: WorkspaceRequest): Promise<unknown>;
   ListSkills(request: WorkspaceRequest): Promise<unknown>;
