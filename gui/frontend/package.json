@@ -8,8 +8,8 @@
     "build:dev": "tsc && vite build --minify false --mode development",
     "build": "tsc && vite build --mode production",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --mode=test",
+    "test:watch": "vitest --mode=test",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },

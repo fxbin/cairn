@@ -1,28 +1,47 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "../App";
-import { desktop } from "../desktop/client";
-import type { HealthResult, RecentProject, RunHistoryView, WorkspaceStatus } from "../desktop/types";
 
-vi.mock("../desktop/client", async () => {
-  const actual = await vi.importActual<typeof import("../desktop/client")>("../desktop/client");
-  return {
-    ...actual,
-    desktop: {
-      health: vi.fn(),
-      observeWorkspace: vi.fn(),
-      listRecentProjects: vi.fn(),
-      rememberProject: vi.fn(),
-      listRuns: vi.fn(),
-      startRun: vi.fn(),
-      resumeRun: vi.fn(),
-      cancelRun: vi.fn(),
-      doctor: vi.fn(),
-      onStream: vi.fn(() => () => undefined),
-    },
-  };
-});
+const desktopMock = vi.hoisted(() => ({
+  health: vi.fn(),
+  observeWorkspace: vi.fn(),
+  pickDirectory: vi.fn(),
+  listRecentProjects: vi.fn(),
+  rememberProject: vi.fn(),
+  archiveProject: vi.fn(),
+  listRuns: vi.fn(),
+  renameSession: vi.fn(),
+  setSessionFlags: vi.fn(),
+  inspectRun: vi.fn(),
+  startRun: vi.fn(),
+  resumeRun: vi.fn(),
+  abortRun: vi.fn(),
+  resolveReconcile: vi.fn(),
+  cancelRun: vi.fn(),
+  doctor: vi.fn(),
+  mcpStatus: vi.fn(),
+  listSkills: vi.fn(),
+  listFileTree: vi.fn(),
+  previewFile: vi.fn(),
+  listChanges: vi.fn(),
+  diffFile: vi.fn(),
+  openPathInEditor: vi.fn(),
+  onStream: vi.fn(() => () => undefined),
+}));
+
+vi.mock("../desktop/client", () => ({
+  desktop: desktopMock,
+  DesktopError: class DesktopError extends Error {
+    body: { code: string; message: string };
+    constructor(body: { code: string; message: string }) {
+      super(body.message);
+      this.body = body;
+    }
+  },
+}));
+
+import App from "../App";
+import type { HealthResult, RecentProject, RunHistoryView, WorkspaceStatus } from "../desktop/types";
 
 const health: HealthResult = {
   ok: true,
@@ -44,7 +63,13 @@ const workspace: WorkspaceStatus = {
 };
 
 const recent: RecentProject[] = [
-  { path: "/tmp/demo", name: "demo", last_used: new Date().toISOString(), pinned: false, archived: false },
+  {
+    path: "/tmp/demo",
+    name: "demo",
+    last_used: new Date().toISOString(),
+    pinned: false,
+    archived: false,
+  },
 ];
 
 const runs: RunHistoryView[] = [
@@ -64,11 +89,13 @@ const runs: RunHistoryView[] = [
 
 describe("App shell", () => {
   beforeEach(() => {
-    vi.mocked(desktop.health).mockResolvedValue(health);
-    vi.mocked(desktop.observeWorkspace).mockResolvedValue(workspace);
-    vi.mocked(desktop.listRecentProjects).mockResolvedValue(recent);
-    vi.mocked(desktop.rememberProject).mockResolvedValue({ ok: true });
-    vi.mocked(desktop.listRuns).mockResolvedValue(runs);
+    vi.clearAllMocks();
+    desktopMock.health.mockResolvedValue(health);
+    desktopMock.observeWorkspace.mockResolvedValue(workspace);
+    desktopMock.listRecentProjects.mockResolvedValue(recent);
+    desktopMock.rememberProject.mockResolvedValue({ ok: true });
+    desktopMock.listRuns.mockResolvedValue(runs);
+    desktopMock.onStream.mockReturnValue(() => undefined);
   });
 
   it("renders shell regions and run list", async () => {
@@ -82,14 +109,14 @@ describe("App shell", () => {
   });
 
   it("submits a task through the desktop bridge", async () => {
-    vi.mocked(desktop.startRun).mockResolvedValue({ run_id: "run-2", state: "starting" });
+    desktopMock.startRun.mockResolvedValue({ run_id: "run-2", state: "starting" });
     render(<App />);
-    await waitFor(() => expect(desktop.listRuns).toHaveBeenCalled());
+    await waitFor(() => expect(desktopMock.listRuns).toHaveBeenCalled());
     const input = screen.getByTestId("task-input");
     await userEvent.type(input, "写一个测试");
     await userEvent.click(screen.getByTestId("task-submit"));
     await waitFor(() => {
-      expect(desktop.startRun).toHaveBeenCalledWith(
+      expect(desktopMock.startRun).toHaveBeenCalledWith(
         expect.objectContaining({ task: "写一个测试", workspace: "/tmp/demo" }),
       );
     });

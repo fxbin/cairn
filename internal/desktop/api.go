@@ -127,7 +127,7 @@ func (api *API) ArchiveProject(_ context.Context, workspace string, archived boo
 }
 
 // ListRuns 返回运行历史，并合并会话展示偏好。
-func (api *API) ListRuns(_ context.Context, request WorkspaceRequest) ([]RunHistoryView, error) {
+func (api *API) ListRuns(ctx context.Context, request WorkspaceRequest) ([]RunHistoryView, error) {
 	workspace, err := absWorkspace(request.Workspace)
 	if err != nil {
 		return nil, err
@@ -136,7 +136,7 @@ func (api *API) ListRuns(_ context.Context, request WorkspaceRequest) ([]RunHist
 	if err != nil {
 		return nil, err
 	}
-	items, err := api.service.ListRuns(context.Background(), workspace, resolveStateDir(request.StateDir), configuration)
+	items, err := api.service.ListRuns(ctx, workspace, resolveStateDir(request.StateDir), configuration)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +353,34 @@ type SkillSummary struct {
 	Scope       string `json:"scope,omitempty"`
 	Disabled    bool   `json:"disabled"`
 	ManualOnly  bool   `json:"manual_only"`
+}
+
+// ListFileTree 返回工作区有界文件树。
+func (api *API) ListFileTree(_ context.Context, workspace string) (FileNode, error) {
+	return ListFileTree(workspace)
+}
+
+// PreviewFile 返回有界文件预览。
+func (api *API) PreviewFile(_ context.Context, workspace, relative string) (FilePreview, error) {
+	return PreviewFile(workspace, relative)
+}
+
+// ListChanges 返回工作区改动列表（不猜测 Agent 归属）。
+func (api *API) ListChanges(_ context.Context, workspace string) (ChangeSet, error) {
+	return ListChanges(workspace)
+}
+
+// DiffFile 返回单文件统一 diff。
+func (api *API) DiffFile(_ context.Context, workspace, relative string) (string, error) {
+	return DiffFile(workspace, relative)
+}
+
+// OpenPathInEditor 使用系统默认应用打开路径。
+func (api *API) OpenPathInEditor(_ context.Context, path string) (OKResult, error) {
+	if err := OpenInEditor(path); err != nil {
+		return OKResult{}, err
+	}
+	return OKResult{OK: true}, nil
 }
 
 func firstLine(text string) string {

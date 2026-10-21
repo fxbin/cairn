@@ -89,6 +89,28 @@ func resultState(outcome app.RunResult, err error) string {
 	return "completed"
 }
 
+// validateMode 校验 GUI 工作模式字符串；未知值失败关闭。
+func validateMode(mode string) error {
+	switch strings.TrimSpace(mode) {
+	case "", "default", "read-only":
+		return nil
+	default:
+		return errInvalid("unsupported mode: " + mode)
+	}
+}
+
+// applyMode 将已校验的工作模式落到配置。
+func applyMode(configuration *config.Config, mode string) error {
+	if err := validateMode(mode); err != nil {
+		return err
+	}
+	if strings.TrimSpace(mode) == "read-only" {
+		configuration.Policy.Write = "deny"
+		configuration.Policy.Exec = "deny"
+	}
+	return nil
+}
+
 // absWorkspace 保证工作区为绝对路径。
 func absWorkspace(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {

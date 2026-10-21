@@ -29,9 +29,13 @@ export function ApprovalPanel({
   const fromStream = useMemo(() => {
     for (let i = streamEvents.length - 1; i >= 0; i -= 1) {
       const event = streamEvents[i];
+      const runId = event.error?.run_id || event.run_id || "";
+      if (selectedRun?.run_id && runId && runId !== selectedRun.run_id) {
+        continue;
+      }
       if (event.kind === "run.waiting_approval" && event.error?.fingerprint) {
         return {
-          run_id: event.error.run_id || event.run_id || "",
+          run_id: runId,
           fingerprint: event.error.fingerprint,
           summary: event.error.summary || "",
           operation_id: event.error.operation_id,
@@ -39,7 +43,7 @@ export function ApprovalPanel({
       }
     }
     return null;
-  }, [streamEvents]);
+  }, [streamEvents, selectedRun?.run_id]);
 
   const loadFromInspect = useCallback(async () => {
     if (!workspacePath || !selectedRun?.run_id) {

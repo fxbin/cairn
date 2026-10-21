@@ -166,6 +166,44 @@ export interface StreamEvent {
   error?: ErrorBody;
 }
 
+export interface FileNode {
+  name: string;
+  relative: string;
+  path: string;
+  kind: string;
+  size?: number;
+  children?: FileNode[];
+  reason?: string;
+}
+
+export interface FilePreview {
+  relative: string;
+  path: string;
+  language?: string;
+  size: number;
+  truncated: boolean;
+  binary: boolean;
+  text?: string;
+  reason?: string;
+}
+
+export interface ChangeEntry {
+  relative: string;
+  status: string;
+  agent_owned: boolean;
+  evidence?: string;
+}
+
+export interface ChangeSet {
+  root: string;
+  branch?: string;
+  entries: ChangeEntry[];
+  added: number;
+  deleted: number;
+  modified: number;
+  untracked: number;
+}
+
 export interface RunSummary {
   // 与 app.RunSummary 对齐的宽松投影；未知字段在桥接层省略。
   [key: string]: unknown;

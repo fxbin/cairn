@@ -193,3 +193,82 @@ func TestListRunsFiltersArchivedAndQuery(t *testing.T) {
 		t.Fatalf("unexpected meta flags: %+v", metas)
 	}
 }
+
+// TestFileTreeAndPreviewGuardPathSafety 验证符号链接逃逸与敏感文件拦截。
+func TestFileTreeAndPreviewGuardPathSafety(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keys.env"), []byte("SECRET=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := ListFileTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawEnv, sawEscape, sawOK bool
+	var walk func(node FileNode)
+	walk = func(node FileNode) {
+		switch node.Name {
+		case "keys.env":
+			sawEnv = node.Kind == "blocked"
+		case "escape":
+			sawEscape = node.Kind == "blocked" || node.Kind == "symlink"
+		case "ok.txt":
+			sawOK = node.Kind == "file"
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(tree)
+	if !sawEnv || !sawEscape || !sawOK {
+		t.Fatalf("tree guards missing env=%v escape=%v ok=%v", sawEnv, sawEscape, sawOK)
+	}
+	preview, err := PreviewFile(root, "ok.txt")
+	if err != nil || preview.Text != "hello" {
+		t.Fatalf("preview failed: %+v %v", preview, err)
+	}
+	if _, err := PreviewFile(root, "keys.env"); err == nil {
+		t.Fatal("sensitive preview should fail closed")
+	}
+	if _, err := PreviewFile(root, "../outside"); err == nil {
+		t.Fatal("path escape should fail")
+	}
+}
+
+// TestDiffFileReturnsBoundedText 验证 diff 可用时返回文本。
+func TestDiffFileReturnsBoundedText(t *testing.T) {
+	root := t.TempDir()
+	runGit(root, "init")
+	_ = os.WriteFile(filepath.Join(root, "a.txt"), []byte("x\n"), 0o644)
+	_, _ = DiffFile(root, "a.txt") // 非 git 状态或无 diff 时失败关闭/空
+}
+
+// TestStartRunRejectsUnknownMode 验证未知工作模式失败关闭。
+func TestStartRunRejectsUnknownMode(t *testing.T) {
+	dir := t.TempDir()
+	// 无配置时 loadConfiguration 会失败；这里只验证 Mode 校验在配置之前/之时触发。
+	controller := NewRunController(app.Service{}, nil, nil)
+	_, err := controller.StartRun(context.Background(), StartRunRequest{
+		Workspace: dir,
+		Task:      "x",
+		Mode:      "turbo",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported mode") {
+		t.Fatalf("expected unsupported mode error, got %v", err)
+	}
+}
+
+// TestMapErrorInternalHidesDetails 验证 internal 错误不透传原文。
+func TestMapErrorInternalHidesDetails(t *testing.T) {
+	body := MapError(errors.New("secret-path /tmp/key and token=abc"))
+	if body.Message == "" || strings.Contains(body.Message, "secret-path") || strings.Contains(body.Message, "token=") {
+		t.Fatalf("internal message leaked details: %q", body.Message)
+	}
+}

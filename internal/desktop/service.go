@@ -112,3 +112,28 @@ func (service *Service) MCPStatus(ctx context.Context, request WorkspaceRequest)
 func (service *Service) ListSkills(ctx context.Context, request WorkspaceRequest) ([]SkillSummary, error) {
 	return service.api.ListSkills(ctx, request)
 }
+
+// ListFileTree 列出有界文件树。
+func (service *Service) ListFileTree(ctx context.Context, workspace string) (FileNode, error) {
+	return service.api.ListFileTree(ctx, workspace)
+}
+
+// PreviewFile 预览文件。
+func (service *Service) PreviewFile(ctx context.Context, workspace, relative string) (FilePreview, error) {
+	return service.api.PreviewFile(ctx, workspace, relative)
+}
+
+// ListChanges 列出工作区改动。
+func (service *Service) ListChanges(ctx context.Context, workspace string) (ChangeSet, error) {
+	return service.api.ListChanges(ctx, workspace)
+}
+
+// DiffFile 返回文件 diff。
+func (service *Service) DiffFile(ctx context.Context, workspace, relative string) (string, error) {
+	return service.api.DiffFile(ctx, workspace, relative)
+}
+
+// OpenPathInEditor 在外部编辑器打开路径。
+func (service *Service) OpenPathInEditor(ctx context.Context, path string) (OKResult, error) {
+	return service.api.OpenPathInEditor(ctx, path)
+}

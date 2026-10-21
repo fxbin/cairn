@@ -243,12 +243,19 @@ func (controller *RunController) StartRun(ctx context.Context, request StartRunR
 	if err != nil {
 		return StartRunAck{}, err
 	}
+	// 先校验工作模式，未知值失败关闭，不进入配置装载。
+	if err := validateMode(request.Mode); err != nil {
+		return StartRunAck{}, err
+	}
 	configuration, err := loadConfiguration(workspace, request.StateDir)
 	if err != nil {
 		return StartRunAck{}, err
 	}
 	if request.Model != "" {
 		configuration.Provider.Model = request.Model
+	}
+	if err := applyMode(&configuration, request.Mode); err != nil {
+		return StartRunAck{}, err
 	}
 	options := app.RunOptions{
 		Task:      request.Task,
@@ -378,6 +385,14 @@ func (controller *RunController) ResolveReconcile(ctx context.Context, request R
 func (controller *RunController) execute(ctx context.Context, cancel context.CancelFunc, options app.RunOptions, sessionHint string) {
 	var registerMu sync.Mutex
 	registered := false
+	cleanup := func(runID string) {
+		controller.mu.Lock()
+		if runID != "" {
+			delete(controller.cancel, runID)
+			delete(controller.running, runID)
+		}
+		controller.mu.Unlock()
+	}
 	onEvent := func(event domain.Event) {
 		registerMu.Lock()
 		runID := string(event.RunID)
@@ -426,6 +441,10 @@ func (controller *RunController) execute(ctx context.Context, cancel context.Can
 		controller.mu.Unlock()
 	}
 	registerMu.Unlock()
+	defer func() {
+		cleanup(runID)
+		cancel()
+	}()
 	controller.finish(runID, outcome, err)
 }
 

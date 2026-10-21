@@ -107,6 +107,295 @@ export class CancelRequest {
 }
 
 /**
+ * ChangeEntry 是工作区改动摘要；归属需证据，不能猜测。
+ */
+export class ChangeEntry {
+    /**
+     * Creates a new ChangeEntry instance.
+     * @param {Partial<ChangeEntry>} [$$source = {}] - The source object to create the ChangeEntry.
+     */
+    constructor($$source = {}) {
+        if (!("relative" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["relative"] = "";
+        }
+        if (!("status" in $$source)) {
+            /**
+             * untracked | modified | deleted | staged | other
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("agent_owned" in $$source)) {
+            /**
+             * AgentOwned 仅在有明确证据时为真；未知保持 false 并标注 Evidence。
+             * @member
+             * @type {boolean}
+             */
+            this["agent_owned"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["evidence"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChangeEntry instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ChangeEntry}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChangeEntry(/** @type {Partial<ChangeEntry>} */($$parsedSource));
+    }
+}
+
+/**
+ * ChangeSet 是改动列表与统计。
+ */
+export class ChangeSet {
+    /**
+     * Creates a new ChangeSet instance.
+     * @param {Partial<ChangeSet>} [$$source = {}] - The source object to create the ChangeSet.
+     */
+    constructor($$source = {}) {
+        if (!("root" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["root"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["branch"] = undefined;
+        }
+        if (!("entries" in $$source)) {
+            /**
+             * @member
+             * @type {ChangeEntry[]}
+             */
+            this["entries"] = [];
+        }
+        if (!("added" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["added"] = 0;
+        }
+        if (!("deleted" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["deleted"] = 0;
+        }
+        if (!("modified" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["modified"] = 0;
+        }
+        if (!("untracked" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["untracked"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChangeSet instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ChangeSet}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("entries" in $$parsedSource) {
+            $$parsedSource["entries"] = $$createField2_0($$parsedSource["entries"]);
+        }
+        return new ChangeSet(/** @type {Partial<ChangeSet>} */($$parsedSource));
+    }
+}
+
+/**
+ * FileNode 是有界文件树节点。
+ */
+export class FileNode {
+    /**
+     * Creates a new FileNode instance.
+     * @param {Partial<FileNode>} [$$source = {}] - The source object to create the FileNode.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("relative" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["relative"] = "";
+        }
+        if (!("path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+        if (!("kind" in $$source)) {
+            /**
+             * file | dir | symlink | blocked
+             * @member
+             * @type {string}
+             */
+            this["kind"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["size"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {FileNode[] | undefined}
+             */
+            this["children"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["reason"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FileNode instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {FileNode}
+     */
+    static createFrom($$source = {}) {
+        const $$createField5_0 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("children" in $$parsedSource) {
+            $$parsedSource["children"] = $$createField5_0($$parsedSource["children"]);
+        }
+        return new FileNode(/** @type {Partial<FileNode>} */($$parsedSource));
+    }
+}
+
+/**
+ * FilePreview 是源码预览正文与元数据。
+ */
+export class FilePreview {
+    /**
+     * Creates a new FilePreview instance.
+     * @param {Partial<FilePreview>} [$$source = {}] - The source object to create the FilePreview.
+     */
+    constructor($$source = {}) {
+        if (!("relative" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["relative"] = "";
+        }
+        if (!("path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["language"] = undefined;
+        }
+        if (!("size" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["size"] = 0;
+        }
+        if (!("truncated" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["truncated"] = false;
+        }
+        if (!("binary" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["binary"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["text"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["reason"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FilePreview instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {FilePreview}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FilePreview(/** @type {Partial<FilePreview>} */($$parsedSource));
+    }
+}
+
+/**
  * HealthResult 报告桌面桥接可用性与只读环境摘要。
  */
 export class HealthResult {
@@ -521,9 +810,9 @@ export class RunDetail {
      * @returns {RunDetail}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType0;
-        const $$createField6_0 = $$createType2;
-        const $$createField7_0 = $$createType4;
+        const $$createField5_0 = $$createType4;
+        const $$createField6_0 = $$createType6;
+        const $$createField7_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField5_0($$parsedSource["summary"]);
@@ -645,7 +934,7 @@ export class RunHistoryView {
      * @returns {RunHistoryView}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType6;
+        const $$createField3_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("fork_source" in $$parsedSource) {
             $$parsedSource["fork_source"] = $$createField3_0($$parsedSource["fork_source"]);
@@ -1117,10 +1406,14 @@ export class WorkspaceStatus {
 }
 
 // Private type creation functions
-const $$createType0 = app$0.RunSummary.createFrom;
-const $$createType1 = contract$0.RunManifest.createFrom;
-const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = domain$0.Event.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = domain$0.SessionForkSource.createFrom;
+const $$createType0 = ChangeEntry.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = FileNode.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = app$0.RunSummary.createFrom;
+const $$createType5 = contract$0.RunManifest.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = domain$0.Event.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = domain$0.SessionForkSource.createFrom;
+const $$createType10 = $Create.Nullable($$createType9);

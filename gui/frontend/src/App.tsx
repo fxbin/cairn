@@ -208,7 +208,7 @@ export default function App() {
               streamEvents={state.streamEvents}
               onError={(error) => dispatch({ type: "error", error })}
             />
-            <FilesPanel workspace={state.workspace} />
+            <FilesPanel workspace={state.workspace} onError={(error) => dispatch({ type: "error", error })} />
             <div className="flex min-h-0 flex-col gap-3">
               <RunDetailsPanel
                 workspacePath={workspacePath}

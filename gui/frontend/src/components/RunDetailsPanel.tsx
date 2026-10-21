@@ -58,7 +58,13 @@ export function RunDetailsPanel({
     const seen = new Set(base.map((event) => event.seq));
     const extras = streamEvents
       .map((item) => item.event)
-      .filter((event): event is DomainEvent => Boolean(event && event.run_id === selectedRun?.run_id))
+      .filter((event): event is DomainEvent =>
+        Boolean(
+          event &&
+            selectedRun?.run_id &&
+            event.run_id === selectedRun.run_id,
+        ),
+      )
       .filter((event) => !seen.has(event.seq));
     return base.concat(extras);
   }, [detail?.events, streamEvents, selectedRun?.run_id]);

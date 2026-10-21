@@ -3,7 +3,6 @@ package desktop
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 
 	"github.com/fxbin/cairn/internal/app"
@@ -81,7 +80,7 @@ func MapError(err error) ErrorBody {
 	case errors.Is(err, os.ErrNotExist):
 		return ErrorBody{Code: CodeNotFound, Message: "未找到请求的资源"}
 	}
-	return ErrorBody{Code: CodeInternal, Message: fmt.Sprintf("内部错误: %v", err)}
+	return ErrorBody{Code: CodeInternal, Message: "内部错误，请通过诊断面板查看详细信息"}
 }
 
 // AsErrorBody 便于在返回 (T, error) 的绑定方法中统一处理。

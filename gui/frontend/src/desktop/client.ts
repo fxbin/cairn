@@ -93,6 +93,16 @@ export const desktop = {
     call(() => DesktopAPI.MCPStatus(request)),
   listSkills: (request: WorkspaceRequest): Promise<unknown> =>
     call(() => DesktopAPI.ListSkills(request)),
+  listFileTree: (workspace: string): Promise<import("./types").FileNode> =>
+    call(() => DesktopAPI.ListFileTree(workspace)),
+  previewFile: (workspace: string, relative: string): Promise<import("./types").FilePreview> =>
+    call(() => DesktopAPI.PreviewFile(workspace, relative)),
+  listChanges: (workspace: string): Promise<import("./types").ChangeSet> =>
+    call(() => DesktopAPI.ListChanges(workspace)),
+  diffFile: (workspace: string, relative: string): Promise<string> =>
+    call(() => DesktopAPI.DiffFile(workspace, relative)),
+  openPathInEditor: (path: string): Promise<OKResult> =>
+    call(() => DesktopAPI.OpenPathInEditor(path)),
   onStream: (handler: (event: StreamEvent) => void): (() => void) => subscribeStream(handler),
 };
 

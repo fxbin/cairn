@@ -7,6 +7,9 @@ import * as RawAPI from "../../bindings/github.com/fxbin/cairn/internal/desktop/
 import type {
   AbortRequest,
   CancelRequest,
+  ChangeSet,
+  FileNode,
+  FilePreview,
   HealthResult,
   InspectRequest,
   OKResult,
@@ -41,6 +44,11 @@ interface DesktopBindings {
   Doctor(request: WorkspaceRequest): Promise<unknown>;
   MCPStatus(request: WorkspaceRequest): Promise<unknown>;
   ListSkills(request: WorkspaceRequest): Promise<unknown>;
+  ListFileTree(workspace: string): Promise<FileNode>;
+  PreviewFile(workspace: string, relative: string): Promise<FilePreview>;
+  ListChanges(workspace: string): Promise<ChangeSet>;
+  DiffFile(workspace: string, relative: string): Promise<string>;
+  OpenPathInEditor(path: string): Promise<OKResult>;
 }
 
 export const Bindings = RawAPI as DesktopBindings;

@@ -10,6 +10,10 @@ export {
 export {
     AbortRequest,
     CancelRequest,
+    ChangeEntry,
+    ChangeSet,
+    FileNode,
+    FilePreview,
     HealthResult,
     InspectRequest,
     OKResult,
