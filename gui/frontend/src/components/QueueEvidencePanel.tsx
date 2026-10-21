@@ -150,9 +150,9 @@ export function QueueEvidencePanel({
             </div>
             <div className="muted">
               用量（未知不显示为 0）：
-              {evidence.metrics
-                ? ` turns=${String(evidence.metrics.turns ?? "—")} tools=${String(evidence.metrics.tool_calls ?? "—")} in=${String(evidence.metrics.input_tokens ?? "—")} out=${String(evidence.metrics.output_tokens ?? "—")}${evidence.metrics.usage_estimated ? "（估算）" : ""}`
-                : " 无"}
+              {` turns=${evidence.metrics.turns || "—"} tools=${evidence.metrics.tool_calls || "—"} in=${evidence.metrics.input_tokens || "—"} out=${evidence.metrics.output_tokens || "—"}${
+                evidence.metrics.usage_estimated ? "（估算）" : ""
+              }`}
             </div>
           </div>
         )}

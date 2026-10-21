@@ -12,6 +12,8 @@ export {
     CancelRequest,
     ChangeEntry,
     ChangeSet,
+    EvidenceMetrics,
+    EvidenceVerification,
     EvidenceView,
     FileNode,
     FilePreview,

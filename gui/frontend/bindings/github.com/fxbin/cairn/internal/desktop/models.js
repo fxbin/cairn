@@ -238,6 +238,117 @@ export class ChangeSet {
 }
 
 /**
+ * EvidenceMetrics 是非敏感用量摘要；未知项由前端显示为“—”。
+ */
+export class EvidenceMetrics {
+    /**
+     * Creates a new EvidenceMetrics instance.
+     * @param {Partial<EvidenceMetrics>} [$$source = {}] - The source object to create the EvidenceMetrics.
+     */
+    constructor($$source = {}) {
+        if (!("turns" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["turns"] = 0;
+        }
+        if (!("tool_calls" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["tool_calls"] = 0;
+        }
+        if (!("input_tokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["input_tokens"] = 0;
+        }
+        if (!("output_tokens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["output_tokens"] = 0;
+        }
+        if (!("usage_estimated" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["usage_estimated"] = false;
+        }
+        if (!("context_compactions" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["context_compactions"] = 0;
+        }
+        if (!("wall_time_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["wall_time_ms"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EvidenceMetrics instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {EvidenceMetrics}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EvidenceMetrics(/** @type {Partial<EvidenceMetrics>} */($$parsedSource));
+    }
+}
+
+/**
+ * EvidenceVerification 是完成证据中的验证摘要。
+ */
+export class EvidenceVerification {
+    /**
+     * Creates a new EvidenceVerification instance.
+     * @param {Partial<EvidenceVerification>} [$$source = {}] - The source object to create the EvidenceVerification.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["verification_seq"] = undefined;
+        }
+        if (!("verification_ok" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["verification_ok"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EvidenceVerification instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {EvidenceVerification}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EvidenceVerification(/** @type {Partial<EvidenceVerification>} */($$parsedSource));
+    }
+}
+
+/**
  * EvidenceView 是完成证据投影。
  */
 export class EvidenceView {
@@ -284,16 +395,16 @@ export class EvidenceView {
         if (!("verification" in $$source)) {
             /**
              * @member
-             * @type {{"verification_seq"?: number, "verification_ok": boolean}}
+             * @type {EvidenceVerification}
              */
-            this["verification"] = {, "verification_ok": false};
+            this["verification"] = (new EvidenceVerification());
         }
-        if (/** @type {any} */(false)) {
+        if (!("metrics" in $$source)) {
             /**
              * @member
-             * @type {{ [_ in string]?: any } | undefined}
+             * @type {EvidenceMetrics}
              */
-            this["metrics"] = undefined;
+            this["metrics"] = (new EvidenceMetrics());
         }
 
         Object.assign(this, $$source);
@@ -305,8 +416,12 @@ export class EvidenceView {
      * @returns {EvidenceView}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType2;
+        const $$createField5_0 = $$createType2;
+        const $$createField6_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("verification" in $$parsedSource) {
+            $$parsedSource["verification"] = $$createField5_0($$parsedSource["verification"]);
+        }
         if ("metrics" in $$parsedSource) {
             $$parsedSource["metrics"] = $$createField6_0($$parsedSource["metrics"]);
         }
@@ -383,7 +498,7 @@ export class FileNode {
      * @returns {FileNode}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType4;
+        const $$createField5_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField5_0($$parsedSource["children"]);
@@ -1088,9 +1203,9 @@ export class RunDetail {
      * @returns {RunDetail}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType5;
-        const $$createField6_0 = $$createType7;
-        const $$createField7_0 = $$createType9;
+        const $$createField5_0 = $$createType6;
+        const $$createField6_0 = $$createType8;
+        const $$createField7_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField5_0($$parsedSource["summary"]);
@@ -1212,7 +1327,7 @@ export class RunHistoryView {
      * @returns {RunHistoryView}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType11;
+        const $$createField3_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("fork_source" in $$parsedSource) {
             $$parsedSource["fork_source"] = $$createField3_0($$parsedSource["fork_source"]);
@@ -1376,7 +1491,7 @@ export class SessionNode {
      * @returns {SessionNode}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType12;
+        const $$createField6_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField6_0($$parsedSource["children"]);
@@ -1456,8 +1571,8 @@ export class SessionTreeView {
      * @returns {SessionTreeView}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType14;
-        const $$createField1_0 = $$createType12;
+        const $$createField0_0 = $$createType15;
+        const $$createField1_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("nodes" in $$parsedSource) {
             $$parsedSource["nodes"] = $$createField0_0($$parsedSource["nodes"]);
@@ -1847,16 +1962,17 @@ export class WorkspaceStatus {
 // Private type creation functions
 const $$createType0 = ChangeEntry.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $Create.Map($Create.Any, $Create.Any);
-const $$createType3 = FileNode.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-const $$createType5 = app$0.RunSummary.createFrom;
-const $$createType6 = contract$0.RunManifest.createFrom;
-const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = domain$0.Event.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = domain$0.SessionForkSource.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = $Create.Array($Create.Any);
-const $$createType13 = SessionNode.createFrom;
-const $$createType14 = $Create.Map($Create.Any, $$createType13);
+const $$createType2 = EvidenceVerification.createFrom;
+const $$createType3 = EvidenceMetrics.createFrom;
+const $$createType4 = FileNode.createFrom;
+const $$createType5 = $Create.Array($$createType4);
+const $$createType6 = app$0.RunSummary.createFrom;
+const $$createType7 = contract$0.RunManifest.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = domain$0.Event.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = domain$0.SessionForkSource.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = $Create.Array($Create.Any);
+const $$createType14 = SessionNode.createFrom;
+const $$createType15 = $Create.Map($Create.Any, $$createType14);

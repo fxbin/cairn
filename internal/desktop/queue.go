@@ -205,18 +205,32 @@ func (api *API) SessionTree(ctx context.Context, request SessionTreeRequest) (Se
 	return view, nil
 }
 
+// EvidenceVerification 是完成证据中的验证摘要。
+type EvidenceVerification struct {
+	Seq uint64 `json:"verification_seq,omitempty"`
+	OK  bool   `json:"verification_ok"`
+}
+
+// EvidenceMetrics 是非敏感用量摘要；未知项由前端显示为“—”。
+type EvidenceMetrics struct {
+	Turns              int   `json:"turns"`
+	ToolCalls          int   `json:"tool_calls"`
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	UsageEstimated     bool  `json:"usage_estimated"`
+	ContextCompactions int   `json:"context_compactions"`
+	WallTimeMS         int64 `json:"wall_time_ms"`
+}
+
 // EvidenceView 是完成证据投影。
 type EvidenceView struct {
-	State        string `json:"state"`
-	Outcome      string `json:"outcome"`
-	FailureClass string `json:"failure_class,omitempty"`
-	StopReason   string `json:"stop_reason,omitempty"`
-	Trusted      bool   `json:"trusted"`
-	Verification struct {
-		Seq uint64 `json:"verification_seq,omitempty"`
-		OK  bool   `json:"verification_ok"`
-	} `json:"verification"`
-	Metrics map[string]any `json:"metrics,omitempty"`
+	State        string               `json:"state"`
+	Outcome      string               `json:"outcome"`
+	FailureClass string               `json:"failure_class,omitempty"`
+	StopReason   string               `json:"stop_reason,omitempty"`
+	Trusted      bool                 `json:"trusted"`
+	Verification EvidenceVerification `json:"verification"`
+	Metrics      EvidenceMetrics      `json:"metrics"`
 }
 
 // Evidence 查询运行完成证据（不以自然语言回复代替）。
@@ -225,25 +239,26 @@ func (api *API) Evidence(ctx context.Context, request InspectRequest) (EvidenceV
 	if err != nil {
 		return EvidenceView{}, err
 	}
-	view := EvidenceView{
+	return EvidenceView{
 		State:        result.State,
 		Outcome:      result.Outcome,
 		FailureClass: result.FailureClass,
 		StopReason:   result.StopReason,
 		Trusted:      result.Evidence.Trusted,
-	}
-	view.Verification.Seq = result.Evidence.VerificationSeq
-	view.Verification.OK = result.Evidence.VerificationOK
-	view.Metrics = map[string]any{
-		"turns":               result.Metrics.Turns,
-		"tool_calls":          result.Metrics.ToolCalls,
-		"input_tokens":        result.Metrics.InputTokens,
-		"output_tokens":       result.Metrics.OutputTokens,
-		"usage_estimated":     result.Metrics.UsageEstimated,
-		"context_compactions": result.Metrics.ContextCompactions,
-		"wall_time_ms":        result.Metrics.WallTimeMS,
-	}
-	return view, nil
+		Verification: EvidenceVerification{
+			Seq: result.Evidence.VerificationSeq,
+			OK:  result.Evidence.VerificationOK,
+		},
+		Metrics: EvidenceMetrics{
+			Turns:              result.Metrics.Turns,
+			ToolCalls:          result.Metrics.ToolCalls,
+			InputTokens:        result.Metrics.InputTokens,
+			OutputTokens:       result.Metrics.OutputTokens,
+			UsageEstimated:     result.Metrics.UsageEstimated,
+			ContextCompactions: result.Metrics.ContextCompactions,
+			WallTimeMS:         result.Metrics.WallTimeMS,
+		},
+	}, nil
 }
 
 func newInputID() string {

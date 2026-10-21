@@ -241,14 +241,29 @@ export interface SessionTreeView {
   roots: string[];
 }
 
+export interface EvidenceVerification {
+  verification_seq?: number;
+  verification_ok: boolean;
+}
+
+export interface EvidenceMetrics {
+  turns: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  usage_estimated: boolean;
+  context_compactions: number;
+  wall_time_ms: number;
+}
+
 export interface EvidenceView {
   state: string;
   outcome: string;
   failure_class?: string;
   stop_reason?: string;
   trusted: boolean;
-  verification: { verification_seq?: number; verification_ok: boolean };
-  metrics?: Record<string, number | boolean>;
+  verification: EvidenceVerification;
+  metrics: EvidenceMetrics;
 }
 
 export interface RunSummary {
