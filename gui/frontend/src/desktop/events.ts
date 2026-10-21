@@ -1,36 +1,44 @@
 /**
- * 运行流事件订阅。事件仅作通知；事实仍来自 Go/Journal 快照查询。
+ * 运行流事件订阅。桌面用 Wails Events，浏览器验收用 bridge 回调。
  */
-import { Events } from "@wailsio/runtime";
 import type { StreamEvent } from "./types";
 
-/** Wails 事件通道名，与 gui/main.go 常量一致。 */
 export const STREAM_EVENT_NAME = "cairn:stream";
 
 type Handler = (event: StreamEvent) => void;
 
-/**
- * 订阅运行流；返回取消函数。
- * 迟到/重复由 Go 层按 runID+seq 过滤，前端仍做会话归属校验。
- */
 export function subscribeStream(handler: Handler): () => void {
-  const wrapped = (payload: unknown) => {
-    const event = extractStreamEvent(payload);
-    if (event) {
-      handler(event);
+  const win = window as unknown as {
+    runtime?: { Events?: { On: (name: string, cb: (payload: unknown) => void) => void; Off: (name: string, cb: (payload: unknown) => void) => unknown } };
+    __CAIRN_SUBSCRIBE__?: (fn: Handler) => void;
+  };
+
+  if (win.runtime?.Events) {
+    const wrapped = (payload: unknown) => {
+      const event = extractStreamEvent(payload);
+      if (event) {
+        handler(event);
+      }
+    };
+    win.runtime.Events.On(STREAM_EVENT_NAME, wrapped);
+    return () => {
+      void win.runtime!.Events!.Off(STREAM_EVENT_NAME, wrapped);
+    };
+  }
+
+  if (win.__CAIRN_SUBSCRIBE__) {
+    win.__CAIRN_SUBSCRIBE__(handler);
+    return () => undefined;
+  }
+
+  // 延迟：bridge 可能稍后注入
+  const timer = window.setInterval(() => {
+    if (win.__CAIRN_SUBSCRIBE__) {
+      win.__CAIRN_SUBSCRIBE__(handler);
+      window.clearInterval(timer);
     }
-  };
-  // Wails Events.On 类型在不同版本间有差异，这里以运行时行为为准。
-  (Events.On as unknown as (name: string, cb: (payload: unknown) => void) => void)(
-    STREAM_EVENT_NAME,
-    wrapped,
-  );
-  return () => {
-    void (Events.Off as unknown as (name: string, cb: (payload: unknown) => void) => unknown)(
-      STREAM_EVENT_NAME,
-      wrapped,
-    );
-  };
+  }, 50);
+  return () => window.clearInterval(timer);
 }
 
 function extractStreamEvent(payload: unknown): StreamEvent | null {

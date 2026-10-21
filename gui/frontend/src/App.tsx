@@ -505,8 +505,14 @@ export default function App() {
               <span className="dot" />
               {statusLabel}
             </span>
-            <button type="button" className="icon-btn" onClick={() => dispatch({ type: "railOpen", value: !state.railOpen })} data-testid="toggle-rail">
-              检查器
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => dispatch({ type: "railOpen", value: !state.railOpen })}
+              data-testid="toggle-rail"
+              aria-pressed={state.railOpen}
+            >
+              {state.railOpen ? "隐藏检查器" : "检查器"}
             </button>
             <button type="button" className="icon-btn" onClick={() => dispatch({ type: "settings", open: true })} data-testid="open-settings">
               设置

@@ -1,8 +1,8 @@
 /**
- * 对 Wails 生成 bindings 的薄封装。生成物无完整 .d.ts，此处以本地类型收窄。
- * 组件不得直接依赖生成文件。
+ * 对 Wails 生成 bindings 的薄封装。
+ * 桌面 WebView 使用真实 bindings；浏览器验收使用 window.__CAIRN_BRIDGE__。
  */
-// @ts-expect-error 生成的 JS bindings 无独立声明文件
+// @ts-ignore 生成的 JS bindings 无独立声明文件
 import * as RawAPI from "../../bindings/github.com/fxbin/cairn/internal/desktop/service.js";
 import type {
   AbortRequest,
@@ -28,6 +28,7 @@ import type {
   WorkspaceRequest,
   WorkspaceStatus,
 } from "./types";
+import { bindBrowserBridge } from "./browserBridge";
 
 interface DesktopBindings {
   Health(): Promise<HealthResult>;
@@ -62,4 +63,31 @@ interface DesktopBindings {
   OpenPathInEditor(path: string): Promise<OKResult>;
 }
 
-export const Bindings = RawAPI as DesktopBindings;
+function inWailsRuntime(): boolean {
+  return typeof window !== "undefined" && Boolean((window as unknown as { runtime?: unknown }).runtime);
+}
+
+function bridge(): DesktopBindings {
+  const existing = (window as unknown as { __CAIRN_BRIDGE__?: DesktopBindings }).__CAIRN_BRIDGE__;
+  if (existing) {
+    return existing;
+  }
+  return bindBrowserBridge() as unknown as DesktopBindings;
+}
+
+const impl: DesktopBindings = new Proxy({} as DesktopBindings, {
+  get(_target, prop: string) {
+    const fallback = bridge() as unknown as Record<string, unknown>;
+    const raw = (RawAPI as unknown as Record<string, unknown>)[prop];
+    if (inWailsRuntime() && typeof raw === "function") {
+      return raw.bind(RawAPI);
+    }
+    const fn = fallback[prop];
+    if (typeof fn === "function") {
+      return fn.bind(fallback);
+    }
+    return raw;
+  },
+});
+
+export const Bindings = impl;
