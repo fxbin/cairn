@@ -42,6 +42,7 @@ type Action =
   | { type: "recent"; recent: RecentProject[] }
   | { type: "runs"; runs: RunHistoryView[] }
   | { type: "selectRun"; runId: string | null }
+  | { type: "autoSelectRun"; runId?: string }
   | { type: "stream"; event: StreamEvent }
   | { type: "panel"; panel: PanelId }
   | { type: "resetStream" };
@@ -73,6 +74,11 @@ function reducer(state: AppState, action: Action): AppState {
     case "runs":
       return { ...state, runs: action.runs };
     case "selectRun":
+      return { ...state, selectedRunId: action.runId };
+    case "autoSelectRun":
+      if (!action.runId || state.selectedRunId) {
+        return state;
+      }
       return { ...state, selectedRunId: action.runId };
     case "stream": {
       const next = state.streamEvents.concat(action.event);
@@ -148,7 +154,12 @@ export default function App() {
   useEffect(() => {
     return desktop.onStream((event) => {
       dispatch({ type: "stream", event });
-      if (event.kind === "run.finished" || event.kind === "run.waiting_approval") {
+      dispatch({ type: "autoSelectRun", runId: event.run_id });
+      if (
+        event.kind === "run.finished" ||
+        event.kind === "run.waiting_approval" ||
+        event.kind === "run.waiting_reconcile"
+      ) {
         if (workspacePath) {
           void desktop
             .listRuns({ workspace: workspacePath })

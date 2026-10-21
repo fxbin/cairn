@@ -93,6 +93,22 @@ select {
   color: var(--c-text-muted);
 }
 
+.tone-ok {
+  color: var(--c-success);
+}
+
+.tone-warn {
+  color: var(--c-warning);
+}
+
+.tone-danger {
+  color: var(--c-danger);
+}
+
+.tone-accent {
+  color: var(--c-accent);
+}
+
 .scroll-y {
   overflow-y: auto;
   overflow-x: hidden;

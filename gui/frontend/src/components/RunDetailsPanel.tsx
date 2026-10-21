@@ -1,8 +1,11 @@
-import type { ErrorBody, RunHistoryView, StreamEvent } from "../desktop/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { desktop } from "../desktop/client";
+import type { DomainEvent, ErrorBody, RunDetail, RunHistoryView, StreamEvent } from "../desktop/types";
 import type { PanelId } from "./panelTypes";
+import { toTimeline } from "../desktop/timeline";
 import { SettingsPanel } from "./SettingsPanel";
 
-/** 运行详情/恢复区：流式事件时间线与设置入口。 */
+/** 运行详情/恢复区：事件时间线、取消与设置。 */
 export function RunDetailsPanel({
   workspacePath,
   selectedRun,
@@ -18,6 +21,68 @@ export function RunDetailsPanel({
   onPanel: (panel: PanelId) => void;
   onError: (error: ErrorBody) => void;
 }) {
+  const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const loadDetail = useCallback(async () => {
+    if (!workspacePath || !selectedRun?.run_id) {
+      setDetail(null);
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await desktop.inspectRun({
+        workspace: workspacePath,
+        run_id: selectedRun.run_id,
+        include_events: true,
+      });
+      setDetail(result);
+    } catch (error) {
+      onError(
+        error && typeof error === "object" && "body" in error
+          ? (error as { body: ErrorBody }).body
+          : { code: "internal", message: String(error) },
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [workspacePath, selectedRun?.run_id, onError]);
+
+  useEffect(() => {
+    void loadDetail();
+  }, [loadDetail]);
+
+  const liveEvents: DomainEvent[] = useMemo(() => {
+    const base = detail?.events ?? [];
+    const seen = new Set(base.map((event) => event.seq));
+    const extras = streamEvents
+      .map((item) => item.event)
+      .filter((event): event is DomainEvent => Boolean(event && event.run_id === selectedRun?.run_id))
+      .filter((event) => !seen.has(event.seq));
+    return base.concat(extras);
+  }, [detail?.events, streamEvents, selectedRun?.run_id]);
+
+  const timeline = useMemo(() => toTimeline(liveEvents), [liveEvents]);
+
+  const cancelRun = async () => {
+    if (!selectedRun?.run_id) {
+      return;
+    }
+    setCancelling(true);
+    try {
+      await desktop.cancelRun({ run_id: selectedRun.run_id, reason: "user cancel" });
+    } catch (error) {
+      onError(
+        error && typeof error === "object" && "body" in error
+          ? (error as { body: ErrorBody }).body
+          : { code: "internal", message: String(error) },
+      );
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   return (
     <section className="panel flex min-h-0 flex-col p-3">
       <div className="mb-2 flex items-center gap-2">
@@ -39,11 +104,21 @@ export function RunDetailsPanel({
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={!selectedRun || cancelling}
+            onClick={() => void cancelRun()}
+            data-testid="cancel-run"
+          >
+            取消运行
+          </button>
+          <button type="button" className="btn" disabled={!selectedRun || loading} onClick={() => void loadDetail()}>
+            刷新
+          </button>
         </div>
       </div>
-      {panel === "settings" && (
-        <SettingsPanel workspacePath={workspacePath} onError={onError} />
-      )}
+      {panel === "settings" && <SettingsPanel workspacePath={workspacePath} onError={onError} />}
       {panel !== "settings" && (
         <>
           {!selectedRun && (
@@ -53,33 +128,29 @@ export function RunDetailsPanel({
           )}
           {selectedRun && (
             <div className="muted text-xs" data-testid="run-selected">
-              运行 {selectedRun.run_id} · {selectedRun.phase || selectedRun.state}
+              运行 {selectedRun.run_id} · {detail?.phase || selectedRun.phase || selectedRun.state}
+              {detail?.task ? ` · ${detail.task.slice(0, 80)}` : ""}
             </div>
           )}
           <div className="scroll-y mt-2 min-h-0 flex-1 space-y-1" data-testid="stream-events">
-            {streamEvents.length === 0 && <div className="muted text-xs">暂无增量事件。</div>}
-            {streamEvents.map((event, index) => (
-              <div
-                key={`${event.run_id || "run"}-${event.seq ?? index}`}
-                className="rounded-md border border-[var(--c-border)] px-2 py-1 text-xs"
-              >
-                <div className="flex justify-between gap-2">
-                  <span className="font-medium">{event.kind}</span>
-                  <span className="muted">
-                    {event.run_id || "—"} · seq {event.seq ?? "—"}
-                  </span>
-                </div>
-                {event.event && (
-                  <div className="muted">
-                    {event.event.type}
-                    {event.event.operation_id ? ` · ${event.event.operation_id}` : ""}
+            {loading && <div className="muted text-xs">加载事件…</div>}
+            {!loading && timeline.length === 0 && (
+              <div className="muted text-xs">暂无事件。提交任务后将显示流式过程。</div>
+            )}
+            {!loading &&
+              timeline.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-md border border-[var(--c-border)] px-2 py-1 text-xs"
+                  data-event-type={item.type}
+                >
+                  <div className="flex justify-between gap-2">
+                    <span className={`font-medium tone-${item.tone}`}>{item.label}</span>
+                    <span className="muted">seq {item.seq}</span>
                   </div>
-                )}
-                {event.status?.response_preview && (
-                  <div className="mt-1 line-clamp-2">{event.status.response_preview}</div>
-                )}
-              </div>
-            ))}
+                  {item.detail && <div className="muted mt-0.5 line-clamp-2">{item.detail}</div>}
+                </div>
+              ))}
           </div>
         </>
       )}

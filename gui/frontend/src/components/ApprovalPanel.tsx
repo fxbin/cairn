@@ -1,8 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { desktop } from "../desktop/client";
 import type { ErrorBody, RunHistoryView, StreamEvent } from "../desktop/types";
 
-/** 审批面板：展示待审批摘要并提交一次性决定。 */
+/**
+ * 审批面板：允许/拒绝一次性决定。
+ * 待审批状态来自流事件或 Journal 投影（重开窗口后仍可恢复）。
+ */
 export function ApprovalPanel({
   workspacePath,
   selectedRun,
@@ -16,16 +19,77 @@ export function ApprovalPanel({
 }) {
   const [busy, setBusy] = useState(false);
   const [lastDecision, setLastDecision] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    run_id: string;
+    fingerprint: string;
+    summary: string;
+    operation_id?: string;
+  } | null>(null);
 
-  const waiting = useMemo(() => {
+  const fromStream = useMemo(() => {
     for (let i = streamEvents.length - 1; i >= 0; i -= 1) {
       const event = streamEvents[i];
       if (event.kind === "run.waiting_approval" && event.error?.fingerprint) {
-        return event.error;
+        return {
+          run_id: event.error.run_id || event.run_id || "",
+          fingerprint: event.error.fingerprint,
+          summary: event.error.summary || "",
+          operation_id: event.error.operation_id,
+        };
       }
     }
     return null;
   }, [streamEvents]);
+
+  const loadFromInspect = useCallback(async () => {
+    if (!workspacePath || !selectedRun?.run_id) {
+      setSnapshot(null);
+      return;
+    }
+    try {
+      const detail = await desktop.inspectRun({
+        workspace: workspacePath,
+        run_id: selectedRun.run_id,
+        include_events: true,
+      });
+      const events = detail.events ?? [];
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i];
+        if (event.type === "approval_requested") {
+          const payload = (event.payload ?? {}) as Record<string, unknown>;
+          const fingerprint = typeof payload.fingerprint === "string" ? payload.fingerprint : "";
+          const summary = typeof payload.summary === "string" ? payload.summary : "";
+          const operationId =
+            typeof payload.operation_id === "string" ? payload.operation_id : event.operation_id;
+          if (fingerprint) {
+            setSnapshot({
+              run_id: selectedRun.run_id,
+              fingerprint,
+              summary,
+              operation_id: operationId,
+            });
+            return;
+          }
+        }
+        if (
+          event.type === "approval_granted" ||
+          event.type === "approval_denied" ||
+          event.type === "operation_started"
+        ) {
+          break;
+        }
+      }
+      setSnapshot(null);
+    } catch {
+      setSnapshot(null);
+    }
+  }, [workspacePath, selectedRun?.run_id]);
+
+  useEffect(() => {
+    void loadFromInspect();
+  }, [loadFromInspect]);
+
+  const waiting = fromStream ?? snapshot;
 
   const decide = async (approve: boolean) => {
     if (!workspacePath || !waiting?.fingerprint || !waiting.run_id) {
@@ -41,6 +105,7 @@ export function ApprovalPanel({
         reason: approve ? "approved via desktop UI" : "denied via desktop UI",
       });
       setLastDecision(approve ? "已允许" : "已拒绝");
+      setSnapshot(null);
     } catch (error) {
       onError(
         error && typeof error === "object" && "body" in error
@@ -58,7 +123,7 @@ export function ApprovalPanel({
       {!waiting && (
         <div className="muted text-xs" data-testid="approval-empty">
           当前没有待审批操作。
-          {selectedRun?.waiting_approval ? "（历史运行标记为待审批，请重新进入运行）" : ""}
+          {selectedRun?.waiting_approval ? "（历史运行标记为待审批，正在从 Journal 重建…）" : ""}
         </div>
       )}
       {waiting && (
