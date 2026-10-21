@@ -1,28 +1,23 @@
 /**
- * Cairn GUI 根布局：六区壳层 + 全局错误/加载/空态。
- * 运行事实来自 desktop 桥接的 Journal 投影，本地状态只保存视图偏好。
+ * Cairn Desktop：对话优先 Agent 客户端布局。
+ * 交互范式对齐 Codex / DeepSeek Harness / MiMo Desktop：
+ * 会话流为主、工具与审批内嵌、底部 composer、可选检查栏。
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { desktop, DesktopError } from "./desktop/client";
+import { buildChatBlocks } from "./desktop/chatBlocks";
 import type {
   ErrorBody,
   HealthResult,
   RecentProject,
+  RunDetail,
   RunHistoryView,
   StreamEvent,
   WorkspaceStatus,
 } from "./desktop/types";
-import { Sidebar } from "./components/Sidebar";
-import { TaskWorkspace } from "./components/TaskWorkspace";
-import { ApprovalPanel } from "./components/ApprovalPanel";
-import { FilesPanel } from "./components/FilesPanel";
-import { RunDetailsPanel } from "./components/RunDetailsPanel";
-import { QueueEvidencePanel } from "./components/QueueEvidencePanel";
-import { RecoveryPanel } from "./components/RecoveryPanel";
-import { StatusBar } from "./components/StatusBar";
-import { ErrorBanner } from "./components/ErrorBanner";
-
-type PanelId = "files" | "run" | "settings";
+import { ChatTranscript } from "./components/ChatTranscript";
+import { Composer, ThreadSidebar } from "./components/ChatChrome";
+import { InspectorRail, type RailTab } from "./components/InspectorRail";
 
 interface AppState {
   health: HealthResult | null;
@@ -30,24 +25,30 @@ interface AppState {
   recent: RecentProject[];
   runs: RunHistoryView[];
   selectedRunId: string | null;
+  runDetail: RunDetail | null;
   streamEvents: StreamEvent[];
   loading: boolean;
+  booting: boolean;
   error: ErrorBody | null;
-  panel: PanelId;
+  railOpen: boolean;
+  railTab: RailTab;
 }
 
 type Action =
-  | { type: "loading"; loading: boolean }
+  | { type: "booting"; value: boolean }
+  | { type: "loading"; value: boolean }
   | { type: "error"; error: ErrorBody | null }
   | { type: "health"; health: HealthResult }
   | { type: "workspace"; workspace: WorkspaceStatus }
   | { type: "recent"; recent: RecentProject[] }
   | { type: "runs"; runs: RunHistoryView[] }
+  | { type: "runDetail"; detail: RunDetail | null }
   | { type: "selectRun"; runId: string | null }
   | { type: "autoSelectRun"; runId?: string }
   | { type: "stream"; event: StreamEvent }
-  | { type: "panel"; panel: PanelId }
-  | { type: "resetStream" };
+  | { type: "clearStream" }
+  | { type: "railOpen"; value: boolean }
+  | { type: "railTab"; tab: RailTab };
 
 const initialState: AppState = {
   health: null,
@@ -55,18 +56,23 @@ const initialState: AppState = {
   recent: [],
   runs: [],
   selectedRunId: null,
+  runDetail: null,
   streamEvents: [],
   loading: true,
+  booting: true,
   error: null,
-  panel: "run",
+  railOpen: true,
+  railTab: "details",
 };
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
+    case "booting":
+      return { ...state, booting: action.value };
     case "loading":
-      return { ...state, loading: action.loading };
+      return { ...state, loading: action.value };
     case "error":
-      return { ...state, error: action.error, loading: false };
+      return { ...state, error: action.error };
     case "health":
       return { ...state, health: action.health };
     case "workspace":
@@ -75,8 +81,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, recent: action.recent };
     case "runs":
       return { ...state, runs: action.runs };
+    case "runDetail":
+      return { ...state, runDetail: action.detail };
     case "selectRun":
-      return { ...state, selectedRunId: action.runId };
+      return { ...state, selectedRunId: action.runId, streamEvents: [] };
     case "autoSelectRun":
       if (!action.runId || state.selectedRunId) {
         return state;
@@ -84,14 +92,15 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, selectedRunId: action.runId };
     case "stream": {
       const next = state.streamEvents.concat(action.event);
-      // 有界缓冲，避免长日志拖垮渲染；完整事件以 Inspect 快照为准。
-      const bounded = next.length > 500 ? next.slice(next.length - 500) : next;
+      const bounded = next.length > 800 ? next.slice(next.length - 800) : next;
       return { ...state, streamEvents: bounded };
     }
-    case "resetStream":
+    case "clearStream":
       return { ...state, streamEvents: [] };
-    case "panel":
-      return { ...state, panel: action.panel };
+    case "railOpen":
+      return { ...state, railOpen: action.value };
+    case "railTab":
+      return { ...state, railTab: action.tab, railOpen: true };
     default:
       return state;
   }
@@ -107,45 +116,70 @@ function errorBodyOf(error: unknown): ErrorBody {
 export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [workspacePath, setWorkspacePath] = useState("");
+  const [threadQuery, setThreadQuery] = useState("");
+  const [draft, setDraft] = useState("");
+  const [model, setModel] = useState("");
+  const [running, setRunning] = useState(false);
 
-  const refreshAll = useCallback(async (path: string) => {
-    if (!path) {
-      dispatch({ type: "loading", loading: false });
-      return;
-    }
-    dispatch({ type: "loading", loading: true });
-    dispatch({ type: "error", error: null });
-    try {
-      const [health, workspace, recent, runs] = await Promise.all([
-        desktop.health(),
-        desktop.observeWorkspace(path),
-        desktop.listRecentProjects(false),
-        desktop.listRuns({ workspace: path }),
-      ]);
-      dispatch({ type: "health", health });
-      dispatch({ type: "workspace", workspace });
-      dispatch({ type: "recent", recent });
-      dispatch({ type: "runs", runs });
-      await desktop.rememberProject(path);
-    } catch (error) {
-      dispatch({ type: "error", error: errorBodyOf(error) });
-    } finally {
-      dispatch({ type: "loading", loading: false });
-    }
+  const onError = useCallback((error: ErrorBody) => {
+    dispatch({ type: "error", error });
   }, []);
 
+  const refreshThreads = useCallback(async (path: string) => {
+    if (!path) {
+      return;
+    }
+    try {
+      const runs = await desktop.listRuns({ workspace: path, query: threadQuery });
+      dispatch({ type: "runs", runs });
+    } catch (error) {
+      dispatch({ type: "error", error: errorBodyOf(error) });
+    }
+    // threadQuery 单独依赖会触发频繁刷新；搜索在输入后由用户回车/防抖可再优化
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadQuery]);
+
+  const refreshAll = useCallback(
+    async (path: string) => {
+      if (!path) {
+        dispatch({ type: "loading", value: false });
+        return;
+      }
+      dispatch({ type: "loading", value: true });
+      try {
+        const [health, workspace, recent] = await Promise.all([
+          desktop.health(),
+          desktop.observeWorkspace(path),
+          desktop.listRecentProjects(false),
+        ]);
+        dispatch({ type: "health", health });
+        dispatch({ type: "workspace", workspace });
+        dispatch({ type: "recent", recent });
+        await desktop.rememberProject(path);
+        await refreshThreads(path);
+      } catch (error) {
+        dispatch({ type: "error", error: errorBodyOf(error) });
+      } finally {
+        dispatch({ type: "loading", value: false });
+        dispatch({ type: "booting", value: false });
+      }
+    },
+    [refreshThreads],
+  );
+
+  // 启动：恢复最近项目
   useEffect(() => {
     void desktop
       .listRecentProjects(false)
       .then((recent) => {
         dispatch({ type: "recent", recent });
-        if (recent.length > 0 && !workspacePath) {
+        if (recent.length > 0) {
           setWorkspacePath(recent[0].path);
         }
       })
       .catch((error) => dispatch({ type: "error", error: errorBodyOf(error) }))
-      .finally(() => dispatch({ type: "loading", loading: false }));
-  }, [workspacePath]);
+      .finally(() => dispatch({ type: "booting", value: false }));
+  }, []);
 
   useEffect(() => {
     if (workspacePath) {
@@ -153,89 +187,240 @@ export default function App() {
     }
   }, [workspacePath, refreshAll]);
 
+  // 选中运行 → 从 Journal 重建
+  useEffect(() => {
+    if (!workspacePath || !state.selectedRunId) {
+      dispatch({ type: "runDetail", detail: null });
+      return;
+    }
+    let cancelled = false;
+    void desktop
+      .inspectRun({
+        workspace: workspacePath,
+        run_id: state.selectedRunId,
+        include_events: true,
+      })
+      .then((detail) => {
+        if (!cancelled) {
+          dispatch({ type: "runDetail", detail });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          dispatch({ type: "error", error: errorBodyOf(error) });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspacePath, state.selectedRunId]);
+
+  // 事件流
   useEffect(() => {
     return desktop.onStream((event) => {
       dispatch({ type: "stream", event });
       dispatch({ type: "autoSelectRun", runId: event.run_id });
-      if (
-        event.kind === "run.finished" ||
-        event.kind === "run.waiting_approval" ||
-        event.kind === "run.waiting_reconcile"
-      ) {
+      if (event.kind === "run.finished") {
+        setRunning(false);
         if (workspacePath) {
-          void desktop
-            .listRuns({ workspace: workspacePath })
-            .then((runs) => dispatch({ type: "runs", runs }))
-            .catch(() => undefined);
+          void refreshThreads(workspacePath);
         }
       }
+      if (event.kind === "run.waiting_approval") {
+        setRunning(false);
+      }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspacePath]);
+
+  const blocks = useMemo(
+    () =>
+      buildChatBlocks(
+        state.runDetail?.events ?? [],
+        state.streamEvents.filter(
+          (item) => !state.selectedRunId || !item.run_id || item.run_id === state.selectedRunId,
+        ),
+      ),
+    [state.runDetail?.events, state.streamEvents, state.selectedRunId],
+  );
 
   const selectedRun = useMemo(
     () => state.runs.find((run) => run.run_id === state.selectedRunId) ?? null,
     [state.runs, state.selectedRunId],
   );
 
+  const statusLabel = useMemo(() => {
+    if (running) {
+      return "执行中";
+    }
+    if (selectedRun?.waiting_approval) {
+      return "待审批";
+    }
+    if (selectedRun) {
+      return selectedRun.phase || selectedRun.state;
+    }
+    return "就绪";
+  }, [running, selectedRun]);
+
+  const submitTask = async () => {
+    if (!workspacePath || !draft.trim()) {
+      return;
+    }
+    const text = draft.trim();
+    setDraft("");
+    setRunning(true);
+    dispatch({ type: "railTab", tab: "details" });
+    try {
+      const ack = await desktop.startRun({
+        workspace: workspacePath,
+        task: text,
+        model: model.trim() || undefined,
+      });
+      if (ack.run_id) {
+        dispatch({ type: "selectRun", runId: ack.run_id });
+      }
+    } catch (error) {
+      setRunning(false);
+      dispatch({ type: "error", error: errorBodyOf(error) });
+    }
+  };
+
+  const decide = async (approve: boolean, fingerprint: string, runId: string) => {
+    if (!workspacePath) {
+      return;
+    }
+    setRunning(true);
+    try {
+      await desktop.resumeRun({
+        workspace: workspacePath,
+        run_id: runId,
+        approve,
+        fingerprint,
+        reason: approve ? "approved via desktop UI" : "denied via desktop UI",
+      });
+    } catch (error) {
+      setRunning(false);
+      dispatch({ type: "error", error: errorBodyOf(error) });
+    }
+  };
+
+  const pickWorkspace = async () => {
+    try {
+      const path = await desktop.pickDirectory("选择工作区", workspacePath);
+      if (path) {
+        setWorkspacePath(path);
+      }
+    } catch (error) {
+      dispatch({ type: "error", error: errorBodyOf(error) });
+    }
+  };
+
+  const filteredThreads = useMemo(() => {
+    const q = threadQuery.trim().toLowerCase();
+    if (!q) {
+      return state.runs;
+    }
+    return state.runs.filter((run) =>
+      `${run.title}\n${run.task}\n${run.run_id}`.toLowerCase().includes(q),
+    );
+  }, [state.runs, threadQuery]);
+
   return (
-    <div className="flex h-full flex-col" data-testid="cairn-shell">
-      <ErrorBanner error={state.error} onDismiss={() => dispatch({ type: "error", error: null })} />
-      <div className="flex min-h-0 flex-1">
-        <Sidebar
-          workspace={state.workspace}
-          recent={state.recent}
-          runs={state.runs}
-          selectedRunId={state.selectedRunId}
-          loading={state.loading}
-          workspacePath={workspacePath}
-          onWorkspaceChange={setWorkspacePath}
-          onSelectRun={(runId) => {
-            dispatch({ type: "selectRun", runId });
-            dispatch({ type: "resetStream" });
-          }}
-          onRefresh={() => void refreshAll(workspacePath)}
-          onError={(error) => dispatch({ type: "error", error })}
-        />
-        <main className="flex min-w-0 flex-1 flex-col gap-3 p-3">
-          <TaskWorkspace
-            workspacePath={workspacePath}
-            selectedRun={selectedRun}
-            onStart={() => void refreshAll(workspacePath)}
-            onError={(error) => dispatch({ type: "error", error })}
-          />
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-3">
-            <ApprovalPanel
-              workspacePath={workspacePath}
-              selectedRun={selectedRun}
-              streamEvents={state.streamEvents}
-              onError={(error) => dispatch({ type: "error", error })}
-            />
-            <FilesPanel workspace={state.workspace} onError={(error) => dispatch({ type: "error", error })} />
-            <div className="flex min-h-0 flex-col gap-3">
-              <RunDetailsPanel
-                workspacePath={workspacePath}
-                selectedRun={selectedRun}
-                streamEvents={state.streamEvents}
-                panel={state.panel}
-                onPanel={(panel) => dispatch({ type: "panel", panel })}
-                onError={(error) => dispatch({ type: "error", error })}
-              />
-              <QueueEvidencePanel
-                workspacePath={workspacePath}
-                runId={selectedRun?.run_id ?? null}
-                onError={(error) => dispatch({ type: "error", error })}
-              />
-              <RecoveryPanel
-                workspacePath={workspacePath}
-                selectedRun={selectedRun}
-                onError={(error) => dispatch({ type: "error", error })}
-                onRefresh={() => void refreshAll(workspacePath)}
-              />
-            </div>
+    <div className="app-shell" data-rail={state.railOpen ? "open" : "closed"} data-testid="cairn-shell">
+      <ThreadSidebar
+        threads={filteredThreads.map((run) => ({
+          run_id: run.run_id,
+          title: run.title,
+          phase: run.phase,
+          state: run.state,
+          updated_at: run.updated_at,
+        }))}
+        activeId={state.selectedRunId}
+        query={threadQuery}
+        onQuery={setThreadQuery}
+        onSelect={(runId) => {
+          dispatch({ type: "selectRun", runId });
+          setRunning(false);
+        }}
+        onNew={() => {
+          dispatch({ type: "selectRun", runId: null });
+          dispatch({ type: "clearStream" });
+          setDraft("");
+          setRunning(false);
+        }}
+        workspacePath={workspacePath}
+        onPickWorkspace={() => void pickWorkspace()}
+        workspaceLabel={state.workspace?.path ? workspacePath.split("/").pop() || workspacePath : workspacePath}
+      />
+
+      <main className="main-column">
+        {state.error && (
+          <div className="error-banner" role="alert" data-testid="error-banner">
+            <span>
+              {state.error.message}
+              <span className="muted"> · {state.error.code}</span>
+            </span>
+            <button type="button" className="btn-sm" onClick={() => dispatch({ type: "error", error: null })}>
+              关闭
+            </button>
           </div>
-        </main>
-      </div>
-      <StatusBar health={state.health} workspace={state.workspace} loading={state.loading} />
+        )}
+
+        <header className="chat-header">
+          <h1>{selectedRun?.title || "新任务"}</h1>
+          <div className="header-actions">
+            <span className="status-pill" data-state={running ? "running" : selectedRun ? selectedRun.state : "idle"}>
+              <span className="dot" />
+              {statusLabel}
+            </span>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => dispatch({ type: "railOpen", value: !state.railOpen })}
+              data-testid="toggle-rail"
+            >
+              检查器
+            </button>
+            <button type="button" className="icon-btn" onClick={() => workspacePath && refreshAll(workspacePath)}>
+              刷新
+            </button>
+          </div>
+        </header>
+
+        <ChatTranscript
+          blocks={blocks}
+          loading={state.loading || state.booting}
+          onDecide={(approve, fingerprint, runId) => void decide(approve, fingerprint, runId)}
+          onSuggestion={(text) => setDraft(text)}
+        />
+
+        <Composer
+          value={draft}
+          onChange={setDraft}
+          onSubmit={() => void submitTask()}
+          onStop={() => {
+            if (state.selectedRunId) {
+              void desktop
+                .cancelRun({ run_id: state.selectedRunId, reason: "user stop" })
+                .then(() => setRunning(false))
+                .catch((error) => dispatch({ type: "error", error: errorBodyOf(error) }));
+            }
+          }}
+          running={running}
+          model={model}
+          onModelChange={setModel}
+          disabled={!workspacePath}
+        />
+      </main>
+
+      <InspectorRail
+        tab={state.railTab}
+        onTab={(tab) => dispatch({ type: "railTab", tab })}
+        workspace={state.workspace}
+        runId={state.selectedRunId}
+        statusLabel={statusLabel}
+        onError={onError}
+      />
     </div>
   );
 }
