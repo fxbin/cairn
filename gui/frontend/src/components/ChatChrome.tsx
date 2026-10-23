@@ -114,7 +114,7 @@ export function Composer({
             入队
           </button>
           {running ? (
-            <button type="button" className="btn-send" style={{ background: "var(--c-danger)" }} onClick={onStop} data-testid="composer-stop">
+            <button type="button" className="btn-send stop" onClick={onStop} data-testid="composer-stop">
               停止
             </button>
           ) : (
