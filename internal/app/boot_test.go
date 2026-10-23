@@ -124,7 +124,7 @@ func TestBootManifestDescribesCapabilities(t *testing.T) {
 	for _, tool := range manifest.Tools {
 		toolNames = append(toolNames, tool.Name)
 	}
-	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,apply_patch,exec_command,send_message,web_fetch,web_search" {
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,git_status,git_diff,apply_patch,exec_command,send_message,web_fetch,web_search" {
 		t.Fatalf("manifest tools = %v", toolNames)
 	}
 	sideEffects := map[string]string{}
@@ -279,7 +279,7 @@ func TestReadOnlyPresetDropsSideEffectTools(t *testing.T) {
 	for _, tool := range manifest.Tools {
 		toolNames = append(toolNames, tool.Name)
 	}
-	if strings.Join(toolNames, ",") != "list_files,read_file,search_text" {
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,git_status,git_diff" {
 		t.Fatalf("read-only tools = %v", toolNames)
 	}
 	for _, tool := range manifest.Tools {

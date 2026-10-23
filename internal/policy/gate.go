@@ -91,7 +91,7 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		}
 	}
 	switch toolName {
-	case "list_files", "read_file", "search_text", "skill":
+	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "web_search", "web_fetch", "send_message":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
 	case "apply_patch":
 		var proposed struct {

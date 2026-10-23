@@ -308,13 +308,22 @@ func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset s
 // presetToolsWithWeb 按 opt-in 决定是否暴露网络工具。
 func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, webEnabled bool) []tools.Tool {
 	patchTool := tools.ApplyPatch{Workspace: workspace}
-	available := []tools.Tool{tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool, tools.SendMessage{}}
+	available := []tools.Tool{
+		tools.ListFiles{Workspace: workspace},
+		tools.ReadFile{Workspace: workspace},
+		tools.SearchText{Workspace: workspace},
+		tools.GitStatus{Workspace: workspace},
+		tools.GitDiff{Workspace: workspace},
+		patchTool,
+		execTool,
+		tools.SendMessage{},
+	}
 	// 网络工具 opt-in：与 dsh Web Search 设置一致，默认不暴露。
 	if webEnabled && config.PresetReadOnly != preset {
 		available = append(available, tools.WebFetch{}, tools.WebSearch{})
 	}
 	if preset == config.PresetReadOnly {
-		return available[:3]
+		return available[:5]
 	}
 	return available
 }

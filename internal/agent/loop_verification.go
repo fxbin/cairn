@@ -737,7 +737,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		return true, nil
 	}
 	command := commands[latest.proposal.CommandIndex]
-	feedback := fmt.Sprintf("Verification command %s failed (%s). Inspect the persisted result, repair the workspace, and run the configured verification again. Evidence: %s", command.ID, result.Code, result.Preview)
+	feedback := verificationFailureFeedback(command.ID, result)
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{
