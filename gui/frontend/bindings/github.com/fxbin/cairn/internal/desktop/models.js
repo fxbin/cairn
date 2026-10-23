@@ -238,6 +238,51 @@ export class ChangeSet {
 }
 
 /**
+ * CommandInfo 描述一个内置命令能力。
+ */
+export class CommandInfo {
+    /**
+     * Creates a new CommandInfo instance.
+     * @param {Partial<CommandInfo>} [$$source = {}] - The source object to create the CommandInfo.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("description" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["description"] = "";
+        }
+        if (!("scope" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["scope"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CommandInfo instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {CommandInfo}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CommandInfo(/** @type {Partial<CommandInfo>} */($$parsedSource));
+    }
+}
+
+/**
  * EvidenceMetrics 是非敏感用量摘要；未知项由前端显示为“—”。
  */
 export class EvidenceMetrics {
@@ -647,6 +692,123 @@ export class HealthResult {
 }
 
 /**
+ * HookAction 是钩子允许的有限动作之一。
+ */
+export class HookAction {
+    /**
+     * Creates a new HookAction instance.
+     * @param {Partial<HookAction>} [$$source = {}] - The source object to create the HookAction.
+     */
+    constructor($$source = {}) {
+        if (!("kind" in $$source)) {
+            /**
+             * Kind 仅支持 queue_followup（入队后续任务）。
+             * @member
+             * @type {string}
+             */
+            this["kind"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["content"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["reason"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HookAction instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {HookAction}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HookAction(/** @type {Partial<HookAction>} */($$parsedSource));
+    }
+}
+
+/**
+ * HookRule 绑定工作区与事件到有限动作；不能提升权限。
+ */
+export class HookRule {
+    /**
+     * Creates a new HookRule instance.
+     * @param {Partial<HookRule>} [$$source = {}] - The source object to create the HookRule.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (!("event" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["event"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (!("actions" in $$source)) {
+            /**
+             * @member
+             * @type {HookAction[]}
+             */
+            this["actions"] = [];
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * FailStreak 连续失败次数；达到阈值自动停用。
+             * @member
+             * @type {number | undefined}
+             */
+            this["fail_streak"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HookRule instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {HookRule}
+     */
+    static createFrom($$source = {}) {
+        const $$createField4_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("actions" in $$parsedSource) {
+            $$parsedSource["actions"] = $$createField4_0($$parsedSource["actions"]);
+        }
+        return new HookRule(/** @type {Partial<HookRule>} */($$parsedSource));
+    }
+}
+
+/**
  * InspectRequest 查询运行投影。
  */
 export class InspectRequest {
@@ -699,6 +861,132 @@ export class InspectRequest {
 }
 
 /**
+ * MemoryCandidateView 是记忆候选的只读投影。
+ */
+export class MemoryCandidateView {
+    /**
+     * Creates a new MemoryCandidateView instance.
+     * @param {Partial<MemoryCandidateView>} [$$source = {}] - The source object to create the MemoryCandidateView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("kind" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["kind"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["run_id"] = undefined;
+        }
+        if (!("outcome" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["outcome"] = "";
+        }
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("trusted_verification" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["trusted_verification"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["created_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["summary"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MemoryCandidateView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {MemoryCandidateView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MemoryCandidateView(/** @type {Partial<MemoryCandidateView>} */($$parsedSource));
+    }
+}
+
+/**
+ * MemoryDetail 是记忆详情投影。
+ */
+export class MemoryDetail {
+    /**
+     * Creates a new MemoryDetail instance.
+     * @param {Partial<MemoryDetail>} [$$source = {}] - The source object to create the MemoryDetail.
+     */
+    constructor($$source = {}) {
+        if (!("candidate" in $$source)) {
+            /**
+             * @member
+             * @type {MemoryCandidateView}
+             */
+            this["candidate"] = (new MemoryCandidateView());
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["audit"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MemoryDetail instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {MemoryDetail}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType8;
+        const $$createField1_0 = $$createType9;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("candidate" in $$parsedSource) {
+            $$parsedSource["candidate"] = $$createField0_0($$parsedSource["candidate"]);
+        }
+        if ("audit" in $$parsedSource) {
+            $$parsedSource["audit"] = $$createField1_0($$parsedSource["audit"]);
+        }
+        return new MemoryDetail(/** @type {Partial<MemoryDetail>} */($$parsedSource));
+    }
+}
+
+/**
  * OKResult 是无数据成功响应。
  */
 export class OKResult {
@@ -726,6 +1014,483 @@ export class OKResult {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new OKResult(/** @type {Partial<OKResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProjectInstructionDoc 单条规约来源与摘要。
+ */
+export class ProjectInstructionDoc {
+    /**
+     * Creates a new ProjectInstructionDoc instance.
+     * @param {Partial<ProjectInstructionDoc>} [$$source = {}] - The source object to create the ProjectInstructionDoc.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["source"] = undefined;
+        }
+        if (!("path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["path"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["sha256"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["bytes"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["excerpt"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectInstructionDoc instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProjectInstructionDoc}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProjectInstructionDoc(/** @type {Partial<ProjectInstructionDoc>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProjectInstructionsView 是规约发现的只读投影。
+ */
+export class ProjectInstructionsView {
+    /**
+     * Creates a new ProjectInstructionsView instance.
+     * @param {Partial<ProjectInstructionsView>} [$$source = {}] - The source object to create the ProjectInstructionsView.
+     */
+    constructor($$source = {}) {
+        if (!("documents" in $$source)) {
+            /**
+             * @member
+             * @type {ProjectInstructionDoc[]}
+             */
+            this["documents"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectInstructionsView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProjectInstructionsView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("documents" in $$parsedSource) {
+            $$parsedSource["documents"] = $$createField0_0($$parsedSource["documents"]);
+        }
+        return new ProjectInstructionsView(/** @type {Partial<ProjectInstructionsView>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderAdmissionRequest 携带用户刚复核的非敏感绑定，不接受密钥或自造身份。
+ */
+export class ProviderAdmissionRequest {
+    /**
+     * Creates a new ProviderAdmissionRequest instance.
+     * @param {Partial<ProviderAdmissionRequest>} [$$source = {}] - The source object to create the ProviderAdmissionRequest.
+     */
+    constructor($$source = {}) {
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["state_dir"] = undefined;
+        }
+        if (!("evidence_fingerprint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["evidence_fingerprint"] = "";
+        }
+        if (!("config_fingerprint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["config_fingerprint"] = "";
+        }
+        if (!("request_profile_fingerprint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["request_profile_fingerprint"] = "";
+        }
+        if (!("reason" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["reason"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["supersedes"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderAdmissionRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderAdmissionRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderAdmissionRequest(/** @type {Partial<ProviderAdmissionRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderPresetView 是命名连接预设的非敏感投影。
+ */
+export class ProviderPresetView {
+    /**
+     * Creates a new ProviderPresetView instance.
+     * @param {Partial<ProviderPresetView>} [$$source = {}] - The source object to create the ProviderPresetView.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["protocol"] = "";
+        }
+        if (!("model" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["model"] = "";
+        }
+        if (!("base_url" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["base_url"] = "";
+        }
+        if (!("api_key_env" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["api_key_env"] = "";
+        }
+        if (!("admission" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["admission"] = "";
+        }
+        if (!("active" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["active"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderPresetView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderPresetView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderPresetView(/** @type {Partial<ProviderPresetView>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderProbeView 是显式探测的只读结论；不含密钥与消息正文。
+ */
+export class ProviderProbeView {
+    /**
+     * Creates a new ProviderProbeView instance.
+     * @param {Partial<ProviderProbeView>} [$$source = {}] - The source object to create the ProviderProbeView.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["evidence_fingerprint"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["config_fingerprint"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["request_profile_fingerprint"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["tool_roundtrip"] = undefined;
+        }
+        if (!("usage_streamed" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["usage_streamed"] = false;
+        }
+        if (!("result" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["result"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["provider_kind"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["error"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderProbeView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderProbeView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderProbeView(/** @type {Partial<ProviderProbeView>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderSetupRequest 是配置向导的显式输入。
+ */
+export class ProviderSetupRequest {
+    /**
+     * Creates a new ProviderSetupRequest instance.
+     * @param {Partial<ProviderSetupRequest>} [$$source = {}] - The source object to create the ProviderSetupRequest.
+     */
+    constructor($$source = {}) {
+        if (!("base_url" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["base_url"] = "";
+        }
+        if (!("model" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["model"] = "";
+        }
+        if (!("api_key_env" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["api_key_env"] = "";
+        }
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["admission"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["overwrite"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["user_scope"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["catalog_url"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["catalog_cache"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderSetupRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderSetupRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderSetupRequest(/** @type {Partial<ProviderSetupRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderSetupView 是配置生成结果的非敏感投影。
+ */
+export class ProviderSetupView {
+    /**
+     * Creates a new ProviderSetupView instance.
+     * @param {Partial<ProviderSetupView>} [$$source = {}] - The source object to create the ProviderSetupView.
+     */
+    constructor($$source = {}) {
+        if (!("config_path" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["config_path"] = "";
+        }
+        if (!("api_key_env" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["api_key_env"] = "";
+        }
+        if (!("catalog_matched" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["catalog_matched"] = false;
+        }
+        if (!("probe_ran" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["probe_ran"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["notes"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderSetupView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderSetupView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField4_0 = $$createType9;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("notes" in $$parsedSource) {
+            $$parsedSource["notes"] = $$createField4_0($$parsedSource["notes"]);
+        }
+        return new ProviderSetupView(/** @type {Partial<ProviderSetupView>} */($$parsedSource));
     }
 }
 
@@ -765,6 +1530,20 @@ export class QueueActionRequest {
              * @type {string | undefined}
              */
             this["reason"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["mode"] = undefined;
         }
 
         Object.assign(this, $$source);
@@ -823,7 +1602,7 @@ export class QueueItem {
              * @member
              * @type {string | undefined}
              */
-            this["content"] = undefined;
+            this["content_preview"] = undefined;
         }
 
         Object.assign(this, $$source);
@@ -1064,6 +1843,8 @@ export class ResolveRequest {
 
 /**
  * ResumeRequest 恢复运行并可选携带一次性审批决定。
+ * Model/Mode 必须与启动时的运行时覆盖一致，使冻结指纹可复现；
+ * 真实配置漂移仍由 requireMatchingConfig 拒绝。
  */
 export class ResumeRequest {
     /**
@@ -1113,6 +1894,20 @@ export class ResumeRequest {
              */
             this["reason"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["mode"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1125,6 +1920,65 @@ export class ResumeRequest {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ResumeRequest(/** @type {Partial<ResumeRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * ReviewNote 是行级审查反馈（本地展示元数据，不改写 Journal）。
+ */
+export class ReviewNote {
+    /**
+     * Creates a new ReviewNote instance.
+     * @param {Partial<ReviewNote>} [$$source = {}] - The source object to create the ReviewNote.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (!("relative" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["relative"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["line"] = undefined;
+        }
+        if (!("body" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReviewNote instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ReviewNote}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReviewNote(/** @type {Partial<ReviewNote>} */($$parsedSource));
     }
 }
 
@@ -1203,9 +2057,9 @@ export class RunDetail {
      * @returns {RunDetail}
      */
     static createFrom($$source = {}) {
-        const $$createField5_0 = $$createType6;
-        const $$createField6_0 = $$createType8;
-        const $$createField7_0 = $$createType10;
+        const $$createField5_0 = $$createType12;
+        const $$createField6_0 = $$createType14;
+        const $$createField7_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField5_0($$parsedSource["summary"]);
@@ -1301,6 +2155,21 @@ export class RunHistoryView {
              */
             this["title"] = "";
         }
+        if (!("pinned" in $$source)) {
+            /**
+             * Pinned/Archived 来自会话展示偏好，供列表排序与操作。
+             * @member
+             * @type {boolean}
+             */
+            this["pinned"] = false;
+        }
+        if (!("archived" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["archived"] = false;
+        }
         if (!("waiting_approval" in $$source)) {
             /**
              * WaitingApproval 表示当前处于待审批。
@@ -1327,7 +2196,7 @@ export class RunHistoryView {
      * @returns {RunHistoryView}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType12;
+        const $$createField3_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("fork_source" in $$parsedSource) {
             $$parsedSource["fork_source"] = $$createField3_0($$parsedSource["fork_source"]);
@@ -1491,7 +2360,7 @@ export class SessionNode {
      * @returns {SessionNode}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType13;
+        const $$createField6_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("children" in $$parsedSource) {
             $$parsedSource["children"] = $$createField6_0($$parsedSource["children"]);
@@ -1571,8 +2440,8 @@ export class SessionTreeView {
      * @returns {SessionTreeView}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType15;
-        const $$createField1_0 = $$createType13;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("nodes" in $$parsedSource) {
             $$parsedSource["nodes"] = $$createField0_0($$parsedSource["nodes"]);
@@ -1741,6 +2610,15 @@ export class StartRunRequest {
         }
         if (/** @type {any} */(false)) {
             /**
+             * ForkSourceRunID 是分支来源的终态 run；后端解析为安全锚点。
+             * @member
+             * @type {string | undefined}
+             */
+            this["fork_source_run_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ForkSource 兼容旧字段：与 ForkSourceRunID 等价。
              * @member
              * @type {string | undefined}
              */
@@ -1754,6 +2632,14 @@ export class StartRunRequest {
              */
             this["mode"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * RequireSessionTail 要求 prev_run_id 仍是会话唯一链尾；续接时为 true。
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["require_session_tail"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1766,6 +2652,209 @@ export class StartRunRequest {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new StartRunRequest(/** @type {Partial<StartRunRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * SteeringRequest 向运行中的任务投递立即补充输入；与后续队列语义分离。
+ */
+export class SteeringRequest {
+    /**
+     * Creates a new SteeringRequest instance.
+     * @param {Partial<SteeringRequest>} [$$source = {}] - The source object to create the SteeringRequest.
+     */
+    constructor($$source = {}) {
+        if (!("run_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["run_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["input_id"] = undefined;
+        }
+        if (!("content" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["content"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SteeringRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SteeringRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SteeringRequest(/** @type {Partial<SteeringRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * WorkflowDefinition 是声明式工作流模板；编辑不改变已运行实例。
+ */
+export class WorkflowDefinition {
+    /**
+     * Creates a new WorkflowDefinition instance.
+     * @param {Partial<WorkflowDefinition>} [$$source = {}] - The source object to create the WorkflowDefinition.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("workspace" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workspace"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("steps" in $$source)) {
+            /**
+             * @member
+             * @type {WorkflowStep[]}
+             */
+            this["steps"] = [];
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * MaxSteps 硬上限，防止无界循环。
+             * @member
+             * @type {number | undefined}
+             */
+            this["max_steps"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDefinition instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {WorkflowDefinition}
+     */
+    static createFrom($$source = {}) {
+        const $$createField3_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("steps" in $$parsedSource) {
+            $$parsedSource["steps"] = $$createField3_0($$parsedSource["steps"]);
+        }
+        return new WorkflowDefinition(/** @type {Partial<WorkflowDefinition>} */($$parsedSource));
+    }
+}
+
+/**
+ * WorkflowRunAck 是工作流启动回执。
+ */
+export class WorkflowRunAck {
+    /**
+     * Creates a new WorkflowRunAck instance.
+     * @param {Partial<WorkflowRunAck>} [$$source = {}] - The source object to create the WorkflowRunAck.
+     */
+    constructor($$source = {}) {
+        if (!("workflow_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["workflow_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["run_ids"] = undefined;
+        }
+        if (!("state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowRunAck instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {WorkflowRunAck}
+     */
+    static createFrom($$source = {}) {
+        const $$createField1_0 = $$createType9;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("run_ids" in $$parsedSource) {
+            $$parsedSource["run_ids"] = $$createField1_0($$parsedSource["run_ids"]);
+        }
+        return new WorkflowRunAck(/** @type {Partial<WorkflowRunAck>} */($$parsedSource));
+    }
+}
+
+/**
+ * WorkflowStep 是有限工作流步骤；仅支持 agent_run。
+ */
+export class WorkflowStep {
+    /**
+     * Creates a new WorkflowStep instance.
+     * @param {Partial<WorkflowStep>} [$$source = {}] - The source object to create the WorkflowStep.
+     */
+    constructor($$source = {}) {
+        if (!("task" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["task"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["model"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["mode"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowStep instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {WorkflowStep}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowStep(/** @type {Partial<WorkflowStep>} */($$parsedSource));
     }
 }
 
@@ -1966,13 +3055,20 @@ const $$createType2 = EvidenceVerification.createFrom;
 const $$createType3 = EvidenceMetrics.createFrom;
 const $$createType4 = FileNode.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = app$0.RunSummary.createFrom;
-const $$createType7 = contract$0.RunManifest.createFrom;
-const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = domain$0.Event.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = domain$0.SessionForkSource.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = $Create.Array($Create.Any);
-const $$createType14 = SessionNode.createFrom;
-const $$createType15 = $Create.Map($Create.Any, $$createType14);
+const $$createType6 = HookAction.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = MemoryCandidateView.createFrom;
+const $$createType9 = $Create.Array($Create.Any);
+const $$createType10 = ProjectInstructionDoc.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = app$0.RunSummary.createFrom;
+const $$createType13 = contract$0.RunManifest.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = domain$0.Event.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = domain$0.SessionForkSource.createFrom;
+const $$createType18 = $Create.Nullable($$createType17);
+const $$createType19 = SessionNode.createFrom;
+const $$createType20 = $Create.Map($Create.Any, $$createType19);
+const $$createType21 = WorkflowStep.createFrom;
+const $$createType22 = $Create.Array($$createType21);

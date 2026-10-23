@@ -3,7 +3,10 @@
  */
 import { Bindings as DesktopAPI } from "./wails-api";
 import type {
+  ProviderProbeView,
+  ProviderAdmissionRequest,
   AbortRequest,
+  SteeringRequest,
   CancelRequest,
   ChangeSet,
   ErrorBody,
@@ -115,10 +118,58 @@ export const desktop = {
     call(() => DesktopAPI.PreviewFile(workspace, relative)),
   listChanges: (workspace: string): Promise<ChangeSet> =>
     call(() => DesktopAPI.ListChanges(workspace)),
-  diffFile: (workspace: string, relative: string): Promise<string> =>
-    call(() => DesktopAPI.DiffFile(workspace, relative)),
-  openPathInEditor: (path: string): Promise<OKResult> =>
-    call(() => DesktopAPI.OpenPathInEditor(path)),
+  diffFile: (workspace: string, relative: string, scope = "all"): Promise<string> =>
+    call(() => DesktopAPI.DiffFile(workspace, relative, scope)),
+  openPathInEditor: (workspace: string, relative: string): Promise<OKResult> =>
+    call(() => DesktopAPI.OpenPathInEditor(workspace, relative)),
+  submitSteering: (request: SteeringRequest): Promise<OKResult> =>
+    call(() => DesktopAPI.SubmitSteering(request)),
+  listHooks: (workspace: string): Promise<Array<{ id: string; event: string; enabled: boolean; actions: Array<{ kind: string; content?: string }> }>> =>
+    call(() => DesktopAPI.ListHooks(workspace)),
+  upsertHook: (rule: { id?: string; workspace: string; event?: string; enabled?: boolean; actions: Array<{ kind: string; content?: string }> }): Promise<OKResult> =>
+    call(() => DesktopAPI.UpsertHook(rule)),
+  disableHook: (id: string): Promise<OKResult> =>
+    call(() => DesktopAPI.DisableHook(id)),
+  listProjectInstructions: (workspace: string): Promise<{ documents: Array<{ source?: string; path: string; sha256?: string; bytes?: number; excerpt?: string }> }> =>
+    call(() => DesktopAPI.ListProjectInstructions(workspace)),
+  listWorkflows: (workspace: string): Promise<Array<{ id: string; name: string; steps: Array<{ task: string }> }>> =>
+    call(() => DesktopAPI.ListWorkflows(workspace)),
+  saveWorkflow: (def: { id?: string; workspace: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }): Promise<OKResult> =>
+    call(() => DesktopAPI.SaveWorkflow(def)),
+  runWorkflow: (workspace: string, workflowID: string, dryRun: boolean): Promise<{ workflow_id: string; run_ids?: string[]; state: string }> =>
+    call(() => DesktopAPI.RunWorkflow(workspace, workflowID, dryRun)),
+  listMemories: (request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>> =>
+    call(() => DesktopAPI.ListMemories(request)),
+  listProviderPresets: (request: WorkspaceRequest): Promise<Array<{ name: string; protocol: string; model: string; base_url: string; api_key_env: string; admission: string; active: boolean }>> =>
+    call(() => DesktopAPI.ListProviderPresets(request)),
+  useProviderPreset: (workspace: string, name: string): Promise<OKResult> =>
+    call(() => DesktopAPI.UseProviderPreset(workspace, name)),
+  runProviderSetup: (request: { base_url: string; model: string; api_key_env: string; workspace: string; admission?: string; overwrite?: boolean; user_scope?: boolean }): Promise<{ config_path: string; api_key_env: string; catalog_matched: boolean; probe_ran: boolean; notes?: string[] }> =>
+    call(() => DesktopAPI.RunProviderSetup(request)),
+  revokeMemory: (request: { workspace: string; candidate_id: string; reason: string }): Promise<unknown> =>
+    call(() => DesktopAPI.RevokeMemory(request)),
+  listCommands: (): Promise<Array<{ name: string; description: string; scope: string }>> =>
+    call(() => DesktopAPI.ListCommands()),
+  installSkill: (workspace: string, scope: string, source: string): Promise<{ name: string }> =>
+    call(() => DesktopAPI.InstallSkill(workspace, scope, source)),
+  setSkillEnabled: (workspace: string, scope: string, name: string, enabled: boolean): Promise<OKResult> =>
+    call(() => DesktopAPI.SetSkillEnabled(workspace, scope, name, enabled)),
+  removeSkill: (workspace: string, scope: string, name: string): Promise<OKResult> =>
+    call(() => DesktopAPI.RemoveSkill(workspace, scope, name)),
+  consolidateMemories: (request: WorkspaceRequest): Promise<number> =>
+    call(() => DesktopAPI.ConsolidateMemories(request)),
+  saveReviewNote: (note: { workspace: string; relative: string; line?: string; body: string }): Promise<OKResult> =>
+    call(() => DesktopAPI.SaveReviewNote(note)),
+  listReviewNotes: (workspace: string, relative: string): Promise<Array<{ id: string; relative: string; line?: string; body: string }>> =>
+    call(() => DesktopAPI.ListReviewNotes(workspace, relative)),
+  probeProvider: (request: WorkspaceRequest): Promise<ProviderProbeView> =>
+    call(() => DesktopAPI.ProbeProvider(request)),
+  confirmProviderAdmission: (request: ProviderAdmissionRequest): Promise<OKResult> =>
+    call(() => DesktopAPI.ConfirmProviderAdmission(request)),
+  writeProjectInstructions: (workspace: string, content: string): Promise<OKResult> =>
+    call(() => DesktopAPI.WriteProjectInstructions(workspace, content)),
+  inspectMemory: (workspace: string, candidateID: string): Promise<{ candidate: { id: string; run_id?: string; outcome: string; status: string }; audit?: string[] }> =>
+    call(() => DesktopAPI.InspectMemory(workspace, candidateID)),
   onStream: (handler: (event: StreamEvent) => void): (() => void) => subscribeStream(handler),
 };
 

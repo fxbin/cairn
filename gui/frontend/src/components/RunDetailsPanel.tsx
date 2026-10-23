@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { desktop } from "../desktop/client";
 import type { DomainEvent, ErrorBody, RunDetail, RunHistoryView, StreamEvent } from "../desktop/types";
 import type { PanelId } from "./panelTypes";
-import { toTimeline } from "../desktop/timeline";
+import { toTimeline, toSubagentViews, toContextCompactions, toContextUsage } from "../desktop/timeline";
 import { SettingsPanel } from "./SettingsPanel";
 
 /** 运行详情/恢复区：事件时间线、取消与设置。 */
@@ -70,6 +70,17 @@ export function RunDetailsPanel({
   }, [detail?.events, streamEvents, selectedRun?.run_id]);
 
   const timeline = useMemo(() => toTimeline(liveEvents), [liveEvents]);
+  const [highlightSeq, setHighlightSeq] = useState<number | null>(null);
+  const scrollToTimelineSeq = (seq: number) => {
+    const el = document.querySelector(`[data-rdp-timeline-seq="${seq}"]`);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setHighlightSeq(seq);
+    window.setTimeout(() => setHighlightSeq((v) => (v === seq ? null : v)), 1200);
+  };
+  const subagentViews = useMemo(() => toSubagentViews(liveEvents), [liveEvents]);
+  const compactions = useMemo(() => toContextCompactions(liveEvents), [liveEvents]);
+  const contextUsage = useMemo(() => toContextUsage(liveEvents), [liveEvents]);
+  const [expandedCompaction, setExpandedCompaction] = useState<number | null>(null);
 
   const cancelRun = async () => {
     if (!selectedRun?.run_id) {
@@ -138,6 +149,71 @@ export function RunDetailsPanel({
               {detail?.task ? ` · ${detail.task.slice(0, 80)}` : ""}
             </div>
           )}
+          {selectedRun && subagentViews.length > 0 && (
+            <div className="mt-2 space-y-1" data-testid="subagent-views-detail">
+              <div className="text-xs font-semibold">子运行</div>
+              {subagentViews.map((view) => (
+                <div
+                  key={view.childRunId}
+                  className="rounded-md border border-[var(--c-border)] px-2 py-1 text-xs"
+                  style={{ cursor: "pointer" }}
+                  title="定位到时间线对应事件"
+                  onClick={() => {
+                    const match = timeline.find((item) => item.type.startsWith("subagent_") && item.detail.includes(view.childRunId));
+                    if (match) scrollToTimelineSeq(match.seq);
+                  }}
+                >
+                  <div className="flex justify-between gap-2">
+                    <span>{view.childRunId}</span>
+                    <span className="muted">
+                      {view.state}
+                      {view.state === "completed" ? ` · ${view.outcome || "未标注"}` : ""}
+                    </span>
+                  </div>
+                  <div className="muted">
+                    工具 {view.usageReported || view.toolCalls ? view.toolCalls : "—"} · {view.usageReported ? `in ${view.promptTokens} / out ${view.completionTokens} tok` : <span data-testid="usage-unreported" style={{ color: "var(--c-warning)", fontWeight: 600, fontSize: 11 }}>未回报</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {selectedRun && compactions.length > 0 && (
+            <div className="mt-2 space-y-1" data-testid="compaction-views-detail">
+              <div className="text-xs font-semibold">压缩检查点</div>
+              {compactions.map((view) => (
+                <div key={view.seq} className="rounded-md border border-[var(--c-border)] px-2 py-1 text-xs">
+                  <div className="flex justify-between gap-2">
+                    <button
+                      type="button"
+                      className="btn-sm"
+                      data-testid={`compaction-expand-${view.seq}`}
+                      aria-expanded={expandedCompaction === view.seq}
+                      onClick={() => setExpandedCompaction(expandedCompaction === view.seq ? null : view.seq)}
+                    >
+                      #{view.seq} {view.trigger} {expandedCompaction === view.seq ? "收起" : "展开"}
+                    </button>
+                    <span className="muted">
+                      {view.unitsBefore}→{view.unitsAfter} · 轮次 {view.compactedTurns}
+                    </span>
+                  </div>
+                  {expandedCompaction === view.seq ? (
+                    <pre
+                      data-testid={`compaction-summary-${view.seq}`}
+                      className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap"
+                    >
+                      {view.summaryFull}
+                    </pre>
+                  ) : (
+                    <div className="muted">{view.summaryPreview}</div>
+                  )}
+                </div>
+              ))}
+              <div className="muted text-xs">
+                压缩次数 {contextUsage.compactionCount || 0}
+                {contextUsage.lastTrigger ? ` · 触发 ${contextUsage.lastTrigger}` : ""}
+              </div>
+            </div>
+          )}
           <div className="scroll-y mt-2 min-h-0 flex-1 space-y-1" data-testid="stream-events">
             {loading && <div className="muted text-xs">加载事件…</div>}
             {!loading && timeline.length === 0 && (
@@ -149,6 +225,8 @@ export function RunDetailsPanel({
                   key={item.id}
                   className="rounded-md border border-[var(--c-border)] px-2 py-1 text-xs"
                   data-event-type={item.type}
+                  data-rdp-timeline-seq={item.seq}
+                  style={highlightSeq === item.seq ? { background: "var(--c-bg-panel)", outline: "1px solid var(--c-accent)" } : undefined}
                 >
                   <div className="flex justify-between gap-2">
                     <span className={`font-medium tone-${item.tone}`}>{item.label}</span>

@@ -61,6 +61,8 @@ export interface RunHistoryView {
   created_at: string;
   updated_at: string;
   title: string;
+  pinned: boolean;
+  archived: boolean;
   waiting_approval: boolean;
   waiting_reconcile: boolean;
 }
@@ -73,7 +75,9 @@ export interface StartRunRequest {
   session_id?: string;
   prev_run_id?: string;
   fork_source?: string;
+  fork_source_run_id?: string;
   mode?: string;
+  require_session_tail?: boolean;
 }
 
 export interface StartRunAck {
@@ -89,6 +93,8 @@ export interface ResumeRequest {
   approve: boolean;
   fingerprint: string;
   reason?: string;
+  model?: string;
+  mode?: string;
 }
 
 export interface AbortRequest {
@@ -156,6 +162,7 @@ export interface DomainEvent {
 }
 
 export interface StreamEvent {
+  workspace?: string;
   kind: string;
   run_id?: string;
   session_id?: string;
@@ -209,7 +216,7 @@ export interface QueueItem {
   state: string;
   target_run_id?: string;
   reason?: string;
-  content?: string;
+  content_preview?: string;
 }
 
 export interface QueueSubmitRequest {
@@ -220,6 +227,8 @@ export interface QueueSubmitRequest {
 }
 
 export interface QueueActionRequest {
+  model?: string;
+  mode?: string;
   workspace: string;
   state_dir?: string;
   input_id: string;
@@ -279,4 +288,34 @@ export interface RunDetail {
   task?: string;
   summary: RunSummary;
   events?: DomainEvent[];
+}
+
+export interface SteeringRequest {
+  run_id: string;
+  input_id?: string;
+  content: string;
+}
+
+/** Provider 探测回执保留非敏感身份绑定，供用户明确确认准入。 */
+export interface ProviderProbeView {
+ result: string;
+ provider_kind?: string;
+ model?: string;
+ error?: string;
+ evidence_fingerprint?: string;
+ config_fingerprint?: string;
+ request_profile_fingerprint?: string;
+ tool_roundtrip?: string;
+ usage_streamed: boolean;
+}
+
+/** 准入确认必须携带所见配置与证据，不能由模型或展示状态推导授权。 */
+export interface ProviderAdmissionRequest {
+ workspace: string;
+ state_dir?: string;
+ evidence_fingerprint: string;
+ config_fingerprint: string;
+ request_profile_fingerprint: string;
+ reason: string;
+ supersedes?: string;
 }

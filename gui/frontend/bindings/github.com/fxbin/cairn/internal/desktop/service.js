@@ -69,6 +69,17 @@ export function CancelRun(request) {
 }
 
 /**
+ * ConfirmProviderAdmission 记录用户明确确认的 Provider 准入。
+ * @param {$models.ProviderAdmissionRequest} request
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function ConfirmProviderAdmission(request) {
+    return $Call.ByID(2950219111, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
  * ConfirmQueue 确认启动队列项。
  * @param {$models.QueueActionRequest} request
  * @returns {$CancellablePromise<$models.StartRunAck>}
@@ -80,13 +91,34 @@ export function ConfirmQueue(request) {
 }
 
 /**
+ * ConsolidateMemories 整理记忆。
+ * @param {$models.WorkspaceRequest} request
+ * @returns {$CancellablePromise<number>}
+ */
+export function ConsolidateMemories(request) {
+    return $Call.ByID(1581085221, request);
+}
+
+/**
  * DiffFile 返回文件 diff。
  * @param {string} workspace
  * @param {string} relative
+ * @param {string} scope
  * @returns {$CancellablePromise<string>}
  */
-export function DiffFile(workspace, relative) {
-    return $Call.ByID(1853547544, workspace, relative);
+export function DiffFile(workspace, relative, scope) {
+    return $Call.ByID(1853547544, workspace, relative, scope);
+}
+
+/**
+ * DisableHook 停用钩子。
+ * @param {string} id
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function DisableHook(id) {
+    return $Call.ByID(491079912, id).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
 }
 
 /**
@@ -133,13 +165,38 @@ export function Health() {
 }
 
 /**
+ * InspectMemory 查看记忆详情。
+ * @param {string} workspace
+ * @param {string} candidateID
+ * @returns {$CancellablePromise<$models.MemoryDetail>}
+ */
+export function InspectMemory(workspace, candidateID) {
+    return $Call.ByID(147719388, workspace, candidateID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType8($result);
+    }));
+}
+
+/**
  * InspectRun 查询运行详情。
  * @param {$models.InspectRequest} request
  * @returns {$CancellablePromise<$models.RunDetail>}
  */
 export function InspectRun(request) {
     return $Call.ByID(3239440932, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType8($result);
+        return $$createType9($result);
+    }));
+}
+
+/**
+ * InstallSkill 安装技能。
+ * @param {string} workspace
+ * @param {string} scope
+ * @param {string} source
+ * @returns {$CancellablePromise<$models.SkillSummary>}
+ */
+export function InstallSkill(workspace, scope, source) {
+    return $Call.ByID(2722999257, workspace, scope, source).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType10($result);
     }));
 }
 
@@ -150,7 +207,17 @@ export function InspectRun(request) {
  */
 export function ListChanges(workspace) {
     return $Call.ByID(191662946, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType9($result);
+        return $$createType11($result);
+    }));
+}
+
+/**
+ * ListCommands 列出内置命令。
+ * @returns {$CancellablePromise<$models.CommandInfo[]>}
+ */
+export function ListCommands() {
+    return $Call.ByID(3334167099).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType13($result);
     }));
 }
 
@@ -161,7 +228,51 @@ export function ListChanges(workspace) {
  */
 export function ListFileTree(workspace) {
     return $Call.ByID(3785902983, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType10($result);
+        return $$createType14($result);
+    }));
+}
+
+/**
+ * ListHooks 列出钩子规则。
+ * @param {string} workspace
+ * @returns {$CancellablePromise<$models.HookRule[]>}
+ */
+export function ListHooks(workspace) {
+    return $Call.ByID(3952687891, workspace).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType16($result);
+    }));
+}
+
+/**
+ * ListMemories 列出记忆候选。
+ * @param {$models.WorkspaceRequest} request
+ * @returns {$CancellablePromise<$models.MemoryCandidateView[]>}
+ */
+export function ListMemories(request) {
+    return $Call.ByID(2966163518, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType18($result);
+    }));
+}
+
+/**
+ * ListProjectInstructions 列出规约来源。
+ * @param {string} workspace
+ * @returns {$CancellablePromise<$models.ProjectInstructionsView>}
+ */
+export function ListProjectInstructions(workspace) {
+    return $Call.ByID(2092809403, workspace).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType19($result);
+    }));
+}
+
+/**
+ * ListProviderPresets 列出命名连接预设。
+ * @param {$models.WorkspaceRequest} request
+ * @returns {$CancellablePromise<$models.ProviderPresetView[]>}
+ */
+export function ListProviderPresets(request) {
+    return $Call.ByID(1684453480, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType21($result);
     }));
 }
 
@@ -172,7 +283,7 @@ export function ListFileTree(workspace) {
  */
 export function ListQueue(request) {
     return $Call.ByID(567820144, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType11($result);
+        return $$createType22($result);
     }));
 }
 
@@ -183,7 +294,19 @@ export function ListQueue(request) {
  */
 export function ListRecentProjects(includeArchived) {
     return $Call.ByID(1329332028, includeArchived).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType13($result);
+        return $$createType24($result);
+    }));
+}
+
+/**
+ * ListReviewNotes 列出审查备注。
+ * @param {string} workspace
+ * @param {string} relative
+ * @returns {$CancellablePromise<$models.ReviewNote[]>}
+ */
+export function ListReviewNotes(workspace, relative) {
+    return $Call.ByID(1837545062, workspace, relative).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType26($result);
     }));
 }
 
@@ -194,7 +317,7 @@ export function ListRecentProjects(includeArchived) {
  */
 export function ListRuns(request) {
     return $Call.ByID(1060138195, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType15($result);
+        return $$createType28($result);
     }));
 }
 
@@ -205,7 +328,18 @@ export function ListRuns(request) {
  */
 export function ListSkills(request) {
     return $Call.ByID(932558951, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType17($result);
+        return $$createType29($result);
+    }));
+}
+
+/**
+ * ListWorkflows 列出工作流。
+ * @param {string} workspace
+ * @returns {$CancellablePromise<$models.WorkflowDefinition[]>}
+ */
+export function ListWorkflows(workspace) {
+    return $Call.ByID(2744962937, workspace).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType31($result);
     }));
 }
 
@@ -216,7 +350,7 @@ export function ListSkills(request) {
  */
 export function MCPStatus(request) {
     return $Call.ByID(1296566745, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType19($result);
+        return $$createType33($result);
     }));
 }
 
@@ -227,17 +361,18 @@ export function MCPStatus(request) {
  */
 export function ObserveWorkspace(workspace) {
     return $Call.ByID(2552225000, workspace).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType20($result);
+        return $$createType34($result);
     }));
 }
 
 /**
- * OpenPathInEditor 在外部编辑器打开路径。
- * @param {string} path
+ * OpenPathInEditor 在外部编辑器打开工作区内相对路径。
+ * @param {string} workspace
+ * @param {string} relative
  * @returns {$CancellablePromise<$models.OKResult>}
  */
-export function OpenPathInEditor(path) {
-    return $Call.ByID(3353992196, path).then(/** @type {($result: any) => any} */(($result) => {
+export function OpenPathInEditor(workspace, relative) {
+    return $Call.ByID(3353992196, workspace, relative).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }
@@ -260,7 +395,18 @@ export function PickDirectory(title, defaultPath) {
  */
 export function PreviewFile(workspace, relative) {
     return $Call.ByID(1345408917, workspace, relative).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType21($result);
+        return $$createType35($result);
+    }));
+}
+
+/**
+ * ProbeProvider 显式探测 Provider。
+ * @param {$models.WorkspaceRequest} request
+ * @returns {$CancellablePromise<$models.ProviderProbeView>}
+ */
+export function ProbeProvider(request) {
+    return $Call.ByID(115992844, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType36($result);
     }));
 }
 
@@ -271,6 +417,19 @@ export function PreviewFile(workspace, relative) {
  */
 export function RememberProject(workspace) {
     return $Call.ByID(3386083111, workspace).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * RemoveSkill 卸载技能。
+ * @param {string} workspace
+ * @param {string} scope
+ * @param {string} name
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function RemoveSkill(workspace, scope, name) {
+    return $Call.ByID(1928170026, workspace, scope, name).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }
@@ -310,13 +469,70 @@ export function ResumeRun(request) {
 }
 
 /**
+ * RevokeMemory 撤销记忆候选。
+ * @param {{"workspace": string, "state_dir"?: string, "candidate_id": string, "reason": string}} request
+ * @returns {$CancellablePromise<$models.MemoryCandidateView>}
+ */
+export function RevokeMemory(request) {
+    return $Call.ByID(2303374504, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType17($result);
+    }));
+}
+
+/**
+ * RunProviderSetup 执行配置向导。
+ * @param {$models.ProviderSetupRequest} request
+ * @returns {$CancellablePromise<$models.ProviderSetupView>}
+ */
+export function RunProviderSetup(request) {
+    return $Call.ByID(3623496188, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType37($result);
+    }));
+}
+
+/**
+ * RunWorkflow 预演或运行工作流。
+ * @param {string} workspace
+ * @param {string} workflowID
+ * @param {boolean} dryRun
+ * @returns {$CancellablePromise<$models.WorkflowRunAck>}
+ */
+export function RunWorkflow(workspace, workflowID, dryRun) {
+    return $Call.ByID(3266917519, workspace, workflowID, dryRun).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType38($result);
+    }));
+}
+
+/**
+ * SaveReviewNote 保存审查备注。
+ * @param {$models.ReviewNote} note
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function SaveReviewNote(note) {
+    return $Call.ByID(1600519140, note).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * SaveWorkflow 保存工作流。
+ * @param {$models.WorkflowDefinition} def
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function SaveWorkflow(def) {
+    return $Call.ByID(2512382465, def).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
  * SessionTree 查询会话树。
  * @param {$models.SessionTreeRequest} request
  * @returns {$CancellablePromise<$models.SessionTreeView>}
  */
 export function SessionTree(request) {
     return $Call.ByID(3197663295, request).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType22($result);
+        return $$createType39($result);
     }));
 }
 
@@ -329,6 +545,20 @@ export function SessionTree(request) {
  */
 export function SetSessionFlags(sessionID, pinned, archived) {
     return $Call.ByID(1440523912, sessionID, pinned, archived).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * SetSkillEnabled 启停技能。
+ * @param {string} workspace
+ * @param {string} scope
+ * @param {string} name
+ * @param {boolean} enabled
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function SetSkillEnabled(workspace, scope, name, enabled) {
+    return $Call.ByID(1393940605, workspace, scope, name, enabled).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }
@@ -355,6 +585,52 @@ export function SubmitQueue(request) {
     }));
 }
 
+/**
+ * SubmitSteering 投递立即补充输入。
+ * @param {$models.SteeringRequest} request
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function SubmitSteering(request) {
+    return $Call.ByID(3100745318, request).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * UpsertHook 写入钩子规则。
+ * @param {$models.HookRule} rule
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function UpsertHook(rule) {
+    return $Call.ByID(3412303249, rule).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * UseProviderPreset 切换激活的命名连接预设。
+ * @param {string} workspace
+ * @param {string} name
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function UseProviderPreset(workspace, name) {
+    return $Call.ByID(4021689534, workspace, name).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
+/**
+ * WriteProjectInstructions 写入规约。
+ * @param {string} workspace
+ * @param {string} content
+ * @returns {$CancellablePromise<$models.OKResult>}
+ */
+export function WriteProjectInstructions(workspace, content) {
+    return $Call.ByID(786609804, workspace, content).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
 // Private type creation functions
 const $$createType0 = $models.RunStatusView.createFrom;
 const $$createType1 = $models.OKResult.createFrom;
@@ -364,18 +640,35 @@ const $$createType4 = app$0.DoctorReport.createFrom;
 const $$createType5 = $models.EvidenceView.createFrom;
 const $$createType6 = contract$0.Result.createFrom;
 const $$createType7 = $models.HealthResult.createFrom;
-const $$createType8 = $models.RunDetail.createFrom;
-const $$createType9 = $models.ChangeSet.createFrom;
-const $$createType10 = $models.FileNode.createFrom;
-const $$createType11 = $Create.Array($$createType2);
-const $$createType12 = $models.RecentProject.createFrom;
+const $$createType8 = $models.MemoryDetail.createFrom;
+const $$createType9 = $models.RunDetail.createFrom;
+const $$createType10 = $models.SkillSummary.createFrom;
+const $$createType11 = $models.ChangeSet.createFrom;
+const $$createType12 = $models.CommandInfo.createFrom;
 const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = $models.RunHistoryView.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = $models.SkillSummary.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = app$0.MCPServerStatus.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = $models.WorkspaceStatus.createFrom;
-const $$createType21 = $models.FilePreview.createFrom;
-const $$createType22 = $models.SessionTreeView.createFrom;
+const $$createType14 = $models.FileNode.createFrom;
+const $$createType15 = $models.HookRule.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = $models.MemoryCandidateView.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = $models.ProjectInstructionsView.createFrom;
+const $$createType20 = $models.ProviderPresetView.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = $Create.Array($$createType2);
+const $$createType23 = $models.RecentProject.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = $models.ReviewNote.createFrom;
+const $$createType26 = $Create.Array($$createType25);
+const $$createType27 = $models.RunHistoryView.createFrom;
+const $$createType28 = $Create.Array($$createType27);
+const $$createType29 = $Create.Array($$createType10);
+const $$createType30 = $models.WorkflowDefinition.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = app$0.MCPServerStatus.createFrom;
+const $$createType33 = $Create.Array($$createType32);
+const $$createType34 = $models.WorkspaceStatus.createFrom;
+const $$createType35 = $models.FilePreview.createFrom;
+const $$createType36 = $models.ProviderProbeView.createFrom;
+const $$createType37 = $models.ProviderSetupView.createFrom;
+const $$createType38 = $models.WorkflowRunAck.createFrom;
+const $$createType39 = $models.SessionTreeView.createFrom;

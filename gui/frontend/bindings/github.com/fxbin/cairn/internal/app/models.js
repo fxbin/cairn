@@ -772,6 +772,20 @@ export class ProviderHealth {
      * @param {Partial<ProviderHealth>} [$$source = {}] - The source object to create the ProviderHealth.
      */
     constructor($$source = {}) {
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["protocol"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["use"] = undefined;
+        }
         if (!("base_url" in $$source)) {
             /**
              * @member

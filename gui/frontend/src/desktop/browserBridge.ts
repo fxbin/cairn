@@ -51,6 +51,8 @@ let runs: RunHistoryView[] = [
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     title: "修复登录问题",
+    pinned: false,
+    archived: false,
     waiting_approval: false,
     waiting_reconcile: false,
   },
@@ -237,6 +239,8 @@ export function createBrowserBridge() {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           title: request.task.slice(0, 24),
+          pinned: false,
+          archived: false,
           waiting_approval: false,
           waiting_reconcile: false,
         },
@@ -320,7 +324,7 @@ export function createBrowserBridge() {
     },
     ListQueue: async (): Promise<QueueItem[]> => {
       record("ListQueue", []);
-      return [{ input_id: "q-1", state: "pending" }];
+      return [{ input_id: "q-1", state: "pending", content_preview: "示例后续任务" }];
     },
     SubmitQueue: async (request: { content: string }): Promise<QueueItem> => {
       record("SubmitQueue", [request]);

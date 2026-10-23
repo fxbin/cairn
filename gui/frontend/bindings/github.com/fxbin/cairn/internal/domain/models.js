@@ -244,6 +244,8 @@ export const EventType = {
     EventSteeringInputSubmitted: "steering_input_submitted",
     EventSteeringInputConsumed: "steering_input_consumed",
     EventQueueInputSubmitted: "queue_input_submitted",
+    EventSubagentDelegated: "subagent_delegated",
+    EventSubagentCompleted: "subagent_completed",
     EventQueueInputConsumed: "queue_input_consumed",
     EventQueueInputCancelled: "queue_input_cancelled",
 };

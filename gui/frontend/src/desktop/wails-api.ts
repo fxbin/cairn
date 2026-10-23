@@ -5,6 +5,8 @@
 // @ts-ignore 生成的 JS bindings 无独立声明文件
 import * as RawAPI from "../../bindings/github.com/fxbin/cairn/internal/desktop/service.js";
 import type {
+  ProviderProbeView,
+  ProviderAdmissionRequest,
   AbortRequest,
   CancelRequest,
   ChangeSet,
@@ -59,8 +61,32 @@ interface DesktopBindings {
   ListFileTree(workspace: string): Promise<FileNode>;
   PreviewFile(workspace: string, relative: string): Promise<FilePreview>;
   ListChanges(workspace: string): Promise<ChangeSet>;
-  DiffFile(workspace: string, relative: string): Promise<string>;
-  OpenPathInEditor(path: string): Promise<OKResult>;
+  DiffFile(workspace: string, relative: string, scope: string): Promise<string>;
+  OpenPathInEditor(workspace: string, relative: string): Promise<OKResult>;
+  SubmitSteering(request: { run_id: string; input_id?: string; content: string }): Promise<OKResult>;
+  ListHooks(workspace: string): Promise<Array<{ id: string; event: string; enabled: boolean; actions: Array<{ kind: string; content?: string }> }>>;
+  UpsertHook(rule: { id?: string; workspace: string; event?: string; enabled?: boolean; actions: Array<{ kind: string; content?: string }> }): Promise<OKResult>;
+  DisableHook(id: string): Promise<OKResult>;
+  ListProjectInstructions(workspace: string): Promise<{ documents: Array<{ source?: string; path: string; sha256?: string; bytes?: number; excerpt?: string }> }>;
+  ListWorkflows(workspace: string): Promise<Array<{ id: string; name: string; steps: Array<{ task: string }> }>>;
+  SaveWorkflow(def: { id?: string; workspace: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }): Promise<OKResult>;
+  RunWorkflow(workspace: string, workflowID: string, dryRun: boolean): Promise<{ workflow_id: string; run_ids?: string[]; state: string }>;
+  ListMemories(request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>>;
+  ListProviderPresets(request: WorkspaceRequest): Promise<Array<{ name: string; protocol: string; model: string; base_url: string; api_key_env: string; admission: string; active: boolean }>>;
+  UseProviderPreset(workspace: string, name: string): Promise<OKResult>;
+  RunProviderSetup(request: { base_url: string; model: string; api_key_env: string; workspace: string; admission?: string; overwrite?: boolean; user_scope?: boolean }): Promise<{ config_path: string; api_key_env: string; catalog_matched: boolean; probe_ran: boolean; notes?: string[] }>;
+  RevokeMemory(request: { workspace: string; candidate_id: string; reason: string }): Promise<unknown>;
+  ListCommands(): Promise<Array<{ name: string; description: string; scope: string }>>;
+  InstallSkill(workspace: string, scope: string, source: string): Promise<{ name: string }>;
+  SetSkillEnabled(workspace: string, scope: string, name: string, enabled: boolean): Promise<OKResult>;
+  RemoveSkill(workspace: string, scope: string, name: string): Promise<OKResult>;
+  ConsolidateMemories(request: WorkspaceRequest): Promise<number>;
+  SaveReviewNote(note: { workspace: string; relative: string; line?: string; body: string }): Promise<OKResult>;
+  ListReviewNotes(workspace: string, relative: string): Promise<Array<{ id: string; relative: string; line?: string; body: string }>>;
+  ProbeProvider(request: WorkspaceRequest): Promise<ProviderProbeView>;
+  ConfirmProviderAdmission(request: ProviderAdmissionRequest): Promise<OKResult>;
+  WriteProjectInstructions(workspace: string, content: string): Promise<OKResult>;
+  InspectMemory(workspace: string, candidateID: string): Promise<{ candidate: { id: string; run_id?: string; outcome: string; status: string }; audit?: string[] }>;
 }
 
 /** 后端连接模式：真实 Wails、显式演示桥、或不可用。 */
