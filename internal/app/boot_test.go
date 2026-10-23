@@ -124,14 +124,14 @@ func TestBootManifestDescribesCapabilities(t *testing.T) {
 	for _, tool := range manifest.Tools {
 		toolNames = append(toolNames, tool.Name)
 	}
-	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,apply_patch,exec_command" {
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,apply_patch,exec_command,send_message,web_fetch,web_search" {
 		t.Fatalf("manifest tools = %v", toolNames)
 	}
 	sideEffects := map[string]string{}
 	for _, tool := range manifest.Tools {
 		sideEffects[tool.Name] = tool.SideEffect
 	}
-	if sideEffects["read_file"] != "none" || sideEffects["apply_patch"] != "workspace" || sideEffects["exec_command"] != "process" {
+	if sideEffects["read_file"] != "none" || sideEffects["apply_patch"] != "workspace" || sideEffects["exec_command"] != "process" || sideEffects["send_message"] != "none" || sideEffects["web_fetch"] != "process" || sideEffects["web_search"] != "process" {
 		t.Fatalf("manifest side effects = %v", sideEffects)
 	}
 	if manifest.Budget.MaxTurns != configuration.Budget.MaxTurns || manifest.Budget.MaxToolCalls != configuration.Budget.MaxToolCalls || manifest.Budget.MaxInputTokens != configuration.Budget.MaxInputTokens || manifest.Budget.MaxWallTime != configuration.Budget.MaxWallTime {

@@ -19,6 +19,7 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/modelcatalog"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -85,9 +86,9 @@ type ProbeObservations struct {
 type SetupService struct {
 	// CatalogLoader 装载模型元数据目录；返回错误时向导降级为安全默认。
 	CatalogLoader func(options modelcatalog.Options) (*modelcatalog.Catalog, error)
-	// EndpointProber 以零期望模式验证流式 usage 与完整工具调用回路；成功
+	// EndpointProber 接收仅在内存使用的密钥，验证流式 usage 与完整工具调用回路；成功
 	// 返回意味着两项生产硬能力均已实测成立。
-	EndpointProber func(ctx context.Context, baseURL, model, apiKeyEnv string) (*ProbeObservations, error)
+	EndpointProber func(ctx context.Context, baseURL, model, apiKey string) (*ProbeObservations, error)
 }
 
 // NewSetupService 返回使用真实目录装载与零期望探测的服务实例。
@@ -99,9 +100,9 @@ func NewSetupService() *SetupService {
 // 第二程回喂固定结果后必须给出最终文本；每一程都必须携带流式 usage。
 // 完整响应给出的明确能力否定以 errSetupCapabilityUnsupported 包装返回；传输、
 // 认证与协议错误保持原错误。Run 对两类错误均失败关闭，不生成未经验证的声明。
-func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKeyEnv string) (*ProbeObservations, error) {
+func probeEndpointBehavior(ctx context.Context, baseURL, model, apiKey string) (*ProbeObservations, error) {
 	client := openaicompat.Client{
-		BaseURL: baseURL, APIKey: os.Getenv(apiKeyEnv),
+		BaseURL: baseURL, APIKey: apiKey,
 		HTTPClient:   &http.Client{Timeout: setupProbeRequestTimeout},
 		Requirements: openaicompat.Requirements{RequireUsage: false},
 	}
@@ -181,6 +182,9 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 	if input.BaseURL == "" || input.Model == "" || input.APIKeyEnv == "" {
 		return nil, errors.New("base_url、模型名与密钥环境变量名均不可为空")
 	}
+	if err := credential.ValidateEnvReference(input.APIKeyEnv); err != nil {
+		return nil, err
+	}
 	if input.Admission == "" {
 		input.Admission = config.ProviderAdmissionRequired
 	}
@@ -234,9 +238,13 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 		return nil, errors.New("该模型/端点缺少工具调用或流式 usage 能力，不满足 Cairn 生产配置的硬性要求；向导终止且未写入配置文件")
 	}
 
-	// 实测探测：密钥已在环境时验证完整工具回路、usage 流式与 stop reason。
-	if os.Getenv(input.APIKeyEnv) != "" {
-		observations, probeErr := service.EndpointProber(ctx, input.BaseURL, input.Model, input.APIKeyEnv)
+	// 实测探测按环境与本机凭据文件解析密钥，不修改进程环境。
+	apiKey, credentialErr := providerCredential(input.Workspace, input.APIKeyEnv)
+	if credentialErr != nil {
+		return nil, credentialErr
+	}
+	if apiKey != "" {
+		observations, probeErr := service.EndpointProber(ctx, input.BaseURL, input.Model, apiKey)
 		if probeErr == nil && (observations == nil || !observations.UsageStreamed) {
 			probeErr = fmt.Errorf("%w: completed probe did not confirm streaming usage", errSetupCapabilityUnsupported)
 		}
@@ -306,7 +314,7 @@ func (service *SetupService) Run(ctx context.Context, input SetupInput) (*SetupO
 func RenderMinimalConfig(input SetupInput, capability config.ProviderCapabilityConfig, pricing *config.PricingConfig) string {
 	var builder strings.Builder
 	builder.WriteString("# Cairn 配置——由 cairn init/provider configure 生成；只写了 Provider 段，其余全部使用安全默认值。\n")
-	builder.WriteString("# 模型密钥只从环境变量读取，绝不写入本文件。\n")
+	builder.WriteString("# 模型密钥只经环境变量名引用，从显式环境或本机凭据文件读取，绝不写入本文件。\n")
 	fmt.Fprintf(&builder, "version: %d\n\n", config.CurrentVersion)
 	builder.WriteString("provider:\n")
 	builder.WriteString("  id: " + contract.ProviderIDCustom + "\n")

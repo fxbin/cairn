@@ -103,7 +103,7 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	}
 	boot.workspaceLock = workspaceLock
 	boot.releaseLock = workspaceLock.Release
-	provider, err := service.provider(cfg)
+	provider, err := service.provider(cfg, workspace.Root)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
 	}

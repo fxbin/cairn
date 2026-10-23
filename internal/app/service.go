@@ -81,6 +81,9 @@ type RunOptions struct {
 	// RequireSessionTail 要求 PrevRunID 在创建事件前仍是其完整历史会话的
 	// 唯一终态链尾；历史选择器用它封闭“展示后状态已变化”的竞态。
 	RequireSessionTail bool
+	// ParentRunID 标记本次运行为另一 run 的子运行；写入 run_created 的
+	// parent_run_id，不改变会话续链、审批或预算语义。
+	ParentRunID domain.RunID
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -102,6 +105,8 @@ type ResumeOptions struct {
 	Config    config.Config
 	Approval  ports.Approval
 	OnEvent   EventSink
+	// Steering 在恢复执行时继续接受安全点补充输入，不继承历史未消费输入。
+	Steering *agent.SteeringBridge
 }
 
 // ReconcileOptions 描述人工记录悬而未决副作用判定的输入。
@@ -208,6 +213,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	// send_message 投递：写入对端 run Journal（父/子跟进）。
+	tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
+		return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)
+	})
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{}, err
 	}
@@ -245,6 +254,13 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 			return RunResult{}, fmt.Errorf("%w: run %s belongs to session %s", ErrSessionContinuation, options.PrevRunID, continuation.SessionID)
 		}
 	}
+	runID := options.PreassignedRunID
+	if runID == "" {
+		runID = domain.NewRunID()
+	}
+	if err := validateSubagentRunParent(ctx, boot.Journal, boot.WorkspaceHash, runID, options); err != nil {
+		return RunResult{}, err
+	}
 	configFingerprint := options.Config.Fingerprint()
 	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)
 	if err != nil {
@@ -262,21 +278,27 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	runID := options.PreassignedRunID
-	if runID == "" {
-		runID = domain.NewRunID()
-	}
 	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef              artifact.Ref  `json:"config_ref"`
 		PriorContextRef        *artifact.Ref `json:"prior_context_ref,omitempty"`
 		ProjectInstructionsRef *artifact.Ref `json:"project_instructions_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
 	if err != nil {
 		return RunResult{}, err
 	}
 	if options.OnEvent != nil {
 		options.OnEvent(first)
+	}
+	// 子运行身份：向父 run 追加 delegated（幂等，已委派则返回既有事实）。
+	if options.ParentRunID != "" {
+		if _, delegatedErr := RecordSubagentDelegated(ctx, boot.Journal, options.ParentRunID, boot.WorkspaceHash, DelegateOptions{
+			ParentRunID: options.ParentRunID,
+			ChildRunID:  runID,
+			Task:        options.Task,
+		}, first.OccurredAt); delegatedErr != nil {
+			return RunResult{}, delegatedErr
+		}
 	}
 	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.EncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
@@ -317,21 +339,27 @@ func contractResultOrNil(result contract.Result, err error) *contract.Result {
 func projectedRunOutcome(journal *sqlite.Journal, stateDir, workspaceHash string, runID domain.RunID, response string, runErr error) (RunResult, error) {
 	result, projectionErr := projectRunResult(context.Background(), journal, stateDir, workspaceHash, runID)
 	sessionID := ""
+	var notificationErr error
 	if projectionErr == nil {
-		if events, loadErr := journal.Load(context.Background(), runID); loadErr == nil {
-			if projection, replayErr := domain.Replay(events); replayErr == nil {
-				sessionID = projection.SessionID
+		events, loadErr := journal.Load(context.Background(), runID)
+		if loadErr != nil {
+			projectionErr = loadErr
+		} else if projection, replayErr := domain.Replay(events); replayErr != nil {
+			projectionErr = replayErr
+		} else {
+			sessionID = projection.SessionID
+			if projection.Terminal() && projection.ParentRunID != "" {
+				notificationContext, cancel := context.WithTimeout(context.Background(), subagentCompletionTimeout)
+				notificationErr = NotifySubagentCompleted(notificationContext, journal, workspaceHash, RunOptions{ParentRunID: projection.ParentRunID}, runID, subagentRunOutcome(projection.State), nil, time.Now().UTC())
+				cancel()
 			}
 		}
 	}
 	outcome := RunResult{ID: runID, Response: response, SessionID: sessionID, Result: contractResultOrNil(result, projectionErr)}
-	if runErr != nil {
-		return outcome, runErr
-	}
 	if projectionErr != nil {
-		return outcome, fmt.Errorf("%w: %v", ErrStateCorrupt, projectionErr)
+		return outcome, errors.Join(runErr, fmt.Errorf("%w: %v", ErrStateCorrupt, projectionErr), notificationErr)
 	}
-	return outcome, nil
+	return outcome, errors.Join(runErr, notificationErr)
 }
 
 // Inspect 只读加载指定运行，验证完整性后返回投影与可选事件历史。
@@ -1032,6 +1060,7 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	}
 	defer cancelRun()
 	resumeInput := agent.RunInput{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, ResumeInvocation: domain.NewID("invoke"), ResumeFromSeq: projection.LastSeq, ResumeObservation: observation}
+	boot.Loop.AdoptSteering(options.Steering)
 	result, err := boot.Loop.Resume(runContext, resumeInput, options.Approval)
 	if wallBudgetExpired(runContext) && !runReachedTerminal(boot.Journal, options.RunID) {
 		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
@@ -1444,12 +1473,16 @@ func abortTerminalFromCancellation(request abortCancellationRequest) abortTermin
 // provider 使用注入构造器或默认 OpenAI-compatible 适配器创建模型端口。能力
 // 卡声明的 usage 与 stop reason 合同随适配器下发，由 Provider 层在每次流结束
 // 时失败关闭校验；显式生成参数原样透传，不在此层引入默认值。
-func (service Service) provider(configuration config.Config) (ports.Provider, error) {
+func (service Service) provider(configuration config.Config, workspacePath string) (ports.Provider, error) {
 	if service.NewProvider != nil {
 		return service.NewProvider(configuration)
 	}
 	if configuration.Provider.BaseURL == "" || configuration.Provider.Model == "" {
 		return nil, errors.New("provider base URL and model are required")
+	}
+	apiKey, err := providerCredential(workspacePath, configuration.Provider.APIKeyEnv)
+	if err != nil {
+		return nil, err
 	}
 	timeout, err := configuration.RequestTimeout()
 	if err != nil {
@@ -1467,7 +1500,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 	switch protocol {
 	case config.ProtocolOpenAIChatCompletions:
 		client := openaicompat.Client{
-			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			BaseURL: configuration.Provider.BaseURL, APIKey: apiKey,
 			HTTPClient: &http.Client{Timeout: timeout},
 			Requirements: openaicompat.Requirements{
 				RequireUsage:       card.StreamingUsage,
@@ -1486,7 +1519,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 		return client, nil
 	case config.ProtocolAnthropicMessages:
 		client := anthropicmessages.Client{
-			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			BaseURL: configuration.Provider.BaseURL, APIKey: apiKey,
 			HTTPClient:   &http.Client{Timeout: timeout},
 			Requirements: anthropicmessages.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
 		}
@@ -1501,7 +1534,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 		return client, nil
 	case config.ProtocolOpenAIResponses:
 		client := openairesponses.Client{
-			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			BaseURL: configuration.Provider.BaseURL, APIKey: apiKey,
 			HTTPClient:   &http.Client{Timeout: timeout},
 			Requirements: openairesponses.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
 		}
@@ -1516,7 +1549,7 @@ func (service Service) provider(configuration config.Config) (ports.Provider, er
 		return client, nil
 	case config.ProtocolGeminiGenerate:
 		client := geminigen.Client{
-			BaseURL: configuration.Provider.BaseURL, APIKey: os.Getenv(configuration.Provider.APIKeyEnv),
+			BaseURL: configuration.Provider.BaseURL, APIKey: apiKey,
 			HTTPClient:   &http.Client{Timeout: timeout},
 			Requirements: geminigen.Requirements{RequireUsage: card.StreamingUsage, AllowedStopReasons: append([]string(nil), card.StopReasons...)},
 		}

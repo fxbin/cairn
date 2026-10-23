@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -64,6 +65,8 @@ type QueueConfirmOptions struct {
 	StateDir  string
 	Config    config.Config
 	InputID   string
+	// OnReserved 仅在确需新执行时、预分配 runID 后回调；登记失败则停止创建运行。
+	OnReserved func(runID domain.RunID, sessionID string) error
 }
 
 // QueueCancelOptions 描述一次取消。
@@ -81,6 +84,8 @@ type QueueItemView struct {
 	State       domain.QueueItemState `json:"state"`
 	TargetRunID domain.RunID          `json:"target_run_id,omitempty"`
 	Reason      string                `json:"reason,omitempty"`
+	// ContentPreview 是队列正文的有界摘要，供 UI 展示；不是完整内容。
+	ContentPreview string `json:"content_preview,omitempty"`
 }
 
 // SubmitQueueInput 把后续任务写入队列命名空间；正文入受限脱敏制品，
@@ -216,9 +221,23 @@ func (service Service) ListQueue(ctx context.Context, workspacePath, stateDir st
 	views := make([]QueueItemView, 0, len(ids))
 	for _, id := range ids {
 		item := projection.Items[id]
-		views = append(views, QueueItemView{InputID: item.InputID, State: item.State, TargetRunID: item.TargetRunID, Reason: item.Reason})
+		view := QueueItemView{InputID: item.InputID, State: item.State, TargetRunID: item.TargetRunID, Reason: item.Reason}
+		if content, contentErr := loadQueueContent(journal, stateDir, workspaceHash, configuration, item); contentErr == nil {
+			view.ContentPreview = queueContentPreview(content)
+		}
+		views = append(views, view)
 	}
 	return views, nil
+}
+
+// queueContentPreview 返回队列正文的单行有界摘要。
+func queueContentPreview(content string) string {
+	const max = 120
+	runes := []rune(strings.TrimSpace(content))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	return string(runes[:max]) + "…"
 }
 
 // ConfirmQueueInput 确认启动待消费输入。
@@ -239,6 +258,11 @@ func (service Service) ConfirmQueueInputWithEvents(ctx context.Context, options 
 	}
 	if content == "" {
 		return RunResult{ID: runID}, nil
+	}
+	if options.OnReserved != nil {
+		if err := options.OnReserved(runID, ""); err != nil {
+			return RunResult{ID: runID}, err
+		}
 	}
 	return service.Run(ctx, RunOptions{
 		Task: content, Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config,
@@ -276,7 +300,10 @@ func (service Service) reserveQueueLink(ctx context.Context, options QueueConfir
 	if item.State == domain.QueueItemLinked {
 		if item.TargetRunID != "" {
 			runEvents, loadErr := journal.Load(ctx, item.TargetRunID)
-			if loadErr == nil && len(runEvents) > 0 {
+			if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+				return "", "", fmt.Errorf("load linked queue target: %w", loadErr)
+			}
+			if len(runEvents) > 0 {
 				return "", item.TargetRunID, nil
 			}
 		}

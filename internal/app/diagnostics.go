@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"os/exec"
 	"runtime/debug"
 
@@ -21,6 +20,8 @@ import (
 // ProviderHealth 汇总 Provider 的非敏感运行前提：端点、模型与密钥环境变量的
 // 存在性（只出现变量名，绝不出现值）。
 type ProviderHealth struct {
+	Protocol      string `json:"protocol"`
+	Use           string `json:"use,omitempty"`
 	BaseURL       string `json:"base_url"`
 	Model         string `json:"model"`
 	APIKeyEnv     string `json:"api_key_env"`
@@ -110,7 +111,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		WorkspaceHash:     "",
 		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
 		Resolution:        configuration.Resolution,
-		Provider:          ProviderHealth{BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
+		Provider:          ProviderHealth{Protocol: configuration.Provider.Protocol, Use: configuration.Provider.Use, BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
 		Admission:         AdmissionHealth{Mode: "disabled"},
 		Sandbox:           SandboxHealth{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
 		Tools:             nil,
@@ -129,7 +130,11 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, nil
 	}
 	report.ConfigFingerprint = configuration.Fingerprint()
-	report.Provider.APIKeyPresent = os.Getenv(configuration.Provider.APIKeyEnv) != ""
+	apiKey, credentialErr := providerCredential(workspacePath, configuration.Provider.APIKeyEnv)
+	if credentialErr != nil {
+		return report, credentialErr
+	}
+	report.Provider.APIKeyPresent = apiKey != ""
 	// 能力卡解析在 doctor 中保持只读：失败只记录错误并压低 ready，不中断
 	// 其余诊断；成功则进入 manifest 与报告供运行前解释。
 	card, cardErr := resolveProviderCard(configuration)
@@ -297,8 +302,17 @@ func toolCapabilities(workspace tools.Workspace, preset string) []ToolCapability
 // 实例（EnvAllow/Backend/Grace 等），此处绝不自造裸工具——否则验证命令所需
 // 的环境变量会被拒、沙箱配置会被静默丢弃（2026-08-16 AB Gate 回归实证）。
 func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset string) []tools.Tool {
+	return presetToolsWithWeb(workspace, execTool, preset, true)
+}
+
+// presetToolsWithWeb 按 opt-in 决定是否暴露网络工具。
+func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, webEnabled bool) []tools.Tool {
 	patchTool := tools.ApplyPatch{Workspace: workspace}
-	available := []tools.Tool{tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool}
+	available := []tools.Tool{tools.ListFiles{Workspace: workspace}, tools.ReadFile{Workspace: workspace}, tools.SearchText{Workspace: workspace}, patchTool, execTool, tools.SendMessage{}}
+	// 网络工具 opt-in：与 dsh Web Search 设置一致，默认不暴露。
+	if webEnabled && config.PresetReadOnly != preset {
+		available = append(available, tools.WebFetch{}, tools.WebSearch{})
+	}
 	if preset == config.PresetReadOnly {
 		return available[:3]
 	}
