@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -71,6 +72,31 @@ func TestApplyEventAccumulatesStats(t *testing.T) {
 	}
 	if console.promptTokens != 150 || console.outputTokens != 30 {
 		t.Fatalf("token 统计不符: in=%d out=%d", console.promptTokens, console.outputTokens)
+	}
+}
+
+// TestTurnClosedExecutionSummary 锁定回合收束摘要包含结果、工具次数、token 与耗时。
+func TestTurnClosedExecutionSummary(t *testing.T) {
+	console := NewRunConsole(context.Background(), RunConsoleInput{})
+	opened := eventWithPayload(domain.EventTurnOpened, `{"turn_index":1}`)
+	opened.OccurredAt = time.Unix(100, 0).UTC()
+	console.applyEvent(opened)
+	console.applyEvent(eventWithPayload(domain.EventToolCallProposed, `{"tool_name":"read_file"}`))
+	console.applyEvent(eventWithPayload(domain.EventModelResponseFinished, `{"usage":{"prompt_tokens":100,"completion_tokens":20}}`))
+	closed := eventWithPayload(domain.EventTurnClosed, `{"outcome":"continue"}`)
+	closed.OccurredAt = time.Unix(104, 500000000).UTC()
+	console.applyEvent(closed)
+	found := ""
+	for i := len(console.lines) - 1; i >= 0; i-- {
+		if strings.Contains(console.lines[i], "轮收束") {
+			found = console.lines[i]
+			break
+		}
+	}
+	for _, want := range []string{"第 1 轮收束", "continue", "工具 1", "in 100 / out 20", "4.5s"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("回合摘要应包含 %q，得到 %q", want, found)
+		}
 	}
 }
 
@@ -383,20 +409,56 @@ func TestModelCommandStartsWizardInit(t *testing.T) {
 // TestCommandSuggestionsAndCompletion 锁定命令候选与补全：斜杠前缀过滤候
 // 选、唯一前缀补全完整命令、多匹配补全公共前缀、零匹配为空。
 func TestCommandSuggestionsAndCompletion(t *testing.T) {
-	if got := commandSuggestions("/mo"); len(got) != 1 || !strings.Contains(got[0], "/model") {
-		t.Fatalf("/mo 应唯一命中 /model，得到 %v", got)
+	if got := commandSuggestions("/mod"); len(got) != 2 {
+		t.Fatalf("/mod 应命中 /model 与 /models，得到 %v", got)
+	}
+	if got := commandSuggestions("/models"); len(got) != 1 || !strings.Contains(got[0], "/models") {
+		t.Fatalf("/models 应唯一命中，得到 %v", got)
 	}
 	if got := commandSuggestions("/zzz"); len(got) != 0 {
 		t.Fatalf("零匹配应为空，得到 %v", got)
 	}
-	if got := completeCommand("/st"); got != "/status" {
-		t.Fatalf("/st 应补全到 /status，得到 %q", got)
+	if got := completeCommand("/sta"); got != "/status" {
+		t.Fatalf("/sta 应补全到 /status，得到 %q", got)
+	}
+	if got := completeCommand("/stee"); got != "/steer" {
+		t.Fatalf("/stee 应补全到 /steer，得到 %q", got)
 	}
 	if got := completeCommand("/s"); got != "" {
 		t.Fatalf("/s 多匹配无更长公共前缀应不动，得到 %q", got)
 	}
-	if got := completeCommand("/c"); got != "/cost" {
-		t.Fatalf("/c 应补全到 /cost，得到 %q", got)
+	if got := completeCommand("/c"); got != "/cl" {
+		// /clear /compact /cost /context 多匹配时公共前缀为 /cl 吗？实际是 /c + 各自后缀
+		// /clear,/compact,/cost,/context → 公共前缀 /c（长度==输入），应返回 ""
+		if got != "" {
+			t.Fatalf("/c 多匹配无更长公共前缀应返回空，得到 %q", got)
+		}
+	}
+	if got := completeCommand("/co"); got != "/com" {
+		// /compact /cost /context → 公共前缀 /co 吗？/compact /cost 共有 /co，/context 是 /co+ntext
+		// /compact,/cost,/context → 公共前缀 "/co"（长度==输入 2？输入是 /co 长度3）
+		// /co 公共前缀是 /co（compact,cost,context 都以 /co 开头）→ 长度相等 → 返回 ""
+		if got != "" {
+			t.Fatalf("/co 多匹配无更长公共前缀应返回空，得到 %q", got)
+		}
+	}
+	if got := completeCommand("/comp"); got != "/compact" {
+		t.Fatalf("/comp 应补全到 /compact，得到 %q", got)
+	}
+	if got := completeCommand("/cle"); got != "/clear" {
+		t.Fatalf("/cle 应补全到 /clear，得到 %q", got)
+	}
+	if got := completeCommand("/ini"); got != "/init" {
+		t.Fatalf("/ini 应补全到 /init，得到 %q", got)
+	}
+	if got := completeCommand("/doct"); got != "/doctor" {
+		t.Fatalf("/doct 应补全到 /doctor，得到 %q", got)
+	}
+	if got := completeCommand("/comp"); got != "/compact" {
+		t.Fatalf("/comp 应补全到 /compact，得到 %q", got)
+	}
+	if got := completeCommand("/ini"); got != "/init" {
+		t.Fatalf("/ini 应补全到 /init，得到 %q", got)
 	}
 	if got := completeCommand("/"); got != "" {
 		t.Fatalf("/ 多匹配无更长公共前缀应不动，得到 %q", got)

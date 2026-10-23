@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -156,11 +157,12 @@ type queueListLoadedMsg struct {
 
 // queueActionDoneMsg 承载入队/确认/取消的结果回执。
 type queueActionDoneMsg struct {
-	action  string
-	item    app.QueueItemView
-	runID   domain.RunID
-	message string
-	err     error
+	action    string
+	item      app.QueueItemView
+	runID     domain.RunID
+	message   string
+	remaining []string
+	err       error
 }
 
 // rewindState 标记主界面正在执行工作区回退：审批续跑走 Resume 但结果按回退
@@ -174,6 +176,8 @@ type rewindState struct {
 // 生命周期，operationParent 接收调用方取消，operationCtx 仅覆盖当前 Run、
 // Resume 或 Rewind，避免单次取消污染后续操作。
 type RunConsole struct {
+	// diffRequest 隔离异步工作区状态查询的新旧回执。
+	diffRequest         uint64
 	rootCtx             context.Context
 	rootCancel          context.CancelFunc
 	operationParent     context.Context
@@ -199,9 +203,22 @@ type RunConsole struct {
 	diffCursor       int
 	diffReturn       consoleMode
 	turn             int
-	promptTokens     int64
-	outputTokens     int64
-	toolCalls        int
+	// lastBatchPlan 是最近一次模型工具批次的并行诊断投影。
+	lastBatchPlan *agent.BatchPlan
+	// subagentViews 是子运行展示投影。
+	subagentViews []SubagentView
+	// phaseTracker 记录活跃/等待用户阶段。
+	phaseTracker *agent.UIPhaseTracker
+	promptTokens int64
+	outputTokens int64
+	toolCalls    int
+	// 回合级执行统计：turn_closed 摘要行展示本轮工具次数与 token，耗时取事件时间差。
+	turnToolCalls     int
+	turnExecutedTools int
+	turnPromptTokens  int64
+	turnOutputTokens  int64
+	turnOpenedAt      time.Time
+	queuePersisting   bool
 
 	sessionPromptTokens int64
 	sessionOutputTokens int64
@@ -509,6 +526,10 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return console, nil
 	}
 	if done, isQueueAction := msg.(queueActionDoneMsg); isQueueAction {
+		if done.action == "persisted" {
+			console.queuePersisting = false
+			console.queue = append(done.remaining, console.queue...)
+		}
 		if done.err != nil {
 			console.appendLine(errStyle.Render("队列操作失败: " + done.err.Error()))
 			return console, nil
@@ -520,6 +541,8 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			console.appendLine(okStyle.Render(fmt.Sprintf("已确认启动 %s → run %s", done.item.InputID, done.runID)))
 		case "cancel":
 			console.appendLine(okStyle.Render(fmt.Sprintf("已取消 %s（%s）", done.item.InputID, done.item.Reason)))
+		case "persisted":
+			console.appendLine(okStyle.Render("已转存到持久队列（/queue 查看；/queue confirm 启动）"))
 		}
 		return console, nil
 	}
@@ -555,7 +578,7 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if console.mode == consoleModelWizard {
 		switch msg.(type) {
-		case consoleEventMsg, runFinishedMsg, rewindFinishedMsg:
+		case consoleEventMsg, runFinishedMsg, rewindFinishedMsg, gitStatusMsg:
 		default:
 			model, cmd := console.relayWizardMsg(msg)
 			updated := model.(RunConsole)
@@ -571,6 +594,21 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			console.applyEvent(typed.event)
 		}
 		return console, waitForOperationMessage(console.rootCtx, console.messages)
+	case gitStatusMsg:
+		if typed.request != console.diffRequest || console.rootCtx.Err() != nil {
+			return console, nil
+		}
+		if typed.err != nil {
+			console.appendLine(warnStyle.Render(typed.err.Error()))
+		} else {
+			console.appendLine(dimStyle.Render(strings.Join(typed.lines, "\n")))
+		}
+		return console, nil
+	case doctorDoneMsg:
+		for _, line := range typed.lines {
+			console.appendLine(line)
+		}
+		return console, nil
 	case runFinishedMsg:
 		if typed.generation != console.operationGeneration {
 			return console, waitForOperationMessage(console.rootCtx, console.messages)
@@ -768,13 +806,51 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "tab":
 			if len(console.queue) > 0 {
 				console.queue = console.queue[1:]
-				console.appendLine(dimStyle.Render("已丢弃队首排队输入"))
+				console.appendLine(dimStyle.Render("已丢弃队首排队输入 · Ctrl+Q 转存持久队列"))
 			}
 			return console, nil
+		case "ctrl+q":
+			if console.queuePersisting {
+				console.appendLine(dimStyle.Render("队列转存尚未完成"))
+				return console, nil
+			}
+			// 运行结束后把内存排队一次性转为持久队列，避免只靠手动预填。
+			if len(console.queue) == 0 {
+				console.appendLine(dimStyle.Render("没有可转存的排队输入"))
+				return console, nil
+			}
+			items := append([]string(nil), console.queue...)
+			console.queue = nil
+			console.queuePersisting = true
+			console.appendLine(dimStyle.Render(fmt.Sprintf("正在转存 %d 条到持久队列…", len(items))))
+			return console, persistQueueCmd(console, items)
 		}
 		return console, nil
 	}
 	return console, nil
+}
+
+// persistQueueCmd 把运行结束后仍留在内存的排队输入批量写入持久队列。
+// 每条独立 input_id；确认前不自动启动为新 run。
+func persistQueueCmd(console RunConsole, items []string) tea.Cmd {
+	return func() tea.Msg {
+		service := console.input.Service
+		ctx := console.rootCtx
+		workspace := console.input.Workspace
+		stateDir := console.input.StateDir
+		configuration := console.input.Config
+		for index, content := range items {
+			inputID := domain.NewID("queue")
+			_, err := service.SubmitQueueInput(ctx, app.QueueSubmitOptions{
+				Workspace: workspace, StateDir: stateDir, Config: configuration,
+				InputID: inputID, Content: content,
+			})
+			if err != nil {
+				return queueActionDoneMsg{action: "persisted", remaining: append([]string(nil), items[index:]...), err: err}
+			}
+		}
+		return queueActionDoneMsg{action: "persisted"}
+	}
 }
 
 // receiveResult 消费一次运行或恢复的结果：等待审批转入审批模式，终态进入
@@ -891,6 +967,9 @@ func (console *RunConsole) resetRun() {
 	console.promptTokens = 0
 	console.outputTokens = 0
 	console.toolCalls = 0
+	console.turnToolCalls, console.turnExecutedTools = 0, 0
+	console.turnPromptTokens, console.turnOutputTokens = 0, 0
+	console.turnOpenedAt = time.Time{}
 	console.waiting = nil
 	console.result = nil
 	console.runErr = nil
@@ -981,8 +1060,16 @@ func (console *RunConsole) applyEvent(event domain.Event) {
 	switch event.Type {
 	case domain.EventTurnOpened:
 		console.turn++
+		console.turnToolCalls = 0
+		console.turnExecutedTools = 0
+		console.turnPromptTokens = 0
+		console.turnOutputTokens = 0
+		console.turnOpenedAt = event.OccurredAt
 	case domain.EventToolCallProposed:
 		console.toolCalls++
+		console.turnToolCalls++
+	case domain.EventOperationStarted:
+		console.turnExecutedTools++
 	case domain.EventModelResponseFinished:
 		var payload struct {
 			Usage struct {
@@ -993,7 +1080,13 @@ func (console *RunConsole) applyEvent(event domain.Event) {
 		if eventPayload(event, &payload) {
 			console.promptTokens += int64(payload.Usage.PromptTokens)
 			console.outputTokens += int64(payload.Usage.CompletionTokens)
+			console.turnPromptTokens += int64(payload.Usage.PromptTokens)
+			console.turnOutputTokens += int64(payload.Usage.CompletionTokens)
 		}
+	case domain.EventSubagentDelegated, domain.EventSubagentCompleted:
+		console.populateSubagentView(event)
+	case domain.EventTurnClosed:
+		console.appendLine(console.turnSummaryLine(event))
 	case domain.EventOperationSucceeded:
 		if console.rewinding != nil {
 			var payload struct {
@@ -1569,12 +1662,35 @@ var consoleCommands = []struct {
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链与工作区历史"},
+	{"/tree", "会话树（含跨会话分支）"},
 	{"/history", "从历史会话唯一链尾继续"},
+	{"/fork", "从终态 run 创建新会话分支"},
+	{"/steer", "运行中补充当前任务（安全点生效）"},
+	{"/queue", "持久后续队列 add/confirm/cancel/list"},
 	{"/rewind", "回退会话对话链"},
 	{"/rewind-files", "回退工作区补丁（撤销所选任务起）"},
 	{"/cost", "本任务与会话累计 token"},
 	{"/theme", "切换主题"},
 	{"/editor", "外部编辑器编辑当前输入"},
+	{"/init", "生成或更新工作区 AGENTS.md 骨架"},
+	{"/compact", "查看上下文用量与压缩检查点"},
+	{"/clear", "清屏（保留会话链与统计）"},
+	{"/context", "展示上下文预算与压缩策略"},
+	{"/doctor", "只读环境与配置诊断"},
+	{"/export", "导出会话事件摘要为 Markdown"},
+	{"/plan", "查看当前任务与会话链计划"},
+	{"/review", "回顾本会话任务结论"},
+	{"/diff", "列出工作区未提交变更"},
+	{"/approvals", "查看待审批操作"},
+	{"/mention", "@ 引用文件语法说明"},
+	{"/config", "查看当前生效配置"},
+	{"/models", "检索模型目录"},
+	{"/tools", "查看内置工具面"},
+	{"/undo", "撤销草稿或最近排队项"},
+	{"/search", "检索 transcript 与会话链"},
+	{"/subagents", "查看子运行进度"},
+	{"/usage", "用量告警与一键修复"},
+	{"/trust", "管理信任标记"},
 	{"/quit", "退出"},
 }
 
@@ -1645,6 +1761,35 @@ func (console *RunConsole) queueCommand(remainder string) (bool, tea.Cmd) {
 		return true, func() tea.Msg {
 			items, err := service.ListQueue(ctx, workspace, stateDir, configuration)
 			return queueListLoadedMsg{items: items, err: err}
+		}
+	case "clear":
+		console.appendLine(dimStyle.Render("正在清空队列…"))
+		return true, func() tea.Msg {
+			items, listErr := service.ListQueue(ctx, workspace, stateDir, configuration)
+			if listErr != nil {
+				return queueListLoadedMsg{err: listErr}
+			}
+			var lastErr error
+			cleared := 0
+			for _, item := range items {
+				if _, err := service.CancelQueueInput(ctx, app.QueueCancelOptions{
+					Workspace: workspace,
+					StateDir:  stateDir,
+					Config:    configuration,
+					InputID:   item.InputID,
+					Reason:    "cleared by /queue clear",
+				}); err == nil {
+					cleared++
+				} else {
+					lastErr = err
+				}
+			}
+			remaining, _ := service.ListQueue(ctx, workspace, stateDir, configuration)
+			if lastErr != nil && cleared == 0 {
+				return queueListLoadedMsg{items: remaining, err: lastErr}
+			}
+			console.appendLine(okStyle.Render(fmt.Sprintf("已清空 %d 个队列项", cleared)))
+			return queueListLoadedMsg{items: remaining}
 		}
 	case "add":
 		if args == "" {
@@ -1906,7 +2051,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	switch name {
 	case "/help", "/?":
 		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /tree 会话树 · /history <run-id> 历史续链 · /fork <run-id> 从终态创建新分支 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
-		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队"))
+		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队 · 结束后 Ctrl+Q 转存持久队列"))
 		console.appendLine(dimStyle.Render("运行中: /steer <文本> 补充当前任务（安全点生效）· 其余输入排队为下一任务"))
 		console.appendLine(dimStyle.Render("队列: /queue add <任务> 持久入队 · /queue confirm <id> 确认启动 · /queue cancel <id> · /queue 列表"))
 		console.appendLine(dimStyle.Render("技能: 启用 skills.enabled 后，以 $名称 或 /skill:名称 加任务说明点名；cairn skills 管理本地技能"))
@@ -1916,6 +2061,9 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.lines = nil
 		console.transcript = nil
 		console.turn, console.toolCalls = 0, 0
+		console.turnToolCalls, console.turnExecutedTools = 0, 0
+		console.turnPromptTokens, console.turnOutputTokens = 0, 0
+		console.turnOpenedAt = time.Time{}
 		console.promptTokens, console.outputTokens = 0, 0
 		console.forkRequest++
 		if console.sessionID != "" || console.sessionForkSource != nil {
@@ -1929,6 +2077,7 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		}
 		console.appendLine(dimStyle.Render("已清屏（会话累计保留，完整历史在事件日志）"))
 	case "/status":
+		console.appendBatchPlan()
 		turns := "未配置"
 		if budget := console.maxTurnsBudget(); budget > 0 {
 			turns = strconv.Itoa(budget)
@@ -2033,6 +2182,59 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	case "/cost":
 		console.appendLine(dimStyle.Render(fmt.Sprintf("本任务 in %d / out %d tok · 会话累计 in %d / out %d tok（金额以事件与制品为准）",
 			console.promptTokens, console.outputTokens, console.sessionPromptTokens+console.promptTokens, console.sessionOutputTokens+console.outputTokens)))
+	case "/init":
+		console.initProjectInstructionsLines(strings.TrimSpace(remainder))
+		return true, nil
+	case "/compact":
+		console.appendCompactStatus()
+	case "/clear":
+		console.lines = nil
+		console.appendLine(dimStyle.Render("已清屏（会话链、统计与事件日志保留）"))
+	case "/context":
+		console.appendContextBudget()
+	case "/doctor":
+		console.appendSafetyEvents()
+		console.appendSecurityPolicy()
+		console.appendHeartbeat()
+		return true, console.doctorCmd()
+	case "/export":
+		console.exportTranscript(strings.TrimSpace(remainder))
+	case "/plan":
+		console.appendPlan()
+	case "/review":
+		console.appendReview()
+	case "/diff":
+		console.appendLine(dimStyle.Render("正在读取工作区变更…"))
+		return true, console.diffCmd()
+	case "/approvals":
+		console.appendApprovals()
+	case "/mention":
+		console.appendMention()
+	case "/config":
+		console.appendConfig()
+	case "/models":
+		console.appendModels(strings.TrimSpace(remainder))
+	case "/tools":
+		console.appendTools()
+	case "/undo":
+		console.appendUndo(strings.TrimSpace(remainder))
+	case "/search":
+		console.appendSearch(strings.TrimSpace(remainder))
+	case "/trust":
+		console.appendTrust(strings.TrimSpace(remainder))
+	case "/usage":
+		if strings.TrimSpace(remainder) == "fix" {
+			console.applyUsageFix()
+		} else {
+			console.appendUsage()
+			console.appendUsagePhases()
+		}
+	case "/subagents":
+		if strings.TrimSpace(remainder) != "" {
+			console.appendSubagentDetail(strings.TrimSpace(remainder))
+		} else {
+			console.appendSubagents()
+		}
 	case "/quit", "/exit":
 		console.rootCancel()
 		return true, tea.Quit
@@ -2132,14 +2334,90 @@ func (console RunConsole) statusWorkspace() string {
 	return console.input.Workspace
 }
 
-// statusLine 生成运行中的统计行：轮次、工具调用与累计 token。
+// statusLine 生成运行中的统计行：轮次、工具调用、累计 token 与上下文水位。
 func (console RunConsole) statusLine() string {
 	turns := fmt.Sprintf("轮次 %d", console.turn)
 	if budget := console.maxTurnsBudget(); budget > 0 {
 		turns = fmt.Sprintf("轮次 %d/%d", console.turn, budget)
 	}
 	hint := "Esc 取消 · 输入即排队 · Ctrl+O 事件"
-	return dimStyle.Render(fmt.Sprintf("%s · 工具调用 %d · 累计 in %d / out %d tok · %s", turns, console.toolCalls, console.promptTokens, console.outputTokens, hint))
+	line := fmt.Sprintf("%s · 工具调用 %d · 累计 in %d / out %d tok", turns, console.toolCalls, console.promptTokens, console.outputTokens)
+	if watermark := console.contextWatermark(); watermark != "" {
+		line += " · " + watermark
+	}
+	return dimStyle.Render(line + " · " + hint)
+}
+
+// appendContextAlerts 在事件流中插入上下文告警行。
+func (console *RunConsole) appendContextAlerts() {
+	for _, alert := range console.contextAlerts() {
+		console.appendLine(alert)
+	}
+}
+
+// contextAlerts 返回当前上下文用量触发的告警行（无则空）。
+func (console RunConsole) contextAlerts() []string {
+	limit := console.input.Config.Context.MaxPromptTokens
+	if limit <= 0 {
+		return nil
+	}
+	used := int(console.promptTokens)
+	percent := used * 100 / limit
+	switch {
+	case percent >= 90:
+		return []string{warnStyle.Render(fmt.Sprintf("⚠ 上下文已用 %d%%，即将触发自动压缩或预算上限", percent))}
+	case percent >= 70:
+		return []string{warnStyle.Render(fmt.Sprintf("! 上下文已用 %d%%，建议 /compact 查看检查点", percent))}
+	}
+	return nil
+}
+
+// contextWatermark 按 max_prompt_tokens 计算上下文用量百分比水位。
+func (console RunConsole) contextWatermark() string {
+	limit := console.input.Config.Context.MaxPromptTokens
+	if limit <= 0 {
+		return ""
+	}
+	used := int(console.promptTokens)
+	percent := used * 100 / limit
+	marker := ""
+	switch {
+	case percent >= 90:
+		marker = "‼"
+	case percent >= 70:
+		marker = "!"
+	}
+	return fmt.Sprintf("上下文 %d%% %s", percent, marker)
+}
+
+// turnSummaryLine 生成回合收束执行摘要：结果、工具次数、token 与墙钟耗时。
+// 耗时取本回合 turn_opened→turn_closed 的事件 OccurredAt 差值，缺失时为 0，
+// 不推断未持久化的时间。
+func (console RunConsole) turnSummaryLine(event domain.Event) string {
+	var payload struct {
+		Outcome string `json:"outcome"`
+	}
+	eventPayload(event, &payload)
+	outcome := payload.Outcome
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	duration := time.Duration(0)
+	if !console.turnOpenedAt.IsZero() && !event.OccurredAt.IsZero() && !event.OccurredAt.Before(console.turnOpenedAt) {
+		duration = event.OccurredAt.Sub(console.turnOpenedAt)
+	}
+	return dimStyle.Render(fmt.Sprintf("▸ 第 %d 轮收束(%s) · 工具 %d（提议）/ 执行 %d · in %d / out %d tok · %s",
+		console.turn, outcome, console.turnToolCalls, console.turnExecutedTools, console.turnPromptTokens, console.turnOutputTokens,
+		formatDuration(duration)))
+}
+
+// formatDuration 把回合耗时格式化为秒级可读文本，避免引入完整时钟依赖。
+func formatDuration(duration time.Duration) string {
+	milliseconds := duration.Milliseconds()
+	if milliseconds < 1000 {
+		return fmt.Sprintf("%dms", milliseconds)
+	}
+	return fmt.Sprintf("%.1fs", float64(milliseconds)/1000)
 }
 
 // finalResponsePreview 截取最终回复的首段作为终态预览，完整回复以运行结
