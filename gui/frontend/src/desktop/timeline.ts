@@ -1,4 +1,11 @@
-import type { DomainEvent } from "../desktop/types";
+/** 投影输入最小事件形状：完整 DomainEvent 与流式轻量事件均可传入。 */
+export interface ProjectionEvent {
+  event_id?: string;
+  run_id: string;
+  seq: number;
+  type: string;
+  payload: unknown;
+}
 
 /** 将领域事件投影为可读时间线条目。 */
 export interface TimelineItem {
@@ -70,7 +77,6 @@ function compactionTimelineDetail(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
   const record = payload as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
-  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const summary = str(record.summary);
   const preview = summary.length > 60 ? `${summary.slice(0, 60)}…` : summary;
   const parts: string[] = [];
@@ -103,7 +109,7 @@ function payloadText(payload: unknown): string {
   return parts.join(" · ");
 }
 
-export function toTimeline(events: DomainEvent[]): TimelineItem[] {
+export function toTimeline(events: ProjectionEvent[]): TimelineItem[] {
   return events.map((event) => ({
     id: event.event_id || `${event.run_id}-${event.seq}`,
     seq: event.seq,
@@ -155,7 +161,7 @@ function usageOf(payload: Record<string, unknown>): { toolCalls: number; promptT
 }
 
 /** 从事件流投影子运行列表：委派建行，完成就地更新。 */
-export function toSubagentViews(events: DomainEvent[]): SubagentView[] {
+export function toSubagentViews(events: ProjectionEvent[]): SubagentView[] {
   const views: SubagentView[] = [];
   const byChild = new Map<string, SubagentView>();
   for (const event of events) {
@@ -229,7 +235,7 @@ function asNumber(value: unknown): number {
 }
 
 /** 从事件流投影压缩检查点列表，按事件序追加。 */
-export function toContextCompactions(events: DomainEvent[]): ContextCompactionView[] {
+export function toContextCompactions(events: ProjectionEvent[]): ContextCompactionView[] {
   const views: ContextCompactionView[] = [];
   for (const event of events) {
     if (event.type !== "context_compacted") {
@@ -264,13 +270,13 @@ export interface ContextUsageView {
   lastProviderPromptTokens: number;
 }
 
-export function toContextUsage(events: DomainEvent[]): ContextUsageView {
+export function toContextUsage(events: ProjectionEvent[]): ContextUsageView {
   const compactions = toContextCompactions(events);
   const last = compactions[compactions.length - 1];
   return {
     compactionCount: compactions.length,
-    estimatedUnitsBefore: last ? last.unitsBefore : 0,
-    estimatedUnitsAfter: last ? last.unitsAfter : 0,
+    estimatedUnitsBefore: last ? (last.unitsBefore ?? 0) : 0,
+    estimatedUnitsAfter: last ? (last.unitsAfter ?? 0) : 0,
     lastTrigger: last ? last.trigger : "",
     lastProviderPromptTokens: last ? last.lastProviderPromptTokens : 0,
   };
