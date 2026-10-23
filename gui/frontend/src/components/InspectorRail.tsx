@@ -698,7 +698,7 @@ export function InspectorRail({
                           }
                         }}
                       >
-                        <summary style={{ cursor: "pointer", listStyle: "none" }} aria-label="展开或收起压缩摘要全文" aria-expanded={expandedCompaction === view.seq} aria-current={expandedCompaction === view.seq ? "true" : undefined} aria-setsize={compactions.length} aria-posinset={compactions.findIndex((c) => c.seq === view.seq) + 1} aria-roledescription="压缩摘要切换" aria-haspopup="true" aria-describedby={`summary-preview-2line-${view.seq}`} aria-relevant="text" aria-multiselectable="false" aria-required="false" aria-sort="none" aria-orientation="vertical" aria-level={3} aria-modal="false" lang="zh" translate="no">
+                        <summary style={{ cursor: "pointer", listStyle: "none" }} aria-label="展开或收起压缩摘要全文" aria-expanded={expandedCompaction === view.seq}>
                           <span data-testid={`compaction-expand-${view.seq}`}>
                             {expandedCompaction === view.seq ? "收起摘要" : "查看摘要全文"}
                           </span>
@@ -792,17 +792,23 @@ export function InspectorRail({
                     className="list-card"
                     key={view.childRunId}
                     data-testid={`subagent-${view.childRunId}`}
-                    role="article"
+                    role="listitem"
                     tabIndex={expandedTaskId === view.childRunId ? 0 : -1}
                     aria-label={`子运行 ${view.childRunId}，${view.state}${view.parentRunId && view.parentRunId !== view.childRunId ? `，隶属 ${view.parentRunId}` : ""}${view.task ? `，任务 ${view.task.slice(0, 30)}` : ""}`}
-                    title={view.task ? `完整任务：${view.task}` : undefined}
-                    aria-expanded={expandedTaskId === view.childRunId} aria-keyshortcuts="Enter Space Escape ArrowUp ArrowDown Home End" aria-flowto={view.parentRunId && view.parentRunId !== view.childRunId ? `subagent-${view.parentRunId}` : undefined} aria-owns={`subagent-task-${view.childRunId} subagent-usage-${view.childRunId}`} aria-errormessage={view.usageReported ? undefined : `subagent-usage-${view.childRunId}`} aria-atomic="false" aria-readonly="true" aria-selected={expandedTaskId === view.childRunId} aria-valuemin={0} aria-valuemax={100} aria-valuenow={view.state === "completed" ? 100 : view.state === "delegated" ? 50 : 0} aria-placeholder={view.task ? undefined : "无任务摘要"}
+                    aria-expanded={expandedTaskId === view.childRunId}
+                    aria-keyshortcuts="Enter Space Escape ArrowUp ArrowDown Home End"
                     style={{
                       outlineColor: "var(--c-accent)",
                       cursor: onSelectRun ? "pointer" : "default",
                       outline: expandedTaskId === view.childRunId ? "1px solid var(--c-accent)" : undefined,
                     }}
-                    title={onSelectRun ? `查看子运行 ${view.childRunId} 详情` : undefined}
+                    title={
+                      onSelectRun
+                        ? `查看子运行 ${view.childRunId} 详情${view.task ? ` · 完整任务：${view.task}` : ""}`
+                        : view.task
+                          ? `完整任务：${view.task}`
+                          : undefined
+                    }
                     onClick={() => {
                       onSelectRun?.(view.childRunId);
                       const match = timeline.find(
@@ -881,7 +887,7 @@ export function InspectorRail({
                           <span
                             role="button"
                             tabIndex={0}
-                            data-testid={`subagent-outcome-${view.childRunId}`} aria-pressed="false"
+                            data-testid={`subagent-outcome-${view.childRunId}`}
                             aria-label="子运行结果，点击定位到时间线"
                             title="定位到时间线对应事件"
                             style={{ cursor: "pointer", textDecoration: "underline" }}
@@ -913,7 +919,7 @@ export function InspectorRail({
                         <>
                           {" · "}
                           <span
-                            data-testid={`subagent-task-${view.childRunId}`} aria-live="polite"
+                            data-testid={`subagent-task-${view.childRunId}`}
                             aria-label={expandedTaskId === view.childRunId ? "收起任务摘要" : "展开任务摘要全文"}
                             aria-pressed={expandedTaskId === view.childRunId}
                             title={`${view.task}（${expandedTaskId === view.childRunId ? "点击收起" : "点击展开全文"}）`}
