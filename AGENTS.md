@@ -36,6 +36,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
+- `exec_session` 仅在显式启用时注册：提供受控 tmux 会话（open/write/read/close），会话独立 ID、工作目录与环境白名单；建会话与敏感动词需授权，取消用 SIGHUP+进程组回收；Journal 记录会话生命周期与输入摘要，不记录按键原文；默认禁用，不继承 `exec_command` 审批豁免。
 - Docker 使用本地已有镜像，无网络、只读根文件系统、最小能力、有限 PID 和唯一工作区挂载；不可用时失败关闭，禁止回退宿主机。
 - 悬而未决的已 started 操作必须经 `resume --resolve` 对账，禁止盲目重试；停在 created/cancelling 的运行经 `resume --abort-run` 收尾。`doctor` 保持只读。
 - 运行完成与验证可信分开；没有 verifier 证据不得宣称已验证。会话回退与文件回退语义分开，缺少无损 before 快照或工作区漂移时不能猜测旧内容，也不能将逐项回退宣称为整批原子事务。

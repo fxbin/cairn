@@ -40,3 +40,5 @@ coverage.out
 
 # 判门报告等本地产物
 /results/
+internal/tui/.cairn-exports/
+internal/tui/AGENTS.md
