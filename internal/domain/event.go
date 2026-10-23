@@ -66,6 +66,8 @@ const (
 	EventSteeringInputSubmitted       EventType = "steering_input_submitted"
 	EventSteeringInputConsumed        EventType = "steering_input_consumed"
 	EventQueueInputSubmitted          EventType = "queue_input_submitted"
+	EventSubagentDelegated            EventType = "subagent_delegated"
+	EventSubagentCompleted            EventType = "subagent_completed"
 	EventQueueInputConsumed           EventType = "queue_input_consumed"
 	EventQueueInputCancelled          EventType = "queue_input_cancelled"
 )
@@ -105,7 +107,7 @@ type EventDraft struct {
 var payloadSchemas = map[EventType]map[string]struct{}{
 	EventRunCreated: {
 		"payload_version": {}, "task": {}, "task_ref": {}, "workspace": {}, "workspace_hash": {}, "config_ref": {}, "config_fingerprint": {}, "build": {}, "budget": {},
-		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {}, "project_instructions_ref": {}, "fork_source": {},
+		"session_id": {}, "prev_run_id": {}, "prior_context_ref": {}, "project_instructions_ref": {}, "fork_source": {}, "parent_run_id": {},
 	},
 	EventRunStarted: {"payload_version": {}, "invocation": {}, "invocation_id": {}},
 	EventRunResumed: {"payload_version": {}, "invocation": {}, "invocation_id": {}, "from_seq": {}, "workspace_observation": {}},
@@ -158,6 +160,8 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	EventSteeringInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}},
 	// P3b 持久后续队列：workspace 级 queue 命名空间，RunID 哨兵 "queue"。
 	EventQueueInputSubmitted: {"payload_version": {}, "input_id": {}, "content_ref": {}, "kind": {}},
+	EventSubagentDelegated:   {"payload_version": {}, "child_run_id": {}, "task_digest": {}, "budget": {}},
+	EventSubagentCompleted:   {"payload_version": {}, "child_run_id": {}, "outcome": {}, "usage": {}},
 	EventQueueInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}, "target_run_id": {}},
 	EventQueueInputCancelled: {"payload_version": {}, "input_id": {}, "reason": {}},
 }
@@ -341,6 +345,7 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 			Budget                 json.RawMessage    `json:"budget"`
 			SessionID              *string            `json:"session_id"`
 			PrevRunID              *string            `json:"prev_run_id"`
+			ParentRunID            *string            `json:"parent_run_id,omitempty"`
 			PriorContextRef        json.RawMessage    `json:"prior_context_ref"`
 			ProjectInstructionsRef json.RawMessage    `json:"project_instructions_ref"`
 			ForkSource             *SessionForkSource `json:"fork_source"`
@@ -905,6 +910,30 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 		}
 		if payload.VerificationSeq != nil && *payload.VerificationSeq == 0 {
 			return fmt.Errorf("%s verification_seq must be positive when present", eventType)
+		}
+	case EventSubagentDelegated:
+		var payload struct {
+			ChildRunID *string `json:"child_run_id"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode subagent_delegated payload semantics: %w", err)
+		}
+		if payload.ChildRunID == nil || strings.TrimSpace(*payload.ChildRunID) == "" {
+			return fmt.Errorf("%s child_run_id must not be empty", eventType)
+		}
+	case EventSubagentCompleted:
+		var payload struct {
+			ChildRunID *string `json:"child_run_id"`
+			Outcome    *string `json:"outcome"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return fmt.Errorf("decode subagent_completed payload semantics: %w", err)
+		}
+		if payload.ChildRunID == nil || strings.TrimSpace(*payload.ChildRunID) == "" {
+			return fmt.Errorf("%s child_run_id must not be empty", eventType)
+		}
+		if payload.Outcome == nil || strings.TrimSpace(*payload.Outcome) == "" {
+			return fmt.Errorf("%s outcome must not be empty", eventType)
 		}
 	case EventSteeringInputSubmitted:
 		var payload struct {

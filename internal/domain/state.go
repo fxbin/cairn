@@ -31,6 +31,7 @@ type RunProjection struct {
 	Build                    *BuildIdentity `json:"build,omitempty"`
 	SessionID                string
 	PrevRunID                RunID
+	ParentRunID              RunID
 	ForkSource               *SessionForkSource
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
@@ -51,6 +52,15 @@ type RunProjection struct {
 	operationFingerprints    map[OperationID]string
 	reconciledFingerprints   map[string]struct{}
 	operations               map[OperationID]*operationRecord
+	// Children 记录父子运行身份与子任务结果投影；不改变父 run 终态。
+	Children map[string]SubagentRecord
+}
+
+// SubagentRecord 是子智能体运行的只读投影。
+type SubagentRecord struct {
+	ChildRunID string
+	State      string
+	Outcome    string
 }
 
 // ValidateDraft 在不改变当前投影的前提下校验一条待追加事件的 payload 与状态迁移。
@@ -127,6 +137,12 @@ func (projection RunProjection) clone() RunProjection {
 		return &value
 	}
 	candidate := projection
+	if projection.Children != nil {
+		candidate.Children = make(map[string]SubagentRecord, len(projection.Children))
+		for id, record := range projection.Children {
+			candidate.Children[id] = record
+		}
+	}
 	candidate.CurrentTurn = copyTurn(projection.CurrentTurn)
 	candidate.PendingApproval = copyApproval(projection.PendingApproval)
 	candidate.PendingOperation = copyOperation(projection.PendingOperation)
@@ -304,6 +320,8 @@ type RunCreatedPayload struct {
 	// ForkSource 绑定新会话分支根指向的历史终态 run；与 PrevRunID 互斥，
 	// 只允许出现在新 session 的根运行上。
 	ForkSource *SessionForkSource `json:"fork_source,omitempty"`
+	// ParentRunID 标记子运行的父运行身份；不改变会话续链或授权语义。
+	ParentRunID RunID `json:"parent_run_id,omitempty"`
 }
 
 // TurnClosedPayload 表示一次推理轮次的关闭结果。
@@ -393,6 +411,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		projection.ConfigFingerprint = payload.ConfigFingerprint
 		projection.SessionID = payload.SessionID
 		projection.PrevRunID = payload.PrevRunID
+		projection.ParentRunID = payload.ParentRunID
 		if payload.ForkSource != nil {
 			source := *payload.ForkSource
 			projection.ForkSource = &source
@@ -719,6 +738,26 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 	case EventVerificationFeedbackAppended:
 		// 验证反馈仅补充模型上下文；终态判定只依赖 verification_finished。
+	case EventSubagentDelegated, EventSubagentCompleted:
+		// 父子运行身份与结果记录；不改变父 run 终态，只更新子任务投影。
+		if projection.Children == nil {
+			projection.Children = map[string]SubagentRecord{}
+		}
+		var payload struct {
+			ChildRunID string `json:"child_run_id"`
+			Outcome    string `json:"outcome"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.ChildRunID != "" {
+			record := projection.Children[payload.ChildRunID]
+			record.ChildRunID = payload.ChildRunID
+			if event.Type == EventSubagentDelegated {
+				record.State = "delegated"
+			} else {
+				record.State = "completed"
+				record.Outcome = payload.Outcome
+			}
+			projection.Children[payload.ChildRunID] = record
+		}
 	case EventSteeringInputSubmitted, EventSteeringInputConsumed:
 		// 安全点 steering 输入/消费只补充审计证据与模型上下文，不改变运行终态；
 		// 幂等标识与内容引用由 payload schema 保证，恢复按事件流重放。

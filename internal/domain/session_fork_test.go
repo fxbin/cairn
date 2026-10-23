@@ -90,3 +90,42 @@ func TestReplayProjectsForkSource(t *testing.T) {
 		t.Fatalf("projection session edge = session %q prev %q", projection.SessionID, projection.PrevRunID)
 	}
 }
+
+// TestRunCreatedAcceptsParentRunID 锁定父子运行字段向后兼容：缺省不受影响，显式值可解析。
+func TestRunCreatedAcceptsParentRunID(t *testing.T) {
+	payload := `{"payload_version":1,"task":"t","workspace":".","parent_run_id":"run-parent"}`
+	if err := validatePayload(EventRunCreated, json.RawMessage(payload)); err != nil {
+		t.Fatalf("parent_run_id must be accepted: %v", err)
+	}
+	payload = `{"payload_version":1,"task":"t","workspace":"."}`
+	if err := validatePayload(EventRunCreated, json.RawMessage(payload)); err != nil {
+		t.Fatalf("legacy payload without parent_run_id must pass: %v", err)
+	}
+}
+
+// TestReplayProjectsSubagentChildren 锁定子智能体事件进入 Children 投影。
+func TestReplayProjectsSubagentChildren(t *testing.T) {
+	runID := RunID("run-parent")
+	created, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "ws", Type: EventRunCreated, OccurredAt: time.Unix(1, 0), Payload: json.RawMessage(`{"payload_version":1,"task":"t","workspace":"."}`)}, 1, GenesisHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegatedPayload := json.RawMessage(`{"payload_version":1,"child_run_id":"child-1","task_digest":"sha256:aa","budget":{"max_turns":3}}`)
+	delegated, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "ws", Type: EventSubagentDelegated, OccurredAt: time.Unix(2, 0), Payload: delegatedPayload}, 2, created.EventHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedPayload := json.RawMessage(`{"payload_version":1,"child_run_id":"child-1","outcome":"ok","usage":{"turns":2}}`)
+	completed, err := NewEvent(EventDraft{RunID: runID, WorkspaceHash: "ws", Type: EventSubagentCompleted, OccurredAt: time.Unix(3, 0), Payload: completedPayload}, 3, delegated.EventHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := Replay([]Event{created, delegated, completed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, ok := projection.Children["child-1"]
+	if !ok || record.State != "completed" || record.Outcome != "ok" {
+		t.Fatalf("unexpected children projection: %+v", projection.Children)
+	}
+}
