@@ -38,6 +38,7 @@ type Config struct {
 	Provider     ProviderConfig     `yaml:"provider"`
 	Workspace    WorkspaceConfig    `yaml:"workspace"`
 	Policy       PolicyConfig       `yaml:"policy"`
+	Tools        ToolsConfig        `yaml:"tools"`
 	Verification VerificationConfig `yaml:"verification"`
 	Budget       BudgetConfig       `yaml:"budget"`
 	Context      ContextConfig      `yaml:"context"`
@@ -370,6 +371,11 @@ func supportedProviderProtocolList() string {
 // 提供方默认值。 Milli 后缀表示千分位整数（指纹禁浮点）；输出上限采用指针
 // 使显式写入的 0 可被失败关闭识别，而不是被误当作未声明。该块是冻结评测
 // 资产属性，只来自 YAML 显式值，不提供环境变量或 CLI 覆盖。
+// EffectiveThinkingEffort 返回归一化的思考力度。
+func (generation ProviderGenerationConfig) EffectiveThinkingEffort() ThinkingEffort {
+	return NormalizeThinkingEffort(generation.ReasoningEffort)
+}
+
 type ProviderGenerationConfig struct {
 	MaxOutputTokens  *int   `yaml:"max_output_tokens"`
 	TemperatureMilli *int   `yaml:"temperature_milli"`
@@ -490,6 +496,11 @@ type SandboxConfig struct {
 }
 
 // PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
+// ToolsConfig 控制可选工具面暴露；Web 默认关闭（opt-in）。
+type ToolsConfig struct {
+	Web bool `yaml:"web"`
+}
+
 type PolicyConfig struct {
 	Write          string   `yaml:"write"`
 	Exec           string   `yaml:"exec"`
