@@ -23,7 +23,6 @@ import (
 	"github.com/fxbin/cairn/internal/modelcatalog"
 	"github.com/fxbin/cairn/internal/provider"
 	"github.com/fxbin/cairn/internal/tools"
-	"gopkg.in/yaml.v3"
 )
 
 // providerListLimit 是 provider models 无查询词时的默认返回条数上限。
@@ -69,8 +68,18 @@ type providerPresetEntry struct {
 	Active    bool   `json:"active"`
 }
 
-// providerPresets 列出已命名连接预设；不打印密钥值。
+// providerPresets 列出或删除已命名连接预设；不打印密钥值。
+// 用法：provider presets | provider presets remove <name>
 func (command Command) providerPresets(ctx context.Context, arguments []string) int {
+	if len(arguments) > 0 && arguments[0] == "save" {
+		return command.providerPresetSave(ctx, arguments[1:])
+	}
+	if len(arguments) > 0 && arguments[0] == "remove" {
+		return command.providerPresetRemove(ctx, arguments[1:])
+	}
+	if len(arguments) > 0 && arguments[0] == "show" {
+		return command.providerPresetShow(ctx, arguments[1:])
+	}
 	flags := flag.NewFlagSet("provider presets", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
@@ -119,6 +128,159 @@ func (command Command) providerPresets(ctx context.Context, arguments []string) 
 	return ExitOK
 }
 
+// providerPresetSave 将命名连接预设原子写入既有配置；同名失败关闭。
+func (command Command) providerPresetSave(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("provider presets save", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	baseURL := flags.String("base-url", "", "provider base URL (required)")
+	model := flags.String("model", "", "model name (required)")
+	apiKeyEnv := flags.String("api-key-env", "", "environment variable name (required)")
+	admission := flags.String("admission", "", "admission gate mode: optional|required")
+	overwrite := flags.Bool("overwrite", false, "replace existing preset")
+	protocol := flags.String("protocol", "", "protocol id: openai-chat-completions|anthropic-messages|openai-responses|gemini-generate-content")
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	// 名字可出现在旗标前；归一化保证后续 --base-url 等仍被解析。
+	normalized := normalizeFlagsThenPositionals(arguments, map[string]struct{}{
+		"--base-url": {}, "--model": {}, "--api-key-env": {}, "--admission": {}, "--protocol": {},
+		"--workspace": {}, "--config": {},
+	})
+	if err := flags.Parse(normalized); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 || *baseURL == "" || *model == "" || *apiKeyEnv == "" {
+		fmt.Fprintln(command.Stderr, "provider presets save requires name, --base-url, --model and --api-key-env")
+		return ExitUsage
+	}
+	path := resolveConfigPath(*configPath, *workspace)
+	preset := config.ProviderPreset{BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv}
+	if strings.TrimSpace(*admission) != "" {
+		preset.Admission = *admission
+	}
+	if proto := strings.TrimSpace(*protocol); proto != "" {
+		switch proto {
+		case config.ProtocolOpenAIChatCompletions, config.ProtocolAnthropicMessages,
+			config.ProtocolOpenAIResponses, config.ProtocolGeminiGenerate:
+			preset.Protocol = proto
+		default:
+			fmt.Fprintln(command.Stderr, "unsupported protocol:", proto)
+			return ExitUsage
+		}
+	}
+	name := flags.Arg(0)
+	if err := config.SaveProviderPreset(path, name, preset, *overwrite); err != nil {
+		fmt.Fprintln(command.Stderr, "preset save failed:", err)
+		return ExitFailed
+	}
+	if *jsonOutput {
+		return command.writeJSONOutput("preset save", struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{Type: "preset_save", Name: name})
+	}
+	fmt.Fprintf(command.Stdout, "已保存连接预设 %s\n", name)
+	return ExitOK
+}
+
+// providerPresetShow 展示单个命名连接预设的非敏感字段。
+func (command Command) providerPresetShow(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("provider presets show", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	normalized := normalizeFlagsThenPositionals(arguments, map[string]struct{}{
+		"--workspace": {}, "--config": {},
+	})
+	if err := flags.Parse(normalized); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "provider presets show requires a name")
+		return ExitUsage
+	}
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	name := flags.Arg(0)
+	preset, exists := configuration.Provider.Presets[name]
+	if !exists {
+		fmt.Fprintln(command.Stderr, "preset is not defined in provider.presets")
+		return ExitFailed
+	}
+	protocol := preset.Protocol
+	if protocol == "" {
+		protocol = config.ProtocolOpenAIChatCompletions
+	}
+	admission := preset.Admission
+	if admission == "" {
+		admission = config.ProviderAdmissionRequired
+	}
+	entry := providerPresetEntry{
+		Name: name, Protocol: protocol, BaseURL: preset.BaseURL, Model: preset.Model,
+		APIKeyEnv: preset.APIKeyEnv, Admission: admission,
+		Active: configuration.Provider.Use == name,
+	}
+	if *jsonOutput {
+		return command.writeJSONOutput("preset show", entry)
+	}
+	fmt.Fprintf(command.Stdout, "name: %s\nprotocol: %s\nbase_url: %s\nmodel: %s\napi_key_env: %s\nadmission: %s\nactive: %t\n",
+		entry.Name, entry.Protocol, entry.BaseURL, entry.Model, entry.APIKeyEnv, entry.Admission, entry.Active)
+	return ExitOK
+}
+
+// providerPresetRemove 删除未激活的命名连接预设。
+func (command Command) providerPresetRemove(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("provider presets remove", flag.ContinueOnError)
+	flags.SetOutput(command.Stderr)
+	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
+	configPath := flags.String("config", "", "configuration path")
+	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	normalized := normalizeFlagsThenPositionals(arguments, map[string]struct{}{
+		"--workspace": {}, "--config": {},
+	})
+	if err := flags.Parse(normalized); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(command.Stderr, "provider presets remove requires a name")
+		return ExitUsage
+	}
+	path := resolveConfigPath(*configPath, *workspace)
+	name := flags.Arg(0)
+	if err := config.RemoveProviderPreset(path, name); err != nil {
+		fmt.Fprintln(command.Stderr, "preset remove failed:", err)
+		return ExitFailed
+	}
+	if *jsonOutput {
+		return command.writeJSONOutput("preset remove", struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}{Type: "preset_remove", Name: name})
+	}
+	fmt.Fprintf(command.Stdout, "已删除连接预设 %s\n", name)
+	return ExitOK
+}
+
+// resolveConfigPath 返回显式路径或工作区缺省配置路径。
+func resolveConfigPath(configPath, workspace string) string {
+	if strings.TrimSpace(configPath) != "" {
+		return configPath
+	}
+	root := workspace
+	if root == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return config.DefaultPath(".")
+		}
+		root = cwd
+	}
+	return config.ResolveDefaultPath(root)
+}
+
 // providerUse 选择激活的连接预设：写入 provider.use，清空内联连接字段，
 // 使下一新 run 使用该预设。活跃 run 不受影响（其身份已在创建时冻结）。
 func (command Command) providerUse(ctx context.Context, arguments []string) int {
@@ -137,20 +299,8 @@ func (command Command) providerUse(ctx context.Context, arguments []string) int 
 		return ExitUsage
 	}
 	name := flags.Arg(0)
-	path := *configPath
-	if path == "" {
-		root := *workspace
-		if root == "" {
-			cwd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintln(command.Stderr, "resolve workspace failed")
-				return ExitFailed
-			}
-			root = cwd
-		}
-		path = config.DefaultPath(root)
-	}
-	if err := writeProviderUse(path, name); err != nil {
+	path := resolveConfigPath(*configPath, *workspace)
+	if err := config.UseProviderPreset(path, name); err != nil {
 		fmt.Fprintln(command.Stderr, "provider use failed:", err)
 		return ExitFailed
 	}
@@ -189,6 +339,9 @@ type providerAdmissionReport struct {
 	HeadEvidence       string `json:"head_evidence,omitempty"`
 	HeadFingerprint    string `json:"head_fingerprint,omitempty"`
 	Allowed            bool   `json:"allowed"`
+	ActivePreset       string `json:"active_preset,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Protocol           string `json:"protocol,omitempty"`
 }
 
 // providerList 列出静态注册表成员与各自绑定的规范协议；注册表是编译期
@@ -222,11 +375,19 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	flags := flag.NewFlagSet("provider models", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
 	query := flags.String("query", "", "model name filter (empty lists the catalog head)")
+	providerFilter := flags.String("provider", "", "filter by provider ID")
+	toolCall := flags.Bool("tool-call", false, "only models supporting tool calls")
+	reasoning := flags.Bool("reasoning", false, "only models supporting reasoning")
 	catalogURL := flags.String("catalog-url", "", "model metadata catalog URL override")
 	catalogCache := flags.String("catalog-cache", "", "model metadata cache file path override")
 	limit := flags.Int("limit", providerListLimit, "maximum entries to list")
+	refresh := flags.Bool("refresh", false, "force refresh catalog from network")
 	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return ExitUsage
+	}
+	if *limit <= 0 {
+		fmt.Fprintln(command.Stderr, "limit must be positive")
 		return ExitUsage
 	}
 	options := modelcatalog.Options{CatalogURL: *catalogURL}
@@ -235,7 +396,13 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
 		options.CachePath = cachePath
 	}
-	catalog, err := modelcatalog.Load(options)
+	var catalog *modelcatalog.Catalog
+	var err error
+	if *refresh {
+		catalog, err = modelcatalog.Refresh(options)
+	} else {
+		catalog, err = modelcatalog.Load(options)
+	}
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "catalog error:", err)
 		return ExitFailed
@@ -244,6 +411,34 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	if *query != "" {
 		entries = catalog.Lookup(*query)
 	}
+	if *providerFilter != "" {
+		entries = catalog.EntriesOf(*providerFilter)
+		if *query != "" {
+			filtered := make([]modelcatalog.ModelEntry, 0, len(entries))
+			lookup := catalog.Lookup(*query)
+			allowed := map[string]struct{}{}
+			for _, item := range lookup {
+				allowed[item.Provider+"/"+item.ID] = struct{}{}
+			}
+			for _, item := range entries {
+				if _, ok := allowed[item.Provider+"/"+item.ID]; ok {
+					filtered = append(filtered, item)
+				}
+			}
+			entries = filtered
+		}
+	}
+	filtered := make([]modelcatalog.ModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		if *toolCall && !entry.ToolCall {
+			continue
+		}
+		if *reasoning && !entry.Reasoning {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	entries = filtered
 	if len(entries) > *limit {
 		entries = entries[:*limit]
 	}
@@ -255,7 +450,10 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 			}
 			continue
 		}
-		fmt.Fprintf(command.Stdout, "%s\tcontext=%d\toutput=%d\ttool_call=%t\n", entry.Name, entry.ContextTokens, entry.OutputTokens, entry.ToolCall)
+		fmt.Fprintf(command.Stdout, "%s\tprovider=%s\tcontext=%d\toutput=%d\ttool_call=%t\treasoning=%t\ttemperature=%t\tprice_in=%.4f\tprice_out=%.4f\n",
+			entry.Name, entry.Provider, entry.ContextTokens, entry.OutputTokens,
+			entry.ToolCall, entry.Reasoning, entry.Temperature,
+			entry.InputUSDPerMillion, entry.OutputUSDPerMillion)
 	}
 	return ExitOK
 }
@@ -275,6 +473,8 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	userScope := flags.Bool("user", false, "write the user-level config shared by all workspaces (default: workspace config)")
 	overwrite := flags.Bool("overwrite", false, "replace an existing config (backs it up as config.yaml.bak)")
+	savePreset := flags.String("save-preset", "", "also save this connection as a named provider preset")
+	overwritePreset := flags.Bool("overwrite-preset", false, "allow replacing an existing named preset")
 	jsonOutput := flags.Bool("json", false, "write JSON to stdout")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return ExitUsage
@@ -293,8 +493,23 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 		fmt.Fprintln(command.Stderr, "configure failed:", err)
 		return ExitFailed
 	}
+	presetName := strings.TrimSpace(*savePreset)
+	if presetName != "" {
+		preset := config.ProviderPreset{BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv}
+		if strings.TrimSpace(*admission) != "" {
+			preset.Admission = *admission
+		}
+		if err := config.SaveProviderPreset(outcome.ConfigPath, presetName, preset, *overwritePreset); err != nil {
+			fmt.Fprintln(command.Stderr, "save preset failed:", err)
+			return ExitFailed
+		}
+	}
 	if *jsonOutput {
-		if err := writeJSONChecked(command.Stdout, providerConfigureReport{ConfigPath: outcome.ConfigPath, CatalogMatched: outcome.CatalogMatched, ProbeRan: outcome.ProbeRan, Notes: outcome.Notes}); err != nil {
+		report := providerConfigureReport{ConfigPath: outcome.ConfigPath, CatalogMatched: outcome.CatalogMatched, ProbeRan: outcome.ProbeRan, Notes: outcome.Notes}
+		if presetName != "" {
+			report.Notes = append(report.Notes, "saved preset "+presetName)
+		}
+		if err := writeJSONChecked(command.Stdout, report); err != nil {
 			fmt.Fprintln(command.Stderr, "configure output failed:", err)
 			return ExitFailed
 		}
@@ -303,6 +518,9 @@ func (command Command) providerConfigure(ctx context.Context, arguments []string
 	fmt.Fprintf(command.Stdout, "配置已生成: %s\n", outcome.ConfigPath)
 	for _, note := range outcome.Notes {
 		fmt.Fprintf(command.Stdout, "  %s\n", note)
+	}
+	if presetName != "" {
+		fmt.Fprintf(command.Stdout, "已保存连接预设 %s\n", presetName)
 	}
 	return ExitOK
 }
@@ -433,9 +651,16 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 		return ExitFailed
 	}
 	outcome, err := provider.EvaluateAdmissionGate(decisions, evidenceStore, profile, configuration.Provider.Admission)
+	protocol := configuration.Provider.Protocol
+	if protocol == "" {
+		protocol = config.ProtocolOpenAIChatCompletions
+	}
 	report := providerAdmissionReport{
 		Admission:          configuration.Provider.Admission,
 		RequestFingerprint: requestFingerprint,
+		ActivePreset:       configuration.Provider.Use,
+		Model:              configuration.Provider.Model,
+		Protocol:           protocol,
 	}
 	if err != nil {
 		report.GateError = err.Error()
@@ -461,6 +686,12 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 			fmt.Fprintf(command.Stdout, "门评估: %v\n", err)
 		}
 		fmt.Fprintf(command.Stdout, "admission=%s allowed=%t\n", configuration.Provider.Admission, report.Allowed)
+		if report.ActivePreset != "" {
+			fmt.Fprintf(command.Stdout, "active_preset=%s\n", report.ActivePreset)
+		}
+		if report.Model != "" {
+			fmt.Fprintf(command.Stdout, "model=%s protocol=%s\n", report.Model, report.Protocol)
+		}
 	}
 	if configuration.Provider.Admission == config.ProviderAdmissionRequired && !report.Allowed {
 		return ExitFailed
@@ -505,48 +736,4 @@ func cliWorkspaceHash(workspacePath string, configuration config.Config) (string
 	}
 	digest := sha256.Sum256([]byte(workspace.Root))
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
-}
-
-// writeProviderUse 在既有配置上原子写入 provider.use：清除内联连接字段，
-// 保留 presets 与其他配置段；目标预设缺失时失败关闭且不落盘。
-func writeProviderUse(path, name string) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-	var document map[string]any
-	if err := yaml.Unmarshal(content, &document); err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-	providerSection, ok := document["provider"].(map[string]any)
-	if !ok {
-		providerSection = map[string]any{}
-	}
-	presetsRaw, _ := providerSection["presets"].(map[string]any)
-	if _, exists := presetsRaw[name]; !exists {
-		return fmt.Errorf("preset %q is not defined in provider.presets", name)
-	}
-	for _, field := range []string{"base_url", "model", "api_key_env", "request_timeout", "id", "admission", "capability", "generation"} {
-		delete(providerSection, field)
-	}
-	providerSection["use"] = name
-	document["provider"] = providerSection
-	encoded, err := yaml.Marshal(document)
-	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-	info, statErr := os.Stat(path)
-	mode := os.FileMode(0o600)
-	if statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, mode); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
-		return fmt.Errorf("replace config: %w", err)
-	}
-	return nil
 }
