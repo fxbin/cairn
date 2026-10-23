@@ -62,6 +62,34 @@ func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch)
 // allow 是有意设计（敏感文件已由工作区层 sensitivePath/ignore 拦截），模型
 // 需要读取（如受写保护的配置文件）才能完成任务的场景不因此被阻断。
 func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error) {
+	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。
+	if toolName == "exec_command" || toolName == "apply_patch" {
+		if err := tools.GuardWrite(gate.Patch.Workspace.Root, toolName); err != nil {
+			return Decision{
+				Effect:      Deny,
+				RuleID:      "untrusted_workspace",
+				Fingerprint: fingerprint(toolName, raw),
+				Summary:     err.Error(),
+			}, nil
+		}
+	}
+	// 危险命令在任何模式下都拒绝，并给出重写提示。
+	if toolName == "exec_command" {
+		var proposed struct {
+			Argv []string `json:"argv"`
+		}
+		if err := json.Unmarshal(raw, &proposed); err == nil {
+			argv := strings.Join(proposed.Argv, " ")
+			if dangerous := DetectDangerousCommand(toolName, argv); dangerous != nil {
+				return Decision{
+					Effect:      Deny,
+					RuleID:      "dangerous_command",
+					Fingerprint: fingerprint(toolName, raw),
+					Summary:     dangerous.Reason + "；" + dangerous.RewriteHint,
+				}, nil
+			}
+		}
+	}
 	switch toolName {
 	case "list_files", "read_file", "search_text", "skill":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
