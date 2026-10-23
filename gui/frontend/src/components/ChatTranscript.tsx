@@ -210,7 +210,6 @@ export function ChatTranscript({
     return (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="empty-hero" data-testid="loading-session">
-          <div className="empty-kicker">Cairn</div>
           <h2>加载会话…</h2>
           <p>正在读取运行事件与工作区状态。</p>
         </div>
@@ -222,7 +221,6 @@ export function ChatTranscript({
     return (
       <div className="chat-scroll" ref={scrollRef}>
         <div className="empty-hero">
-          <div className="empty-kicker">New session</div>
           <h2>今天想改点什么？</h2>
           <p>描述目标即可。Cairn 会规划步骤、执行工具，并在有副作用时请你确认。</p>
           {capability && !capability.hasWorkspace && (

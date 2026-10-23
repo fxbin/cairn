@@ -378,10 +378,10 @@ export function InspectorRail({
         {tab === "files" && (
           <div className="rail-section">
             <h3>工作区 / 工件</h3>
-            <div className="muted" style={{ marginBottom: 8, fontSize: 11 }}>
+            <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
               预览经路径与敏感边界；二进制/超大文件截断或拒绝。
             </div>
-            <div className="muted" style={{ marginBottom: 10, fontSize: 11.5 }}>
+            <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
               {workspace?.path || "未选择"}
             </div>
             {tree ? <FileTree node={tree} onFile={(rel) => void openPreview(rel)} /> : <div className="empty-sm">加载中…</div>}
@@ -541,9 +541,15 @@ export function InspectorRail({
               <div className="meta">{runId ? `run ${runId}` : "未选择运行"}</div>
             </div>
 
+            {!runId ? (
+              <div className="empty-sm" data-testid="rail-idle-hint" style={{ marginTop: 12 }}>
+                选择运行后显示证据、上下文与时间线
+              </div>
+            ) : (
+              <>
             <h3>完成证据</h3>
             <div className="meta" data-testid="result-layers" style={{ marginBottom: 8 }}>
-              任务完成、验证可信、外部副作用对账分别展示；可信与待对账不得混为一谈。
+              完成 · 可信 · 对账分栏展示
             </div>
             {evidence ? (
               <div className="list-card">
@@ -615,10 +621,8 @@ export function InspectorRail({
                   {evidence.metrics.wall_time_ms ?? "—"}ms
                 </div>
               ) : null}
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-                文件引用、规约、记忆与 Skill 的实际注入以 Journal 事件为准；未知容量不填假百分比。
-                压缩摘要与原始证据可追溯；UI 选择不冒充实际注入。
-                历史 run 绑定的规约快照与当前文件比较；冷恢复不重读当前正文。
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                注入以 Journal 事件为准；未知容量不填假百分比。
               </div>
             </div>
 
@@ -1074,6 +1078,8 @@ export function InspectorRail({
                 void load();
               }}
             />
+              </>
+            )}
           </div>
         )}
       </div>

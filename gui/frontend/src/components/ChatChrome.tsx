@@ -130,7 +130,7 @@ export function Composer({
           )}
         </div>
       </div>
-      <div className="composer-hint">副作用会先请求批准；运行事实写入 Event Journal。</div>
+      <div className="composer-hint">副作用需批准</div>
     </div>
   );
 }
