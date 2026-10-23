@@ -45,18 +45,20 @@ type ProviderGenerationSummary struct {
 // ProviderProbeResult 是合同探测的闭合结论：无消息正文、无密钥、无明文端点，
 // 可安全进入本地记录与人工复核。
 type ProviderProbeResult struct {
-	Result                string                     `json:"result"`
-	ProviderKind          string                     `json:"provider_kind"`
-	EndpointIdentity      string                     `json:"endpoint_identity"`
-	Model                 string                     `json:"model"`
-	ModelRevision         string                     `json:"model_revision"`
-	CapabilityFingerprint string                     `json:"capability_fingerprint"`
-	Generation            *ProviderGenerationSummary `json:"generation"`
-	UsageStreamed         bool                       `json:"usage_streamed"`
-	StopReason            string                     `json:"stop_reason"`
-	ToolRoundtrip         string                     `json:"tool_roundtrip"`
-	Error                 string                     `json:"error,omitempty"`
-	EvidenceFingerprint   string                     `json:"evidence_fingerprint,omitempty"`
+	ConfigFingerprint         string                     `json:"config_fingerprint,omitempty"`
+	RequestProfileFingerprint string                     `json:"request_profile_fingerprint,omitempty"`
+	Result                    string                     `json:"result"`
+	ProviderKind              string                     `json:"provider_kind"`
+	EndpointIdentity          string                     `json:"endpoint_identity"`
+	Model                     string                     `json:"model"`
+	ModelRevision             string                     `json:"model_revision"`
+	CapabilityFingerprint     string                     `json:"capability_fingerprint"`
+	Generation                *ProviderGenerationSummary `json:"generation"`
+	UsageStreamed             bool                       `json:"usage_streamed"`
+	StopReason                string                     `json:"stop_reason"`
+	ToolRoundtrip             string                     `json:"tool_roundtrip"`
+	Error                     string                     `json:"error,omitempty"`
+	EvidenceFingerprint       string                     `json:"evidence_fingerprint,omitempty"`
 
 	// probed 记录网络探测是否真实执行过：仅执行过的探测才有观测事实可落
 	// 盘为证据；早期配置失败没有观测语义，不进入证据存储。
@@ -106,13 +108,20 @@ func (service Service) CheckProvider(ctx context.Context, options CheckProviderO
 		result.Error = err.Error()
 		return result, nil
 	}
+	_, requestFingerprint, err := admissionProfile(configuration)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	result.ConfigFingerprint = configuration.Fingerprint()
+	result.RequestProfileFingerprint = requestFingerprint
 	result.EndpointIdentity = digest
 	result.Model = profile.Model
 	result.ModelRevision = profile.ProviderModelRevision
 	result.CapabilityFingerprint = profile.CapabilityFingerprint
 	result.Generation = summarizeProviderGeneration(profile.GenerationOptions)
 
-	client, err := service.provider(configuration)
+	client, err := service.provider(configuration, options.Workspace)
 	if err != nil {
 		result.Error = err.Error()
 		return result, nil
