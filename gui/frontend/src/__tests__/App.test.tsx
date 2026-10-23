@@ -32,6 +32,28 @@ const desktopMock = vi.hoisted(() => ({
   listChanges: vi.fn(),
   diffFile: vi.fn(),
   openPathInEditor: vi.fn(),
+  submitSteering: vi.fn(),
+  listHooks: vi.fn(async () => []),
+  upsertHook: vi.fn(async () => ({ ok: true })),
+  disableHook: vi.fn(async () => ({ ok: true })),
+  listWorkflows: vi.fn(async () => []),
+  saveWorkflow: vi.fn(async () => ({ ok: true })),
+  runWorkflow: vi.fn(async () => ({ workflow_id: "w1", state: "running" })),
+  listProjectInstructions: vi.fn(async () => ({ documents: [] })),
+  listMemories: vi.fn(async () => []),
+  revokeMemory: vi.fn(async () => ({})),
+  listCommands: vi.fn(async () => []),
+  installSkill: vi.fn(async () => ({ name: "s" })),
+  setSkillEnabled: vi.fn(async () => ({ ok: true })),
+  removeSkill: vi.fn(async () => ({ ok: true })),
+  consolidateMemories: vi.fn(async () => 0),
+  saveReviewNote: vi.fn(async () => ({ ok: true })),
+  listReviewNotes: vi.fn(async () => []),
+  listProviderPresets: vi.fn(async () => []),
+  runProviderSetup: vi.fn(),
+  probeProvider: vi.fn(async () => ({ result: "pass" })),
+  writeProjectInstructions: vi.fn(async () => ({ ok: true })),
+  inspectMemory: vi.fn(async () => ({ candidate: { id: "c1", outcome: "ok", status: "active" }, audit: [] })),
   onStream: vi.fn(() => () => undefined),
 }));
 
@@ -135,4 +157,21 @@ describe("Chat-first shell", () => {
       );
     });
   });
+  it("配置生成成功后清除已解决的旧错误并显示成功通知", async () => {
+    desktopMock.listRuns.mockRejectedValueOnce(new Error("尚未配置 Provider"));
+    desktopMock.doctor.mockResolvedValue({});
+    desktopMock.mcpStatus.mockResolvedValue([]);
+    desktopMock.listSkills.mockResolvedValue([]);
+    desktopMock.runProviderSetup.mockResolvedValue({ config_path: "/tmp/demo/.agent/config.yaml", probe_ran: true, notes: [] });
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("error-banner")).toHaveTextContent("尚未配置 Provider"));
+    await userEvent.click(screen.getByTestId("open-settings"));
+    await userEvent.click(screen.getByRole("button", { name: "Provider" }));
+    await userEvent.type(screen.getByTestId("setup-base-url"), "http://127.0.0.1:1/v1");
+    await userEvent.type(screen.getByTestId("setup-model"), "local-model");
+    await userEvent.click(screen.getByTestId("run-setup"));
+    await waitFor(() => expect(screen.getByTestId("provider-notice")).toHaveTextContent("配置已生成"));
+    await waitFor(() => expect(screen.queryByTestId("error-banner")).not.toBeInTheDocument());
+  });
+
 });
