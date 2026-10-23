@@ -393,3 +393,33 @@ func normalizeModelName(value string) string {
 	lowered = strings.ReplaceAll(lowered, " ", "-")
 	return lowered
 }
+
+// Refresh 强制跳过磁盘缓存从目录源获取；失败仍回退陈旧缓存并标注。
+// 供用户显式刷新目录时使用，不改变 Load 的 TTL 语义。
+func Refresh(options Options) (*Catalog, error) {
+	if options.CatalogURL == "" {
+		options.CatalogURL = DefaultCatalogURL
+	}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	client := &http.Client{Transport: options.Transport, Timeout: catalogFetchTimeout}
+	response, err := client.Get(options.CatalogURL)
+	if err != nil {
+		return staleFallback(options.CachePath, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return staleFallback(options.CachePath, fmt.Errorf("catalog endpoint returned %d", response.StatusCode))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, catalogMaxBytes))
+	if err != nil {
+		return staleFallback(options.CachePath, err)
+	}
+	catalog, err := parseCatalog(body, options.Now().UTC())
+	if err != nil {
+		return staleFallback(options.CachePath, err)
+	}
+	_ = writeCache(options.CachePath, catalog)
+	return catalog, nil
+}
