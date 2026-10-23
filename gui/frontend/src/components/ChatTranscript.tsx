@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatBlock } from "../desktop/chatBlocks";
 import type { ErrorBody } from "../desktop/types";
 
@@ -9,48 +11,56 @@ function formatTime(iso: string): string {
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-function splitBlocks(text: string): Array<{ type: "p" | "code"; text: string }> {
-  const out: Array<{ type: "p" | "code"; text: string }> = [];
-  const segments = text.split(/```/);
-  segments.forEach((segment, index) => {
-    if (index % 2 === 1) {
-      const cleaned = segment.replace(/^[a-zA-Z0-9_+-]*\n/, "");
-      out.push({ type: "code", text: cleaned.replace(/\n$/, "") });
-    } else if (segment.trim()) {
-      out.push({ type: "p", text: segment.trim() });
-    }
-  });
-  return out;
-}
+const LONG_BODY_THRESHOLD = 2400;
 
-function renderInline(text: string) {
-  const nodes: Array<string | JSX.Element> = [];
-  const regex = /`([^`]+)`|\*\*([^*]+)\*\*|\*\*?\*([^*]+)\*\*?/g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text))) {
-    if (match.index > last) nodes.push(text.slice(last, match.index));
-    if (match[1] != null) nodes.push(<code key={`${match.index}-c`}>{match[1]}</code>);
-    else if (match[2] != null) nodes.push(<strong key={`${match.index}-b`}>{match[2]}</strong>);
-    else if (match[3] != null) nodes.push(<em key={`${match.index}-i`}>{match[3]}</em>);
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
-}
-
+/** AssistantBody 安全渲染模型正文：Markdown 不执行 raw HTML/脚本。 */
 export function AssistantBody({ text }: { text: string }) {
-  const parts = useMemo(() => splitBlocks(text), [text]);
+  const [expanded, setExpanded] = useState(false);
+  const long = text.length > LONG_BODY_THRESHOLD;
+  const shown = long && !expanded ? text.slice(0, LONG_BODY_THRESHOLD) + "\n…" : text;
   return (
-    <div className="msg-body">
-      {parts.map((part, index) =>
-        part.type === "code" ? (
-          <pre key={index}>
-            <code>{part.text}</code>
-          </pre>
-        ) : (
-          <p key={index}>{renderInline(part.text)}</p>
-        ),
+    <div className="msg-body" data-testid="assistant-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+        components={{
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer noopener">
+              {children}
+            </a>
+          ),
+          code: ({ className, children }) => {
+            const isBlock = String(className || "").includes("language-") || String(children).includes("\n");
+            if (!isBlock) {
+              return <code>{children}</code>;
+            }
+            const raw = String(children);
+            return (
+              <div className="code-block">
+                <button
+                  type="button"
+                  className="btn-sm code-copy"
+                  data-testid="copy-code"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(raw);
+                  }}
+                >
+                  复制
+                </button>
+                <pre>
+                  <code className={className}>{children}</code>
+                </pre>
+              </div>
+            );
+          },
+        }}
+      >
+        {shown}
+      </ReactMarkdown>
+      {long && (
+        <button type="button" className="btn-sm" data-testid="expand-body" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "收起" : "展开全文"}
+        </button>
       )}
     </div>
   );
@@ -84,7 +94,18 @@ function ToolCard({ block }: { block: Extract<ChatBlock, { kind: "tool" }> }) {
           <span>{open ? "收起" : "展开"}</span>
         </span>
       </button>
-      {open && block.detail && <div className="tool-card-body">{block.detail}</div>}
+      {open && block.detail && (
+        <div className="tool-card-body" data-testid="tool-output">
+          <button
+            type="button"
+            className="btn-sm"
+            onClick={() => void navigator.clipboard?.writeText(block.detail)}
+          >
+            复制输出
+          </button>
+          <pre style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{block.detail}</pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -94,10 +115,20 @@ function ApprovalCard({
   onDecide,
 }: {
   block: Extract<ChatBlock, { kind: "approval" }>;
-  onDecide: (approve: boolean, fingerprint: string, runId: string) => void;
+  onDecide: (approve: boolean, fingerprint: string, runId: string) => Promise<boolean>;
 }) {
+  const [busy, setBusy] = useState(false);
+  const decide = (approve: boolean) => {
+    if (block.resolved || busy) {
+      return;
+    }
+    setBusy(true);
+    void onDecide(approve, block.fingerprint, block.runId)
+      .then((accepted) => { if (!accepted) setBusy(false); })
+      .catch(() => setBusy(false));
+  };
   return (
-    <div className="approval-card">
+    <div className="approval-card" data-testid="approval-card">
       <h3>
         <span>⚠</span> 需要你的确认
       </h3>
@@ -106,6 +137,12 @@ function ApprovalCard({
         运行 {block.runId}
         {block.operationId ? ` · 操作 ${block.operationId}` : ""}
       </div>
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ fontSize: 12, cursor: "pointer" }}>影响与指纹</summary>
+        <div className="mono-block" style={{ marginTop: 6, fontSize: 11 }}>
+          fingerprint: {block.fingerprint || "—"}
+        </div>
+      </details>
       {block.resolved ? (
         <div
           className="muted"
@@ -119,10 +156,22 @@ function ApprovalCard({
         </div>
       ) : (
         <div className="approval-actions">
-          <button type="button" className="btn-approve" onClick={() => onDecide(true, block.fingerprint, block.runId)}>
+          <button
+            type="button"
+            className="btn-approve"
+            data-testid="approval-allow"
+            disabled={busy}
+            onClick={() => decide(true)}
+          >
             允许并继续
           </button>
-          <button type="button" className="btn-deny" onClick={() => onDecide(false, block.fingerprint, block.runId)}>
+          <button
+            type="button"
+            className="btn-deny"
+            data-testid="approval-deny"
+            disabled={busy}
+            onClick={() => decide(false)}
+          >
             拒绝
           </button>
         </div>
@@ -136,11 +185,18 @@ export function ChatTranscript({
   loading,
   onDecide,
   onSuggestion,
+  capability,
 }: {
   blocks: ChatBlock[];
   loading: boolean;
-  onDecide: (approve: boolean, fingerprint: string, runId: string) => void;
+  onDecide: (approve: boolean, fingerprint: string, runId: string) => Promise<boolean>;
   onSuggestion: (text: string) => void;
+  capability?: {
+    hasWorkspace: boolean;
+    hasConfig: boolean;
+    onPickWorkspace?: () => void;
+    onOpenSettings?: () => void;
+  };
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
@@ -168,6 +224,28 @@ export function ChatTranscript({
           <div className="orb">C</div>
           <h2>今天想改点什么？</h2>
           <p>描述目标即可。Cairn 会规划步骤、执行工具，并在有副作用时请你确认。</p>
+          {capability && !capability.hasWorkspace && (
+            <div className="list-card" data-testid="empty-need-workspace">
+              <div className="title">先选择工作区</div>
+              <div className="meta">没有工作区时无法装载配置或启动任务。</div>
+              {capability.onPickWorkspace && (
+                <button type="button" className="btn-sm primary" onClick={capability.onPickWorkspace}>
+                  选择目录
+                </button>
+              )}
+            </div>
+          )}
+          {capability && capability.hasWorkspace && !capability.hasConfig && (
+            <div className="list-card" data-testid="empty-need-config">
+              <div className="title">工作区缺少 .agent/config.yaml</div>
+              <div className="meta">配置就绪后才能启动真实运行；不会写入演示任务。</div>
+              {capability.onOpenSettings && (
+                <button type="button" className="btn-sm" onClick={capability.onOpenSettings}>
+                  打开设置查看诊断
+                </button>
+              )}
+            </div>
+          )}
           <div className="suggestion-row">
             {[
               "梳理仓库模块边界并给出重构建议",

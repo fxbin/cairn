@@ -7,6 +7,7 @@ export function Composer({
   onSubmit,
   onStop,
   onQueue,
+  onInsertFile,
   running,
   model,
   onModelChange,
@@ -19,6 +20,7 @@ export function Composer({
   onSubmit: () => void;
   onStop: () => void;
   onQueue: () => void;
+  onInsertFile?: () => void;
   running: boolean;
   model: string;
   onModelChange: (value: string) => void;
@@ -45,23 +47,26 @@ export function Composer({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            if (event.metaKey || event.ctrlKey) {
               event.preventDefault();
-              if (!running && value.trim() && !disabled) {
-                onSubmit();
-              }
+              if (value.trim() && !disabled) onQueue();
+              return;
             }
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+            if (!event.shiftKey) {
               event.preventDefault();
-              if (value.trim() && !disabled) {
-                onQueue();
-              }
+              if (!running && value.trim() && !disabled) onSubmit();
             }
           }}
           placeholder={placeholder || "向 Cairn 描述任务…（Enter 发送，⌘/Ctrl+Enter 入队，Shift+Enter 换行）"}
+          title="可用内置命令见资源页；斜杠文本不会直接执行为 shell"
           aria-label="任务输入"
           data-testid="composer-input"
           rows={2}
+          onPaste={(event) => {
+            // 保留粘贴文本原样（含代码块），交给 textarea 默认处理。
+            event.stopPropagation();
+          }}
         />
         <div className="composer-toolbar">
           <select
@@ -86,6 +91,18 @@ export function Composer({
             {readOnly ? "只读" : "可写"}
           </span>
           <span className="spacer" />
+          {onInsertFile && (
+            <button
+              type="button"
+              className="btn-sm"
+              disabled={disabled || running}
+              data-testid="composer-file"
+              title="插入工作区文件引用"
+              onClick={onInsertFile}
+            >
+              引用文件
+            </button>
+          )}
           <button
             type="button"
             className="btn-sm"
@@ -130,24 +147,30 @@ export function ThreadSidebar({
   workspacePath,
   onPickWorkspace,
   workspaceLabel,
+  recent = [],
+  onSwitchWorkspace,
 }: {
   threads: Array<{
     run_id: string;
+    session_id?: string;
     title: string;
     phase?: string;
     state: string;
     updated_at: string;
     waiting_approval?: boolean;
+    pinned?: boolean;
   }>;
   activeId: string | null;
   query: string;
   onQuery: (value: string) => void;
   onSelect: (runId: string) => void;
   onNew: () => void;
-  onContext: (runId: string, title: string) => void;
+  onContext: (runId: string, title: string, sessionId: string, pinned: boolean) => void;
   workspacePath: string;
   onPickWorkspace: () => void;
   workspaceLabel: string;
+  recent?: Array<{ path: string; name: string; archived?: boolean }>;
+  onSwitchWorkspace?: (path: string) => void;
 }) {
   return (
     <aside className="sidebar">
@@ -187,7 +210,10 @@ export function ThreadSidebar({
               className={`thread-item ${thread.run_id === activeId ? "active" : ""}`}
               onClick={() => onSelect(thread.run_id)}
             >
-              <div className="thread-item-title">{thread.title}</div>
+              <div className="thread-item-title">
+                {thread.pinned ? <span title="置顶">📌 </span> : null}
+                {thread.title}
+              </div>
               <div className="thread-item-meta">
                 <span
                   className="thread-dot"
@@ -203,7 +229,7 @@ export function ThreadSidebar({
               aria-label="会话操作"
               onClick={(event) => {
                 event.stopPropagation();
-                onContext(thread.run_id, thread.title);
+                onContext(thread.run_id, thread.title, thread.session_id || thread.run_id, Boolean(thread.pinned));
               }}
               data-testid={`thread-more-${thread.run_id}`}
             >
@@ -213,6 +239,22 @@ export function ThreadSidebar({
         ))}
       </div>
       <div className="sidebar-footer">
+        {recent.length > 1 && onSwitchWorkspace && (
+          <div className="recent-projects" data-testid="recent-projects">
+            {recent.slice(0, 5).map((item) => (
+              <button
+                key={item.path}
+                type="button"
+                className={`recent-item ${item.path === workspacePath ? "active" : ""}`}
+                data-testid={`recent-${item.name}`}
+                title={item.path}
+                onClick={() => onSwitchWorkspace(item.path)}
+              >
+                {item.name}
+              </button>
+            ))}
+          </div>
+        )}
         <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath} data-testid="workspace-chip">
           <span className="ws-icon">⌂</span>
           <span className="path">{workspaceLabel || "选择工作区"}</span>
