@@ -40,12 +40,13 @@ func WorkspaceObserve(path string) (WorkspaceStatus, error) {
 	return status, nil
 }
 
-// OpenInEditor 尝试使用系统打开路径；仅接受已存在的工作区内文件/目录。
-// 需要调用方先通过路径边界校验；此处再做存在性检查，不绕过 Policy。
-func OpenInEditor(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("path is required")
+// OpenInEditor 使用系统打开工作区内路径；先经统一边界解析，禁止敏感/逃逸。
+func OpenInEditor(workspace, relative string) error {
+	_, resolved, _, err := resolveReadableRelative(workspace, relative)
+	if err != nil {
+		return err
 	}
+	path := resolved
 	if !fileExists(path) && !dirExists(path) {
 		return errors.New("path does not exist")
 	}
@@ -96,7 +97,7 @@ func gitStatus(workspace string) (root, branch string, dirty bool) {
 }
 
 func runGit(workspace string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", append([]string{"--literal-pathspecs"}, args...)...)
 	cmd.Dir = workspace
 	return cmd.Output()
 }

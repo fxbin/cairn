@@ -33,15 +33,17 @@ type QueueActionRequest struct {
 	StateDir  string `json:"state_dir,omitempty"`
 	InputID   string `json:"input_id"`
 	Reason    string `json:"reason,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 // QueueItem 是队列项视图。
 type QueueItem struct {
-	InputID     string `json:"input_id"`
-	State       string `json:"state"`
-	TargetRunID string `json:"target_run_id,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	Content     string `json:"content,omitempty"`
+	InputID        string `json:"input_id"`
+	State          string `json:"state"`
+	TargetRunID    string `json:"target_run_id,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	ContentPreview string `json:"content_preview,omitempty"`
 }
 
 // ListQueue 返回持久后续队列。
@@ -61,10 +63,11 @@ func (api *API) ListQueue(ctx context.Context, request QueueRequest) ([]QueueIte
 	out := make([]QueueItem, 0, len(items))
 	for _, item := range items {
 		out = append(out, QueueItem{
-			InputID:     item.InputID,
-			State:       string(item.State),
-			TargetRunID: string(item.TargetRunID),
-			Reason:      item.Reason,
+			InputID:        item.InputID,
+			State:          string(item.State),
+			TargetRunID:    string(item.TargetRunID),
+			Reason:         item.Reason,
+			ContentPreview: item.ContentPreview,
 		})
 	}
 	return out, nil
@@ -100,27 +103,9 @@ func (api *API) SubmitQueue(ctx context.Context, request QueueSubmitRequest) (Qu
 	return QueueItem{InputID: item.InputID, State: string(item.State), TargetRunID: string(item.TargetRunID), Reason: item.Reason}, nil
 }
 
-// ConfirmQueue 确认启动队列项。
+// ConfirmQueue 确认启动队列项；进入统一 RunController，事件与取消完整。
 func (api *API) ConfirmQueue(ctx context.Context, request QueueActionRequest) (StartRunAck, error) {
-	workspace, err := absWorkspace(request.Workspace)
-	if err != nil {
-		return StartRunAck{}, err
-	}
-	configuration, err := loadConfiguration(workspace, request.StateDir)
-	if err != nil {
-		return StartRunAck{}, err
-	}
-	// 队列确认会启动运行；这里同步返回受理结果的标识，事件流继续推送。
-	outcome, err := api.service.ConfirmQueueInput(ctx, app.QueueConfirmOptions{
-		Workspace: workspace,
-		StateDir:  resolveStateDir(request.StateDir),
-		Config:    configuration,
-		InputID:   request.InputID,
-	})
-	if err != nil {
-		return StartRunAck{}, err
-	}
-	return StartRunAck{RunID: string(outcome.ID), SessionID: outcome.SessionID, State: "queued_started"}, nil
+	return api.controller.ConfirmQueue(ctx, request)
 }
 
 // CancelQueue 取消队列项。

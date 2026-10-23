@@ -84,6 +84,9 @@ type RunHistoryView struct {
 	app.RunHistoryItem
 	// Title 优先取用户元数据，否则使用任务首行。
 	Title string `json:"title"`
+	// Pinned/Archived 来自会话展示偏好，供列表排序与操作。
+	Pinned   bool `json:"pinned"`
+	Archived bool `json:"archived"`
 	// WaitingApproval 表示当前处于待审批。
 	WaitingApproval bool `json:"waiting_approval"`
 	// WaitingReconcile 表示存在悬而未决副作用。
@@ -92,15 +95,20 @@ type RunHistoryView struct {
 
 // StartRunRequest 启动一次新任务。
 type StartRunRequest struct {
-	Workspace  string `json:"workspace"`
-	StateDir   string `json:"state_dir,omitempty"`
-	Task       string `json:"task"`
-	Model      string `json:"model,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	PrevRunID  string `json:"prev_run_id,omitempty"`
+	Workspace string `json:"workspace"`
+	StateDir  string `json:"state_dir,omitempty"`
+	Task      string `json:"task"`
+	Model     string `json:"model,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	PrevRunID string `json:"prev_run_id,omitempty"`
+	// ForkSourceRunID 是分支来源的终态 run；后端解析为安全锚点。
+	ForkSourceRunID string `json:"fork_source_run_id,omitempty"`
+	// ForkSource 兼容旧字段：与 ForkSourceRunID 等价。
 	ForkSource string `json:"fork_source,omitempty"`
 	// Mode 是产品工作模式（如 default / read-only）；后端不支持时失败关闭。
 	Mode string `json:"mode,omitempty"`
+	// RequireSessionTail 要求 prev_run_id 仍是会话唯一链尾；续接时为 true。
+	RequireSessionTail bool `json:"require_session_tail,omitempty"`
 }
 
 // StartRunAck 确认运行已受理（异步执行）。
@@ -111,6 +119,8 @@ type StartRunAck struct {
 }
 
 // ResumeRequest 恢复运行并可选携带一次性审批决定。
+// Model/Mode 必须与启动时的运行时覆盖一致，使冻结指纹可复现；
+// 真实配置漂移仍由 requireMatchingConfig 拒绝。
 type ResumeRequest struct {
 	Workspace   string `json:"workspace"`
 	StateDir    string `json:"state_dir,omitempty"`
@@ -118,6 +128,8 @@ type ResumeRequest struct {
 	Approve     bool   `json:"approve"`
 	Fingerprint string `json:"fingerprint"`
 	Reason      string `json:"reason,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Mode        string `json:"mode,omitempty"`
 }
 
 // ResolveRequest 对悬而未决副作用做人工对账。
@@ -178,6 +190,7 @@ type RunDetail struct {
 // StreamEvent 是推送给前端的增量通知信封。
 // Kind 取值：run.event | run.status | run.waiting_approval | run.waiting_reconcile | run.finished | error。
 type StreamEvent struct {
+	Workspace  string         `json:"workspace,omitempty"`
 	Kind       string         `json:"kind"`
 	RunID      string         `json:"run_id,omitempty"`
 	SessionID  string         `json:"session_id,omitempty"`
@@ -199,4 +212,11 @@ type RunStatusView struct {
 	ResponsePreview  string `json:"response_preview,omitempty"`
 	ErrorCode        string `json:"error_code,omitempty"`
 	ErrorMessage     string `json:"error_message,omitempty"`
+}
+
+// SteeringRequest 向运行中的任务投递立即补充输入；与后续队列语义分离。
+type SteeringRequest struct {
+	RunID   string `json:"run_id"`
+	InputID string `json:"input_id,omitempty"`
+	Content string `json:"content"`
 }

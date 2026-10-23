@@ -129,13 +129,13 @@ func (service *Service) ListChanges(ctx context.Context, workspace string) (Chan
 }
 
 // DiffFile 返回文件 diff。
-func (service *Service) DiffFile(ctx context.Context, workspace, relative string) (string, error) {
-	return service.api.DiffFile(ctx, workspace, relative)
+func (service *Service) DiffFile(ctx context.Context, workspace, relative string, scope string) (string, error) {
+	return service.api.DiffFile(ctx, workspace, relative, scope)
 }
 
-// OpenPathInEditor 在外部编辑器打开路径。
-func (service *Service) OpenPathInEditor(ctx context.Context, path string) (OKResult, error) {
-	return service.api.OpenPathInEditor(ctx, path)
+// OpenPathInEditor 在外部编辑器打开工作区内相对路径。
+func (service *Service) OpenPathInEditor(ctx context.Context, workspace, relative string) (OKResult, error) {
+	return service.api.OpenPathInEditor(ctx, workspace, relative)
 }
 
 // ListQueue 列出后续队列。
@@ -166,4 +166,129 @@ func (service *Service) SessionTree(ctx context.Context, request SessionTreeRequ
 // Evidence 查询完成证据。
 func (service *Service) Evidence(ctx context.Context, request InspectRequest) (EvidenceView, error) {
 	return service.api.Evidence(ctx, request)
+}
+
+// SubmitSteering 投递立即补充输入。
+func (service *Service) SubmitSteering(ctx context.Context, request SteeringRequest) (OKResult, error) {
+	return service.api.SubmitSteering(ctx, request)
+}
+
+// ListHooks 列出钩子规则。
+func (service *Service) ListHooks(ctx context.Context, workspace string) ([]HookRule, error) {
+	return service.api.ListHooks(ctx, workspace)
+}
+
+// UpsertHook 写入钩子规则。
+func (service *Service) UpsertHook(ctx context.Context, rule HookRule) (OKResult, error) {
+	return service.api.UpsertHook(ctx, rule)
+}
+
+// DisableHook 停用钩子。
+func (service *Service) DisableHook(ctx context.Context, id string) (OKResult, error) {
+	return service.api.DisableHook(ctx, id)
+}
+
+// ListProjectInstructions 列出规约来源。
+func (service *Service) ListProjectInstructions(ctx context.Context, workspace string) (ProjectInstructionsView, error) {
+	return service.api.ListProjectInstructions(ctx, workspace)
+}
+
+// ListWorkflows 列出工作流。
+func (service *Service) ListWorkflows(ctx context.Context, workspace string) ([]WorkflowDefinition, error) {
+	return service.api.ListWorkflows(ctx, workspace)
+}
+
+// SaveWorkflow 保存工作流。
+func (service *Service) SaveWorkflow(ctx context.Context, def WorkflowDefinition) (OKResult, error) {
+	return service.api.SaveWorkflow(ctx, def)
+}
+
+// RunWorkflow 预演或运行工作流。
+func (service *Service) RunWorkflow(ctx context.Context, workspace, workflowID string, dryRun bool) (WorkflowRunAck, error) {
+	return service.api.RunWorkflow(ctx, workspace, workflowID, dryRun)
+}
+
+// ListMemories 列出记忆候选。
+func (service *Service) ListMemories(ctx context.Context, request WorkspaceRequest) ([]MemoryCandidateView, error) {
+	return service.api.ListMemories(ctx, request)
+}
+
+// RevokeMemory 撤销记忆候选。
+func (service *Service) RevokeMemory(ctx context.Context, request struct {
+	Workspace   string `json:"workspace"`
+	StateDir    string `json:"state_dir,omitempty"`
+	CandidateID string `json:"candidate_id"`
+	Reason      string `json:"reason"`
+}) (MemoryCandidateView, error) {
+	return service.api.RevokeMemory(ctx, request)
+}
+
+// ListCommands 列出内置命令。
+func (service *Service) ListCommands(ctx context.Context) ([]CommandInfo, error) {
+	return service.api.ListCommands(ctx)
+}
+
+// InstallSkill 安装技能。
+func (service *Service) InstallSkill(ctx context.Context, workspace, scope, source string) (SkillSummary, error) {
+	return service.api.InstallSkill(ctx, workspace, scope, source)
+}
+
+// SetSkillEnabled 启停技能。
+func (service *Service) SetSkillEnabled(ctx context.Context, workspace, scope, name string, enabled bool) (OKResult, error) {
+	return service.api.SetSkillEnabled(ctx, workspace, scope, name, enabled)
+}
+
+// RemoveSkill 卸载技能。
+func (service *Service) RemoveSkill(ctx context.Context, workspace, scope, name string) (OKResult, error) {
+	return service.api.RemoveSkill(ctx, workspace, scope, name)
+}
+
+// ConsolidateMemories 整理记忆。
+func (service *Service) ConsolidateMemories(ctx context.Context, request WorkspaceRequest) (int, error) {
+	return service.api.ConsolidateMemories(ctx, request)
+}
+
+// SaveReviewNote 保存审查备注。
+func (service *Service) SaveReviewNote(ctx context.Context, note ReviewNote) (OKResult, error) {
+	return service.api.SaveReviewNote(ctx, note)
+}
+
+// ListReviewNotes 列出审查备注。
+func (service *Service) ListReviewNotes(ctx context.Context, workspace, relative string) ([]ReviewNote, error) {
+	return service.api.ListReviewNotes(ctx, workspace, relative)
+}
+
+// ProbeProvider 显式探测 Provider。
+func (service *Service) ProbeProvider(ctx context.Context, request WorkspaceRequest) (ProviderProbeView, error) {
+	return service.api.ProbeProvider(ctx, request)
+}
+
+// WriteProjectInstructions 写入规约。
+func (service *Service) WriteProjectInstructions(ctx context.Context, workspace, content string) (OKResult, error) {
+	return service.api.WriteProjectInstructions(ctx, workspace, content)
+}
+
+// InspectMemory 查看记忆详情。
+func (service *Service) InspectMemory(ctx context.Context, workspace, candidateID string) (MemoryDetail, error) {
+	return service.api.InspectMemory(ctx, workspace, candidateID)
+}
+
+// ListProviderPresets 列出命名连接预设。
+func (service *Service) ListProviderPresets(ctx context.Context, request WorkspaceRequest) ([]ProviderPresetView, error) {
+	return service.api.ListProviderPresets(ctx, request)
+}
+
+// UseProviderPreset 切换激活的命名连接预设。
+func (service *Service) UseProviderPreset(ctx context.Context, workspace, name string) (OKResult, error) {
+	return service.api.UseProviderPreset(ctx, workspace, name)
+}
+
+// RunProviderSetup 执行配置向导。
+func (service *Service) RunProviderSetup(ctx context.Context, request ProviderSetupRequest) (ProviderSetupView, error) {
+	return service.api.RunProviderSetup(ctx, request)
+}
+
+// ConfirmProviderAdmission 记录用户明确确认的 Provider 准入。
+func (service *Service) ConfirmProviderAdmission(ctx context.Context, request ProviderAdmissionRequest) (OKResult, error) {
+	return service.api.ConfirmProviderAdmission(ctx, request)
 }

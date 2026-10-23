@@ -80,11 +80,44 @@ func OpenReadOnlyContext(ctx context.Context, path string) (*Journal, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	if err := db.PingContext(ctx); err != nil {
+	if err := pingReadOnlyContext(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping read-only SQLite journal: %w", err)
 	}
 	return &Journal{db: db}, nil
+}
+
+// 只读连接只等待短暂的 SQLite 启动锁；不改变 SQLite 的全局忙等待，
+// 每次连接失败之间均观察调用方取消，超过等待窗口仍报告连接失败。
+const (
+	readOnlyOpenWait          = time.Second
+	readOnlyOpenRetryInterval = 10 * time.Millisecond
+)
+
+// pingReadOnlyContext 只重试连接阶段的 BUSY/LOCKED，绝不重试写入或吞掉损坏。
+func pingReadOnlyContext(ctx context.Context, db *sql.DB) error {
+	waitContext, cancel := context.WithTimeout(ctx, readOnlyOpenWait)
+	defer cancel()
+	for {
+		err := db.PingContext(waitContext)
+		if err == nil {
+			return nil
+		}
+		var sqliteError *modernsqlite.Error
+		if !errors.As(err, &sqliteError) || (sqliteError.Code()&0xff != sqlite3.SQLITE_BUSY && sqliteError.Code()&0xff != sqlite3.SQLITE_LOCKED) {
+			return err
+		}
+		timer := time.NewTimer(readOnlyOpenRetryInterval)
+		select {
+		case <-waitContext.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		case <-timer.C:
+		}
+	}
 }
 
 // Close 关闭 SQLite 连接并释放相关资源。

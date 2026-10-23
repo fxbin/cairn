@@ -116,6 +116,21 @@ func applyMode(configuration *config.Config, mode string) error {
 	return nil
 }
 
+// applyRuntimeOverrides 将模型/模式覆盖一致地落到配置，供启动与审批恢复共用，
+// 保证冻结指纹可复现且真实漂移仍被拒绝。
+func applyRuntimeOverrides(configuration *config.Config, model, mode string) error {
+	if configuration == nil {
+		return errInvalid("configuration is required")
+	}
+	if strings.TrimSpace(model) != "" {
+		configuration.Provider.Model = strings.TrimSpace(model)
+	}
+	if strings.TrimSpace(mode) != "" {
+		return applyMode(configuration, mode)
+	}
+	return nil
+}
+
 // absWorkspace 保证工作区为绝对路径。
 func absWorkspace(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
