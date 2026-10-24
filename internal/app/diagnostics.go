@@ -29,11 +29,15 @@ type ProviderHealth struct {
 }
 
 // SandboxHealth 汇总执行后端的只读探测结果；镜像可用性为 yes/no/unknown，
-// 探测失败不改变 doctor 的完整性判定。
+// 探测失败不改变 doctor 的完整性判定。HostConfinement 描述 OS 原生沙箱档位。
 type SandboxHealth struct {
 	Backend        string `json:"backend"`
 	DockerImage    string `json:"docker_image,omitempty"`
 	ImageAvailable string `json:"image_available,omitempty"`
+	// HostConfined 表示 host 后端是否套 Seatbelt（macOS）。
+	HostConfined bool `json:"host_confined"`
+	// SeatbeltAvailable 表示平台是否存在 sandbox-exec。
+	SeatbeltAvailable bool `json:"seatbelt_available"`
 }
 
 // AdmissionHealth 汇总当前 Provider 绑定的准入模式和只读判定；Error 只使用
@@ -104,16 +108,21 @@ type TelemetryHealth struct {
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
 	validationErr := config.Validate(configuration)
 	report := DoctorReport{
-		ConfigValid:       validationErr == nil,
-		Preset:            configuration.Preset,
-		Profile:           configuration.Profile,
-		Build:             buildIdentity(),
-		WorkspaceHash:     "",
-		Policy:            PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
-		Resolution:        configuration.Resolution,
-		Provider:          ProviderHealth{Protocol: configuration.Provider.Protocol, Use: configuration.Provider.Use, BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
-		Admission:         AdmissionHealth{Mode: "disabled"},
-		Sandbox:           SandboxHealth{Backend: configuration.Sandbox.Backend, DockerImage: configuration.Sandbox.DockerImage},
+		ConfigValid:   validationErr == nil,
+		Preset:        configuration.Preset,
+		Profile:       configuration.Profile,
+		Build:         buildIdentity(),
+		WorkspaceHash: "",
+		Policy:        PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
+		Resolution:    configuration.Resolution,
+		Provider:      ProviderHealth{Protocol: configuration.Provider.Protocol, Use: configuration.Provider.Use, BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
+		Admission:     AdmissionHealth{Mode: "disabled"},
+		Sandbox: SandboxHealth{
+			Backend:           configuration.Sandbox.Backend,
+			DockerImage:       configuration.Sandbox.DockerImage,
+			HostConfined:      tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.SeatbeltAvailable(),
+			SeatbeltAvailable: tools.SeatbeltAvailable(),
+		},
 		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",

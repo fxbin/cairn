@@ -32,6 +32,8 @@ const (
 	ExecBackendHost ExecBackend = "host"
 	// ExecBackendDocker 在显式指定的 Docker 容器内启动经过审批的 argv。
 	ExecBackendDocker ExecBackend = "docker"
+	// ExecBackendSeatbeltHost 是 host+macOS Seatbelt 的展示名。
+	ExecBackendSeatbeltHost ExecBackend = "host+seatbelt"
 )
 
 // ExecCommand 是仅在工作区内按 argv 启动并可整体取消的进程工具。
@@ -42,6 +44,11 @@ type ExecCommand struct {
 	Backend       ExecBackend
 	DockerImage   string
 	DockerMaxPIDs int
+	// HostConfined 为 true 时 host 后端套 OS 原生沙箱（macOS Seatbelt）。
+	// 与 Codex/DSH 同构：默认约束网络与工作区外写入。
+	HostConfined bool
+	// HostWrite 跟随 Policy.Write：false 时 seatbelt 仅允许临时目录写入。
+	HostWrite bool
 }
 
 // ExecArguments 是 exec_command 的受限执行参数。
@@ -97,13 +104,56 @@ func (tool ExecCommand) executionBackend() ExecBackend {
 	return tool.Backend
 }
 
-// executeHost 以受限环境和独立进程组运行宿主机 argv。
+// executeHost 以受限环境和独立进程组运行宿主机 argv；
+// HostConfined 时先套 Seatbelt，缺少 sandbox-exec 则失败关闭。
 func (tool ExecCommand) executeHost(ctx context.Context, arguments ExecArguments, workingDirectory string) Result {
-	command := exec.Command(arguments.Argv[0], arguments.Argv[1:]...)
+	argv := arguments.Argv
+	backend := ExecBackendHost
+	var cleanup func() error
+	if tool.HostConfined {
+		if !SeatbeltAvailable() {
+			return Failure("sandbox_unavailable", "host confinement requires sandbox-exec")
+		}
+		writeMode := SeatbeltWriteWorkspace
+		if !tool.HostWrite {
+			writeMode = SeatbeltWriteNone
+		}
+		profile, err := SeatbeltProfile(SeatbeltOptions{
+			WorkspaceRoot: tool.Workspace.Root,
+			WriteMode:     writeMode,
+			AllowNetwork:  false,
+		})
+		if err != nil {
+			return Failure("invalid_backend", err.Error())
+		}
+		file, err := os.CreateTemp("", "cairn-seatbelt-*.sb")
+		if err != nil {
+			return Failure("sandbox_unavailable", err.Error())
+		}
+		profilePath := file.Name()
+		if _, err := file.WriteString(profile); err != nil {
+			_ = file.Close()
+			_ = os.Remove(profilePath)
+			return Failure("sandbox_unavailable", err.Error())
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(profilePath)
+			return Failure("sandbox_unavailable", err.Error())
+		}
+		wrapped, err := WrapSeatbelt(profilePath, argv)
+		if err != nil {
+			_ = os.Remove(profilePath)
+			return Failure("invalid_backend", err.Error())
+		}
+		argv = wrapped
+		cleanup = func() error { return os.Remove(profilePath) }
+		backend = ExecBackendSeatbeltHost
+	}
+	command := exec.Command(argv[0], argv[1:]...)
 	command.Dir = workingDirectory
 	command.Env = mergedEnvironment(tool.EnvAllow, arguments.Env)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return tool.runCommand(ctx, arguments, ExecBackendHost, command, nil)
+	return tool.runCommand(ctx, arguments, backend, command, cleanup)
 }
 
 // executeDocker 以固定安全选项运行 Docker；二进制、镜像或 daemon 不可用时该路径
