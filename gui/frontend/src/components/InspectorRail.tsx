@@ -6,6 +6,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
 import { desktop } from "../desktop/client";
+import { OpenLocationMenu } from "./OpenLocationMenu";
 import { toTimeline, toSubagentViews, toContextCompactions, toContextUsage, filterTimelineByKind, type TimelineKind } from "../desktop/timeline";
 import type {
   ChangeSet,
@@ -378,6 +379,7 @@ export function InspectorRail({
         {tab === "files" && (
           <div className="rail-section">
             <h3>工作区 / 工件</h3>
+            {workspace?.path && <OpenLocationMenu workspace={workspace.path} relative={diffPath || "."} label="打开位置" />}
             <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
               预览经路径与敏感边界；二进制/超大文件截断或拒绝。
             </div>

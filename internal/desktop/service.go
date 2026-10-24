@@ -138,6 +138,16 @@ func (service *Service) OpenPathInEditor(ctx context.Context, workspace, relativ
 	return service.api.OpenPathInEditor(ctx, workspace, relative)
 }
 
+// ListOpenLocations 列出打开位置目标。
+func (service *Service) ListOpenLocations(ctx context.Context, workspace string) ([]OpenLocationTarget, error) {
+	return service.api.ListOpenLocations(ctx, workspace)
+}
+
+// OpenInLocationWithTarget 用指定目标打开路径。
+func (service *Service) OpenInLocationWithTarget(ctx context.Context, workspace, relative, target string) (OKResult, error) {
+	return service.api.OpenInLocationWithTarget(ctx, workspace, relative, target)
+}
+
 // ListQueue 列出后续队列。
 func (service *Service) ListQueue(ctx context.Context, request QueueRequest) ([]QueueItem, error) {
 	return service.api.ListQueue(ctx, request)

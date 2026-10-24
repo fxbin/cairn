@@ -63,6 +63,8 @@ interface DesktopBindings {
   ListChanges(workspace: string): Promise<ChangeSet>;
   DiffFile(workspace: string, relative: string, scope: string): Promise<string>;
   OpenPathInEditor(workspace: string, relative: string): Promise<OKResult>;
+  ListOpenLocations(workspace: string): Promise<Array<{ id: string; label: string; available: boolean }>>;
+  OpenInLocationWithTarget(workspace: string, relative: string, target: string): Promise<OKResult>;
   SubmitSteering(request: { run_id: string; input_id?: string; content: string }): Promise<OKResult>;
   ListHooks(workspace: string): Promise<Array<{ id: string; event: string; enabled: boolean; actions: Array<{ kind: string; content?: string }> }>>;
   UpsertHook(rule: { id?: string; workspace: string; event?: string; enabled?: boolean; actions: Array<{ kind: string; content?: string }> }): Promise<OKResult>;

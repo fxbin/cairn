@@ -395,6 +395,21 @@ export function createBrowserBridge() {
       record("DiffFile", []);
       return "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n";
     },
+    ListOpenLocations: async () => {
+      record("ListOpenLocations", []);
+      return [
+        { id: "finder", label: "Finder", available: true },
+        { id: "terminal", label: "Terminal", available: true },
+        { id: "vscode", label: "VS Code", available: true },
+        { id: "cursor", label: "Cursor", available: false },
+        { id: "idea", label: "IntelliJ IDEA", available: false },
+        { id: "ghostty", label: "Ghostty", available: true },
+      ];
+    },
+    OpenInLocationWithTarget: async (_w: string, _r: string, target: string) => {
+      record("OpenInLocationWithTarget", [target]);
+      return { ok: true };
+    },
     OpenPathInEditor: async () => {
       record("OpenPathInEditor", []);
       return ok();

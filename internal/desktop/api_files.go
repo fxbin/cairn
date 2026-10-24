@@ -110,3 +110,19 @@ func firstLine(text string) string {
 }
 
 // Shutdown 有界收尾异步运行，供桌面退出钩子调用。
+
+// ListOpenLocations 列出当前平台可用的「打开位置」目标。
+func (api *API) ListOpenLocations(_ context.Context, workspace string) ([]OpenLocationTarget, error) {
+	if _, err := absWorkspace(workspace); err != nil {
+		return nil, err
+	}
+	return listOpenLocationTargets(), nil
+}
+
+// OpenInLocationWithTarget 用指定目标打开工作区路径。
+func (api *API) OpenInLocationWithTarget(_ context.Context, workspace, relative, target string) (OKResult, error) {
+	if err := OpenInLocation(workspace, relative, target); err != nil {
+		return OKResult{}, err
+	}
+	return OKResult{OK: true}, nil
+}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { OpenLocationMenu } from "./OpenLocationMenu";
 import { desktop } from "../desktop/client";
 import type { ChangeSet, ErrorBody, FileNode, FilePreview, WorkspaceStatus } from "../desktop/types";
 
@@ -118,6 +119,9 @@ export function FilesPanel({
     <section className="panel flex min-h-0 flex-col p-3">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-sm font-semibold">文件 / 改动</h2>
+        {workspace?.path && (
+          <OpenLocationMenu workspace={workspace.path} relative={diffPath || "."} />
+        )}
         <div className="ml-auto flex gap-1">
           {(
             [
