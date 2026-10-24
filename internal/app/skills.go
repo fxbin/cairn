@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/tools"
@@ -73,9 +74,72 @@ func (service Service) configuredSkillTool(workspace string, cfg config.Config) 
 	if cfg.Skills == nil || !cfg.Skills.Enabled {
 		return nil, nil
 	}
-	catalog, err := service.Skills(workspace, cfg.Skills.Shared)
+	catalog, err := service.SkillsWithConfig(workspace, *cfg.Skills)
 	if err != nil {
 		return nil, err
 	}
 	return &tools.Skill{Catalog: catalog}, nil
+}
+
+// SkillsWithConfig 按配置装配技能根：原生/共享之外，可选 skillshare 默认源
+// 与 extra_dirs（只读、允许符号链接包）。目录不存在时跳过，不报错。
+func (service Service) SkillsWithConfig(workspace string, cfg config.SkillsConfig) (*tools.SkillCatalog, error) {
+	roots := make([]tools.SkillRoot, 0, 6)
+	project, err := service.SkillStoreFor(workspace, "workspace")
+	if err != nil {
+		return nil, err
+	}
+	roots = append(roots, tools.SkillRoot{Path: project.Root, Scope: "workspace"})
+	if cfg.Shared {
+		view, err := tools.NewWorkspace(workspace, nil, 0, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		path, _, err := view.Resolve(filepath.Join(".agents", "skills"))
+		if err != nil {
+			return nil, errors.New("shared workspace skill directory escapes workspace")
+		}
+		roots = append(roots, tools.SkillRoot{Path: path, Scope: "workspace-shared"})
+	}
+	userRoot, err := userdir.Path("skills")
+	if err == nil {
+		roots = append(roots, tools.SkillRoot{Path: userRoot, Scope: "user"})
+	}
+	if cfg.Shared {
+		if home, err := os.UserHomeDir(); err == nil {
+			roots = append(roots, tools.SkillRoot{
+				Path: filepath.Join(home, ".agents", "skills"), Scope: "user-shared", AllowLinkedPackages: true,
+			})
+		}
+	}
+	if cfg.Skillshare {
+		if path, err := skillshareSkillsDir(); err == nil {
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				roots = append(roots, tools.SkillRoot{Path: path, Scope: "skillshare", AllowLinkedPackages: true})
+			}
+		}
+	}
+	for _, dir := range cfg.ExtraDirs {
+		path := strings.TrimSpace(dir)
+		if path == "" {
+			continue
+		}
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, path[2:])
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			roots = append(roots, tools.SkillRoot{Path: path, Scope: "external", AllowLinkedPackages: true})
+		}
+	}
+	return tools.DiscoverSkills(roots)
+}
+
+// skillshareSkillsDir 返回 skillshare 默认 skills 源目录。
+func skillshareSkillsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	// macOS/Linux 约定；Windows 可用 extra_dirs 显式配置。
+	return filepath.Join(home, ".config", "skillshare", "skills"), nil
 }

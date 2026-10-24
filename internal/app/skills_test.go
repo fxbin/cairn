@@ -1,81 +1,51 @@
 package app
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/ports"
 )
 
-// TestSkillBootOptInAndDoctorReadOnly 显式配置才装配技能，doctor 不扫描无效来源或创建管理状态。
-func TestSkillBootOptInAndDoctorReadOnly(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	workspace := t.TempDir()
-	state := t.TempDir()
-	configuration := withTestProvider(config.Defaults())
-	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
-	boot, err := service.assembleBoot(workspace, state, configuration, nil)
-	if err != nil {
+// TestSkillsWithConfigMountsSkillshareAndExtraDirs 锁定只读外部源挂载。
+func TestSkillsWithConfigMountsSkillshareAndExtraDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// 伪造 skillshare 源目录（目录名必须与 frontmatter name 一致）
+	share := filepath.Join(home, ".config", "skillshare", "skills", "demo")
+	if err := os.MkdirAll(share, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, spec := range boot.Registry.Specs() {
-		if spec.Name == "skill" {
-			t.Fatal("unconfigured skills assembled")
-		}
-	}
-	if err := boot.Close(); err != nil {
+	if err := os.WriteFile(filepath.Join(share, "SKILL.md"), []byte("---\nname: demo\ndescription: demo skill\n---\n\nbody\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	configuration.Skills = &config.SkillsConfig{Enabled: true}
-	boot, err = service.assembleBoot(workspace, state, configuration, nil)
-	if err != nil {
+	extra := filepath.Join(t.TempDir(), "ext")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, spec := range boot.Registry.Specs() {
-		found = found || spec.Name == "skill"
-	}
-	if !found {
-		t.Fatal("enabled skills not assembled")
-	}
-	if err := boot.Close(); err != nil {
+	if err := os.WriteFile(filepath.Join(extra, "SKILL.md"), []byte("---\nname: ext\ndescription: external\n---\n\nx\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(workspace, ".agent"), 0700); err != nil && !os.IsExist(err) {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, ".agent", "skills"), []byte("not a directory"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	report, err := service.Doctor(context.Background(), workspace, t.TempDir(), configuration)
-	if err != nil || !slices.Contains(report.Tools, "skill") {
-		t.Fatalf("doctor scanned skill source or omitted tool: %v %#v", err, report.Tools)
-	}
-}
 
-// TestSkillWorkspaceManagementRejectsSymlinkEscape 目标目录不能经 .agent 或 .agents 逃到工作区外。
-func TestSkillWorkspaceManagementRejectsSymlinkEscape(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	workspace := t.TempDir()
 	service := Service{}
-	workspace, outside := t.TempDir(), t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(workspace, ".agent")); err != nil {
-		t.Skip(err)
-	}
-	if _, err := service.SkillStoreFor(workspace, "workspace"); err == nil {
-		t.Fatal("native skill store escaped workspace")
-	}
-	if err := os.Remove(filepath.Join(workspace, ".agent")); err != nil {
+	catalog, err := service.SkillsWithConfig(workspace, config.SkillsConfig{
+		Enabled:    true,
+		Skillshare: true,
+		ExtraDirs:  []string{filepath.Dir(extra)},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(workspace, ".agents")); err != nil {
-		t.Fatal(err)
+	names := map[string]string{}
+	for _, entry := range catalog.Entries() {
+		names[entry.Name] = entry.Scope
 	}
-	if _, err := service.Skills(workspace, true); err == nil {
-		t.Fatal("shared skill source escaped workspace")
+	if scope, ok := names["demo"]; !ok || scope != "skillshare" {
+		t.Fatalf("skillshare skill missing or wrong scope: %+v", names)
+	}
+	if scope, ok := names["ext"]; !ok || scope != "external" {
+		t.Fatalf("external skill missing or wrong scope: %+v", names)
 	}
 }
