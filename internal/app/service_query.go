@@ -124,3 +124,21 @@ func (service Service) Evidence(ctx context.Context, workspacePath, stateDir str
 }
 
 // Resume 在校验冻结配置、日志和制品后恢复等待审批或普通运行；返回前关闭
+
+// ListActiveRuns 列出尚未进入终态的运行，供多会话/子代理面板使用；只读。
+func (service Service) ListActiveRuns(ctx context.Context, workspacePath, stateDir string, configuration config.Config) ([]RunHistoryItem, error) {
+	items, err := service.ListRuns(ctx, workspacePath, stateDir, configuration)
+	if err != nil {
+		return nil, err
+	}
+	active := make([]RunHistoryItem, 0, len(items))
+	for _, item := range items {
+		switch item.State {
+		case domain.RunCompleted, domain.RunFailed, domain.RunCancelled:
+			continue
+		default:
+			active = append(active, item)
+		}
+	}
+	return active, nil
+}

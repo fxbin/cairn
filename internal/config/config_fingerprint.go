@@ -26,6 +26,7 @@ type fingerprintView struct {
 	MCP          *MCPConfig                   `json:"mcp,omitempty"`
 	Skills       *SkillsConfig                `json:"skills,omitempty"`
 	Tools        *ToolsConfig                 `json:"tools,omitempty"`
+	Hooks        *[]HookConfig                `json:"hooks,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -71,6 +72,7 @@ func (config Config) Fingerprint() string {
 		MCP:          mcpFingerprint(config.MCP),
 		Skills:       skillsFingerprint(config.Skills),
 		Tools:        toolsFingerprint(config.Tools),
+		Hooks:        hooksFingerprint(config.Hooks),
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
@@ -86,6 +88,15 @@ func toolsFingerprint(tools ToolsConfig) *ToolsConfig {
 		return nil
 	}
 	copied := tools
+	return &copied
+}
+
+// hooksFingerprint 仅在配置了钩子时进入指纹。
+func hooksFingerprint(rules []HookConfig) *[]HookConfig {
+	if len(rules) == 0 {
+		return nil
+	}
+	copied := append([]HookConfig(nil), rules...)
 	return &copied
 }
 

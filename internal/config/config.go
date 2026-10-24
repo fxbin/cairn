@@ -30,6 +30,7 @@ type Config struct {
 	Workspace    WorkspaceConfig    `yaml:"workspace"`
 	Policy       PolicyConfig       `yaml:"policy"`
 	Tools        ToolsConfig        `yaml:"tools"`
+	Hooks        []HookConfig       `yaml:"hooks,omitempty"`
 	Verification VerificationConfig `yaml:"verification"`
 	Budget       BudgetConfig       `yaml:"budget"`
 	Context      ContextConfig      `yaml:"context"`
@@ -296,6 +297,20 @@ type ToolsConfig struct {
 	RunTests bool `yaml:"run_tests"`
 	// LspDiagnostics 启用 lsp_diagnostics 只读诊断。
 	LspDiagnostics bool `yaml:"lsp_diagnostics"`
+}
+
+// HookConfig 单条工作区钩子（YAML 形状与 hooks.Rule 对齐）。
+type HookConfig struct {
+	ID        string `yaml:"id"`
+	Event     string `yaml:"event"`
+	ToolMatch string `yaml:"tool_match,omitempty"`
+	Effect    string `yaml:"effect,omitempty"`
+	Reason    string `yaml:"reason,omitempty"`
+	Enabled   bool   `yaml:"enabled"`
+	Actions   []struct {
+		Kind    string `yaml:"kind"`
+		Content string `yaml:"content,omitempty"`
+	} `yaml:"actions,omitempty"`
 }
 
 // PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。

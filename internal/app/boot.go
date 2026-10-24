@@ -11,6 +11,7 @@ import (
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -145,6 +146,7 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	}
 	boot.Gate = gate
 	gate.MCPRegistry = registry
+	gate.SetHooks(hooksFromConfig(cfg.Hooks))
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
@@ -317,4 +319,33 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 		MCP:               mcpDeclarations(configuration.MCP),
 		Skills:            configuration.Skills,
 	}
+}
+
+// hooksFromConfig 将 YAML 钩子配置转换为运行时规则；非法规则跳过（失败关闭装配）。
+func hooksFromConfig(configured []config.HookConfig) []hooks.Rule {
+	if len(configured) == 0 {
+		return nil
+	}
+	rules := make([]hooks.Rule, 0, len(configured))
+	for _, item := range configured {
+		rule := hooks.Rule{
+			ID:        item.ID,
+			Event:     hooks.Event(item.Event),
+			ToolMatch: item.ToolMatch,
+			Effect:    hooks.Effect(item.Effect),
+			Reason:    item.Reason,
+			Enabled:   item.Enabled,
+		}
+		for _, action := range item.Actions {
+			rule.Actions = append(rule.Actions, hooks.Action{
+				Kind:    hooks.ActionKind(action.Kind),
+				Content: action.Content,
+			})
+		}
+		if err := hooks.ValidateRule(rule); err != nil {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	return rules
 }

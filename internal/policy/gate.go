@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -30,6 +31,13 @@ type Gate struct {
 	ProtectedPaths []string
 	Patch          tools.ApplyPatch
 	MCPRegistry    *tools.Registry
+	// Hooks 是可选工作区钩子；只能收紧决策，不能放宽 Policy。
+	Hooks []hooks.Rule
+}
+
+// SetHooks 覆盖钩子规则列表（装配层调用）。
+func (gate *Gate) SetHooks(rules []hooks.Rule) {
+	gate.Hooks = append([]hooks.Rule(nil), rules...)
 }
 
 // Decision 是可持久化的策略结论及其审批绑定信息。
@@ -58,10 +66,51 @@ func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch)
 }
 
 // Decide 对模型提议的固定工具调用作出策略判定，并为审批生成绑定指纹。
+// 先算基础策略，再套钩子收紧（钩子不得放宽 Policy）。
 // 注意：ProtectedPaths 是防篡改边界而非保密边界——只读工具对受保护路径恒
 // allow 是有意设计（敏感文件已由工作区层 sensitivePath/ignore 拦截），模型
 // 需要读取（如受写保护的配置文件）才能完成任务的场景不因此被阻断。
 func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error) {
+	decision, err := gate.decideBase(toolName, raw)
+	if err != nil {
+		return decision, err
+	}
+	return gate.applyToolHooks(toolName, decision), nil
+}
+
+// applyToolHooks 用 pre_tool 钩子收紧决策；Deny/Ask 不可被钩子放宽。
+func (gate *Gate) applyToolHooks(toolName string, decision Decision) Decision {
+	if len(gate.Hooks) == 0 {
+		return decision
+	}
+	policyAllows := decision.Effect == Allow
+	hookDecision := hooks.EvaluateTool(gate.Hooks, toolName, policyAllows)
+	switch hookDecision.Effect {
+	case hooks.EffectDeny:
+		decision.Effect = Deny
+		decision.RuleID = "hook_deny"
+		decision.Summary = firstNonEmptyHook(hookDecision.Reason, "denied by workspace hook")
+	case hooks.EffectAsk:
+		if decision.Effect == Allow {
+			decision.Effect = Ask
+			decision.RuleID = "hook_ask"
+			decision.Summary = firstNonEmptyHook(hookDecision.Reason, "approval required by workspace hook")
+		}
+	}
+	return decision
+}
+
+func firstNonEmptyHook(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// decideBase 是未叠加钩子的原始策略判定。
+func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, error) {
 	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。
 	if toolName == "exec_command" || toolName == "apply_patch" {
 		if err := tools.GuardWrite(gate.Patch.Workspace.Root, toolName); err != nil {
@@ -91,7 +140,7 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		}
 	}
 	switch toolName {
-	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "web_search", "web_fetch", "send_message", "lsp_diagnostics":
+	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "git_log", "web_search", "web_fetch", "send_message", "lsp_diagnostics":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
 	case "run_tests":
 		// 测试命令与 exec 同级：走 ExecMode，避免 allow 豁免被滥用。
@@ -126,6 +175,30 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		default:
 			return Decision{Effect: Deny, RuleID: "invalid_browser", Fingerprint: fingerprint("browser", raw), Summary: "unknown browser action"}, nil
 		}
+	case "git_commit":
+		var proposed struct {
+			Message string   `json:"message"`
+			Paths   []string `json:"paths"`
+		}
+		if err := json.Unmarshal(raw, &proposed); err != nil || strings.TrimSpace(proposed.Message) == "" || len(proposed.Paths) == 0 {
+			return Decision{Effect: Deny, RuleID: "invalid_commit", Fingerprint: fingerprint("git_commit", raw), Summary: "git_commit requires message and paths"}, nil
+		}
+		for _, item := range proposed.Paths {
+			if strings.Contains(item, "..") || strings.HasPrefix(item, "/") {
+				return Decision{Effect: Deny, RuleID: "invalid_commit", Fingerprint: fingerprint("git_commit", raw), Summary: "invalid git_commit path"}, nil
+			}
+			for _, protected := range gate.ProtectedPaths {
+				if matchesProtected(item, protected) {
+					return Decision{Effect: Deny, RuleID: "protected_path", Fingerprint: fingerprint("git_commit", raw), Summary: "protected path: " + item}, nil
+				}
+			}
+		}
+		return Decision{
+			Effect:      gate.WriteMode,
+			RuleID:      "git_commit",
+			Fingerprint: fingerprint("git_commit", raw),
+			Summary:     "git commit " + strings.Join(proposed.Paths, ", "),
+		}, nil
 	case "apply_patch":
 		var proposed struct {
 			Path string `json:"path"`
