@@ -495,12 +495,14 @@ type SandboxConfig struct {
 	MaxPIDs     int    `yaml:"max_pids"`
 }
 
-// PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
-// ToolsConfig 控制可选工具面暴露；Web 默认关闭（opt-in）。
+// ToolsConfig 控制可选工具面暴露；Web 与 ExecSession 默认关闭（opt-in）。
 type ToolsConfig struct {
 	Web bool `yaml:"web"`
+	// ExecSession 显式启用受控 tmux 会话工具；默认不注册。
+	ExecSession bool `yaml:"exec_session"`
 }
 
+// PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
 type PolicyConfig struct {
 	Write          string   `yaml:"write"`
 	Exec           string   `yaml:"exec"`
@@ -1076,6 +1078,7 @@ type fingerprintView struct {
 	Sandbox      SandboxConfig                `json:"sandbox"`
 	MCP          *MCPConfig                   `json:"mcp,omitempty"`
 	Skills       *SkillsConfig                `json:"skills,omitempty"`
+	Tools        *ToolsConfig                 `json:"tools,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -1120,6 +1123,7 @@ func (config Config) Fingerprint() string {
 		Sandbox:      config.Sandbox,
 		MCP:          mcpFingerprint(config.MCP),
 		Skills:       skillsFingerprint(config.Skills),
+		Tools:        toolsFingerprint(config.Tools),
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
@@ -1127,6 +1131,15 @@ func (config Config) Fingerprint() string {
 	}
 	digest := sha256.Sum256(append([]byte("cairn-config-fingerprint-v4\x00"), encoded...))
 	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+// toolsFingerprint 仅在存在 opt-in 工具时进入指纹，保证默认配置指纹不变。
+func toolsFingerprint(tools ToolsConfig) *ToolsConfig {
+	if !tools.Web && !tools.ExecSession {
+		return nil
+	}
+	copied := tools
+	return &copied
 }
 
 // providerSelectionFingerprint 是 v2 指纹的 provider 段：身份字段（provider_id、

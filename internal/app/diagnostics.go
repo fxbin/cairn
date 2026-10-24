@@ -154,7 +154,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	if _, err := execToolFor(workspace, configuration); err != nil {
 		return report, err
 	}
-	capabilities := toolCapabilities(workspace, configuration.Preset)
+	capabilities := toolCapabilities(workspace, configuration.Preset, configuration.Tools)
 	if configuration.Skills != nil && configuration.Skills.Enabled {
 		capabilities = append(capabilities, ToolCapability{Name: "skill", SideEffect: string(tools.SideEffectNone)})
 	}
@@ -285,8 +285,8 @@ func probeDockerImage(image string) string {
 // 纯装配，不产生任何副作用，符合 doctor 的只读合同。read-only Preset 只列出
 // 三件只读工具。doctor 只需非敏感能力事实，副作用工具实例的运行时配置在此
 // 无关紧要。
-func toolCapabilities(workspace tools.Workspace, preset string) []ToolCapability {
-	registry, err := tools.NewRegistry(presetTools(workspace, tools.ExecCommand{Workspace: workspace}, preset)...)
+func toolCapabilities(workspace tools.Workspace, preset string, options config.ToolsConfig) []ToolCapability {
+	registry, err := tools.NewRegistry(presetTools(workspace, tools.ExecCommand{Workspace: workspace}, preset, options)...)
 	if err != nil {
 		return nil
 	}
@@ -297,16 +297,16 @@ func toolCapabilities(workspace tools.Workspace, preset string) []ToolCapability
 	return capabilities
 }
 
-// presetTools 按 Preset 返回注册表工具子集；read-only 只组合三件只读工具，
-// coding 与 benchmark 使用完整五件。副作用工具必须传入"已完成配置装配"的
-// 实例（EnvAllow/Backend/Grace 等），此处绝不自造裸工具——否则验证命令所需
-// 的环境变量会被拒、沙箱配置会被静默丢弃（2026-08-16 AB Gate 回归实证）。
-func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset string) []tools.Tool {
-	return presetToolsWithWeb(workspace, execTool, preset, true)
+// presetTools 按 Preset 与 tools 开关返回注册表工具子集；read-only 只组合只读工具。
+// 副作用工具必须传入"已完成配置装配"的实例（EnvAllow/Backend/Grace 等），
+// 此处绝不自造裸工具——否则验证命令所需的环境变量会被拒、沙箱配置会被静默丢弃
+// （2026-08-16 AB Gate 回归实证）。
+func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig) []tools.Tool {
+	return presetToolsWithWeb(workspace, execTool, preset, options)
 }
 
-// presetToolsWithWeb 按 opt-in 决定是否暴露网络工具。
-func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, webEnabled bool) []tools.Tool {
+// presetToolsWithWeb 按 opt-in 决定是否暴露网络与会话工具。
+func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig) []tools.Tool {
 	patchTool := tools.ApplyPatch{Workspace: workspace}
 	available := []tools.Tool{
 		tools.ListFiles{Workspace: workspace},
@@ -319,8 +319,12 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 		tools.SendMessage{},
 	}
 	// 网络工具 opt-in：与 dsh Web Search 设置一致，默认不暴露。
-	if webEnabled && config.PresetReadOnly != preset {
+	if options.Web && config.PresetReadOnly != preset {
 		available = append(available, tools.WebFetch{}, tools.WebSearch{})
+	}
+	// exec_session 默认禁用；显式启用且非 read-only 时注册 tmux 后端。
+	if options.ExecSession && config.PresetReadOnly != preset {
+		available = append(available, tools.ExecSession{Workspace: workspace, Backend: tools.NewTmuxSessionBackend()})
 	}
 	if preset == config.PresetReadOnly {
 		return available[:5]

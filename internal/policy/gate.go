@@ -144,6 +144,41 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 			Summary:              "execute " + quoteArgv(proposed.Argv),
 			WorkspaceObservation: observation,
 		}, nil
+	case "exec_session":
+		// 会话工具不继承 exec_command 审批豁免：建会话与写入一律经 ExecMode，
+		// 读/关作为回收与观察允许；后端未启用时注册阶段就不会暴露。
+		var request tools.SessionRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: "invalid exec_session arguments"}, nil
+		}
+		if err := tools.ValidateSessionRequest(request); err != nil {
+			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: err.Error()}, nil
+		}
+		switch request.Action {
+		case tools.SessionRead:
+			return Decision{Effect: Allow, RuleID: "session_read", Fingerprint: fingerprint("exec_session", raw), Summary: "read controlled session output"}, nil
+		case tools.SessionClose:
+			return Decision{Effect: Allow, RuleID: "session_close", Fingerprint: fingerprint("exec_session", raw), Summary: "close controlled session"}, nil
+		case tools.SessionOpen, tools.SessionWrite:
+			effect := gate.ExecMode
+			if effect == Allow {
+				// 不继承 exec_command 的 allow 豁免；敏感动词与建会话至少 ask。
+				effect = Ask
+			}
+			if tools.IsSensitiveInput(request.Content) {
+				effect = Ask
+			}
+			summary := "open controlled session"
+			if request.Action == tools.SessionWrite {
+				summary = "write controlled session input"
+				if tools.IsSensitiveInput(request.Content) {
+					summary = "write sensitive controlled session input"
+				}
+			}
+			return Decision{Effect: effect, RuleID: "session_mutate", Fingerprint: fingerprint("exec_session", raw), Summary: summary}, nil
+		default:
+			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: "unknown session action"}, nil
+		}
 	default:
 		if gate.MCPRegistry != nil {
 			proposal, found, err := gate.MCPRegistry.MCPProposal(toolName, raw)

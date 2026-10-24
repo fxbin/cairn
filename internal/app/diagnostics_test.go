@@ -11,6 +11,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // TestDoctorReportRedactsCredentialMaterial 锁定 doctor 输出的脱敏合同：只出现
@@ -56,8 +57,36 @@ func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	if report.Build.Flavor != "plain" || report.Build.Fingerprint == "" {
 		t.Fatalf("doctor report build identity = %+v", report.Build)
 	}
-	if strings.Join(report.Tools, ",") != "list_files,read_file,search_text,git_status,git_diff,apply_patch,exec_command,send_message,web_fetch,web_search" {
+	if strings.Join(report.Tools, ",") != "list_files,read_file,search_text,git_status,git_diff,apply_patch,exec_command,send_message" {
 		t.Fatalf("tools = %v", report.Tools)
+	}
+}
+
+// TestManifestRegistersOptInWebAndSessionTools 锁定 tools.web / tools.exec_session 显式启用后才出现在工具面。
+func TestManifestRegistersOptInWebAndSessionTools(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	configuration.Tools.Web = true
+	configuration.Tools.ExecSession = true
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
+		return &finalProvider{}, nil
+	}}
+	boot, err := service.assembleBoot(t.TempDir(), t.TempDir(), configuration, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boot.Close()
+	names := make([]string, 0, len(boot.Manifest().Tools))
+	for _, tool := range boot.Manifest().Tools {
+		names = append(names, tool.Name)
+	}
+	joined := strings.Join(names, ",")
+	for _, want := range []string{"web_search", "web_fetch", "exec_session"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("opt-in tool %q missing from %v", want, names)
+		}
+	}
+	if side := boot.Registry.SideEffect("exec_session"); side != tools.SideEffectProcess {
+		t.Fatalf("exec_session side effect = %q", side)
 	}
 }
 

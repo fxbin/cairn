@@ -125,7 +125,7 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 		}
 		boot.MCP = catalog
 	}
-	available := presetTools(workspace, execTool, cfg.Preset)
+	available := presetTools(workspace, execTool, cfg.Preset, cfg.Tools)
 	skillTool, err := service.configuredSkillTool(workspace.Root, cfg)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)

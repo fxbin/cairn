@@ -785,7 +785,7 @@ func checkEvolutionInvariantsAt(ctx context.Context, source queryerRows, checkNo
 				return fmt.Errorf("promoted evolution candidate %s has a promotion status that diverges from its audit history", candidate.ID)
 			}
 		default:
-			return fmt.Errorf("evolution candidate %s has state %q that is not implemented in this slice", candidate.ID, candidate.Status)
+			return fmt.Errorf("evolution candidate %s has unknown or corrupt state %q", candidate.ID, candidate.Status)
 		}
 	}
 	return nil
