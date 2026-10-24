@@ -29,6 +29,7 @@ type fingerprintView struct {
 	Tools        *ToolsConfig                 `json:"tools,omitempty"`
 	Hooks        *[]HookConfig                `json:"hooks,omitempty"`
 	Prompt       *PromptConfig                `json:"prompt,omitempty"`
+	ActiveMode   string                       `json:"active_mode,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -76,6 +77,7 @@ func (config Config) Fingerprint() string {
 		Tools:        toolsFingerprint(config.Tools),
 		Hooks:        hooksFingerprint(config.Hooks),
 		Prompt:       promptFingerprint(config.Prompt),
+		ActiveMode:   config.ActiveMode,
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {

@@ -993,3 +993,54 @@ func TestResolveSystemPromptFile(t *testing.T) {
 		t.Fatalf("inline must win: %q", cfg.Prompt.Resolved)
 	}
 }
+
+// TestLoadAppliesNamedMode 覆盖 mode 合并与显式 YAML 覆盖优先。
+func TestLoadAppliesNamedMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `version: 2
+active_mode: review-bot
+provider:
+  base_url: http://127.0.0.1:1
+  model: test-model
+policy:
+  write: ask
+modes:
+  review-bot:
+    policy:
+      mode: review
+  full-auto:
+    policy:
+      mode: full
+    tools:
+      web: true
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveMode != "review-bot" {
+		t.Fatalf("active mode = %q", cfg.ActiveMode)
+	}
+	// YAML 显式 write=ask 覆盖 mode 合成
+	if cfg.Policy.Write != "ask" {
+		t.Fatalf("explicit write must win: %q", cfg.Policy.Write)
+	}
+	// --mode 覆盖 active_mode
+	cfg2, err := Load(path, Overrides{Mode: "full-auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.ActiveMode != "full-auto" {
+		t.Fatalf("cli mode = %q", cfg2.ActiveMode)
+	}
+	if cfg2.Policy.Mode != "full" || !cfg2.Tools.Web {
+		t.Fatalf("full-auto overlay missing: %+v tools=%+v", cfg2.Policy, cfg2.Tools)
+	}
+	if _, err := Load(path, Overrides{Mode: "missing"}); err == nil {
+		t.Fatal("unknown mode must fail closed")
+	}
+}

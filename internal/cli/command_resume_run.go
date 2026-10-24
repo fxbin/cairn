@@ -17,6 +17,7 @@ import (
 
 func (command Command) resume(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("resume", flag.ContinueOnError)
+	mode := flags.String("mode", "", "named mode from config modes map")
 	flags.SetOutput(command.Stderr)
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
@@ -54,7 +55,7 @@ func (command Command) resume(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "--abort-run requires --reason")
 		return ExitUsage
 	}
-	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{})
+	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{Mode: *mode})
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
@@ -213,6 +214,7 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 	maxOutputTokens := flags.Int("max-output-tokens", 0, "maximum reported output tokens")
 	maxWallTime := flags.String("max-wall-time", "", "maximum wall-clock duration")
 	maxCostUSD := flags.Float64("max-cost-usd", 0, "maximum reported-token cost in USD (requires configured pricing)")
+	mode := flags.String("mode", "", "named mode from config modes map (overrides active_mode)")
 	trialActivation := flags.Bool("trial-activation", false, "resolve the sandbox-activated compaction variant before running (explicit trial opt-in)")
 	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
 	if err := flags.Parse(normalizeRunArguments(arguments)); err != nil {
@@ -223,6 +225,7 @@ func (command Command) run(ctx context.Context, arguments []string) int {
 		return ExitUsage
 	}
 	configuration, err := command.loadConfig(*workspace, *configPath, config.Overrides{
+		Mode:    *mode,
 		BaseURL: *baseURL, Model: *model, APIKeyEnv: *apiKeyEnv, MaxTurns: *maxTurns,
 		MaxToolCalls: *maxToolCalls, MaxInputTokens: *maxInputTokens,
 		MaxOutputTokens: *maxOutputTokens, MaxWallTime: *maxWallTime, MaxCostUSD: *maxCostUSD,

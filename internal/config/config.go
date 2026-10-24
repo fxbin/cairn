@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/userdir"
 )
@@ -24,24 +26,28 @@ const (
 
 // Config 汇集一次 Cairn 运行的全部非敏感配置。
 type Config struct {
-	Version      int                `yaml:"version"`
-	Profile      string             `yaml:"profile"`
-	Preset       string             `yaml:"preset"`
-	Provider     ProviderConfig     `yaml:"provider"`
-	Workspace    WorkspaceConfig    `yaml:"workspace"`
-	Policy       PolicyConfig       `yaml:"policy"`
-	Tools        ToolsConfig        `yaml:"tools"`
-	Hooks        []HookConfig       `yaml:"hooks,omitempty"`
-	Prompt       PromptConfig       `yaml:"prompt,omitempty"`
-	Verification VerificationConfig `yaml:"verification"`
-	Budget       BudgetConfig       `yaml:"budget"`
-	Context      ContextConfig      `yaml:"context"`
-	Pricing      PricingConfig      `yaml:"pricing"`
-	Output       OutputConfig       `yaml:"output"`
-	Cancellation CancellationConfig `yaml:"cancellation"`
-	Sandbox      SandboxConfig      `yaml:"sandbox"`
-	MCP          *MCPConfig         `yaml:"mcp,omitempty" json:"mcp,omitempty"`
-	Skills       *SkillsConfig      `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Version   int             `yaml:"version"`
+	Profile   string          `yaml:"profile"`
+	Preset    string          `yaml:"preset"`
+	Provider  ProviderConfig  `yaml:"provider"`
+	Workspace WorkspaceConfig `yaml:"workspace"`
+	Policy    PolicyConfig    `yaml:"policy"`
+	Tools     ToolsConfig     `yaml:"tools"`
+	Hooks     []HookConfig    `yaml:"hooks,omitempty"`
+	Prompt    PromptConfig    `yaml:"prompt,omitempty"`
+	// ActiveMode 选择 modes 中的命名装配块；空值表示不套用 mode。
+	ActiveMode string `yaml:"active_mode,omitempty"`
+	// Modes 是命名配置块；字段形状与主配置子集兼容，合并时显式 YAML 优先。
+	Modes        map[string]yaml.Node `yaml:"modes,omitempty"`
+	Verification VerificationConfig   `yaml:"verification"`
+	Budget       BudgetConfig         `yaml:"budget"`
+	Context      ContextConfig        `yaml:"context"`
+	Pricing      PricingConfig        `yaml:"pricing"`
+	Output       OutputConfig         `yaml:"output"`
+	Cancellation CancellationConfig   `yaml:"cancellation"`
+	Sandbox      SandboxConfig        `yaml:"sandbox"`
+	MCP          *MCPConfig           `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Skills       *SkillsConfig        `yaml:"skills,omitempty" json:"skills,omitempty"`
 	// Resolution 是解析过程生成的非敏感 Resolved Execution Plan（字段→值→来源），
 	// 只读派生事实：不参与 YAML 解码、不进入配置指纹（语义已由解析后的字段承载），
 	// 随冻结配置制品持久化，供诊断与可访问性视图使用。
@@ -394,6 +400,8 @@ type VerificationCommand struct {
 
 // Overrides 保存由环境变量或 CLI 提供的可控运行时覆盖项。
 type Overrides struct {
+	// Mode 覆盖 active_mode（CLI --mode）。
+	Mode            string
 	BaseURL         string
 	Model           string
 	APIKeyEnv       string

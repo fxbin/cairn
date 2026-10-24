@@ -50,10 +50,37 @@ func Load(path string, overrides Overrides) (Config, error) {
 			if *probe.Version != CurrentVersion {
 				return Config{}, fmt.Errorf("unsupported config version %d", *probe.Version)
 			}
+			var modeMeta struct {
+				ActiveMode string               `yaml:"active_mode"`
+				Modes      map[string]yaml.Node `yaml:"modes"`
+			}
+			metaDecoder := yaml.NewDecoder(strings.NewReader(string(content)))
+			if err := metaDecoder.Decode(&modeMeta); err != nil {
+				return Config{}, fmt.Errorf("parse config modes: %w", err)
+			}
+			modeName := strings.TrimSpace(overrides.Mode)
+			if modeName == "" {
+				modeName = strings.TrimSpace(modeMeta.ActiveMode)
+			}
+			if modeName != "" {
+				node, ok := modeMeta.Modes[modeName]
+				if !ok {
+					return Config{}, fmt.Errorf("unknown active mode %q", modeName)
+				}
+				if err := node.Decode(&config); err != nil {
+					return Config{}, fmt.Errorf("apply mode %q: %w", modeName, err)
+				}
+				config.ActiveMode = modeName
+				recorder.record("active_mode", modeName, "mode")
+			}
 			decoder := yaml.NewDecoder(strings.NewReader(string(content)))
 			decoder.KnownFields(true)
 			if err := decoder.Decode(&config); err != nil {
 				return Config{}, fmt.Errorf("parse config: %w", err)
+			}
+			if strings.TrimSpace(overrides.Mode) != "" {
+				config.ActiveMode = strings.TrimSpace(overrides.Mode)
+				recorder.record("active_mode", config.ActiveMode, "cli")
 			}
 			providerOverlayFact = probe.Provider
 			// 命名 Profile 的预算预设仅填充 YAML 缺省字段，显式值按优先级
