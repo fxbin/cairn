@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/provider"
 )
@@ -27,6 +28,7 @@ type fingerprintView struct {
 	Skills       *SkillsConfig                `json:"skills,omitempty"`
 	Tools        *ToolsConfig                 `json:"tools,omitempty"`
 	Hooks        *[]HookConfig                `json:"hooks,omitempty"`
+	Prompt       *PromptConfig                `json:"prompt,omitempty"`
 }
 
 // providerCapabilityFingerprint 是进入指纹的能力声明投影。
@@ -73,6 +75,7 @@ func (config Config) Fingerprint() string {
 		Skills:       skillsFingerprint(config.Skills),
 		Tools:        toolsFingerprint(config.Tools),
 		Hooks:        hooksFingerprint(config.Hooks),
+		Prompt:       promptFingerprint(config.Prompt),
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
@@ -88,6 +91,19 @@ func toolsFingerprint(tools ToolsConfig) *ToolsConfig {
 		return nil
 	}
 	copied := tools
+	return &copied
+}
+
+// promptFingerprint 仅在自定义系统提示时进入指纹。
+func promptFingerprint(prompt PromptConfig) *PromptConfig {
+	resolved := strings.TrimSpace(prompt.Resolved)
+	if resolved == "" {
+		resolved = strings.TrimSpace(prompt.SystemPrompt)
+	}
+	if resolved == "" && strings.TrimSpace(prompt.SystemPromptFile) == "" {
+		return nil
+	}
+	copied := PromptConfig{SystemPrompt: resolved}
 	return &copied
 }
 

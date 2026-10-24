@@ -3,10 +3,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/contract"
 	yaml "gopkg.in/yaml.v3"
@@ -103,6 +105,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 	if err := ApplyPermissionMode(&config.Policy); err != nil {
 		return Config{}, err
 	}
+	if err := resolvePromptFile(&config); err != nil {
+		return Config{}, err
+	}
 	if err := Validate(config); err != nil {
 		return Config{}, err
 	}
@@ -112,3 +117,28 @@ func Load(path string, overrides Overrides) (Config, error) {
 
 // applyProfilePreset 将命名 Profile 的预算预设填充到 YAML 缺省的预算字段；
 // 显式设置的字段保留 YAML 值并把来源标记为 yaml。
+
+// resolvePromptFile 展开 system_prompt_file 为 Resolved；内联 SystemPrompt 优先。
+func resolvePromptFile(config *Config) error {
+	config.Prompt.Resolved = strings.TrimSpace(config.Prompt.SystemPrompt)
+	if config.Prompt.Resolved != "" {
+		return nil
+	}
+	path := strings.TrimSpace(config.Prompt.SystemPromptFile)
+	if path == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read system_prompt_file: %w", err)
+	}
+	if !utf8.Valid(raw) {
+		return errors.New("system_prompt_file must be UTF-8 text")
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return errors.New("system_prompt_file is empty")
+	}
+	config.Prompt.Resolved = text
+	return nil
+}

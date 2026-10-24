@@ -32,6 +32,7 @@ type Config struct {
 	Policy       PolicyConfig       `yaml:"policy"`
 	Tools        ToolsConfig        `yaml:"tools"`
 	Hooks        []HookConfig       `yaml:"hooks,omitempty"`
+	Prompt       PromptConfig       `yaml:"prompt,omitempty"`
 	Verification VerificationConfig `yaml:"verification"`
 	Budget       BudgetConfig       `yaml:"budget"`
 	Context      ContextConfig      `yaml:"context"`
@@ -238,6 +239,17 @@ type BudgetConfig struct {
 }
 
 // ContextConfig 限制单次模型请求的可见历史，并控制自动压缩生成的检查点体积。
+// PromptConfig 控制系统提示词来源；两者皆空时使用内置默认提示。
+// 文件路径相对工作区或绝对路径；正文进指纹，文件在 Load 时展开为正文。
+type PromptConfig struct {
+	// SystemPrompt 直接内联系统提示（优先于 File）。
+	SystemPrompt string `yaml:"system_prompt,omitempty"`
+	// SystemPromptFile 指向 UTF-8 文本文件。
+	SystemPromptFile string `yaml:"system_prompt_file,omitempty"`
+	// Resolved 是 Load 展开后的最终正文（不进 YAML 解码，仅供装配）。
+	Resolved string `yaml:"-" json:"-"`
+}
+
 type ContextConfig struct {
 	AutoCompact             bool `yaml:"auto_compact"`
 	MaxPromptTokens         int  `yaml:"max_prompt_tokens"`

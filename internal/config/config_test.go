@@ -977,3 +977,19 @@ func TestApplyPermissionMode(t *testing.T) {
 		t.Fatal("unknown mode must fail closed")
 	}
 }
+
+// TestResolveSystemPromptFile 覆盖内联优先与文件展开。
+func TestResolveSystemPromptFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "sys.md")
+	if err := os.WriteFile(file, []byte("  custom system prompt  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Prompt: PromptConfig{SystemPromptFile: file}}
+	if err := resolvePromptFile(&cfg); err != nil || cfg.Prompt.Resolved != "custom system prompt" {
+		t.Fatalf("resolved = %q err=%v", cfg.Prompt.Resolved, err)
+	}
+	cfg = Config{Prompt: PromptConfig{SystemPrompt: "inline", SystemPromptFile: file}}
+	if err := resolvePromptFile(&cfg); err != nil || cfg.Prompt.Resolved != "inline" {
+		t.Fatalf("inline must win: %q", cfg.Prompt.Resolved)
+	}
+}

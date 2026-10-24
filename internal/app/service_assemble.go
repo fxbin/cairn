@@ -202,6 +202,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		VerificationAutoAfterPatch:     configuration.Verification.AutoAfterPatch,
 		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
+		SystemPrompt: configuration.Prompt.Resolved,
 	}
 	if checkpoint := configuration.Context.DecisionCheckpoint; checkpoint != nil && checkpoint.Enabled {
 		loop.DecisionCheckpointEnabled = true
