@@ -495,11 +495,18 @@ type SandboxConfig struct {
 	MaxPIDs     int    `yaml:"max_pids"`
 }
 
-// ToolsConfig 控制可选工具面暴露；Web 与 ExecSession 默认关闭（opt-in）。
+// ToolsConfig 控制可选工具面暴露；Web、ExecSession、Browser、RunTests 与
+// LspDiagnostics 默认关闭或仅出现在非 read-only Preset（opt-in）。
 type ToolsConfig struct {
 	Web bool `yaml:"web"`
 	// ExecSession 显式启用受控 tmux 会话工具；默认不注册。
 	ExecSession bool `yaml:"exec_session"`
+	// Browser 启用 headless Chrome CDP 工具；默认不注册。
+	Browser bool `yaml:"browser"`
+	// RunTests 启用 run_tests 结构化测试执行。
+	RunTests bool `yaml:"run_tests"`
+	// LspDiagnostics 启用 lsp_diagnostics 只读诊断。
+	LspDiagnostics bool `yaml:"lsp_diagnostics"`
 }
 
 // PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
@@ -1135,7 +1142,7 @@ func (config Config) Fingerprint() string {
 
 // toolsFingerprint 仅在存在 opt-in 工具时进入指纹，保证默认配置指纹不变。
 func toolsFingerprint(tools ToolsConfig) *ToolsConfig {
-	if !tools.Web && !tools.ExecSession {
+	if !tools.Web && !tools.ExecSession && !tools.Browser && !tools.RunTests && !tools.LspDiagnostics {
 		return nil
 	}
 	copied := tools

@@ -326,8 +326,22 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	if options.ExecSession && config.PresetReadOnly != preset {
 		available = append(available, tools.ExecSession{Workspace: workspace, Backend: tools.NewTmuxSessionBackend()})
 	}
+	// run_tests / lsp_diagnostics 为开发辅助面，read-only 仍允许只读诊断。
+	if options.RunTests && config.PresetReadOnly != preset {
+		available = append(available, tools.RunTests{Workspace: workspace})
+	}
+	if options.Browser && config.PresetReadOnly != preset {
+		available = append(available, tools.Browser{Driver: &tools.LazyBrowserDriver{}})
+	}
 	if preset == config.PresetReadOnly {
-		return available[:5]
+		readOnly := append([]tools.Tool(nil), available[:5]...)
+		if options.LspDiagnostics {
+			readOnly = append(readOnly, tools.LspDiagnostics{Workspace: workspace})
+		}
+		return readOnly
+	}
+	if options.LspDiagnostics {
+		available = append(available, tools.LspDiagnostics{Workspace: workspace})
 	}
 	return available
 }

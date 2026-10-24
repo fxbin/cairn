@@ -91,8 +91,41 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 		}
 	}
 	switch toolName {
-	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "web_search", "web_fetch", "send_message":
+	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "web_search", "web_fetch", "send_message", "lsp_diagnostics":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
+	case "run_tests":
+		// 测试命令与 exec 同级：走 ExecMode，避免 allow 豁免被滥用。
+		return Decision{
+			Effect:      gate.ExecMode,
+			RuleID:      "test_execution",
+			Fingerprint: fingerprint("run_tests", raw),
+			Summary:     "run workspace tests",
+		}, nil
+	case "browser":
+		var request struct {
+			Action     string `json:"action"`
+			URL        string `json:"url"`
+			Expression string `json:"expression"`
+		}
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return Decision{Effect: Deny, RuleID: "invalid_browser", Fingerprint: fingerprint("browser", raw), Summary: "invalid browser arguments"}, nil
+		}
+		switch request.Action {
+		case "screenshot", "close":
+			return Decision{Effect: Allow, RuleID: "browser_read", Fingerprint: fingerprint("browser", raw), Summary: "browser " + request.Action}, nil
+		case "open", "eval":
+			effect := gate.ExecMode
+			if effect == Allow {
+				effect = Ask
+			}
+			summary := "browser " + request.Action
+			if request.Action == "open" {
+				summary = "browser open " + request.URL
+			}
+			return Decision{Effect: effect, RuleID: "browser_mutate", Fingerprint: fingerprint("browser", raw), Summary: summary}, nil
+		default:
+			return Decision{Effect: Deny, RuleID: "invalid_browser", Fingerprint: fingerprint("browser", raw), Summary: "unknown browser action"}, nil
+		}
 	case "apply_patch":
 		var proposed struct {
 			Path string `json:"path"`

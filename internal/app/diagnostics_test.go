@@ -67,6 +67,9 @@ func TestManifestRegistersOptInWebAndSessionTools(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	configuration.Tools.Web = true
 	configuration.Tools.ExecSession = true
+	configuration.Tools.RunTests = true
+	configuration.Tools.LspDiagnostics = true
+	configuration.Tools.Browser = true
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) {
 		return &finalProvider{}, nil
 	}}
@@ -80,7 +83,7 @@ func TestManifestRegistersOptInWebAndSessionTools(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	joined := strings.Join(names, ",")
-	for _, want := range []string{"web_search", "web_fetch", "exec_session"} {
+	for _, want := range []string{"web_search", "web_fetch", "exec_session", "run_tests", "lsp_diagnostics", "browser"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("opt-in tool %q missing from %v", want, names)
 		}
