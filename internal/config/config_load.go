@@ -100,6 +100,9 @@ func Load(path string, overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 	applyOverrides(&config, overrides, recorder)
+	if err := ApplyPermissionMode(&config.Policy); err != nil {
+		return Config{}, err
+	}
 	if err := Validate(config); err != nil {
 		return Config{}, err
 	}

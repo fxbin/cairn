@@ -958,3 +958,22 @@ func TestDecisionCheckpointAbsentKeepsFingerprintAndEnableChangesIt(t *testing.T
 		t.Fatal("absent decision checkpoint must keep fingerprint")
 	}
 }
+
+// TestApplyPermissionMode 三档命名权限与显式 write/exec 优先。
+func TestApplyPermissionMode(t *testing.T) {
+	review := PolicyConfig{Mode: PermissionReview}
+	if err := ApplyPermissionMode(&review); err != nil || review.Write != "ask" || review.Exec != "ask" {
+		t.Fatalf("review = %+v err=%v", review, err)
+	}
+	workspace := PolicyConfig{Mode: PermissionWorkspace}
+	if err := ApplyPermissionMode(&workspace); err != nil || workspace.Write != "allow" || workspace.Exec != "allow" {
+		t.Fatalf("workspace = %+v", workspace)
+	}
+	full := PolicyConfig{Mode: PermissionFull, Write: "ask"}
+	if err := ApplyPermissionMode(&full); err != nil || full.Write != "ask" {
+		t.Fatalf("explicit write must win: %+v", full)
+	}
+	if err := ApplyPermissionMode(&PolicyConfig{Mode: "yolo"}); err == nil {
+		t.Fatal("unknown mode must fail closed")
+	}
+}

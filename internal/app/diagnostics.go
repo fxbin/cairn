@@ -86,6 +86,7 @@ type DoctorReport struct {
 
 // PolicyHealth 暴露写入与命令执行策略的非敏感结论；doctor 只报告，不决策。
 type PolicyHealth struct {
+	Mode  string `json:"mode,omitempty"`
 	Write string `json:"write"`
 	Exec  string `json:"exec"`
 }
@@ -113,7 +114,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Profile:       configuration.Profile,
 		Build:         buildIdentity(),
 		WorkspaceHash: "",
-		Policy:        PolicyHealth{Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
+		Policy:        PolicyHealth{Mode: configuration.Policy.Mode, Write: configuration.Policy.Write, Exec: configuration.Policy.Exec},
 		Resolution:    configuration.Resolution,
 		Provider:      ProviderHealth{Protocol: configuration.Provider.Protocol, Use: configuration.Provider.Use, BaseURL: configuration.Provider.BaseURL, Model: configuration.Provider.Model, APIKeyEnv: configuration.Provider.APIKeyEnv, APIKeyPresent: false},
 		Admission:     AdmissionHealth{Mode: "disabled"},

@@ -128,6 +128,9 @@ func ApplyPreset(cfg *Config, preset string) error {
 		return errors.New("config is required")
 	}
 	cfg.Preset = strings.TrimSpace(preset)
+	if err := ApplyPermissionMode(&cfg.Policy); err != nil {
+		return err
+	}
 	recorder := &resolutionRecorder{}
 	if err := normalizePreset(cfg, recorder, "runtime:preset"); err != nil {
 		return err

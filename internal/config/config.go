@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fxbin/cairn/internal/contract"
@@ -315,10 +316,52 @@ type HookConfig struct {
 
 // PolicyConfig 决定工作区写入、进程执行和环境变量暴露的默认边界。
 type PolicyConfig struct {
+	// Mode 是三档命名权限：review（默认审核）、workspace（默认权限）、full（完全权限）。
+	// 显式 write/exec 优先于 Mode 合成值。
+	Mode           string   `yaml:"mode,omitempty"`
 	Write          string   `yaml:"write"`
 	Exec           string   `yaml:"exec"`
 	ProtectedPaths []string `yaml:"protected_paths"`
 	EnvAllow       []string `yaml:"env_allowlist"`
+}
+
+// 权限模式常量；与 Codex/DSH 三档对齐。
+const (
+	// PermissionReview 默认审核：写与执行均需确认。
+	PermissionReview = "review"
+	// PermissionWorkspace 默认权限：工作区内写与常规执行放行（沙箱与危险命令仍拦）。
+	PermissionWorkspace = "workspace"
+	// PermissionFull 完全权限：写与执行放行；危险命令与受保护路径仍失败关闭。
+	PermissionFull = "full"
+)
+
+// ApplyPermissionMode 将命名权限模式合成 Write/Exec；显式非空值优先。
+func ApplyPermissionMode(policy *PolicyConfig) error {
+	if policy == nil {
+		return errors.New("policy is required")
+	}
+	mode := strings.TrimSpace(policy.Mode)
+	if mode == "" {
+		return nil
+	}
+	var write, exec string
+	switch mode {
+	case PermissionReview:
+		write, exec = "ask", "ask"
+	case PermissionWorkspace:
+		write, exec = "allow", "allow"
+	case PermissionFull:
+		write, exec = "allow", "allow"
+	default:
+		return fmt.Errorf("unknown policy.mode %q (supported: %s, %s, %s)", mode, PermissionReview, PermissionWorkspace, PermissionFull)
+	}
+	if strings.TrimSpace(policy.Write) == "" {
+		policy.Write = write
+	}
+	if strings.TrimSpace(policy.Exec) == "" {
+		policy.Exec = exec
+	}
+	return nil
 }
 
 // VerificationConfig 描述完成前必须执行的固定验收命令。
