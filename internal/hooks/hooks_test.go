@@ -62,3 +62,17 @@ func TestActionsForEvent(t *testing.T) {
 		t.Fatal("wrong event must not match")
 	}
 }
+
+// TestActionsForPostTool 覆盖 post_tool 按工具匹配收集动作。
+func TestActionsForPostTool(t *testing.T) {
+	rules := []Rule{{
+		ID: "p", Event: EventPostTool, ToolMatch: "git_*", Enabled: true,
+		Actions: []Action{{Kind: ActionQueueFollowup, Content: "praise"}},
+	}}
+	if len(ActionsFor(rules, EventPostTool, "git_commit")) != 1 {
+		t.Fatal("expected match")
+	}
+	if len(ActionsFor(rules, EventPostTool, "read_file")) != 0 {
+		t.Fatal("must not match other tools")
+	}
+}

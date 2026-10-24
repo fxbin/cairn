@@ -9,6 +9,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -33,6 +34,7 @@ type operationPayload struct {
 	Result             any           `json:"result,omitempty"`
 	ResultRef          *artifact.Ref `json:"result_ref,omitempty"`
 	ResultStorageError string        `json:"result_storage_error,omitempty"`
+	HookActions        []hooks.Action `json:"hook_actions,omitempty"`
 }
 
 // policyDecisionPayload 保存可回放的策略结论及拒绝时的结构化失败信息。
@@ -195,6 +197,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	resultContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	payload := loop.resultPayload(call.Name, result)
+	payload.HookActions = loop.dispatchPostToolHooks(call.Name, result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return tools.Result{}, err
 	}
@@ -336,4 +339,13 @@ func redactToolResult(result tools.Result) tools.Result {
 		result.Data = append(json.RawMessage(nil), artifact.RedactJSON(result.Data)...)
 	}
 	return result
+}
+
+// dispatchPostToolHooks 收集 post_tool 钩子动作并写入操作载荷；不在此处执行副作用，
+// 执行仍由宿主（如 desktop queue）按 action 合同处理。
+func (loop *Loop) dispatchPostToolHooks(toolName string, result tools.Result) []hooks.Action {
+	if len(loop.Hooks) == 0 {
+		return nil
+	}
+	return hooks.ActionsFor(loop.Hooks, hooks.EventPostTool, toolName)
 }

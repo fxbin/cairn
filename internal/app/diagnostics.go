@@ -36,8 +36,8 @@ type SandboxHealth struct {
 	ImageAvailable string `json:"image_available,omitempty"`
 	// HostConfined 表示 host 后端是否套 Seatbelt（macOS）。
 	HostConfined bool `json:"host_confined"`
-	// SeatbeltAvailable 表示平台是否存在 sandbox-exec。
-	SeatbeltAvailable bool `json:"seatbelt_available"`
+	// SeatbeltAvailable 表示平台 OS 沙箱（Seatbelt/bwrap）是否可用。
+	SeatbeltAvailable bool `json:"seatbelt_available"` // alias of OS sandbox
 }
 
 // AdmissionHealth 汇总当前 Provider 绑定的准入模式和只读判定；Error 只使用
@@ -121,8 +121,8 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		Sandbox: SandboxHealth{
 			Backend:           configuration.Sandbox.Backend,
 			DockerImage:       configuration.Sandbox.DockerImage,
-			HostConfined:      tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.SeatbeltAvailable(),
-			SeatbeltAvailable: tools.SeatbeltAvailable(),
+			HostConfined:      tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.OSSandboxAvailable(),
+			SeatbeltAvailable: tools.OSSandboxAvailable(),
 		},
 		Tools:             nil,
 		VerificationCount: len(configuration.Verification.Commands),

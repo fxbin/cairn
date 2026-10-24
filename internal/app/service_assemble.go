@@ -64,7 +64,7 @@ func execToolFor(workspace tools.Workspace, configuration config.Config) (tools.
 		DockerMaxPIDs: configuration.Sandbox.MaxPIDs,
 		// host 后端在存在 OS 沙箱（macOS Seatbelt）时默认收紧；无沙箱平台
 		// 保持显式 host，不伪造隔离。
-		HostConfined: tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.SeatbeltAvailable(),
+		HostConfined: tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.OSSandboxAvailable(),
 		HostWrite:    configuration.Policy.Write != "deny",
 	}, nil
 }

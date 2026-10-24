@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"github.com/fxbin/cairn/internal/hooks"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,8 @@ type Loop struct {
 	Artifacts             *artifact.Store
 	OnEvent               EventSink
 	SystemPrompt          string
+	// Hooks 是可选工作区钩子；pre_tool 由 Policy 收紧，post_tool 记录动作。
+	Hooks []hooks.Rule
 	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
 	// 同时进入创建事件以支持 resume 回放。
 	PriorContext    string

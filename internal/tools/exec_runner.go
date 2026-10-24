@@ -6,7 +6,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -49,55 +48,31 @@ func (HostRunner) Run(ctx context.Context, request ExecRunRequest) Result {
 	return runProcess(ctx, request.Arguments, ExecBackendHost, command, nil, request.Grace)
 }
 
-// SeatbeltRunner 在宿主机执行并套 macOS Seatbelt。
+// SeatbeltRunner 在宿主机执行并套 OS 约束（macOS Seatbelt / Linux bubblewrap）。
 type SeatbeltRunner struct{}
 
-// ID 返回 host+seatbelt。
+// ID 返回 host+os-sandbox。
 func (SeatbeltRunner) ID() ExecBackend { return ExecBackendSeatbeltHost }
 
-// Run 包装 argv 后执行；缺 sandbox-exec 时失败关闭。
+// Run 包装 argv 后执行；缺少 OS 沙箱时失败关闭。
 func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) Result {
-	if !SeatbeltAvailable() {
-		return Failure("sandbox_unavailable", "host confinement requires sandbox-exec")
-	}
 	writeMode := SeatbeltWriteWorkspace
 	if !request.HostWrite {
 		writeMode = SeatbeltWriteNone
 	}
-	profile, err := SeatbeltProfile(SeatbeltOptions{
+	wrapped, cleanup, err := ConfineArgv(SeatbeltOptions{
 		WorkspaceRoot: request.Workspace.Root,
 		WriteMode:     writeMode,
 		AllowNetwork:  false,
-	})
-	if err != nil {
-		return Failure("invalid_backend", err.Error())
-	}
-	file, err := os.CreateTemp("", "cairn-seatbelt-*.sb")
+	}, request.Arguments.Argv)
 	if err != nil {
 		return Failure("sandbox_unavailable", err.Error())
-	}
-	profilePath := file.Name()
-	if _, err := file.WriteString(profile); err != nil {
-		_ = file.Close()
-		_ = os.Remove(profilePath)
-		return Failure("sandbox_unavailable", err.Error())
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(profilePath)
-		return Failure("sandbox_unavailable", err.Error())
-	}
-	wrapped, err := WrapSeatbelt(profilePath, request.Arguments.Argv)
-	if err != nil {
-		_ = os.Remove(profilePath)
-		return Failure("invalid_backend", err.Error())
 	}
 	command := exec.Command(wrapped[0], wrapped[1:]...)
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return runProcess(ctx, request.Arguments, ExecBackendSeatbeltHost, command, func() error {
-		return os.Remove(profilePath)
-	}, request.Grace)
+	return runProcess(ctx, request.Arguments, ExecBackendSeatbeltHost, command, cleanup, request.Grace)
 }
 
 // DockerRunner 在显式镜像容器内执行（无网络、只读根）。
