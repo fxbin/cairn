@@ -322,6 +322,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 		tools.ListFiles{Workspace: workspace},
 		tools.ReadFile{Workspace: workspace},
 		tools.SearchText{Workspace: workspace},
+		tools.Todo{Board: tools.NewTodoBoard()},
 		tools.GitStatus{Workspace: workspace},
 		tools.GitDiff{Workspace: workspace},
 		tools.GitLog{Workspace: workspace},
@@ -346,7 +347,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 		available = append(available, tools.Browser{Driver: &tools.LazyBrowserDriver{}})
 	}
 	if preset == config.PresetReadOnly {
-		readOnly := append([]tools.Tool(nil), available[:6]...)
+		readOnly := append([]tools.Tool(nil), available[:7]...)
 		if options.LspDiagnostics {
 			readOnly = append(readOnly, tools.LspDiagnostics{Workspace: workspace})
 		}

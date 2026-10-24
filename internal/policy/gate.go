@@ -140,7 +140,7 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 		}
 	}
 	switch toolName {
-	case "list_files", "read_file", "search_text", "skill", "git_status", "git_diff", "git_log", "web_search", "web_fetch", "send_message", "lsp_diagnostics":
+	case "list_files", "read_file", "search_text", "skill", "todo", "git_status", "git_diff", "git_log", "web_search", "web_fetch", "send_message", "lsp_diagnostics":
 		return Decision{Effect: Allow, RuleID: "read_only", Fingerprint: fingerprint(toolName, raw), Summary: "read-only workspace access"}, nil
 	case "run_tests":
 		// 测试命令与 exec 同级：走 ExecMode，避免 allow 豁免被滥用。

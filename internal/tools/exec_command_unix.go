@@ -49,6 +49,8 @@ type ExecCommand struct {
 	HostConfined bool
 	// HostWrite 跟随 Policy.Write：false 时 seatbelt 仅允许临时目录写入。
 	HostWrite bool
+	// EnvResolver 按名解析凭证；nil 时 EnvRefs 失败关闭。
+	EnvResolver func(name string) (string, bool)
 }
 
 // ExecArguments 是 exec_command 的受限执行参数。
@@ -58,6 +60,9 @@ type ExecArguments struct {
 	TimeoutMS      int               `json:"timeout_ms"`
 	MaxOutputBytes int               `json:"max_output_bytes"`
 	Env            map[string]string `json:"env"`
+	// EnvRefs 将进程环境变量映射到凭证名（而非明文）；执行时经 EnvResolver
+	// 取值，Journal 只见引用名，降低密钥进事件面的风险。
+	EnvRefs map[string]string `json:"env_refs,omitempty"`
 }
 
 // SideEffect 声明 ExecCommand 会产生进程级副作用。
@@ -65,7 +70,7 @@ func (tool ExecCommand) SideEffect() SideEffectClass { return SideEffectProcess 
 
 // Spec 返回 exec_command 的受限 JSON 参数定义。
 func (tool ExecCommand) Spec() ports.ToolSpec {
-	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace. Use a workspace-relative cwd; /workspace is accepted as the workspace root alias.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","description":"Workspace-relative directory; /workspace denotes its root."},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
+	return ports.ToolSpec{Name: "exec_command", Description: "Run an approved argv command inside the workspace. Use a workspace-relative cwd; /workspace is accepted as the workspace root alias.", Parameters: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["argv"],"properties":{"argv":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}},"cwd":{"type":"string","description":"Workspace-relative directory; /workspace denotes its root."},"timeout_ms":{"type":"integer","minimum":1,"maximum":3600000},"max_output_bytes":{"type":"integer","minimum":1,"maximum":1048576},"env":{"type":"object","additionalProperties":{"type":"string"}},"env_refs":{"type":"object","additionalProperties":{"type":"string"}}}}`)}
 }
 
 // Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令；Docker 后端
@@ -78,6 +83,29 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	}
 	if err := tool.validateEnvironment(arguments.Env); err != nil {
 		return Failure("invalid", err.Error())
+	}
+	if len(arguments.EnvRefs) > 0 {
+		if tool.EnvResolver == nil {
+			return Failure("invalid", "env_refs require a configured credential resolver")
+		}
+		for envName, credName := range arguments.EnvRefs {
+			if strings.TrimSpace(envName) == "" || strings.TrimSpace(credName) == "" {
+				return Failure("invalid", "env_refs entries must be non-empty")
+			}
+			if !credential.Key(credName) {
+				return Failure("invalid", "env_refs credential name is not allowed")
+			}
+			if _, ok := tool.EnvResolver(credName); !ok {
+				return Failure("invalid", "credential not found for env_refs: "+credName)
+			}
+			arguments.Env[envName] = "" // 占位，真实值在 runner 合成
+		}
+		// 真实注入放到 request 合成：见 execute 调用 runner 前展开
+		for envName, credName := range arguments.EnvRefs {
+			if value, ok := tool.EnvResolver(credName); ok {
+				arguments.Env[envName] = value
+			}
+		}
 	}
 	workingDirectory, relativeCWD, err := tool.Workspace.Resolve(arguments.CWD)
 	if err != nil {
@@ -431,6 +459,8 @@ func (tool ExecCommand) validateEnvironment(environment map[string]string) error
 }
 
 // mergedEnvironment 从允许继承的环境变量与显式覆盖构造确定性的进程环境。
+// mergedEnvironment 合并白名单与覆盖；EnvRefs 经解析器取值，失败时跳过该键并
+// 由调用方在 validate 阶段拒绝（见 Execute）。
 func mergedEnvironment(allowed map[string]struct{}, overrides map[string]string) []string {
 	values := make(map[string]string)
 	for key := range allowed {

@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -66,6 +67,13 @@ func execToolFor(workspace tools.Workspace, configuration config.Config) (tools.
 		// 保持显式 host，不伪造隔离。
 		HostConfined: tools.ExecBackend(configuration.Sandbox.Backend) != tools.ExecBackendDocker && tools.OSSandboxAvailable(),
 		HostWrite:    configuration.Policy.Write != "deny",
+		EnvResolver: func(name string) (string, bool) {
+			value, err := credential.ResolveEnv(name)
+			if err != nil {
+				return "", false
+			}
+			return value, true
+		},
 	}, nil
 }
 

@@ -148,3 +148,18 @@ func TestBrowserFakeDriverScreenshot(t *testing.T) {
 		t.Fatalf("screenshot failed: %s", result.Preview)
 	}
 }
+
+// TestTodoBoardLifecycle 覆盖计划增改完成。
+func TestTodoBoardLifecycle(t *testing.T) {
+	board := NewTodoBoard()
+	tool := Todo{Board: board}
+	add := tool.Execute(context.Background(), json.RawMessage(`{"action":"add","id":"a","text":"write tests"}`))
+	if !add.OK {
+		t.Fatal(add.Preview)
+	}
+	tool.Execute(context.Background(), json.RawMessage(`{"action":"complete","id":"a"}`))
+	items := board.Snapshot()
+	if len(items) != 1 || items[0].Status != "done" {
+		t.Fatalf("items = %+v", items)
+	}
+}

@@ -32,6 +32,7 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 	scope := flags.String("scope", "workspace", "management target: workspace or user")
 	shared := flags.Bool("shared", false, "include cross-client .agents/skills in list and show")
 	jsonOutput := flags.Bool("json", false, "write NDJSON to stdout")
+	audit := flags.Bool("audit", false, "run skillshare audit on the source before install (requires skillshare CLI)")
 	if err := flags.Parse(normalizeFlagsThenPositionals(arguments[1:], map[string]struct{}{"--workspace": {}, "--scope": {}})); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return ExitOK
@@ -102,6 +103,12 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 	name := flags.Arg(0)
 	switch action {
 	case "install":
+		if *audit {
+			if _, auditErr := tools.RunSkillshareAudit(ctx, name); auditErr != nil {
+				fmt.Fprintln(command.Stderr, "skillshare audit failed:", auditErr)
+				return ExitFailed
+			}
+		}
 		name, err = store.Install(name)
 	case "remove":
 		err = store.Remove(name)
