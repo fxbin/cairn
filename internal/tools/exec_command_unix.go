@@ -70,6 +70,7 @@ func (tool ExecCommand) Spec() ports.ToolSpec {
 
 // Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令；Docker 后端
 // 不可用或配置无效时失败关闭，绝不会降级为宿主机执行。
+// 执行边界由 ExecRunner 策略（host / seatbelt / docker）决定。
 func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result {
 	arguments, err := ParseExecArguments(raw)
 	if err != nil {
@@ -86,14 +87,19 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	if err != nil || !info.IsDir() {
 		return Failure("invalid_path", "cwd must be a workspace directory")
 	}
-	switch tool.executionBackend() {
-	case ExecBackendHost:
-		return tool.executeHost(ctx, arguments, workingDirectory)
-	case ExecBackendDocker:
-		return tool.executeDocker(ctx, arguments, relativeCWD)
-	default:
-		return Failure("invalid_backend", "exec sandbox backend must be host or docker")
+	runner, err := runnerFor(tool.executionBackend(), tool.Workspace, tool.HostConfined, tool.HostWrite, tool.DockerImage, tool.dockerPIDLimit())
+	if err != nil {
+		return Failure("invalid_backend", err.Error())
 	}
+	return runner.Run(ctx, ExecRunRequest{
+		Arguments:        arguments,
+		WorkingDirectory: workingDirectory,
+		RelativeCWD:      relativeCWD,
+		Workspace:        tool.Workspace,
+		EnvAllow:         tool.EnvAllow,
+		HostWrite:        tool.HostWrite,
+		Grace:            tool.Grace,
+	})
 }
 
 // executionBackend 将零值工具保持为兼容的宿主机后端；实际配置必须在装配层严格校验。
@@ -104,84 +110,17 @@ func (tool ExecCommand) executionBackend() ExecBackend {
 	return tool.Backend
 }
 
-// executeHost 以受限环境和独立进程组运行宿主机 argv；
-// HostConfined 时先套 Seatbelt，缺少 sandbox-exec 则失败关闭。
-func (tool ExecCommand) executeHost(ctx context.Context, arguments ExecArguments, workingDirectory string) Result {
-	argv := arguments.Argv
-	backend := ExecBackendHost
-	var cleanup func() error
-	if tool.HostConfined {
-		if !SeatbeltAvailable() {
-			return Failure("sandbox_unavailable", "host confinement requires sandbox-exec")
-		}
-		writeMode := SeatbeltWriteWorkspace
-		if !tool.HostWrite {
-			writeMode = SeatbeltWriteNone
-		}
-		profile, err := SeatbeltProfile(SeatbeltOptions{
-			WorkspaceRoot: tool.Workspace.Root,
-			WriteMode:     writeMode,
-			AllowNetwork:  false,
-		})
-		if err != nil {
-			return Failure("invalid_backend", err.Error())
-		}
-		file, err := os.CreateTemp("", "cairn-seatbelt-*.sb")
-		if err != nil {
-			return Failure("sandbox_unavailable", err.Error())
-		}
-		profilePath := file.Name()
-		if _, err := file.WriteString(profile); err != nil {
-			_ = file.Close()
-			_ = os.Remove(profilePath)
-			return Failure("sandbox_unavailable", err.Error())
-		}
-		if err := file.Close(); err != nil {
-			_ = os.Remove(profilePath)
-			return Failure("sandbox_unavailable", err.Error())
-		}
-		wrapped, err := WrapSeatbelt(profilePath, argv)
-		if err != nil {
-			_ = os.Remove(profilePath)
-			return Failure("invalid_backend", err.Error())
-		}
-		argv = wrapped
-		cleanup = func() error { return os.Remove(profilePath) }
-		backend = ExecBackendSeatbeltHost
-	}
-	command := exec.Command(argv[0], argv[1:]...)
-	command.Dir = workingDirectory
-	command.Env = mergedEnvironment(tool.EnvAllow, arguments.Env)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return tool.runCommand(ctx, arguments, backend, command, cleanup)
-}
-
-// executeDocker 以固定安全选项运行 Docker；二进制、镜像或 daemon 不可用时该路径
-// 只返回失败，不会触发原始 argv 的宿主机执行。
-func (tool ExecCommand) executeDocker(ctx context.Context, arguments ExecArguments, relativeCWD string) Result {
-	if err := tool.validateDockerConfiguration(); err != nil {
-		return Failure("invalid_backend", err.Error())
-	}
-	if strings.Contains(tool.Workspace.Root, ",") {
-		return Failure("invalid_path", "docker sandbox does not support a workspace path containing a comma")
-	}
-	dockerBinary, err := exec.LookPath("docker")
-	if err != nil {
-		return Failure("sandbox_unavailable", fmt.Sprintf("docker sandbox is unavailable: %v", err))
-	}
-	containerName := dockerContainerName()
-	command := tool.dockerCommand(dockerBinary, arguments, relativeCWD, containerName)
-	return tool.runCommand(ctx, arguments, ExecBackendDocker, command, func() error {
-		return tool.removeDockerContainer(dockerBinary, containerName)
-	})
-}
-
 // validateDockerConfiguration 复核工具直连场景的 Docker 配置，避免绕过 Config 校验。
 func (tool ExecCommand) validateDockerConfiguration() error {
-	if tool.DockerImage == "" || tool.DockerImage != strings.TrimSpace(tool.DockerImage) || strings.HasPrefix(tool.DockerImage, "-") || strings.ContainsAny(tool.DockerImage, " \t\r\n\x00") {
+	return validateDockerImageAndPIDs(tool.DockerImage, tool.dockerPIDLimit())
+}
+
+// validateDockerImageAndPIDs 校验镜像名与 PID 配额（Runner 共用）。
+func validateDockerImageAndPIDs(image string, maxPIDs int) error {
+	if image == "" || image != strings.TrimSpace(image) || strings.HasPrefix(image, "-") || strings.ContainsAny(image, " \t\r\n\x00") {
 		return errors.New("docker sandbox requires a valid docker image")
 	}
-	if tool.dockerPIDLimit() < 1 || tool.dockerPIDLimit() > 1024 {
+	if maxPIDs < 1 || maxPIDs > 1024 {
 		return errors.New("docker sandbox max pids must be between 1 and 1024")
 	}
 	return nil
@@ -197,6 +136,11 @@ func (tool ExecCommand) dockerPIDLimit() int {
 
 // dockerRunArguments 构造无网络、只读根文件系统且仅挂载规范工作区的 Docker argv。
 func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD, containerName string) []string {
+	return dockerRunArgumentsFor(tool.Workspace, tool.DockerImage, tool.dockerPIDLimit(), arguments, relativeCWD, containerName)
+}
+
+// dockerRunArgumentsFor 是策略层共用的 docker argv 构造。
+func dockerRunArgumentsFor(workspace Workspace, image string, maxPIDs int, arguments ExecArguments, relativeCWD, containerName string) []string {
 	containerCWD := "/workspace"
 	if relativeCWD != "." {
 		containerCWD = path.Join(containerCWD, filepath.ToSlash(relativeCWD))
@@ -205,7 +149,7 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 	// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
 	// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
 	command = append(command, "--user", strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()))
-	command = append(command, DockerSandboxBaseArgs(tool.dockerPIDLimit(), tool.Workspace.Root, containerCWD)...)
+	command = append(command, DockerSandboxBaseArgs(maxPIDs, workspace.Root, containerCWD)...)
 	keys := make([]string, 0, len(arguments.Env))
 	for key := range arguments.Env {
 		keys = append(keys, key)
@@ -214,15 +158,20 @@ func (tool ExecCommand) dockerRunArguments(arguments ExecArguments, relativeCWD,
 	for _, key := range keys {
 		command = append(command, "--env", key+"="+arguments.Env[key])
 	}
-	command = append(command, tool.DockerImage)
+	command = append(command, image)
 	return append(command, arguments.Argv...)
 }
 
 // dockerCommand 创建不继承宿主机环境的 Docker CLI 进程；容器环境仅由
 // dockerRunArguments 中明确编码的 arguments.Env 提供。
 func (tool ExecCommand) dockerCommand(dockerBinary string, arguments ExecArguments, relativeCWD, containerName string) *exec.Cmd {
-	command := exec.Command(dockerBinary, tool.dockerRunArguments(arguments, relativeCWD, containerName)...)
-	command.Dir = tool.Workspace.Root
+	return dockerRunCommand(dockerBinary, tool.Workspace, tool.DockerImage, tool.dockerPIDLimit(), arguments, relativeCWD, containerName)
+}
+
+// dockerRunCommand 是策略层共用的 docker 进程构造。
+func dockerRunCommand(dockerBinary string, workspace Workspace, image string, maxPIDs int, arguments ExecArguments, relativeCWD, containerName string) *exec.Cmd {
+	command := exec.Command(dockerBinary, dockerRunArgumentsFor(workspace, image, maxPIDs, arguments, relativeCWD, containerName)...)
+	command.Dir = workspace.Root
 	command.Env = []string{}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return command
@@ -244,6 +193,11 @@ const (
 // removeDockerContainer 在 docker run 客户端被取消后删除容器；删除失败时
 // 必须经成功的本地查询确认容器已不存在，不能把 daemon 错误当作终止证据。
 func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string) error {
+	return removeDockerContainerByID(dockerBinary, containerName)
+}
+
+// removeDockerContainerByID 是策略层共用的容器回收。
+func removeDockerContainerByID(dockerBinary, containerName string) error {
 	for attempt := 0; attempt < dockerCleanupAttempts; attempt++ {
 		cleanupContext, cancel := context.WithTimeout(context.Background(), dockerCleanupTimeout)
 		command := exec.CommandContext(cleanupContext, dockerBinary, "rm", "--force", containerName)
@@ -255,7 +209,7 @@ func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string
 			return nil
 		}
 	}
-	absent, err := tool.dockerContainerAbsent(dockerBinary, containerName)
+	absent, err := dockerContainerAbsent(dockerBinary, containerName)
 	if err != nil {
 		return err
 	}
@@ -267,7 +221,7 @@ func (tool ExecCommand) removeDockerContainer(dockerBinary, containerName string
 
 // dockerContainerAbsent 只在有界 Docker 列表查询成功且输出为空时确认容器
 // 不存在；名称过滤可能匹配额外容器，非空、截断或查询失败一律保守拒绝确认。
-func (tool ExecCommand) dockerContainerAbsent(dockerBinary, containerName string) (bool, error) {
+func dockerContainerAbsent(dockerBinary, containerName string) (bool, error) {
 	queryContext, cancel := context.WithTimeout(context.Background(), dockerCleanupTimeout)
 	defer cancel()
 	command := exec.CommandContext(queryContext, dockerBinary, "container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "name="+containerName)
@@ -299,7 +253,13 @@ type execCommandOutput struct {
 }
 
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
+// runCommand 启动已完成边界装配的进程；包装 runCommandShared。
 func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) Result {
+	return runCommandShared(ctx, arguments, backend, command, cleanup, tool.Grace)
+}
+
+// runCommandShared 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
+func runCommandShared(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration) Result {
 	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	stdout := &limitedBuffer{limit: arguments.MaxOutputBytes}
@@ -321,13 +281,13 @@ func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments,
 	case <-commandContext.Done():
 		cancelled = true
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
-		grace := tool.Grace
-		if grace <= 0 {
-			grace = 2 * time.Second
+		waitGrace := grace
+		if waitGrace <= 0 {
+			waitGrace = 2 * time.Second
 		}
 		select {
 		case waitErr = <-finished:
-		case <-time.After(grace):
+		case <-time.After(waitGrace):
 			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 			var terminationConfirmed bool
 			waitErr, terminationConfirmed = waitForExitAfterKill(finished, 5*time.Second)
