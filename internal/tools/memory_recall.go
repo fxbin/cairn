@@ -59,6 +59,9 @@ func (MemoryRecall) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return Failure("invalid_arguments", "memory_recall arguments are not valid JSON")
 	}
+	if err := validateMemoryRecallRequest(request); err != nil {
+		return Failure("invalid_arguments", err.Error())
+	}
 	data, err := explain(ctx, request)
 	if err != nil {
 		return Failure("memory_recall_failed", err.Error())
