@@ -6,13 +6,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/tools"
 )
 
 // ErrSubagentStart 表示子运行无法受控启动。
@@ -129,4 +133,59 @@ func BuildStartEvidence(parent, child domain.RunID, narrowed []string, at time.T
 		NarrowedTools: append([]string(nil), narrowed...),
 		StartedAt:     at.UTC(),
 	}
+}
+
+// enforceSubagentToolNarrowing 在子 run 启动前强制工具面收窄：子可见工具必须
+// ⊆ 父工具集。父集合优先取调用方显式传入的 ParentTools；缺失时按父冻结配置
+// 的 Preset 重建基础工具面（不含 opt-in 扩展），保持失败关闭。
+func enforceSubagentToolNarrowing(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, workspaceHash string, registry *tools.Registry, options RunOptions) error {
+	if registry == nil {
+		return fmt.Errorf("%w: tool registry is required", ErrSubagentStart)
+	}
+	childTools := registry.Names()
+	parentTools := options.ParentTools
+	if len(parentTools) == 0 {
+		derived, err := parentBaseToolNames(ctx, journal, artifacts, options.StateDir, workspaceHash, options.ParentRunID)
+		if err != nil {
+			return err
+		}
+		parentTools = derived
+	}
+	if _, err := NarrowTools(parentTools, childTools); err != nil {
+		return err
+	}
+	return nil
+}
+
+// parentBaseToolNames 从父 run 冻结配置的 Preset 重建基础工具面；缺失或损坏
+// 失败关闭，不得以空集合或子集合顶替。
+func parentBaseToolNames(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, stateDir, workspaceHash string, parentRunID domain.RunID) ([]string, error) {
+	if journal == nil || parentRunID == "" {
+		return nil, fmt.Errorf("%w: parent journal and run id are required to derive tools", ErrSubagentStart)
+	}
+	events, err := journal.Load(ctx, parentRunID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load parent run: %v", ErrSubagentStart, err)
+	}
+	frozenRaw, err := readFrozenRunConfig(events, stateDir, workspaceHash)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parent frozen config: %v", ErrSubagentStart, err)
+	}
+	if len(frozenRaw) == 0 {
+		return nil, fmt.Errorf("%w: parent frozen config is missing", ErrSubagentStart)
+	}
+	var frozen contract.FrozenRunConfig
+	if err := json.Unmarshal(frozenRaw, &frozen); err != nil {
+		return nil, fmt.Errorf("%w: decode parent frozen config: %v", ErrSubagentStart, err)
+	}
+	preset := frozen.Projection.Preset
+	if preset == "" {
+		preset = config.PresetCoding
+	}
+	empty := tools.Workspace{}
+	registry, err := tools.NewRegistry(presetTools(empty, tools.ExecCommand{Workspace: empty}, preset, config.ToolsConfig{})...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: rebuild parent tool surface: %v", ErrSubagentStart, err)
+	}
+	return registry.Names(), nil
 }

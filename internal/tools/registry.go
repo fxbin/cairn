@@ -96,6 +96,18 @@ func (registry *Registry) Fingerprint() (string, error) {
 	}{Tools: registry.Specs()})
 }
 
+// Names 按注册顺序返回模型可见工具名（含 MCP 目录），供子代理收窄与诊断投影使用。
+func (registry *Registry) Names() []string {
+	names := make([]string, 0, len(registry.order))
+	names = append(names, registry.order...)
+	if registry.mcp != nil {
+		for _, spec := range registry.mcp.Specs() {
+			names = append(names, spec.Name)
+		}
+	}
+	return names
+}
+
 // Execute 查找具名工具并执行；未知工具会返回结构化失败结果。
 func (registry *Registry) Execute(ctx context.Context, name string, arguments json.RawMessage) Result {
 	tool, exists := registry.tools[name]

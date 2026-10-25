@@ -69,6 +69,10 @@ type RunOptions struct {
 	// ParentRunID 标记本次运行为另一 run 的子运行；写入 run_created 的
 	// parent_run_id，不改变会话续链、审批或预算语义。
 	ParentRunID domain.RunID
+	// ParentTools 是父运行模型可见工具名集合；设置 ParentRunID 时用于强制
+	// 子工具面收窄（child ⊆ parent）。空值时回退为按父冻结 Preset 重建的
+	// 基础工具面（不含 opt-in 扩展），保持失败关闭。
+	ParentTools []string
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -244,6 +248,11 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	if err := validateSubagentRunParent(ctx, boot.Journal, boot.WorkspaceHash, runID, options); err != nil {
 		return RunResult{}, err
+	}
+	if options.ParentRunID != "" {
+		if err := enforceSubagentToolNarrowing(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, boot.Registry, options); err != nil {
+			return RunResult{}, err
+		}
 	}
 	configFingerprint := options.Config.Fingerprint()
 	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)

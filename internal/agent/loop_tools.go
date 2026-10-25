@@ -24,16 +24,16 @@ type toolCallPayload struct {
 
 // operationPayload 是工具操作开始或终态事件的可回放证据字段。
 type operationPayload struct {
-	ToolName           string        `json:"tool_name"`
-	SideEffectClass    string        `json:"side_effect_class,omitempty"`
-	MutationBarrier    bool          `json:"mutation_barrier,omitempty"`
-	PlannedPath        string        `json:"planned_path,omitempty"`
-	PlannedBefore      string        `json:"planned_before,omitempty"`
-	PlannedBeforeRef   *artifact.Ref `json:"planned_before_ref,omitempty"`
-	PlannedAfter       string        `json:"planned_after,omitempty"`
-	Result             any           `json:"result,omitempty"`
-	ResultRef          *artifact.Ref `json:"result_ref,omitempty"`
-	ResultStorageError string        `json:"result_storage_error,omitempty"`
+	ToolName           string         `json:"tool_name"`
+	SideEffectClass    string         `json:"side_effect_class,omitempty"`
+	MutationBarrier    bool           `json:"mutation_barrier,omitempty"`
+	PlannedPath        string         `json:"planned_path,omitempty"`
+	PlannedBefore      string         `json:"planned_before,omitempty"`
+	PlannedBeforeRef   *artifact.Ref  `json:"planned_before_ref,omitempty"`
+	PlannedAfter       string         `json:"planned_after,omitempty"`
+	Result             any            `json:"result,omitempty"`
+	ResultRef          *artifact.Ref  `json:"result_ref,omitempty"`
+	ResultStorageError string         `json:"result_storage_error,omitempty"`
 	HookActions        []hooks.Action `json:"hook_actions,omitempty"`
 }
 

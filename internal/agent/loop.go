@@ -2,11 +2,11 @@
 package agent
 
 import (
-	"github.com/fxbin/cairn/internal/hooks"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fxbin/cairn/internal/hooks"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/artifact"

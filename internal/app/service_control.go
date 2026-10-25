@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
@@ -391,6 +392,10 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 	}
 	if err := appendEvent(terminal.eventType, nil, nil, terminal.payload); err != nil {
 		return RunResult{ID: options.RunID}, err
+	}
+	// 父运行终止后向未终态子 run 合作式传播取消；已终态子跳过，失败不掩盖本 run 终态。
+	if propagateErr := PropagateSubagentCancel(ctx, boot.Journal, boot.WorkspaceHash, options.RunID, time.Now().UTC()); propagateErr != nil {
+		return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, "", errors.Join(nil, propagateErr))
 	}
 	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, "", nil)
 }
