@@ -107,7 +107,8 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return Result{}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: projection.PendingOperation.ID, Reason: "run has a dangling side-effect operation that requires reconciliation"}
 	}
-	if projection.PendingOperation != nil {
+	// 只读中断：含并行 started 的多个 none 操作；副作用已在上方拦截。
+	if len(startedReadOperations(projection)) > 0 {
 		if projection.CurrentTurn == nil {
 			return Result{}, errors.New("dangling read operation has no open turn")
 		}
@@ -369,26 +370,42 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	return loop.resumeToolResponse(ctx, &projection, input, turnID, response, true)
 }
 
+// startedReadOperations 返回已 started 未终结的只读（none）操作。
+func startedReadOperations(projection domain.RunProjection) []domain.StartedOperation {
+	var out []domain.StartedOperation
+	for _, op := range projection.StartedOperations() {
+		if op.SideEffectClass != "workspace" && op.SideEffectClass != "process" {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
 // repairInterruptedRead 仅闭合已中断的只读操作，不启动工具或关闭轮次；
-// 调用方随后决定继续运行，还是按已落盘预算停止。
+// 调用方随后决定继续运行，还是按已落盘预算停止。支持只读并行下的多个中断窗口。
 func (loop *Loop) repairInterruptedRead(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) error {
-	pending := projection.PendingOperation
-	if pending == nil || pending.SideEffectClass == "workspace" || pending.SideEffectClass == "process" {
+	reads := startedReadOperations(*projection)
+	if len(reads) == 0 {
 		return errors.New("interrupted read repair requires a pending read-only operation")
 	}
 	if projection.CurrentTurn == nil {
 		return errors.New("dangling read operation has no open turn")
 	}
-	call, found := proposedToolCall(events, pending.ID)
-	if !found {
-		return errors.New("dangling read operation has no replayable tool proposal")
-	}
 	turnID := *projection.CurrentTurn
-	result := tools.Failure("interrupted_read", "read-only operation was interrupted before its result was persisted")
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
-		return err
+	for _, pending := range reads {
+		call, found := proposedToolCall(events, pending.ID)
+		if !found {
+			return errors.New("dangling read operation has no replayable tool proposal")
+		}
+		result := tools.Failure("interrupted_read", "read-only operation was interrupted before its result was persisted")
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
+			return err
+		}
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(result)}); err != nil {
+			return err
+		}
 	}
-	return loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(result)})
+	return nil
 }
 
 // appendResume records an invocation only at a recovery boundary where there

@@ -186,10 +186,50 @@ const (
 
 // operationRecord 记录回放时验证操作合法性所需的最小内部事实。
 type operationRecord struct {
-	state              operationState
-	toolResultAppended bool
 	turnID             TurnID
+	state              operationState
 	requiresToolResult bool
+	toolResultAppended bool
+	// ToolName 与 SideEffectClass 在 operation_started 时记录，供恢复器定位
+	// 只读并行中断窗口；不进入公开投影。
+	toolName        string
+	sideEffectClass string
+}
+
+// StartedOperation 是已 started 未终结操作的公开恢复视图。
+type StartedOperation struct {
+	ID              OperationID
+	ToolName        string
+	SideEffectClass string
+	TurnID          TurnID
+}
+
+// StartedOperations 返回全部已 started 未终结操作（含只读并发）。
+func (projection RunProjection) StartedOperations() []StartedOperation {
+	var out []StartedOperation
+	for id, record := range projection.operations {
+		if record == nil || record.state != operationStarted {
+			continue
+		}
+		out = append(out, StartedOperation{ID: id, ToolName: record.toolName, SideEffectClass: record.sideEffectClass, TurnID: record.turnID})
+	}
+	return out
+}
+
+// hasStartedOperation 判断是否存在已 started 未终结的操作（含只读并发）。
+func hasStartedOperation(projection *RunProjection) bool {
+	for _, record := range projection.operations {
+		if record != nil && record.state == operationStarted {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInFlightOperation 判断是否存在任何未终结操作：副作用占 PendingOperation
+// 槽位，只读操作以 operations 映射中的 started 状态表达。
+func hasInFlightOperation(projection *RunProjection) bool {
+	return projection.PendingOperation != nil || hasStartedOperation(projection)
 }
 
 // PendingApproval 描述等待人工确认的副作用操作。
@@ -428,7 +468,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		}
 		projection.State = RunRunning
 	case EventRunResumed:
-		if projection.State != RunRunning || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		if projection.State != RunRunning || projection.PendingApproval != nil || hasInFlightOperation(projection) {
 			return fmt.Errorf("run_resumed from %s", projection.State)
 		}
 		var payload struct {
@@ -450,7 +490,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		turnID := *event.TurnID
 		projection.CurrentTurn = &turnID
 	case EventTurnClosed:
-		if (projection.State != RunRunning && projection.State != RunCancelling) || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		if (projection.State != RunRunning && projection.State != RunCancelling) || event.TurnID == nil || projection.CurrentTurn == nil || *event.TurnID != *projection.CurrentTurn || projection.PendingApproval != nil || hasInFlightOperation(projection) {
 			return fmt.Errorf("turn_closed does not match current turn")
 		}
 		var payload TurnClosedPayload
@@ -508,7 +548,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		projection.unfinishedVerification = nil
 		projection.unfinishedVerificationID = ""
 	case EventContextCompacted:
-		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || hasInFlightOperation(projection) {
 			return fmt.Errorf("context_compacted is not legal for run state %s", projection.State)
 		}
 		var payload ContextCompactedPayload
@@ -539,7 +579,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		projection.LastContextCompactSeq = event.Seq
 		projection.ContextCompactedThrough = payload.ThroughSeq
 	case EventOperationStarted:
-		if projection.State != RunRunning || projection.PendingOperation != nil {
+		if projection.State != RunRunning {
 			return fmt.Errorf("operation_started is not legal for run state %s", projection.State)
 		}
 		if event.OperationID == nil {
@@ -560,10 +600,27 @@ func (projection *RunProjection) Apply(event Event) error {
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return fmt.Errorf("decode operation start: %w", err)
 		}
+		sideEffect := payload.SideEffectClass == "workspace" || payload.SideEffectClass == "process"
+		// 只读操作（none）可并发 started；副作用操作仍保持单飞行。副作用启动
+		// 要求当前无任何已 started 操作，只读启动要求无副作用飞行中。
+		if sideEffect {
+			if projection.PendingOperation != nil {
+				return fmt.Errorf("operation_started is not legal while a side-effect operation is pending")
+			}
+			if hasStartedOperation(projection) {
+				return fmt.Errorf("operation_started side-effect requires no in-flight operations")
+			}
+		} else if projection.PendingOperation != nil {
+			return fmt.Errorf("operation_started is not legal for run state %s", projection.State)
+		}
 		if payload.SideEffectClass == "workspace" || (payload.SideEffectClass == "process" && payload.MutationBarrier) {
 			projection.LastMutationSeq = event.Seq
 		}
-		projection.PendingOperation = &PendingOperation{ID: *event.OperationID, ToolName: payload.ToolName, SideEffectClass: payload.SideEffectClass, MutationBarrier: payload.MutationBarrier, PlannedPath: payload.PlannedPath, PlannedBefore: payload.PlannedBefore, PlannedAfter: payload.PlannedAfter}
+		if sideEffect {
+			projection.PendingOperation = &PendingOperation{ID: *event.OperationID, ToolName: payload.ToolName, SideEffectClass: payload.SideEffectClass, MutationBarrier: payload.MutationBarrier, PlannedPath: payload.PlannedPath, PlannedBefore: payload.PlannedBefore, PlannedAfter: payload.PlannedAfter}
+		}
+		record.toolName = payload.ToolName
+		record.sideEffectClass = payload.SideEffectClass
 		record.state = operationStarted
 	case EventPolicyDecided:
 		if event.OperationID == nil {
@@ -698,7 +755,7 @@ func (projection *RunProjection) Apply(event Event) error {
 		// ADR-0017：完成的结构前置是"验证已收束"——验证事件存在且覆盖最后
 		// 变更；验证是否成功不影响完成合法性，完成可信等级由
 		// contract.CompletionTrusted 依据 VerificationSucceeded 分离判定。
-		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil || projection.LastVerificationSeq == 0 || (projection.LastMutationSeq != 0 && projection.LastVerificationSeq <= projection.LastMutationSeq) {
+		if projection.State != RunRunning || projection.CurrentTurn != nil || projection.PendingApproval != nil || hasInFlightOperation(projection) || projection.LastVerificationSeq == 0 || (projection.LastMutationSeq != 0 && projection.LastVerificationSeq <= projection.LastMutationSeq) {
 			return fmt.Errorf("run_completed without a closed verification")
 		}
 		projection.State = RunCompleted
@@ -706,12 +763,12 @@ func (projection *RunProjection) Apply(event Event) error {
 		// 终态事件只允许一次：completed/cancelled 为不相容终态，failed 自身
 		// 也不得重复进入；created/running/cancelling 是合法失败起点
 		//（Abort 可中止未启动的 run，预算耗尽先经 cancel_requested 进入 cancelling）。
-		if projection.State == RunCompleted || projection.State == RunCancelled || projection.State == RunFailed || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		if projection.State == RunCompleted || projection.State == RunCancelled || projection.State == RunFailed || projection.PendingApproval != nil || hasInFlightOperation(projection) {
 			return fmt.Errorf("run_failed from terminal state %s", projection.State)
 		}
 		projection.State = RunFailed
 	case EventRunCancelled:
-		if projection.State != RunCancelling || projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
+		if projection.State != RunCancelling || projection.CurrentTurn != nil || projection.PendingApproval != nil || hasInFlightOperation(projection) {
 			return fmt.Errorf("run_cancelled from terminal state %s", projection.State)
 		}
 		projection.State = RunCancelled

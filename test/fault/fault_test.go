@@ -53,7 +53,8 @@ func TestFaultInjectStartedReadOperationCanRemainRunnable(t *testing.T) {
 	authorized, _ := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:approved"}`)}, 5, proposed.EventHash)
 	operationStarted, _ := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"read_file","side_effect_class":"none"}`)}, 6, authorized.EventHash)
 	projection, err := domain.Replay([]domain.Event{created, started, turn, proposed, authorized, operationStarted})
-	if err != nil || projection.Phase() != "running" || projection.PendingOperation == nil {
+	startedReads := projection.StartedOperations()
+	if err != nil || projection.Phase() != "running" || len(startedReads) != 1 || startedReads[0].SideEffectClass != "none" {
 		t.Fatalf("projection=%#v err=%v", projection, err)
 	}
 }

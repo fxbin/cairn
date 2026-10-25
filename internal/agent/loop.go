@@ -458,9 +458,25 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		}
 		patched := false
 		allToolCallsSucceeded := true
-		for _, call := range response.ToolCalls {
-			toolResult, err := loop.executeTool(ctx, &projection, input, turnID, call)
-			if err != nil {
+		outcomes, batchErr := loop.executeToolCalls(ctx, &projection, input, turnID, response.ToolCalls)
+		if batchErr != nil && (len(outcomes) == 0 || outcomes[len(outcomes)-1].err == nil) {
+			var waiting *ports.WaitingApprovalError
+			if errors.As(batchErr, &waiting) {
+				return Result{RunID: input.RunID}, waiting
+			}
+			var budget *ports.BudgetExceededError
+			if errors.As(batchErr, &budget) {
+				return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
+			}
+			var guard *ports.LoopGuardExceededError
+			if errors.As(batchErr, &guard) {
+				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+			}
+			return loop.failCurrentTurn(ctx, &projection, input, turnID, batchErr)
+		}
+		for index, call := range response.ToolCalls {
+			if index < len(outcomes) && outcomes[index].err != nil {
+				err := outcomes[index].err
 				var persistence *toolResultPersistenceError
 				if errors.As(err, &persistence) {
 					return Result{RunID: input.RunID}, err
@@ -487,6 +503,10 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			}
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
+			}
+			var toolResult tools.Result
+			if index < len(outcomes) {
+				toolResult = outcomes[index].result
 			}
 			encoded, err := json.Marshal(loop.Tools.ModelResult(call.Name, toolResult))
 			if err != nil {

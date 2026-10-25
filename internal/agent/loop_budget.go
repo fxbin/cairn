@@ -68,6 +68,8 @@ func (loop *Loop) stopForPersistedResponseBudget(ctx context.Context, projection
 		if pending.SideEffectClass == "workspace" || pending.SideEffectClass == "process" {
 			return Result{RunID: input.RunID}, true, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.ID, Reason: "persisted response budget is exceeded; reconcile the started operation before stopping"}
 		}
+	}
+	if len(startedReadOperations(*projection)) > 0 {
 		commitContext, cancel := loop.commitContext(ctx)
 		defer cancel()
 		if err := loop.repairInterruptedRead(commitContext, projection, input, events); err != nil {
