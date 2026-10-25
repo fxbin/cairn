@@ -39,7 +39,7 @@ type ScheduleSpec struct {
 	ID       string        `json:"id"`
 	Interval time.Duration `json:"interval"`
 	// NextAt 是下次触发时刻。
-	NextAt time.Time `json:"next_at"`
+	NextAt time.Time    `json:"next_at"`
 	State  TriggerState `json:"state"`
 	Miss   MissPolicy   `json:"miss_policy"`
 	// MaxConcurrent 同时运行上限；0 表示禁止并发。

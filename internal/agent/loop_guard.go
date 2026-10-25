@@ -15,14 +15,47 @@ import (
 )
 
 const (
-	consecutiveOperationFailureLimit = 3
-	periodicTurnWindow               = 6
-	noProgressTurnLimit              = 6
+	// 默认熔断阈值；可由配置 Guard 段覆盖，覆盖后进入配置指纹。
+	defaultConsecutiveOperationFailureLimit = 3
+	defaultPeriodicTurnWindow               = 6
+	defaultNoProgressTurnLimit              = 6
 
 	loopGuardRepeatedOperationFailure = "repeated_operation_failure"
 	loopGuardPeriodicTurnCycle        = "periodic_turn_cycle"
 	loopGuardNoProgress               = "no_workspace_or_verifier_progress"
+
+	// 旧常量名保留为默认阈值别名，测试与历史引用不必改动；生产路径用
+	// resolveGuardThresholds 按 Loop 配置解析。
+	consecutiveOperationFailureLimit = defaultConsecutiveOperationFailureLimit
+	periodicTurnWindow               = defaultPeriodicTurnWindow
+	noProgressTurnLimit              = defaultNoProgressTurnLimit
 )
+
+// guardThresholds 解析后的熔断阈值；零值回落默认。
+type guardThresholds struct {
+	consecutiveOperationFailures int
+	periodicTurnWindow           int
+	noProgressTurnLimit          int
+}
+
+// resolveGuardThresholds 用正数覆盖值替换默认阈值，非正数保持默认。
+func resolveGuardThresholds(consecutive, window, noProgress int) guardThresholds {
+	thresholds := guardThresholds{
+		consecutiveOperationFailures: defaultConsecutiveOperationFailureLimit,
+		periodicTurnWindow:           defaultPeriodicTurnWindow,
+		noProgressTurnLimit:          defaultNoProgressTurnLimit,
+	}
+	if consecutive > 0 {
+		thresholds.consecutiveOperationFailures = consecutive
+	}
+	if window > 0 {
+		thresholds.periodicTurnWindow = window
+	}
+	if noProgress > 0 {
+		thresholds.noProgressTurnLimit = noProgress
+	}
+	return thresholds
+}
 
 // openedTurnCount 从事件日志重建已经消耗的模型轮次，保证暂停或恢复不会重置硬上限。
 func openedTurnCount(events []domain.Event) int {
@@ -36,8 +69,17 @@ func openedTurnCount(events []domain.Event) int {
 	return count
 }
 
-// repeatedOperationFailureGuard 返回连续相同操作指纹失败达到阈值时的熔断原因。
+// repeatedOperationFailureGuard 返回连续相同操作指纹失败达到默认阈值时的
+// 熔断原因；测试与无配置路径使用。生产路径见 repeatedOperationFailureGuardWithLimit。
 func repeatedOperationFailureGuard(events []domain.Event) string {
+	return repeatedOperationFailureGuardWithLimit(events, defaultConsecutiveOperationFailureLimit)
+}
+
+// repeatedOperationFailureGuardWithLimit 按显式阈值判断连续同指纹失败熔断。
+func repeatedOperationFailureGuardWithLimit(events []domain.Event, limit int) string {
+	if limit <= 0 {
+		limit = defaultConsecutiveOperationFailureLimit
+	}
 	lifecycle := mcpLifecycleOperations(events)
 	fingerprints := make(map[domain.OperationID]string)
 	lastFingerprint := ""
@@ -71,7 +113,7 @@ func repeatedOperationFailureGuard(events []domain.Event) string {
 			lastFingerprint, consecutive = "", 0
 		}
 	}
-	if consecutive >= consecutiveOperationFailureLimit {
+	if consecutive >= limit {
 		return loopGuardRepeatedOperationFailure
 	}
 	return ""
@@ -150,8 +192,20 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 
 // turnLoopGuard 仅在进展观察完整且保持不变时检查继续轮次的 A-B 周期
 // 与稳定无进展状态，避免重复操作模式覆盖有效工作区或验证进展。
+// 使用默认窗口；生产路径见 turnLoopGuardWithLimits。
 func turnLoopGuard(events []domain.Event) string {
-	closed := make([]domain.TurnClosedPayload, 0, periodicTurnWindow)
+	return turnLoopGuardWithLimits(events, defaultPeriodicTurnWindow, defaultNoProgressTurnLimit)
+}
+
+// turnLoopGuardWithLimits 按显式窗口判断周期循环或长期无进展。
+func turnLoopGuardWithLimits(events []domain.Event, periodicWindow, noProgressLimit int) string {
+	if periodicWindow <= 0 {
+		periodicWindow = defaultPeriodicTurnWindow
+	}
+	if noProgressLimit <= 0 {
+		noProgressLimit = defaultNoProgressTurnLimit
+	}
+	closed := make([]domain.TurnClosedPayload, 0, periodicWindow)
 	for _, event := range events {
 		if event.Type != domain.EventTurnClosed {
 			continue
@@ -161,8 +215,8 @@ func turnLoopGuard(events []domain.Event) string {
 			closed = append(closed, payload)
 		}
 	}
-	if len(closed) >= periodicTurnWindow {
-		window := closed[len(closed)-periodicTurnWindow:]
+	if len(closed) >= periodicWindow {
+		window := closed[len(closed)-periodicWindow:]
 		if turnProgressStable(window) && window[0].OperationSignature != "" && window[1].OperationSignature != "" &&
 			window[0].OperationSignature != window[1].OperationSignature &&
 			window[0].OperationSignature == window[2].OperationSignature &&
@@ -172,8 +226,8 @@ func turnLoopGuard(events []domain.Event) string {
 			return loopGuardPeriodicTurnCycle
 		}
 	}
-	if len(closed) >= noProgressTurnLimit {
-		window := closed[len(closed)-noProgressTurnLimit:]
+	if len(closed) >= noProgressLimit {
+		window := closed[len(closed)-noProgressLimit:]
 		if turnProgressStable(window) {
 			return loopGuardNoProgress
 		}
@@ -202,7 +256,11 @@ func (loop *Loop) currentOperationFailureGuard(ctx context.Context, runID domain
 	if err != nil {
 		return err
 	}
-	if reason := repeatedOperationFailureGuard(events); reason != "" {
+	limit := loop.GuardConsecutiveFailures
+	if limit <= 0 {
+		limit = defaultConsecutiveOperationFailureLimit
+	}
+	if reason := repeatedOperationFailureGuardWithLimit(events, limit); reason != "" {
 		return &ports.LoopGuardExceededError{Reason: reason}
 	}
 	return nil
@@ -308,7 +366,11 @@ func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.
 	if err != nil {
 		return err
 	}
-	if reason := repeatedOperationFailureGuard(events); reason != "" {
+	failureLimit := loop.GuardConsecutiveFailures
+	if failureLimit <= 0 {
+		failureLimit = defaultConsecutiveOperationFailureLimit
+	}
+	if reason := repeatedOperationFailureGuardWithLimit(events, failureLimit); reason != "" {
 		return loop.persistLoopGuardExceeded(ctx, projection, input, reason)
 	}
 	payload, err := loop.continuationPayload(events, turnID)
@@ -319,7 +381,9 @@ func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.
 		return err
 	}
 	events = append(events, domain.Event{Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(payload)})
-	if reason := turnLoopGuard(events); reason != "" {
+	periodicWindow := loop.GuardPeriodicWindow
+	noProgressLimit := loop.GuardNoProgressLimit
+	if reason := turnLoopGuardWithLimits(events, periodicWindow, noProgressLimit); reason != "" {
 		return loop.persistLoopGuardExceeded(ctx, projection, input, reason)
 	}
 	return nil

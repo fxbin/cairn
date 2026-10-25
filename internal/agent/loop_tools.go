@@ -158,6 +158,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}{Fingerprint: decision.Fingerprint, Summary: decision.Summary, Rule: decision.RuleID})}); err != nil {
 			return tools.Result{}, err
 		}
+		loop.dispatchLifecycleHooks(hooks.EventNotification, call.Name)
 		return tools.Result{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
@@ -251,8 +252,19 @@ func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunPr
 }
 
 // mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。
-func mustJSON(value any) json.RawMessage {
+// payloadJSON 编码事件载荷；失败返回错误，由调用方失败关闭。
+func payloadJSON(value any) (json.RawMessage, error) {
 	return artifact.EncodeRedactedJSON(value)
+}
+
+// mustJSON 编码事件载荷。载荷为纯数据结构，正常情况下可编码；万一失败，
+// 返回非法载荷并由 payloadSchemas / ValidateDraft 失败关闭，绝不 panic。
+func mustJSON(value any) json.RawMessage {
+	raw, err := artifact.EncodeRedactedJSON(value)
+	if err != nil {
+		return json.RawMessage(`{"__encode_error":true}`)
+	}
+	return raw
 }
 
 // containsSecretJSON 通过比较脱敏前后 JSON 判断载荷是否含有敏感内容。
@@ -348,4 +360,17 @@ func (loop *Loop) dispatchPostToolHooks(toolName string, result tools.Result) []
 		return nil
 	}
 	return hooks.ActionsFor(loop.Hooks, hooks.EventPostTool, toolName)
+}
+
+// dispatchLifecycleHooks 收集非工具生命周期钩子动作；不授予、不执行副作用，
+// 仅返回动作供宿主入队。toolName 对非工具事件传空。
+func (loop *Loop) dispatchLifecycleHooks(event hooks.Event, toolName string) []hooks.Action {
+	if len(loop.Hooks) == 0 {
+		return nil
+	}
+	actions := hooks.ActionsFor(loop.Hooks, event, toolName)
+	if len(actions) > 0 && loop.OnHookActions != nil {
+		loop.OnHookActions(event, actions)
+	}
+	return actions
 }

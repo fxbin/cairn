@@ -605,7 +605,7 @@ func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
@@ -847,7 +847,7 @@ func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
@@ -921,7 +921,7 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 	}
 	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
@@ -976,7 +976,7 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Append(context.Background(), events[len(events)-1].Seq, domain.EventDraft{RunID: initial.ID, WorkspaceHash: hash, Type: domain.EventRunCancelRequested, Payload: artifact.EncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), events[len(events)-1].Seq, domain.EventDraft{RunID: initial.ID, WorkspaceHash: hash, Type: domain.EventRunCancelRequested, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Cause string `json:"cause"`
 	}{Cause: "user_interrupt"})}); err != nil {
 		t.Fatal(err)
@@ -1065,7 +1065,7 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Task              string `json:"task"`
 		Workspace         string `json:"workspace"`
 		ConfigFingerprint string `json:"config_fingerprint"`
@@ -1120,7 +1120,7 @@ func TestLegacyProviderCapabilityRunRefusesRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
 		ConfigRef         artifact.Ref `json:"config_ref"`
@@ -1231,7 +1231,7 @@ func TestServiceResumeEnforcesRequiredAdmission(t *testing.T) {
 	runID := domain.NewRunID()
 	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
 		RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-		Payload: artifact.EncodeRedactedJSON(struct {
+		Payload: artifact.MustEncodeRedactedJSON(struct {
 			Task              string       `json:"task"`
 			Workspace         string       `json:"workspace"`
 			ConfigRef         artifact.Ref `json:"config_ref"`
@@ -1286,7 +1286,7 @@ func TestServiceReconcileEnforcesRequiredAdmission(t *testing.T) {
 	configRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
 	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 			Task              string       `json:"task"`
 			Workspace         string       `json:"workspace"`
 			ConfigRef         artifact.Ref `json:"config_ref"`
@@ -1432,7 +1432,7 @@ func TestServiceListRunsProjectsSessionsAndSortsCurrentWorkspace(t *testing.T) {
 			WorkspaceHash: workspaceHash,
 			OccurredAt:    occurredAt,
 			Type:          domain.EventRunCreated,
-			Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{
+			Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{
 				Task:      task,
 				Workspace: workspace,
 				SessionID: sessionID,
@@ -1462,7 +1462,7 @@ func TestServiceListRunsProjectsSessionsAndSortsCurrentWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := otherJournal.Append(context.Background(), 0, domain.EventDraft{RunID: domain.RunID("run-other"), WorkspaceHash: otherHash, OccurredAt: newerTime.Add(time.Hour), Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{Task: "other", Workspace: otherWorkspace})}); err != nil {
+	if _, err := otherJournal.Append(context.Background(), 0, domain.EventDraft{RunID: domain.RunID("run-other"), WorkspaceHash: otherHash, OccurredAt: newerTime.Add(time.Hour), Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "other", Workspace: otherWorkspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := otherJournal.Close(); err != nil {
@@ -1505,7 +1505,7 @@ func TestServiceListRunsFailsClosedForForeignWorkspaceEvent(t *testing.T) {
 		RunID:         domain.RunID("run-foreign"),
 		WorkspaceHash: "sha256:foreign",
 		Type:          domain.EventRunCreated,
-		Payload:       artifact.EncodeRedactedJSON(domain.RunCreatedPayload{Task: "foreign", Workspace: workspace}),
+		Payload:       artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "foreign", Workspace: workspace}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1539,10 +1539,10 @@ func TestServiceListRunsFailsClosedForInvalidTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-transition")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCompleted, Payload: artifact.EncodeRedactedJSON(domain.RunCompletedPayload{FinalResponse: "impossible"})}); err != nil {
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCompleted, Payload: artifact.MustEncodeRedactedJSON(domain.RunCompletedPayload{FinalResponse: "impossible"})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1565,7 +1565,7 @@ func TestServiceListRunsClassifiesInvalidPersistedEventAsCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-time")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid time", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid time", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1600,7 +1600,7 @@ func TestServiceListRunsClassifiesInvalidPersistedEventTypeAsCorrupt(t *testing.
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-sequence")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid sequence", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid sequence", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1659,7 +1659,7 @@ func TestRunRejectsPriorRunWithoutFrozenConfig(t *testing.T) {
 	drafts := []domain.EventDraft{
 		{
 			RunID: priorRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-			Payload: artifact.EncodeRedactedJSON(domain.RunCreatedPayload{
+			Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{
 				Task: "legacy prior", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), SessionID: "session-v2",
 			}),
 		},
@@ -1728,7 +1728,7 @@ func TestSessionContinuationRejectsLegacyAncestorConfig(t *testing.T) {
 		drafts := []domain.EventDraft{
 			{
 				RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-				Payload: artifact.EncodeRedactedJSON(struct {
+				Payload: artifact.MustEncodeRedactedJSON(struct {
 					domain.RunCreatedPayload
 					ConfigRef artifact.Ref `json:"config_ref"`
 				}{

@@ -82,7 +82,11 @@ func EncodeDelegated(options DelegateOptions) (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode subagent_delegated: %w", err)
 	}
-	return artifact.EncodeRedactedJSON(json.RawMessage(payload)), nil
+	raw, err := artifact.EncodeRedactedJSON(json.RawMessage(payload))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 // EncodeCompleted 序列化完成载荷；outcome 必填且 child_run_id 与委派一致。
@@ -98,5 +102,9 @@ func EncodeCompleted(childRunID domain.RunID, outcome string, usage json.RawMess
 	if err != nil {
 		return nil, fmt.Errorf("encode subagent_completed: %w", err)
 	}
-	return artifact.EncodeRedactedJSON(json.RawMessage(payload)), nil
+	raw, err := artifact.EncodeRedactedJSON(json.RawMessage(payload))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }

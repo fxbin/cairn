@@ -44,7 +44,7 @@ func deliverRunMessage(ctx context.Context, journal ports.Journal, artifacts *ar
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	raw := artifact.EncodeRedactedJSON(payload)
+	raw := artifact.MustEncodeRedactedJSON(payload)
 	_, err = journal.Append(ctx, seq, domain.EventDraft{
 		RunID:         toRunID,
 		WorkspaceHash: workspaceHash,

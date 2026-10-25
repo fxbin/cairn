@@ -348,6 +348,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	}
 	if preset == config.PresetReadOnly {
 		readOnly := append([]tools.Tool(nil), available[:7]...)
+		readOnly = append(readOnly, tools.MemoryRecall{})
 		if options.LspDiagnostics {
 			readOnly = append(readOnly, tools.LspDiagnostics{Workspace: workspace})
 		}
@@ -356,6 +357,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	if options.LspDiagnostics {
 		available = append(available, tools.LspDiagnostics{Workspace: workspace})
 	}
+	available = append(available, tools.MemoryRecall{})
 	return available
 }
 

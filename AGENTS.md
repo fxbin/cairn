@@ -25,7 +25,9 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/provider/`、`internal/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
 | `internal/adapters/` | Journal、Memory 的 SQLite 存储及 OpenAI-compatible 协议适配 |
 | `internal/tools/`、`internal/policy/`、`internal/artifact/`、`internal/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
+| `internal/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
 | `internal/memory/`、`internal/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
+| `internal/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
 
 ## 不可绕过的边界
 
@@ -48,7 +50,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 密钥只通过 `provider.api_key_env` 引用环境变量；本机 `keys.env` 使用 0600 权限，装载优先级为显式环境 → 工作区凭据 → 用户凭据。密钥不得进入 YAML、事件、制品、错误或提交。
 - MCP 的环境与 Bearer/客户端密钥只引用环境变量；OAuth 令牌使用用户配置根下的独立私有存储、0600 原子文件和服务器身份绑定。登录由显式命令发起；read-only/benchmark 不启用外部 MCP，`doctor` 和 `mcp list` 不连接服务器。
 - 新配置字段同步处理默认值、严格校验与测试。影响执行、权限、预算的字段加入 `fingerprintView`；展示/运维字段和 `Config.Resolution` 不进入指纹，Resolution 不参与 YAML 解码。
-- Profile 的具体预算以 `internal/config` 为准；提高预算必须显式并进入指纹。Preset 只组合已知能力，未知值失败关闭；read-only 必须禁写、禁 exec、禁验证命令，工具子集由 `readOnlySafeTools` 统一提供。
+- Profile 的具体预算以 `internal/config` 为准；提高预算必须显式并进入指纹。Preset 只组合已知能力，未知值失败关闭；read-only 必须禁写、禁 exec、禁验证命令，工具子集由 `presetToolsWithWeb` 的只读分支统一提供。
 - Provider 目录建议不等于能力验证；身份、协议、请求画像、探测证据和准入决定保持分离，变更时核对配置指纹与准入绑定。
 - 修改事件或迁移时，联查 `domain/event.go` 的 `payloadSchemas`、`domain/state.go` 的 replay、写入方、读取投影和相关测试，保留旧事件兼容与哈希链完整性。
 - 修改存储或恢复行为时，联查 CLI → App → Store → 完整性检查及错误路径；不得静默删除历史数据或放宽损坏检测。

@@ -29,6 +29,7 @@ type fingerprintView struct {
 	Tools        *ToolsConfig                 `json:"tools,omitempty"`
 	Hooks        *[]HookConfig                `json:"hooks,omitempty"`
 	Prompt       *PromptConfig                `json:"prompt,omitempty"`
+	Guard        *GuardConfig                 `json:"guard,omitempty"`
 	ActiveMode   string                       `json:"active_mode,omitempty"`
 }
 
@@ -77,6 +78,7 @@ func (config Config) Fingerprint() string {
 		Tools:        toolsFingerprint(config.Tools),
 		Hooks:        hooksFingerprint(config.Hooks),
 		Prompt:       promptFingerprint(config.Prompt),
+		Guard:        config.Guard,
 		ActiveMode:   config.ActiveMode,
 	}
 	encoded, err := json.Marshal(view)

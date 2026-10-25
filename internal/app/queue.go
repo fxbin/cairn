@@ -135,7 +135,7 @@ func (service Service) SubmitQueueInput(ctx context.Context, options QueueSubmit
 	if _, err := journal.Append(ctx, nextSeq, domain.EventDraft{
 		EventID: domain.NewID("evt"), RunID: domain.QueueRunID, WorkspaceHash: workspaceHash,
 		Type: domain.EventQueueInputSubmitted,
-		Payload: artifact.EncodeRedactedJSON(struct {
+		Payload: artifact.MustEncodeRedactedJSON(struct {
 			InputID    string       `json:"input_id"`
 			ContentRef artifact.Ref `json:"content_ref"`
 			Kind       string       `json:"kind"`
@@ -185,7 +185,7 @@ func (service Service) CancelQueueInput(ctx context.Context, options QueueCancel
 	if _, err := journal.Append(ctx, nextSeq, domain.EventDraft{
 		EventID: domain.NewID("evt"), RunID: domain.QueueRunID, WorkspaceHash: workspaceHash,
 		Type: domain.EventQueueInputCancelled,
-		Payload: artifact.EncodeRedactedJSON(struct {
+		Payload: artifact.MustEncodeRedactedJSON(struct {
 			InputID string `json:"input_id"`
 			Reason  string `json:"reason"`
 		}{InputID: options.InputID, Reason: options.Reason}),
@@ -332,7 +332,7 @@ func (service Service) reserveQueueLink(ctx context.Context, options QueueConfir
 	if _, err := journal.Append(ctx, nextSeq, domain.EventDraft{
 		EventID: domain.NewID("evt"), RunID: domain.QueueRunID, WorkspaceHash: workspaceHash,
 		Type: domain.EventQueueInputConsumed,
-		Payload: artifact.EncodeRedactedJSON(struct {
+		Payload: artifact.MustEncodeRedactedJSON(struct {
 			InputID     string       `json:"input_id"`
 			Outcome     string       `json:"outcome"`
 			TargetRunID domain.RunID `json:"target_run_id"`

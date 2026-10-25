@@ -21,6 +21,14 @@ const (
 	EventRunFinished Event = "run_finished"
 	// EventRunFailed 运行失败后。
 	EventRunFailed Event = "run_failed"
+	// EventUserPromptSubmit 用户输入进入队列/轮次前；仅观察与动作，不得拒绝提交。
+	EventUserPromptSubmit Event = "user_prompt_submit"
+	// EventTurnStart 轮次打开后、模型请求前；仅观察与动作。
+	EventTurnStart Event = "turn_start"
+	// EventPreCompact 上下文压缩前；仅观察与动作。
+	EventPreCompact Event = "pre_compact"
+	// EventNotification 审批等待、预算告警等通知点；仅观察与动作。
+	EventNotification Event = "notification"
 )
 
 // Effect 是钩子对工具调用的收紧效果（不放宽 Policy.Deny）。
@@ -67,13 +75,15 @@ type ToolDecision struct {
 	HookID string
 }
 
-// ValidateRule 校验规则形状；失败关闭，禁止未知动作。
+// ValidateRule 校验规则形状；失败关闭，禁止未知动作。非 pre_tool 事件
+// 不允许 Effect，避免用观察点改又权限或终态。
 func ValidateRule(rule Rule) error {
 	if strings.TrimSpace(rule.ID) == "" {
 		return fmt.Errorf("hook id is required")
 	}
 	switch rule.Event {
-	case EventPreTool, EventPostTool, EventRunFinished, EventRunFailed:
+	case EventPreTool, EventPostTool, EventRunFinished, EventRunFailed,
+		EventUserPromptSubmit, EventTurnStart, EventPreCompact, EventNotification:
 	default:
 		return fmt.Errorf("unsupported hook event %q", rule.Event)
 	}
@@ -83,6 +93,8 @@ func ValidateRule(rule Rule) error {
 		default:
 			return fmt.Errorf("unsupported pre_tool effect %q", rule.Effect)
 		}
+	} else if rule.Effect != "" {
+		return fmt.Errorf("hook event %q must not set effect", rule.Event)
 	}
 	for _, action := range rule.Actions {
 		if action.Kind != ActionQueueFollowup {

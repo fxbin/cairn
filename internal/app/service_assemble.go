@@ -213,6 +213,11 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		SystemPrompt: configuration.Prompt.Resolved,
 		Hooks:        hooksFromConfig(configuration.Hooks),
 	}
+	if guard := configuration.Guard; guard != nil {
+		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures
+		loop.GuardPeriodicWindow = guard.PeriodicTurnWindow
+		loop.GuardNoProgressLimit = guard.NoProgressTurnLimit
+	}
 	if checkpoint := configuration.Context.DecisionCheckpoint; checkpoint != nil && checkpoint.Enabled {
 		loop.DecisionCheckpointEnabled = true
 		minTurns := checkpoint.MinTurns

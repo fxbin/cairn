@@ -14,6 +14,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/memory"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -205,6 +206,29 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
 		return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)
 	})
+	// memory_recall：只读证据账本；服务端强制工作区，模型无法写入或跨区检索。
+	tools.BindMemoryExplain(func(ctx context.Context, request tools.MemoryRecallRequest) (json.RawMessage, error) {
+		ledger, err := service.ExplainMemoryRecall(ctx, MemoryExplainOptions{
+			Query: memory.RecallQuery{
+				TaskPromptDigest:    request.TaskPromptDigest,
+				Outcomes:            request.Outcomes,
+				FailureClasses:      request.FailureClasses,
+				TrustedVerification: request.TrustedVerification,
+				CreatedFrom:         request.CreatedFrom,
+				CreatedUntil:        request.CreatedUntil,
+				Limit:               request.Limit,
+				Precision:           request.Precision,
+			},
+			Workspace: options.Workspace,
+			StateDir:  options.StateDir,
+			Config:    options.Config,
+			Now:       time.Now().UTC(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(ledger)
+	})
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{}, err
 	}
@@ -271,7 +295,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef              artifact.Ref  `json:"config_ref"`
 		PriorContextRef        *artifact.Ref `json:"prior_context_ref,omitempty"`
@@ -293,7 +317,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 			return RunResult{}, delegatedErr
 		}
 	}
-	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.EncodeRedactedJSON(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.MustEncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {

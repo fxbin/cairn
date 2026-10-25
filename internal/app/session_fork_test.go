@@ -248,7 +248,7 @@ func TestSessionForkRejectsInvalidSources(t *testing.T) {
 		runningID := domain.NewRunID()
 		if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
 			RunID: runningID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-			Payload: artifact.EncodeRedactedJSON(struct {
+			Payload: artifact.MustEncodeRedactedJSON(struct {
 				domain.RunCreatedPayload
 				ConfigRef artifact.Ref `json:"config_ref"`
 			}{RunCreatedPayload: domain.RunCreatedPayload{Task: "running", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), SessionID: "session-live"}, ConfigRef: configRef}),
@@ -376,7 +376,7 @@ func TestSessionForkRejectsCyclicAncestry(t *testing.T) {
 		drafts := []domain.EventDraft{
 			{
 				RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-				Payload: artifact.EncodeRedactedJSON(struct {
+				Payload: artifact.MustEncodeRedactedJSON(struct {
 					domain.RunCreatedPayload
 					ConfigRef artifact.Ref `json:"config_ref"`
 				}{RunCreatedPayload: domain.RunCreatedPayload{

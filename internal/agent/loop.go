@@ -27,9 +27,13 @@ type Loop struct {
 	Model                string
 	// ProviderKind 是历史 ProviderKind 词表值，写入 model_request_started；
 	// 由配置 effective protocol 经闭合映射派生，不再硬编码。
-	ProviderKind                   string
-	ConfigFingerprint              string
-	MaxTurns                       int
+	ProviderKind      string
+	ConfigFingerprint string
+	MaxTurns          int
+	// Guard 阈值：零值回落默认；显式配置经 fingerprintView 进入配置指纹。
+	GuardConsecutiveFailures       int
+	GuardPeriodicWindow            int
+	GuardNoProgressLimit           int
 	MaxToolCalls                   int
 	MaxInputTokens                 int
 	MaxOutputTokens                int
@@ -57,6 +61,9 @@ type Loop struct {
 	SystemPrompt          string
 	// Hooks 是可选工作区钩子；pre_tool 由 Policy 收紧，post_tool 记录动作。
 	Hooks []hooks.Rule
+	// OnHookActions 接收生命周期钩子动作（不含 pre_tool 效果）；宿主负责
+	// 按 queue_followup 合同入队。nil 时动作仅丢弃，不产生副作用。
+	OnHookActions func(event hooks.Event, actions []hooks.Action)
 	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
 	// 同时进入创建事件以支持 resume 回放。
 	PriorContext    string
@@ -244,6 +251,8 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if loop.MaxTurns <= 0 {
 		loop.MaxTurns = fallbackMaxTurns
 	}
+	// 观察点：用户任务进入运行；仅收集动作。
+	loop.dispatchLifecycleHooks(hooks.EventUserPromptSubmit, "")
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
 		return Result{}, err
@@ -306,6 +315,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		}{Turn: turn + 1})}); err != nil {
 			return Result{}, err
 		}
+		loop.dispatchLifecycleHooks(hooks.EventTurnStart, "")
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, &projection, input, &turnID)
 		}

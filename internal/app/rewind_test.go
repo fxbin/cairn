@@ -202,7 +202,7 @@ func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration 
 			t.Fatal(err)
 		}
 	}
-	planRef, err := artifacts.Put(artifact.EncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: runs}), "application/json")
+	planRef, err := artifacts.Put(artifact.MustEncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: runs}), "application/json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration 
 	defer journal.Close()
 	runID := domain.NewRunID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.EncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
 			domain.RunCreatedPayload
 			ConfigRef artifact.Ref `json:"config_ref"`
 			TaskRef   artifact.Ref `json:"task_ref"`

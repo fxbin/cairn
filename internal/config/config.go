@@ -35,6 +35,8 @@ type Config struct {
 	Tools     ToolsConfig     `yaml:"tools"`
 	Hooks     []HookConfig    `yaml:"hooks,omitempty"`
 	Prompt    PromptConfig    `yaml:"prompt,omitempty"`
+	// Guard 覆盖循环熔断阈值；缺省使用默认值且不改变指纹。
+	Guard *GuardConfig `yaml:"guard,omitempty"`
 	// ActiveMode 选择 modes 中的命名装配块；空值表示不套用 mode。
 	ActiveMode string `yaml:"active_mode,omitempty"`
 	// Modes 是命名配置块；字段形状与主配置子集兼容，合并时显式 YAML 优先。
@@ -277,6 +279,26 @@ type DecisionCheckpointConfig struct {
 
 // DecisionCheckpointMinTurns 是软决策检查点的默认最早触发轮次。
 const DecisionCheckpointMinTurns = 4
+
+// GuardConfig 覆盖循环熔断阈值；指针 + omitempty：未配置时使用默认值且
+// 指纹与旧版逐位一致。提高阈值必须显式配置并进入指纹。
+type GuardConfig struct {
+	// ConsecutiveOperationFailures 是相同操作指纹连续失败的熔断阈值。
+	ConsecutiveOperationFailures int `yaml:"consecutive_operation_failures"`
+	// PeriodicTurnWindow 是 A-B 周期检测的轮次窗口。
+	PeriodicTurnWindow int `yaml:"periodic_turn_window"`
+	// NoProgressTurnLimit 是工作区/验证长期无进展的轮次阈值。
+	NoProgressTurnLimit int `yaml:"no_progress_turn_limit"`
+}
+
+// DefaultGuardConsecutiveOperationFailures 是默认连续同指纹失败熔断阈值。
+const DefaultGuardConsecutiveOperationFailures = 3
+
+// DefaultGuardPeriodicTurnWindow 是默认周期轮次窗口。
+const DefaultGuardPeriodicTurnWindow = 6
+
+// DefaultGuardNoProgressTurnLimit 是默认无进展轮次阈值。
+const DefaultGuardNoProgressTurnLimit = 6
 
 // PricingConfig 必须显式启用；只有输入与输出 token 价格都给出时，成本预算
 // 才合法，Cairn 不会静默采用虚构的成本估计。
