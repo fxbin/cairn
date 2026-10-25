@@ -208,6 +208,13 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	// 嵌套运行恢复：委派回调会在本 Run 内嵌套子 Run，子 Run 会覆盖进程级
+	// 回调绑定；先保存外层绑定并在返回时恢复，保证父 Loop 后续 send_message
+	// 与 memory_recall 仍指向父 Boot 的存活资源。
+	previousDeliver := tools.CurrentMessageDeliver()
+	previousExplain := tools.CurrentMemoryExplain()
+	defer tools.BindMessageDeliver(previousDeliver)
+	defer tools.BindMemoryExplain(previousExplain)
 	// send_message 投递：写入对端 run Journal（父/子跟进）。
 	tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
 		return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)

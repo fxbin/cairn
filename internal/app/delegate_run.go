@@ -74,7 +74,22 @@ func delegateTaskResult(childRunID domain.RunID, maxTurns int, result RunResult,
 		payload, _ := json.Marshal(delegateTaskPayload{ChildRunID: string(childRunID), Outcome: "awaiting_approval", MaxTurns: maxTurns})
 		return tools.Result{OK: true, Code: "awaiting_approval", Data: payload, Preview: "子运行 " + string(childRunID) + " 等待审批"}
 	}
-	outcome := MapRunOutcome(err, "")
+	// 结果口径以子运行已持久化终态为准（与完成事实回写一致）；投影不可用时
+	// 才回退错误映射，避免预算耗尽等场景在父视图与 Journal 间出现两种口径。
+	outcome := ""
+	if result.Result != nil {
+		switch result.Result.State {
+		case string(domain.RunCompleted):
+			outcome = "ok"
+		case string(domain.RunCancelled):
+			outcome = "cancelled"
+		case string(domain.RunFailed):
+			outcome = "failed"
+		}
+	}
+	if outcome == "" {
+		outcome = MapRunOutcome(err, "")
+	}
 	response := result.Response
 	truncated := len(response) > DelegateResponseMaxBytes
 	if truncated {

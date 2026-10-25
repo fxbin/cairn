@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/domain"
@@ -18,6 +19,20 @@ import (
 // DelegatorFunc 以父运行身份执行一次委派；结果按工具结果合同回传，错误
 // 编码进 Result 而不是以 Go error 中断父循环。
 type DelegatorFunc func(ctx context.Context, parentRunID domain.RunID, arguments json.RawMessage) tools.Result
+
+// classifyBatchSpecialError 识别批次错误中必须原样上抛的特殊分类：工具结果
+// 落盘失败禁止上层关闭 Turn 或终态化 Run，对账暂停必须保持可恢复语义；
+// 未命中特殊分类时返回 nil，交由调用方按普通失败或其余分类收尾。
+func classifyBatchSpecialError(err error) error {
+	var persistence *toolResultPersistenceError
+	if errors.As(err, &persistence) {
+		return err
+	}
+	if errors.Is(err, ports.ErrWaitingReconcile) {
+		return err
+	}
+	return nil
+}
 
 // executeDelegateTask 经装配的委派回调执行子任务并再同步父投影；未装配
 // 委派回调的运行（含子运行自身）失败关闭，不虚构子代理。

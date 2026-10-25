@@ -465,6 +465,11 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		allToolCallsSucceeded := true
 		outcomes, batchErr := loop.executeToolCalls(ctx, &projection, input, turnID, response.ToolCalls)
 		if batchErr != nil && (len(outcomes) == 0 || outcomes[len(outcomes)-1].err == nil) {
+			// 错误位于非末位（其后调用未执行）时由本分支统一分类；分类集与
+			// 单调用分支保持一致：落盘失败与对账暂停不得被误终态化或降级。
+			if special := classifyBatchSpecialError(batchErr); special != nil {
+				return Result{RunID: input.RunID}, special
+			}
 			var waiting *ports.WaitingApprovalError
 			if errors.As(batchErr, &waiting) {
 				return Result{RunID: input.RunID}, waiting

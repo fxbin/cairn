@@ -157,3 +157,82 @@ func TestDelegateTaskSurfacesChildApprovalPauseAndResumeCoversNotification(t *te
 	}
 	assertLatestChildState(t, workspace, stateDir, configuration, result.ID, domain.RunID(childID), "completed", "ok")
 }
+
+// delegateThenMessageProvider 编排绑定恢复路径：父委派 → 子收尾 → 父向预置
+// 目标 run 投递跟进消息 → 父收尾。
+type delegateThenMessageProvider struct {
+	calls  int
+	target string
+}
+
+func (provider *delegateThenMessageProvider) Stream(_ context.Context, _ ports.ModelRequest, emit func(ports.ModelEvent) error) error {
+	provider.calls++
+	switch provider.calls {
+	case 1:
+		if err := emit(ports.ModelEvent{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "delegate-1", Name: "delegate_task", Arguments: json.RawMessage(`{"task":"child work"}`)}}); err != nil {
+			return err
+		}
+	case 2:
+		if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "child done"}); err != nil {
+			return err
+		}
+	case 3:
+		if err := emit(ports.ModelEvent{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "message-1", Name: "send_message", Arguments: json.RawMessage(`{"to_run_id":"` + provider.target + `","content":"followup after delegation"}`)}}); err != nil {
+			return err
+		}
+	default:
+		if err := emit(ports.ModelEvent{Kind: ports.TextDelta, Text: "parent done"}); err != nil {
+			return err
+		}
+	}
+	return emitTestCompletion(emit)
+}
+
+// TestDelegateTaskRestoresGlobalBindingsForParentMessaging 验证嵌套子 Run
+// 返回后进程级投递绑定恢复为父 Boot：父在委派之后调用 send_message 仍能
+// 把 steering 事实写入目标 run Journal，而不是落到已关闭的子 Journal。
+func TestDelegateTaskRestoresGlobalBindingsForParentMessaging(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := delegateTestConfig()
+	// 预置一个已终态的目标 run 作为投递对象。
+	seed := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	seeded, err := seed.Run(context.Background(), RunOptions{Task: "seed", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &delegateThenMessageProvider{target: string(seeded.ID)}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	result, err := service.Run(context.Background(), RunOptions{Task: "parent task", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := (Service{}).Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Projection.State != domain.RunCompleted {
+		t.Fatalf("parent state = %s", inspected.Projection.State)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	targetEvents, err := journal.Load(context.Background(), seeded.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := false
+	for _, event := range targetEvents {
+		if event.Type == domain.EventSteeringInputSubmitted {
+			delivered = true
+		}
+	}
+	if !delivered {
+		t.Fatalf("send_message after delegation was not delivered to %s", seeded.ID)
+	}
+}

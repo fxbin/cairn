@@ -79,11 +79,8 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			outcomes[index] = toolCallOutcome{err: err}
 			return err
 		}
-		operationID := domain.NewOperationID()
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})}); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
-		}
+		// 策略判定先于事件追加：非 allow 调用直接回退串行路径，由 executeTool
+		// 走完整单份提议链，避免组内留下停在 denied/awaiting 的孤儿提议。
 		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 		if err != nil {
 			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
@@ -91,10 +88,6 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 		}
 		decision = freshApprovalDecision(*projection, decision)
 		decision = loop.bindMCPDeclaration(call.Name, decision)
-		if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
-		}
 		if decision.Effect != policy.Allow {
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}
@@ -103,6 +96,15 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 				return err
 			}
 			continue
+		}
+		operationID := domain.NewOperationID()
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})}); err != nil {
+			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
+			return err
+		}
+		if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
+			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
+			return err
 		}
 		startedPayload, err := loop.plannedOperationPayload(call)
 		if err != nil {

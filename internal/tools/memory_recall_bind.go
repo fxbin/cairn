@@ -23,6 +23,12 @@ func BindMemoryExplain(fn MemoryExplainFunc) {
 	memoryExplainMu.Unlock()
 }
 
+// CurrentMemoryExplain 返回当前装配的召回回调；供嵌套运行（模型侧委派）
+// 在子运行返回后恢复外层绑定，避免父 Loop 使用已关闭的子资源。
+func CurrentMemoryExplain() MemoryExplainFunc {
+	return defaultMemoryExplain()
+}
+
 // defaultMemoryExplain 读取当前回调。
 func defaultMemoryExplain() MemoryExplainFunc {
 	memoryExplainMu.RLock()

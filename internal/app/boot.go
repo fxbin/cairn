@@ -107,8 +107,10 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 	boot.closeJournal = journal.Close
 	workspaceLock, lockErr := acquireWorkspaceLock(stateDir, hash)
 	// 家族共享锁：仅同进程子运行（ParentRunID 且父 Boot 持锁）允许在 ErrHeld
-	// 下不占第二把排他锁，依赖 Journal CAS 与家族单写入约定；锁被无关进程
-	// 持有时依旧失败关闭。共享路径不持有自有锁，Boot 关闭时不重复释放。
+	// 下不占第二把排他锁，依赖 Journal CAS 与家族单写入约定。ErrHeld 不携带
+	// 持有者身份，本分支的安全性来自调用约定——allowSharedLock 只由委派回调
+	// 内的子 Run 设置，父持锁期间无关进程无法通过同一判定获得豁免；跨进程
+	// 启动子运行必须走严格路径。共享路径不持有自有锁，Boot 关闭时不重复释放。
 	if lockErr == nil {
 		boot.workspaceLock = workspaceLock
 		boot.releaseLock = workspaceLock.Release

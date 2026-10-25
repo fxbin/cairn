@@ -22,6 +22,12 @@ func BindMessageDeliver(fn MessageDeliverFunc) {
 	messageDeliverMu.Unlock()
 }
 
+// CurrentMessageDeliver 返回当前装配的投递回调；供嵌套运行（模型侧委派）
+// 在子运行返回后恢复外层绑定，避免父 Loop 使用已关闭的子资源。
+func CurrentMessageDeliver() MessageDeliverFunc {
+	return defaultMessageDeliver()
+}
+
 // defaultMessageDeliver 读取当前回调。
 func defaultMessageDeliver() MessageDeliverFunc {
 	messageDeliverMu.RLock()
