@@ -124,7 +124,7 @@ func TestBootManifestDescribesCapabilities(t *testing.T) {
 	for _, tool := range manifest.Tools {
 		toolNames = append(toolNames, tool.Name)
 	}
-	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,todo,git_status,git_diff,git_log,git_commit,apply_patch,exec_command,send_message,memory_recall" {
+	if strings.Join(toolNames, ",") != "list_files,read_file,search_text,todo,git_status,git_diff,git_log,git_commit,apply_patch,exec_command,send_message,delegate_task,memory_recall" {
 		t.Fatalf("manifest tools = %v", toolNames)
 	}
 	sideEffects := map[string]string{}

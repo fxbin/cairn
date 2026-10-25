@@ -57,7 +57,7 @@ func TestDoctorReportRedactsCredentialMaterial(t *testing.T) {
 	if report.Build.Flavor != "plain" || report.Build.Fingerprint == "" {
 		t.Fatalf("doctor report build identity = %+v", report.Build)
 	}
-	if strings.Join(report.Tools, ",") != "list_files,read_file,search_text,todo,git_status,git_diff,git_log,git_commit,apply_patch,exec_command,send_message,memory_recall" {
+	if strings.Join(report.Tools, ",") != "list_files,read_file,search_text,todo,git_status,git_diff,git_log,git_commit,apply_patch,exec_command,send_message,delegate_task,memory_recall" {
 		t.Fatalf("tools = %v", report.Tools)
 	}
 }

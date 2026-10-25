@@ -72,6 +72,13 @@ func resolveProviderCard(configuration config.Config) (contract.ProviderCapabili
 // 会关闭已完成初始化的资源并合并关闭错误（Journal 关闭期间继续持有工作区锁），
 // 不留下孤儿 Journal 或锁；装配只做纯构造，不产生事件或副作用。
 func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.Config, onEvent EventSink) (*Boot, error) {
+	return service.assembleBootWithLock(workspacePath, stateDir, cfg, onEvent, false)
+}
+
+// assembleBootWithLock 装配 Boot；allowSharedLock 为 true 时允许在锁已被
+// 家族持有（ErrHeld）的情况下不占第二把排他锁，依赖 Journal CAS 与家族
+// 单写入约定。仅子运行（ParentRunID）路径使用。
+func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg config.Config, onEvent EventSink, allowSharedLock bool) (*Boot, error) {
 	if err := config.Validate(cfg); err != nil {
 		return nil, err
 	}
@@ -98,12 +105,16 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 	}
 	boot.Journal = journal
 	boot.closeJournal = journal.Close
-	workspaceLock, err := acquireWorkspaceLock(stateDir, hash)
-	if err != nil {
-		return nil, bootAssemblyFailure(boot, err)
+	workspaceLock, lockErr := acquireWorkspaceLock(stateDir, hash)
+	// 家族共享锁：仅同进程子运行（ParentRunID 且父 Boot 持锁）允许在 ErrHeld
+	// 下不占第二把排他锁，依赖 Journal CAS 与家族单写入约定；锁被无关进程
+	// 持有时依旧失败关闭。共享路径不持有自有锁，Boot 关闭时不重复释放。
+	if lockErr == nil {
+		boot.workspaceLock = workspaceLock
+		boot.releaseLock = workspaceLock.Release
+	} else if !allowSharedLock || !errors.Is(lockErr, lock.ErrHeld) {
+		return nil, bootAssemblyFailure(boot, lockErr)
 	}
-	boot.workspaceLock = workspaceLock
-	boot.releaseLock = workspaceLock.Release
 	provider, err := service.provider(cfg, workspace.Root)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)

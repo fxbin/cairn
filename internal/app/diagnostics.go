@@ -330,6 +330,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 		patchTool,
 		execTool,
 		tools.SendMessage{},
+		tools.DelegateTask{},
 	}
 	// 网络工具 opt-in：与 dsh Web Search 设置一致，默认不暴露。
 	if options.Web && config.PresetReadOnly != preset {

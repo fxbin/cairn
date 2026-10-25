@@ -111,8 +111,9 @@ func firstNonEmptyHook(values ...string) string {
 
 // decideBase 是未叠加钩子的原始策略判定。
 func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, error) {
-	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。
-	if toolName == "exec_command" || toolName == "apply_patch" {
+	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。委派会经子
+	// run 产生受控副作用，未信任工作区同样拒绝。
+	if toolName == "exec_command" || toolName == "apply_patch" || toolName == "delegate_task" {
 		if err := tools.GuardWrite(gate.Patch.Workspace.Root, toolName); err != nil {
 			return Decision{
 				Effect:      Deny,
@@ -249,6 +250,22 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 			Fingerprint:          execFingerprint(proposed, observation),
 			Summary:              "execute " + quoteArgv(proposed.Argv),
 			WorkspaceObservation: observation,
+		}, nil
+	case "delegate_task":
+		// 委派与命令执行同级：走 ExecMode，不继承写豁免；子 run 的每个工具
+		// 仍各自经过完整策略链，委派本身不扩大授权面。
+		var proposed struct {
+			Task     string `json:"task"`
+			MaxTurns int    `json:"max_turns"`
+		}
+		if err := json.Unmarshal(raw, &proposed); err != nil || strings.TrimSpace(proposed.Task) == "" || proposed.MaxTurns < 0 || proposed.MaxTurns > tools.DelegateMaxTurnsLimit {
+			return Decision{Effect: Deny, RuleID: "invalid_delegation", Fingerprint: fingerprint("delegate_task", raw), Summary: "delegate_task requires task and optional max_turns within limit"}, nil
+		}
+		return Decision{
+			Effect:      gate.ExecMode,
+			RuleID:      "subagent_delegation",
+			Fingerprint: fingerprint("delegate_task", raw),
+			Summary:     "delegate subtask to a child run",
 		}, nil
 	case "exec_session":
 		// 会话工具不继承 exec_command 审批豁免：建会话与写入一律经 ExecMode，

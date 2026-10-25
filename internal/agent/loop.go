@@ -64,6 +64,11 @@ type Loop struct {
 	// OnHookActions 接收生命周期钩子动作（不含 pre_tool 效果）；宿主负责
 	// 按 queue_followup 合同入队。nil 时动作仅丢弃，不产生副作用。
 	OnHookActions func(event hooks.Event, actions []hooks.Action)
+	// Delegator 执行 delegate_task 委派：以父运行身份受控启动子 run 并同步
+	// 等待终态或审批暂停。nil 表示当前运行不接受委派（子运行不嵌套），调用
+	// 失败关闭；回调期间应用层会向本 run Journal 追加 delegated/completed
+	// 事实，Loop 在回调返回后先再同步投影再继续追加。
+	Delegator DelegatorFunc
 	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
 	// 同时进入创建事件以支持 resume 回放。
 	PriorContext    string

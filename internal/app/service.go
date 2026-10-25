@@ -197,7 +197,13 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
+	var boot *Boot
+	if options.ParentRunID != "" {
+		// 子运行：家族共享锁路径，父 Boot 在同进程持锁时不再占第二把排他锁。
+		boot, err = service.assembleBootWithLock(options.Workspace, options.StateDir, options.Config, options.OnEvent, true)
+	} else {
+		boot, err = service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
+	}
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -237,20 +243,28 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	if len(active) != 0 {
-		switch active[0].Phase() {
-		case "waiting_approval":
-			pending := active[0].PendingApproval
-			if pending != nil {
-				return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, &ports.WaitingApprovalError{RunID: active[0].ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
+		if options.ParentRunID != "" {
+			// 子运行家族豁免：活跃运行必须是本子运行的祖先或同父兄弟；
+			// 无关运行仍按排他合同拒绝。
+			if err := tolerateFamilyActiveRuns(ctx, boot.Journal, boot.WorkspaceHash, active, options.ParentRunID); err != nil {
+				return RunResult{}, err
 			}
-		case "waiting_reconcile":
-			return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, ErrWaitingReconcile)
-		case "created", "cancelling":
-			// 进程在 run_created/run_started 之间或取消序列中途崩溃留下的非终态运行：
-			// 此状态下没有可恢复的执行语义，唯一出口是补写终态解锁工作区。
-			return RunResult{}, fmt.Errorf("%w: run %s is %s after an interrupted lifecycle; finish it with resume %s --abort-run --reason <text>", ErrActiveRun, active[0].ID, active[0].Phase(), active[0].ID)
+		} else {
+			switch active[0].Phase() {
+			case "waiting_approval":
+				pending := active[0].PendingApproval
+				if pending != nil {
+					return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, &ports.WaitingApprovalError{RunID: active[0].ID, OperationID: pending.OperationID, Fingerprint: pending.Fingerprint, Summary: pending.Summary})
+				}
+			case "waiting_reconcile":
+				return RunResult{}, fmt.Errorf("%w: %w", ErrActiveRun, ErrWaitingReconcile)
+			case "created", "cancelling":
+				// 进程在 run_created/run_started 之间或取消序列中途崩溃留下的非终态运行：
+				// 此状态下没有可恢复的执行语义，唯一出口是补写终态解锁工作区。
+				return RunResult{}, fmt.Errorf("%w: run %s is %s after an interrupted lifecycle; finish it with resume %s --abort-run --reason <text>", ErrActiveRun, active[0].ID, active[0].Phase(), active[0].ID)
+			}
+			return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
 		}
-		return RunResult{}, fmt.Errorf("%w: resume %s", ErrActiveRun, active[0].ID)
 	}
 	if err := validateSessionLink(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash, options); err != nil {
 		return RunResult{}, err
@@ -277,6 +291,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		if err := enforceSubagentToolNarrowing(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, boot.Registry, options); err != nil {
 			return RunResult{}, err
 		}
+	} else {
+		// 模型侧委派仅绑定根运行（子运行不嵌套委派）；回调复用本次装配的
+		// Journal 与配置，父 Loop 在工具执行期间阻塞等待子终态或审批暂停。
+		boot.Loop.Delegator = service.delegatorFor(boot, options)
 	}
 	configFingerprint := options.Config.Fingerprint()
 	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)

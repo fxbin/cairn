@@ -183,8 +183,13 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return tools.Result{}, err
 	}
-	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
-	result = redactToolResult(result)
+	var result tools.Result
+	if call.Name == tools.DelegateTaskName {
+		result = loop.executeDelegateTask(ctx, projection, input, call)
+	} else {
+		result = loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+		result = redactToolResult(result)
+	}
 	if result.Code == tools.CodeTerminationUnconfirmed {
 		return result, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
 	}
