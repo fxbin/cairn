@@ -143,6 +143,9 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 		}(i)
 	}
 	wg.Wait()
+	// 取消不提前返回：首个取消项之后仍需把同组其余已 started 调用逐个闭合，
+	// 否则悬空只读操作会使后续取消/终态事件违反状态机合法性。
+	cancelledSeen := false
 	for i, item := range prepared {
 		result := execResults[i].result
 		if result.Code == tools.CodeTerminationUnconfirmed {
@@ -177,15 +180,19 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
-		outcomes[item.index] = toolCallOutcome{result: result}
 		if cancelled {
 			outcomes[item.index] = toolCallOutcome{result: result, err: ctx.Err()}
-			return ctx.Err()
+			cancelledSeen = true
+			continue
 		}
+		outcomes[item.index] = toolCallOutcome{result: result}
 		if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
+	}
+	if cancelledSeen {
+		return ctx.Err()
 	}
 	return nil
 }

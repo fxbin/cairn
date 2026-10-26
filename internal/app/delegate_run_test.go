@@ -275,6 +275,17 @@ func TestTolerateFamilyActiveRunsAllowsAncestorsAndSiblingsOnly(t *testing.T) {
 	if err := tolerateFamilyActiveRuns(context.Background(), journal, hash, unrelated, parent.ID); !errors.Is(err, ErrActiveRun) {
 		t.Fatalf("unrelated active run must be rejected: %v", err)
 	}
+	// 深链祖先上溯：手工构造祖父与父的创建事件，豁免必须沿 parent_run_id 命中祖父。
+	grandparent, midParent := domain.NewRunID(), domain.NewRunID()
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: grandparent, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"gp","workspace":"/gp"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: midParent, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"mid","workspace":"/mid","parent_run_id":"` + string(grandparent) + `"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tolerateFamilyActiveRuns(context.Background(), journal, hash, []domain.RunProjection{{ID: grandparent}}, midParent); err != nil {
+		t.Fatalf("grandparent must be tolerated via parent_run_id walk: %v", err)
+	}
 }
 
 // conflictOnceJournal 在前 N 次 Append 注入 CAS 序号冲突，模拟完成回写与
@@ -344,6 +355,72 @@ func TestRecordSubagentCompletedRetriesOnceOnSequenceConflict(t *testing.T) {
 	exhausted := &conflictOnceJournal{Journal: journal, conflicts: 2}
 	if _, err := RecordSubagentCompleted(context.Background(), exhausted, parent.ID, hash, stuckChild, "ok", nil, at.Add(3*time.Nanosecond)); !errors.Is(err, sqlite.ErrConflict) {
 		t.Fatalf("persistent conflict must fail closed: %v", err)
+	}
+}
+
+// concurrentWinnerJournal 模拟并发写者：首次追加先真实落盘（并发方胜出）
+// 再返回冲突；重试重载后应走幂等分支返回既有事实而不双写。
+type concurrentWinnerJournal struct {
+	ports.Journal
+	injected bool
+}
+
+func (journal *concurrentWinnerJournal) Append(ctx context.Context, expectedSeq uint64, draft domain.EventDraft) (domain.Event, error) {
+	if !journal.injected {
+		journal.injected = true
+		if _, err := journal.Journal.Append(ctx, expectedSeq, draft); err != nil {
+			return domain.Event{}, err
+		}
+		return domain.Event{}, sqlite.ErrConflict
+	}
+	return journal.Journal.Append(ctx, expectedSeq, draft)
+}
+
+// TestRecordSubagentCompletedRetrySeesConcurrentWinnerIdempotently 锁定重试
+// 重载遇并发完成事实时幂等返回：不双写、不报错。
+func TestRecordSubagentCompletedRetrySeesConcurrentWinnerIdempotently(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	parent, err := service.Run(context.Background(), RunOptions{Task: "parent", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	child := domain.NewRunID()
+	events, err := journal.Load(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := events[len(events)-1].OccurredAt
+	if _, err := RecordSubagentDelegated(context.Background(), journal, parent.ID, hash, DelegateOptions{ParentRunID: parent.ID, ChildRunID: child, Task: "winner probe"}, at.Add(time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &concurrentWinnerJournal{Journal: journal}
+	event, err := RecordSubagentCompleted(context.Background(), wrapped, parent.ID, hash, child, "ok", nil, at.Add(2*time.Nanosecond))
+	if err != nil || event.Type != domain.EventSubagentCompleted {
+		t.Fatalf("idempotent retry result = %+v err=%v", event, err)
+	}
+	reloaded, err := journal.Load(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, item := range reloaded {
+		if item.Type == domain.EventSubagentCompleted {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("completed facts = %d, want exactly 1", completed)
 	}
 }
 
