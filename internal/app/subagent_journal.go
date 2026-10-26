@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -52,7 +53,18 @@ func RecordSubagentDelegated(ctx context.Context, journal ports.Journal, parentR
 }
 
 // RecordSubagentCompleted 只收束已委派的子身份；相同完成事实幂等返回，不覆写历史结果。
+// 完成事实可能与仍在运行的父 Loop 并发追加：CAS 序号冲突不是结果不确定，
+// 重载一次并重试一次（幂等校验随之重跑）；仍失败则失败关闭，不静默丢事实。
 func RecordSubagentCompleted(ctx context.Context, journal ports.Journal, parentRunID domain.RunID, workspaceHash string, childRunID domain.RunID, outcome string, usage json.RawMessage, occurredAt time.Time) (domain.Event, error) {
+	event, err := recordSubagentCompletedOnce(ctx, journal, parentRunID, workspaceHash, childRunID, outcome, usage, occurredAt)
+	if err != nil && errors.Is(err, sqlite.ErrConflict) {
+		event, err = recordSubagentCompletedOnce(ctx, journal, parentRunID, workspaceHash, childRunID, outcome, usage, occurredAt)
+	}
+	return event, err
+}
+
+// recordSubagentCompletedOnce 执行一次完整的加载、幂等校验与 CAS 追加。
+func recordSubagentCompletedOnce(ctx context.Context, journal ports.Journal, parentRunID domain.RunID, workspaceHash string, childRunID domain.RunID, outcome string, usage json.RawMessage, occurredAt time.Time) (domain.Event, error) {
 	draft, err := CompletedEventDraft(parentRunID, workspaceHash, childRunID, outcome, usage, occurredAt)
 	if err != nil {
 		return domain.Event{}, fmt.Errorf("%w: %w", ErrSubagentAppend, err)

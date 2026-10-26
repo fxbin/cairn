@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
+	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -234,5 +237,144 @@ func TestDelegateTaskRestoresGlobalBindingsForParentMessaging(t *testing.T) {
 	}
 	if !delivered {
 		t.Fatalf("send_message after delegation was not delivered to %s", seeded.ID)
+	}
+}
+
+// TestTolerateFamilyActiveRunsAllowsAncestorsAndSiblingsOnly 锁定家族豁免
+// 判定：父与同父兄弟放行，无关活跃运行拒绝。
+func TestTolerateFamilyActiveRunsAllowsAncestorsAndSiblingsOnly(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	parent, err := service.Run(context.Background(), RunOptions{Task: "parent", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	sibling := domain.NewRunID()
+	events, err := journal.Load(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordSubagentDelegated(context.Background(), journal, parent.ID, hash, DelegateOptions{ParentRunID: parent.ID, ChildRunID: sibling, Task: "sibling"}, events[len(events)-1].OccurredAt.Add(time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	family := []domain.RunProjection{{ID: parent.ID}, {ID: sibling}}
+	if err := tolerateFamilyActiveRuns(context.Background(), journal, hash, family, parent.ID); err != nil {
+		t.Fatalf("family runs must be tolerated: %v", err)
+	}
+	unrelated := []domain.RunProjection{{ID: domain.NewRunID()}}
+	if err := tolerateFamilyActiveRuns(context.Background(), journal, hash, unrelated, parent.ID); !errors.Is(err, ErrActiveRun) {
+		t.Fatalf("unrelated active run must be rejected: %v", err)
+	}
+}
+
+// conflictOnceJournal 在前 N 次 Append 注入 CAS 序号冲突，模拟完成回写与
+// 父 Loop 并发追加的竞争窗口。
+type conflictOnceJournal struct {
+	ports.Journal
+	conflicts int
+}
+
+func (journal *conflictOnceJournal) Append(ctx context.Context, expectedSeq uint64, draft domain.EventDraft) (domain.Event, error) {
+	if journal.conflicts > 0 {
+		journal.conflicts--
+		return domain.Event{}, sqlite.ErrConflict
+	}
+	return journal.Journal.Append(ctx, expectedSeq, draft)
+}
+
+// TestRecordSubagentCompletedRetriesOnceOnSequenceConflict 锁定有界重试：
+// 单次 CAS 冲突后重载重试成功落事实；连续冲突仍失败关闭。
+func TestRecordSubagentCompletedRetriesOnceOnSequenceConflict(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	parent, err := service.Run(context.Background(), RunOptions{Task: "parent", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hash, err := workspaceFor(workspace, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := openJournal(stateDir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	retryChild, stuckChild := domain.NewRunID(), domain.NewRunID()
+	events, err := journal.Load(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := events[len(events)-1].OccurredAt
+	for _, child := range []domain.RunID{retryChild, stuckChild} {
+		if _, err := RecordSubagentDelegated(context.Background(), journal, parent.ID, hash, DelegateOptions{ParentRunID: parent.ID, ChildRunID: child, Task: "retry probe"}, at.Add(time.Nanosecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 单次冲突：重载后重试成功，完成事实恰好一条。
+	wrapped := &conflictOnceJournal{Journal: journal, conflicts: 1}
+	if _, err := RecordSubagentCompleted(context.Background(), wrapped, parent.ID, hash, retryChild, "ok", nil, at.Add(2*time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := journal.Load(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, event := range reloaded {
+		if event.Type == domain.EventSubagentCompleted {
+			completed++
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("completed facts = %d, want 1", completed)
+	}
+	// 连续冲突：重试一次后仍失败关闭，不静默丢事实也不死循环。
+	exhausted := &conflictOnceJournal{Journal: journal, conflicts: 2}
+	if _, err := RecordSubagentCompleted(context.Background(), exhausted, parent.ID, hash, stuckChild, "ok", nil, at.Add(3*time.Nanosecond)); !errors.Is(err, sqlite.ErrConflict) {
+		t.Fatalf("persistent conflict must fail closed: %v", err)
+	}
+}
+
+// TestChildBootExcludesDelegateToolSurface 锁定子运行工具面：根 Boot 注册
+// delegate_task；子 Boot（家族共享锁路径）不注册，且在根持锁时仍可装配。
+func TestChildBootExcludesDelegateToolSurface(t *testing.T) {
+	configuration := withTestProvider(config.Defaults())
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	root, err := service.assembleBoot(workspace, stateDir, configuration, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	child, err := service.assembleBootWithLock(workspace, stateDir, configuration, nil, true)
+	if err != nil {
+		t.Fatalf("child boot under family lock failed: %v", err)
+	}
+	defer child.Close()
+	hasDelegate := func(names []string) bool {
+		for _, name := range names {
+			if name == "delegate_task" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasDelegate(root.Registry.Names()) {
+		t.Fatalf("root surface must include delegate_task: %v", root.Registry.Names())
+	}
+	if hasDelegate(child.Registry.Names()) {
+		t.Fatalf("child surface must exclude delegate_task: %v", child.Registry.Names())
 	}
 }

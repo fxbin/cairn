@@ -58,3 +58,37 @@ func TestFaultInjectStartedReadOperationCanRemainRunnable(t *testing.T) {
 		t.Fatalf("projection=%#v err=%v", projection, err)
 	}
 }
+
+// TestFaultInjectParallelStartedReadOperationsRemainRunnable 锁定只读并行下的
+// 多中断窗口：两个并发 started 的只读操作都保持运行态并出现在恢复视图。
+func TestFaultInjectParallelStartedReadOperationsRemainRunnable(t *testing.T) {
+	runID, turnID := domain.NewRunID(), domain.NewTurnID()
+	created, _ := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: json.RawMessage(`{"task":"fault","workspace":"/workspace"}`)}, 1, domain.GenesisHash)
+	started, _ := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted}, 2, created.EventHash)
+	turn, _ := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnOpened, TurnID: &turnID}, 3, started.EventHash)
+	chain := []domain.Event{created, started, turn}
+	for index, operationID := range []domain.OperationID{domain.NewOperationID(), domain.NewOperationID()} {
+		tool := "read_file"
+		if index == 1 {
+			tool = "search_text"
+		}
+		proposed, err := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"call_id":"read` + string(rune('a'+index)) + `","tool_name":"` + tool + `","arguments":{"path":"x.txt"}}`)}, chain[len(chain)-1].Seq+1, chain[len(chain)-1].EventHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authorized, err := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"effect":"allow","fingerprint":"sha256:approved"}`)}, proposed.Seq+1, proposed.EventHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operationStarted, err := domain.NewEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"tool_name":"` + tool + `","side_effect_class":"none"}`)}, authorized.Seq+1, authorized.EventHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, proposed, authorized, operationStarted)
+	}
+	projection, err := domain.Replay(chain)
+	startedReads := projection.StartedOperations()
+	if err != nil || projection.Phase() != "running" || len(startedReads) != 2 {
+		t.Fatalf("projection phase=%s started=%d err=%v", projection.Phase(), len(startedReads), err)
+	}
+}

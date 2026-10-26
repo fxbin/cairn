@@ -482,6 +482,9 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			if errors.As(batchErr, &guard) {
 				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
 			}
+			if ctx.Err() != nil {
+				return loop.persistCancellation(ctx, &projection, input, &turnID)
+			}
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, batchErr)
 		}
 		for index, call := range response.ToolCalls {

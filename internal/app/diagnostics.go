@@ -362,6 +362,19 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	return available
 }
 
+// withoutDelegateTool 返回不含委派工具的工具切片；子运行不暴露委派面，
+// 委派能力只属于根运行（与 Loop 侧 Delegator 绑定规则一致）。
+func withoutDelegateTool(available []tools.Tool) []tools.Tool {
+	filtered := make([]tools.Tool, 0, len(available))
+	for _, tool := range available {
+		if _, isDelegate := tool.(tools.DelegateTask); isDelegate {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
 // VerificationFact 摘要最近一次验证的序号与结果。
 type VerificationFact struct {
 	Seq uint64 `json:"seq"`
