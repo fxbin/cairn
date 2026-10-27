@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -32,6 +33,12 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions) agent.Delega
 			return tools.Failure("invalid_arguments", "delegate_task requires task and optional max_turns within limit")
 		}
 		childRunID := domain.NewRunID()
+		// 配置与额度校验先于委派事实落盘：失败关闭时不留下孤儿 delegated
+		// 事实（无子运行的悬空委派会永久占据父投影 Children）。
+		childConfig, err := childDelegationConfig(ctx, boot.Journal, parentRunID, options.Config, request)
+		if err != nil {
+			return tools.Failure("delegate_failed", err.Error())
+		}
 		if _, err := RecordSubagentDelegated(ctx, boot.Journal, parentRunID, boot.WorkspaceHash, DelegateOptions{
 			ParentRunID: parentRunID,
 			ChildRunID:  childRunID,
@@ -40,10 +47,6 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions) agent.Delega
 		}, time.Now().UTC()); err != nil {
 			return tools.Failure("delegate_failed", err.Error())
 		}
-		childConfig := options.Config
-		if request.MaxTurns > 0 && (childConfig.Budget.MaxTurns <= 0 || childConfig.Budget.MaxTurns > request.MaxTurns) {
-			childConfig.Budget.MaxTurns = request.MaxTurns
-		}
 		result, err := service.Run(ctx, RunOptions{
 			Task:             request.Task,
 			Workspace:        options.Workspace,
@@ -51,9 +54,53 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions) agent.Delega
 			Config:           childConfig,
 			PreassignedRunID: childRunID,
 			ParentRunID:      parentRunID,
+			// 显式传递父运行真实模型可见工具面（含 skill 与 MCP 目录），
+			// 避免按冻结 Preset 重建的基础面因缺少 opt-in 扩展而误拒收窄。
+			ParentTools: boot.Registry.Names(),
 		})
 		return delegateTaskResult(childRunID, request.MaxTurns, result, err)
 	}
+}
+
+// childDelegationConfig 从父配置派生子配置：轮数取「请求额度、父配置额度、
+// 父剩余轮数」的最小值；父显式配置了轮数且已无剩余时失败关闭，禁止把
+// 超额或无限制额度借给子运行。其余字段与父配置一致。
+func childDelegationConfig(ctx context.Context, journal ports.Journal, parentRunID domain.RunID, parentConfig config.Config, request tools.DelegateRequest) (config.Config, error) {
+	childConfig := parentConfig
+	limit := request.MaxTurns
+	if parentConfig.Budget.MaxTurns > 0 && (limit <= 0 || limit > parentConfig.Budget.MaxTurns) {
+		limit = parentConfig.Budget.MaxTurns
+	}
+	if parentConfig.Budget.MaxTurns > 0 {
+		opened, err := parentOpenedTurns(ctx, journal, parentRunID)
+		if err != nil {
+			return config.Config{}, err
+		}
+		remaining := parentConfig.Budget.MaxTurns - opened
+		if remaining < 1 {
+			return config.Config{}, errors.New("parent run has no remaining turns to delegate")
+		}
+		if limit <= 0 || limit > remaining {
+			limit = remaining
+		}
+	}
+	childConfig.Budget.MaxTurns = limit
+	return childConfig, nil
+}
+
+// parentOpenedTurns 统计父运行已开启的轮数，供子额度钳制。
+func parentOpenedTurns(ctx context.Context, journal ports.Journal, parentRunID domain.RunID) (int, error) {
+	events, err := journal.Load(ctx, parentRunID)
+	if err != nil {
+		return 0, fmt.Errorf("load parent run for remaining turns: %w", err)
+	}
+	opened := 0
+	for _, event := range events {
+		if event.Type == domain.EventTurnOpened {
+			opened++
+		}
+	}
+	return opened, nil
 }
 
 // delegateTaskPayload 是回传父模型的委派结果载荷。

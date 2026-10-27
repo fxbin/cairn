@@ -16,10 +16,12 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
-// ErrConflict 表示追加时观察到的日志头序号与调用方预期不一致。
-var ErrConflict = errors.New("journal conflict")
+// ErrConflict 表示追加时观察到的日志头序号与调用方预期不一致；与 ports
+// 共享哨兵，供运行中 Loop 做确定性的重载重试判定。
+var ErrConflict = ports.ErrJournalConflict
 
 // ErrPersistedContent 表示 SQLite 行可读取，但其中的持久化事件字段无法解码。
 var ErrPersistedContent = errors.New("invalid persisted journal content")

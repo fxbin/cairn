@@ -21,7 +21,24 @@ const malformedToolArgumentsFeedback = "Cairn runtime: the previous tool call wa
 type EventSink func(domain.Event)
 
 // append 以当前投影序号追加事件、应用投影并向外部 sink 广播。
+// 家族外部追加（子完成回写、跨 run 消息）与本 Loop 并发时序号会冲突：
+// 冲突属确定性可消除——先重载尾部把外部事实应用进投影，再重验重试一次；
+// 外部事件使草稿非法或二次追加仍冲突时失败关闭，不无限重试。
 func (loop *Loop) append(ctx context.Context, projection *domain.RunProjection, draft domain.EventDraft) error {
+	if err := loop.appendOnce(ctx, projection, draft); err != nil {
+		if !errors.Is(err, ports.ErrJournalConflict) {
+			return err
+		}
+		if resyncErr := loop.resyncProjection(ctx, projection); resyncErr != nil {
+			return fmt.Errorf("%w; resync after conflict failed: %v", err, resyncErr)
+		}
+		return loop.appendOnce(ctx, projection, draft)
+	}
+	return nil
+}
+
+// appendOnce 执行一次校验、CAS 追加、投影应用与 sink 广播。
+func (loop *Loop) appendOnce(ctx context.Context, projection *domain.RunProjection, draft domain.EventDraft) error {
 	if err := projection.ValidateDraft(draft); err != nil {
 		return fmt.Errorf("validate %s after sequence %d: %w", draft.Type, projection.LastSeq, err)
 	}

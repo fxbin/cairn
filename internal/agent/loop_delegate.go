@@ -41,26 +41,27 @@ func (loop *Loop) executeDelegateTask(ctx context.Context, projection *domain.Ru
 		return tools.Failure("not_wired", "delegate_task is not configured for this runtime")
 	}
 	result := redactToolResult(loop.Delegator(ctx, input.RunID, call.Arguments))
-	if err := loop.resyncProjection(ctx, projection, input); err != nil {
+	if err := loop.resyncProjection(ctx, projection); err != nil {
 		return tools.Failure("delegate_resync_failed", err.Error())
 	}
 	return result
 }
 
-// resyncProjection 重载父 Journal 尾部并把外部追加的事实逐事件应用到投影；
-// 外部事件违反当前运行状态机时失败关闭。父 Loop 仍是自身事件的唯一调度者，
-// 再同步只吸收家族写入的委托/完成/steering 事实，不重放本 Loop 已应用事件。
-func (loop *Loop) resyncProjection(ctx context.Context, projection *domain.RunProjection, input RunInput) error {
-	events, err := loop.Journal.Load(ctx, input.RunID)
+// resyncProjection 重载本 run Journal 尾部并把外部追加的事实逐事件应用到
+// 投影；外部事件违反当前运行状态机时失败关闭。本 Loop 仍是自身事件的唯一
+// 调度者，再同步只吸收家族写入的委托/完成/steering 事实，不重放已应用事件，
+// 也不经 sink 广播外部事实（它们由写入方负责可见性）。
+func (loop *Loop) resyncProjection(ctx context.Context, projection *domain.RunProjection) error {
+	events, err := loop.Journal.Load(ctx, projection.ID)
 	if err != nil {
-		return fmt.Errorf("reload journal for delegation resync: %w", err)
+		return fmt.Errorf("reload journal for resync: %w", err)
 	}
 	for _, event := range events {
 		if event.Seq <= projection.LastSeq {
 			continue
 		}
-		if event.RunID != input.RunID {
-			return fmt.Errorf("delegation resync encountered an event of foreign run %s", event.RunID)
+		if event.RunID != projection.ID {
+			return fmt.Errorf("resync encountered an event of foreign run %s", event.RunID)
 		}
 		if err := projection.Apply(event); err != nil {
 			return fmt.Errorf("apply external event %s after sequence %d: %w", event.Type, projection.LastSeq, err)

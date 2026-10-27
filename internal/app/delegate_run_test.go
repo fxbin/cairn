@@ -455,3 +455,63 @@ func TestChildBootExcludesDelegateToolSurface(t *testing.T) {
 		t.Fatalf("child surface must exclude delegate_task: %v", child.Registry.Names())
 	}
 }
+
+// TestDelegateTaskWorksWhenSkillsEnabled 锁定 R3 修复：技能启用时父工具面
+// 含 skill 工具，显式传递后子收窄不再被基础面重建误拒，委派照常完成。
+func TestDelegateTaskWorksWhenSkillsEnabled(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := delegateTestConfig()
+	configuration.Skills = &config.SkillsConfig{Enabled: true}
+	provider := &delegateThenFinalProvider{}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+	result, err := service.Run(context.Background(), RunOptions{Task: "parent task", Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := (Service{}).Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID := onlyChildRun(t, inspected.Projection)
+	if record := inspected.Projection.Children[childID]; record.State != "completed" || record.Outcome != "ok" {
+		t.Fatalf("skills-enabled delegation child record = %+v", record)
+	}
+}
+
+// TestDelegateTaskClampsChildTurnsToParentRemaining 锁定子额度钳制：父剩余
+// 轮数为零时失败关闭不产生子运行（父随后按既有预算语义收束）；剩余一轮时
+// 子额度被钳到剩余值并照常完成。
+func TestDelegateTaskClampsChildTurnsToParentRemaining(t *testing.T) {
+	for _, setting := range []struct {
+		parentMaxTurns int
+		expectChild    bool
+	}{
+		{parentMaxTurns: 1, expectChild: false},
+		{parentMaxTurns: 2, expectChild: true},
+	} {
+		workspace, stateDir := t.TempDir(), t.TempDir()
+		configuration := delegateTestConfig()
+		configuration.Budget.MaxTurns = setting.parentMaxTurns
+		provider := &delegateThenFinalProvider{}
+		service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return provider, nil }}
+		result, err := service.Run(context.Background(), RunOptions{Task: "parent task", Workspace: workspace, StateDir: stateDir, Config: configuration})
+		if setting.expectChild {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if !errors.Is(err, ports.ErrTurnBudgetExceeded) {
+			t.Fatalf("exhausted-parent err = %v, want turn budget stop", err)
+		}
+		inspected, err := (Service{}).Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if setting.expectChild && inspected.Projection.State != domain.RunCompleted {
+			t.Fatalf("parent state = %s", inspected.Projection.State)
+		}
+		children := len(inspected.Projection.Children)
+		if (setting.expectChild && children != 1) || (!setting.expectChild && children != 0) {
+			t.Fatalf("max_turns=%d children = %d, want child=%t", setting.parentMaxTurns, children, setting.expectChild)
+		}
+	}
+}

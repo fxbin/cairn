@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 // Journal 是用于测试和进程内运行的并发安全内存事件日志。
@@ -27,7 +28,7 @@ func (journal *Journal) Append(ctx context.Context, expectedSeq uint64, draft do
 	defer journal.mu.Unlock()
 	events := journal.events[draft.RunID]
 	if uint64(len(events)) != expectedSeq {
-		return domain.Event{}, fmt.Errorf("journal conflict for %s: got expected seq %d, current %d", draft.RunID, expectedSeq, len(events))
+		return domain.Event{}, fmt.Errorf("%w: journal conflict for %s: got expected seq %d, current %d", ports.ErrJournalConflict, draft.RunID, expectedSeq, len(events))
 	}
 	previousHash := domain.GenesisHash
 	if len(events) > 0 {

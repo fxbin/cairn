@@ -17,6 +17,11 @@ var ErrTurnBudgetExceeded = errors.New("turn budget exhausted")
 // ErrWaitingReconcile 表示已启动的副作用操作没有可确认的终态，必须人工对账。
 var ErrWaitingReconcile = errors.New("run has a dangling side-effect operation that requires reconciliation")
 
+// ErrJournalConflict 表示追加时观察到的事件序号与调用方预期不一致；家族
+// 外部追加（子完成回写、跨 run 消息）与运行中 Loop 并发时会出现，是可由
+// 重载消除的确定性冲突，不是结果不确定的失败。
+var ErrJournalConflict = errors.New("journal append sequence conflict")
+
 // Approval 是 resume 提供的显式、一次性审批决定。
 type Approval struct {
 	Fingerprint string

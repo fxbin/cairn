@@ -181,3 +181,81 @@ func TestLoopCancelsReadonlyBatchWithoutDanglingOperations(t *testing.T) {
 			countEvent(events, domain.EventOperationCancelled), countEvent(events, domain.EventOperationFailed))
 	}
 }
+
+// externalAppendProbe 在执行时以外部写者身份向本 run Journal 追加一条
+// steering 事实，模拟家族外部追加与 Loop 事件的确定性竞争。
+type externalAppendProbe struct {
+	name    string
+	journal ports.Journal
+	runID   domain.RunID
+}
+
+func (probe *externalAppendProbe) Spec() ports.ToolSpec {
+	return ports.ToolSpec{Name: probe.name, Description: "readonly external-append probe", Parameters: json.RawMessage(`{"type":"object"}`)}
+}
+
+// SideEffect 声明为无副作用，可进只读并行组。
+func (probe *externalAppendProbe) SideEffect() tools.SideEffectClass { return tools.SideEffectNone }
+
+// Execute 以当前末序号 CAS 追加一条外部 steering 事实后成功返回。
+func (probe *externalAppendProbe) Execute(ctx context.Context, raw json.RawMessage) tools.Result {
+	events, err := probe.journal.Load(ctx, probe.runID)
+	if err != nil {
+		return tools.Failure("probe_failed", err.Error())
+	}
+	draft := domain.EventDraft{RunID: probe.runID, WorkspaceHash: "workspace", Type: domain.EventSteeringInputSubmitted, Payload: json.RawMessage(`{"payload_version":1,"input_id":"ext-1","kind":"steer"}`)}
+	if _, err := probe.journal.Append(ctx, uint64(len(events)), draft); err != nil {
+		return tools.Failure("probe_failed", err.Error())
+	}
+	return tools.Success(json.RawMessage(`{}`), "external event appended", 0, "", false)
+}
+
+// TestLoopAppendResyncsAfterExternalFamilyAppend 锁定 Loop 追加韧性：外部
+// 家族追加（本测试以探针确定性制造）抬高序号后，Loop 的下一次追加经
+// 冲突再同步重试成功，运行干净完成且外部事实保留在事件链中。
+func TestLoopAppendResyncsAfterExternalFamilyAppend(t *testing.T) {
+	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "external append resilience")
+	probe := &externalAppendProbe{name: "read_file", journal: journal, runID: runID}
+	registry, err := tools.NewRegistry(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{
+			{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "probe-1", Name: "read_file", Arguments: json.RawMessage(`{}`)}},
+			{Kind: ports.Done},
+		},
+		{{Kind: ports.TextDelta, Text: "resynced"}, {Kind: ports.Done}},
+	}}
+	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 3}
+	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "external append resilience", WorkspaceHash: "workspace"})
+	if err != nil || result.Response != "resynced" {
+		t.Fatalf("run=%#v err=%v", result, err)
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := false
+	for _, event := range events {
+		if event.Type == domain.EventSteeringInputSubmitted {
+			external = true
+		}
+	}
+	if !external {
+		t.Fatalf("external steering fact missing from journal")
+	}
+	if _, err := domain.Replay(events); err != nil {
+		t.Fatalf("journal no longer replays: %v", err)
+	}
+}
