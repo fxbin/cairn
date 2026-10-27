@@ -49,8 +49,9 @@ func (loop *Loop) executeDelegateTask(ctx context.Context, projection *domain.Ru
 
 // resyncProjection 重载本 run Journal 尾部并把外部追加的事实逐事件应用到
 // 投影；外部事件违反当前运行状态机时失败关闭。本 Loop 仍是自身事件的唯一
-// 调度者，再同步只吸收家族写入的委托/完成/steering 事实，不重放已应用事件，
-// 也不经 sink 广播外部事实（它们由写入方负责可见性）。
+// 调度者，再同步只吸收家族写入的委托/完成/steering 事实，不重放已应用事件。
+// 外部事实不经本 Loop 的 OnEvent sink 广播——流式视图由写入方与 Journal
+// 投影（Inspect/进度视图）共同承担，Journal 仍是唯一事实源。
 func (loop *Loop) resyncProjection(ctx context.Context, projection *domain.RunProjection) error {
 	events, err := loop.Journal.Load(ctx, projection.ID)
 	if err != nil {

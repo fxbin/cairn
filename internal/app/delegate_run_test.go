@@ -513,5 +513,16 @@ func TestDelegateTaskClampsChildTurnsToParentRemaining(t *testing.T) {
 		if (setting.expectChild && children != 1) || (!setting.expectChild && children != 0) {
 			t.Fatalf("max_turns=%d children = %d, want child=%t", setting.parentMaxTurns, children, setting.expectChild)
 		}
+		// 精确钳制锁：子运行冻结的轮数必须等于父剩余值（父配置 2、委派时已
+		// 开 1 轮 → 子冻结 1）；用同构配置 Inspect 子 run，指纹不匹配即失败。
+		if setting.expectChild {
+			childID := onlyChildRun(t, inspected.Projection)
+			childConfiguration := configuration
+			childConfiguration.Budget.MaxTurns = 1
+			childInspected, childErr := (Service{}).Inspect(context.Background(), workspace, stateDir, childConfiguration, domain.RunID(childID), false)
+			if childErr != nil || childInspected.Projection.State != domain.RunCompleted {
+				t.Fatalf("clamped child inspect = err:%v state:%s (fingerprint mismatch means clamp not frozen)", childErr, childInspected.Projection.State)
+			}
+		}
 	}
 }
