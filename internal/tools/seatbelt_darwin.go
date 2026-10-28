@@ -54,10 +54,14 @@ func SeatbeltProfile(options SeatbeltOptions) (string, error) {
 	b.WriteString("(allow file-write-data (literal \"/dev/null\"))\n")
 	b.WriteString("(allow file-write-data (literal \"/dev/stdout\"))\n")
 	b.WriteString("(allow file-write-data (literal \"/dev/stderr\"))\n")
-	// 临时目录：编译器/测试缓存常用
+	// 临时目录：编译器/测试缓存常用。内核按符号链接解析后的规范路径匹配
+	// subpath 规则，macOS 用户级临时目录实际位于 /private/var/folders
+	//（/var 是指向 /private/var 的符号链接），仅写 /var/folders 在真实系统
+	// 上不可达，必须同时放行规范路径。
 	b.WriteString("(allow file-write* (subpath \"/private/tmp\"))\n")
 	b.WriteString("(allow file-write* (subpath \"/tmp\"))\n")
 	b.WriteString("(allow file-write* (subpath \"/var/folders\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/private/var/folders\"))\n")
 	if options.WriteMode == SeatbeltWriteWorkspace {
 		fmt.Fprintf(&b, "(allow file-write* (subpath \"%s\"))\n", root)
 	}
