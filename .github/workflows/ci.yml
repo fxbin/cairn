@@ -1,0 +1,68 @@
+# Cairn 持续集成：基础门禁 + 扩展验证矩阵。
+#
+# 边界约定（与 .github/VERIFICATION.md 一致）：
+# - gate 在 push/PR 上运行 AGENTS.md 验证矩阵的可自动化子集，只跑默认标签测试。
+# - extended 仅在手动触发（workflow_dispatch）或每周定时运行：race、faultinject、e2e。
+# - 全程不配置任何密钥；fault/e2e 用例使用进程内脚本化 Provider 与回环端点，
+#   不会调用真实 Provider 或付费服务；缺环境时用例显式失败，而非跳过后报告通过。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # 每周二 05:00（北京时间）全量复检；cron 使用 UTC
+    - cron: '0 21 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 基础门禁：格式漂移、静态检查、构建、默认标签全量测试
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt 漂移检查
+        run: |
+          drift=$(gofmt -l .)
+          if [ -n "$drift" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$drift"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: 构建 CLI
+        run: go build ./cmd/cairn
+      - name: 默认标签全量测试
+        run: go test ./...
+
+  # 扩展矩阵：race、协议合同、故障注入与端到端；仅显式入口触发
+  extended:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: race 全量
+        run: go test -race ./...
+      - name: 协议合同测试
+        run: go test ./internal/adapters/provider/openaicompat -run Contract -count=1
+      - name: 故障注入（started 副作用对账）
+        run: go test ./test/fault -tags=faultinject -count=1
+      - name: 端到端（脚本化 Provider）
+        run: go test ./test/e2e -tags=e2e -count=1
