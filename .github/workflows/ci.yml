@@ -48,6 +48,10 @@ jobs:
         run: go vet ./cmd/... ./internal/... ./test/...
       - name: 构建 CLI
         run: go build ./cmd/cairn
+      # internal/benchmark 的 runner 测试强制 exec/验证走 Docker 沙箱（alpine:latest），
+      # 预拉取公共镜像使该路径在 Linux 上真实执行；镜像缺失时按合同失败关闭。
+      - name: 预拉取沙箱镜像
+        run: docker pull alpine:latest
       - name: 默认标签全量测试
         run: go test ./cmd/... ./internal/... ./test/...
 
@@ -61,6 +65,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      # 同 gate：benchmark 测试需要本地 Docker 与 alpine 镜像
+      - name: 预拉取沙箱镜像
+        run: docker pull alpine:latest
       - name: race 全量（gui 除外，同 gate 分组约定）
         run: go test -race ./cmd/... ./internal/... ./test/...
       - name: 协议合同测试
