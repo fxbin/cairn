@@ -133,6 +133,8 @@ func (command Command) dispatch(ctx context.Context, args []string) int {
 		return command.packageCommand(ctx, args[1:])
 	case "session":
 		return command.sessionCommand(ctx, args[1:])
+	case "workflow":
+		return command.workflowCommand(ctx, args[1:])
 	case "init":
 		return command.initCommand(ctx, args[1:])
 	case "tui":
@@ -514,6 +516,7 @@ Usage:
   cairn session show <run-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn session fork --from <run-id> <task> [run flags] [--json]
   cairn session continue [--from <run-id>] <task> [run flags] [--json]
+  cairn workflow status <workflow-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn provider models [--query <name>] [--provider <id>] [--tool-call] [--reasoning] [--refresh] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--admission optional|required] [--save-preset <name>] [--overwrite-preset] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]

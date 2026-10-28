@@ -244,6 +244,7 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 		"github.com/fxbin/cairn/internal/adapters/mcpclient":                  true,
 		"github.com/fxbin/cairn/internal/adapters/journal/sqlite":             true,
 		"github.com/fxbin/cairn/internal/adapters/memstore/sqlite":            true,
+		"github.com/fxbin/cairn/internal/adapters/workflow/sqlite":            true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat":      true,
 		"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages": true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openairesponses":   true,
