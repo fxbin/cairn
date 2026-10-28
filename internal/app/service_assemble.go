@@ -212,6 +212,9 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
 		SystemPrompt: configuration.Prompt.Resolved,
 		Hooks:        hooksFromConfig(configuration.Hooks),
+		// 异步委派语义由配置显式开启；停靠与交付所需的子完成信号登记表由
+		// service.Run 在装配委派回调时注入。
+		AsyncDelegateEnabled: configuration.Tools.DelegateAsync,
 	}
 	if guard := configuration.Guard; guard != nil {
 		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures

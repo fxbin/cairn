@@ -49,6 +49,11 @@ func Validate(config Config) error {
 		if config.Policy.Write != "deny" || config.Policy.Exec != "deny" || len(config.Verification.Commands) != 0 {
 			return fmt.Errorf("read-only preset requires deny policies and no verification commands")
 		}
+		// read-only 面不注册委派工具，异步委派开关在其上只会制造可达的失败
+		// 提议，配置层直接失败关闭。
+		if config.Tools.DelegateAsync {
+			return fmt.Errorf("tools.delegate_async is not available with the %s preset", PresetReadOnly)
+		}
 	}
 	if config.Provider.APIKeyEnv == "" {
 		return fmt.Errorf("provider.api_key_env is required")

@@ -44,6 +44,11 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if err := checkFrozenRunContract(events, options.StateDir, boot.WorkspaceHash); err != nil {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	// 异步委派启用时，含非终态子的父运行恢复失败关闭：不自动续跑子、不重发
+	// 未知副作用，先显式恢复或收尾子运行。
+	if err := rejectResumeWithUnfinishedAsyncChildren(options.Config.Tools.DelegateAsync, events); err != nil {
+		return RunResult{ID: options.RunID}, err
+	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
 		return RunResult{ID: options.RunID}, fmt.Errorf("%w: use --resolve %s=<verdict>", ErrWaitingReconcile, projection.PendingOperation.ID)
 	}
@@ -236,6 +241,10 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return service.driveRewindRun(ctx, boot, options.RunID, rewindPlan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
 	}
 
+	// 对账后继续模型续跑同样受异步子门禁约束：非终态子未收束前不续跑父运行。
+	if err := rejectResumeWithUnfinishedAsyncChildren(options.Config.Tools.DelegateAsync, events); err != nil {
+		return RunResult{ID: options.RunID}, err
+	}
 	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
 	if err != nil {
 		return RunResult{ID: options.RunID}, err

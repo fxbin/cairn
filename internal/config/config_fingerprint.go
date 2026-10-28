@@ -91,7 +91,7 @@ func (config Config) Fingerprint() string {
 
 // toolsFingerprint 仅在存在 opt-in 工具时进入指纹，保证默认配置指纹不变。
 func toolsFingerprint(tools ToolsConfig) *ToolsConfig {
-	if !tools.Web && !tools.ExecSession && !tools.Browser && !tools.RunTests && !tools.LspDiagnostics {
+	if !tools.Web && !tools.ExecSession && !tools.DelegateAsync && !tools.Browser && !tools.RunTests && !tools.LspDiagnostics {
 		return nil
 	}
 	copied := tools

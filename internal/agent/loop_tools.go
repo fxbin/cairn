@@ -150,6 +150,17 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 		return tools.Result{}, err
 	}
+	// 异步子活跃期间拒绝父侧副作用类工具（含再次委派）：同一时刻至多一个
+	// 写入者，只读工具与 steering 不受限；拒绝发生在操作启动之前。
+	if loop.AsyncDelegateEnabled && loop.Tools.SideEffect(call.Name) != tools.SideEffectNone {
+		writerActive, gateErr := loop.asyncChildWriterActive(ctx, projection)
+		if gateErr != nil {
+			return tools.Result{}, gateErr
+		}
+		if writerActive {
+			return loop.refuseParentSideEffectWhileChildActive(ctx, projection, input, turnID, operationID, call)
+		}
+	}
 	if decision.Effect == policy.Ask {
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 			Fingerprint string `json:"fingerprint"`

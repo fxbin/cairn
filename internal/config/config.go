@@ -326,12 +326,16 @@ type SandboxConfig struct {
 	MaxPIDs     int    `yaml:"max_pids"`
 }
 
-// ToolsConfig 控制可选工具面暴露；Web、ExecSession、Browser、RunTests 与
-// LspDiagnostics 默认关闭或仅出现在非 read-only Preset（opt-in）。
+// ToolsConfig 控制可选工具面暴露；Web、ExecSession、Browser、RunTests、
+// LspDiagnostics 与 DelegateAsync 默认关闭或仅出现在非 read-only Preset（opt-in）。
 type ToolsConfig struct {
 	Web bool `yaml:"web"`
 	// ExecSession 显式启用受控 tmux 会话工具；默认不注册。
 	ExecSession bool `yaml:"exec_session"`
+	// DelegateAsync 显式启用 delegate_task 的调用级异步委派：允许父运行在子
+	// 运行期间停靠安全点继续消费 steering，并在子终态后于下一安全点交付结果
+	// 摘要。默认关闭；开启即改变执行语义并进入配置指纹。
+	DelegateAsync bool `yaml:"delegate_async"`
 	// Browser 启用 headless Chrome CDP 工具；默认不注册。
 	Browser bool `yaml:"browser"`
 	// RunTests 启用 run_tests 结构化测试执行。
