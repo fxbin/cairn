@@ -16,8 +16,8 @@ CI 只证明第一级；通过 CI 不代表沙箱评测或真实验收已通过�
 
 ## CI 入口
 
-- **gate**（push 到 main / 全部 PR）：gofmt 漂移检查、`go vet ./...`、`go build ./cmd/cairn`、`go test ./...`（默认标签）。
-- **extended**（仅手动 workflow_dispatch / 每周定时）：`go test -race ./...`、`openaicompat -run Contract`、`./test/fault -tags=faultinject`、`./test/e2e -tags=e2e`。
+- **gate**（push 到 main / 全部 PR）：gofmt 漂移检查、`go vet`、`go build ./cmd/cairn`、默认标签全量测试（不含 `gui` 包——Wails 桌面壳依赖本地前端构建产物 `gui/frontend/dist`，git 忽略，须先跑 gui 前端构建，按可用性单独分组，不在默认门禁覆盖范围）。
+- **extended**（仅手动 workflow_dispatch / 每周定时）：`go test -race`（gui 除外）、`openaicompat -run Contract`、`./test/fault -tags=faultinject`、`./test/e2e -tags=e2e`。
 - 工作流不配置任何密钥；fault/e2e 用例使用进程内脚本化 Provider 与回环 HTTP 端点，不调用真实服务；缺环境时用例显式失败，不会静默跳过后报告通过。
 
 ## 恢复与审批矩阵（既有用例映射）
@@ -62,7 +62,7 @@ CI 只证明第一级；通过 CI 不代表沙箱评测或真实验收已通过�
 
 ## 首次基线记录（2026-10-28）
 
-- 本地（darwin/arm64，Go 1.26.4）：gofmt 无漂移（仅本地忽略目录除外）、`go vet` 0 问题、`go build ./cmd/cairn` 成功、默认标签测试 34 个包全部通过。
-- CI 首跑结果以 Actions 运行为准，跑后补记。
-- 未执行：extended 矩阵首跑（手动触发后补记）、沙箱评测、真实 Provider 验收。
-- 未证明的能力：真实 Provider 下的稳定性、TUI 交互体验、发布级验收；以上须按三级分层另行取证，不得引用 CI 结果替代。
+- 本地（darwin/arm64，Go 1.26.4）：gofmt 无漂移（仅本地忽略目录除外）、`go vet` 0 问题、`go build ./cmd/cairn` 成功、默认标签测试 34 个包全部通过（本地含 gui 前端产物）。
+- CI 首跑（Linux runner）暴露平台差异：`gui` 包在无前端产物的全新检出不编译（`//go:embed all:frontend/dist` 无匹配），已按分组约定将 gui 移出门禁范围；其余包以 CI 运行为准。
+- 未执行：extended 矩阵首跑（手动触发后补记）、沙箱评测、真实 Provider 验收、gui/桌面构建在 CI 的构建验证。
+- 未证明的能力：真实 Provider 下的稳定性、TUI 交互体验、桌面 GUI 构建、发布级验收；以上须按三级分层另行取证，不得引用 CI 结果替代。

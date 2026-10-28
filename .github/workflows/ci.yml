@@ -29,10 +29,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      # gui 是 Wails 桌面壳，编译依赖本地前端构建产物 gui/frontend/dist（git 忽略，
+      # 须先跑 gui 的前端构建）；按约定单独分组，不进默认门禁。
+      - name: 计算可编译包列表
+        run: echo "PACKAGES=$(go list ./... | grep -v '^github.com/fxbin/cairn/gui$' | tr '\n' ' ')" >> "$GITHUB_ENV"
       - name: gofmt 漂移检查
         run: |
           drift=$(gofmt -l .)
@@ -42,11 +46,11 @@ jobs:
             exit 1
           fi
       - name: go vet
-        run: go vet ./...
+        run: go vet $PACKAGES
       - name: 构建 CLI
         run: go build ./cmd/cairn
       - name: 默认标签全量测试
-        run: go test ./...
+        run: go test $PACKAGES
 
   # 扩展矩阵：race、协议合同、故障注入与端到端；仅显式入口触发
   extended:
@@ -54,12 +58,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: race 全量
-        run: go test -race ./...
+      - name: race 全量（gui 除外，同 gate 分组约定）
+        run: go test -race $(go list ./... | grep -v '^github.com/fxbin/cairn/gui$')
       - name: 协议合同测试
         run: go test ./internal/adapters/provider/openaicompat -run Contract -count=1
       - name: 故障注入（started 副作用对账）
