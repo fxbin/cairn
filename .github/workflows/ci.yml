@@ -1,10 +1,12 @@
 # Cairn 持续集成：基础门禁 + 扩展验证矩阵。
 #
-# 边界约定（与 .github/VERIFICATION.md 一致）：
+# 边界约定：
 # - gate 在 push/PR 上运行 AGENTS.md 验证矩阵的可自动化子集，只跑默认标签测试。
 # - extended 仅在手动触发（workflow_dispatch）或每周定时运行：race、faultinject、e2e。
 # - 全程不配置任何密钥；fault/e2e 用例使用进程内脚本化 Provider 与回环端点，
 #   不会调用真实 Provider 或付费服务；缺环境时用例显式失败，而非跳过后报告通过。
+# - 恢复/审批场景矩阵与三级证据分层的完整文档在本地 docs/ci-verification-baseline.md
+#   （按仓库约定不提交）；本文件的注释即上述边界的可提交表述。
 name: CI
 
 on:
