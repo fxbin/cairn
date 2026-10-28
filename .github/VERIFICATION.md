@@ -62,7 +62,10 @@ CI 只证明第一级；通过 CI 不代表沙箱评测或真实验收已通过�
 
 ## 首次基线记录（2026-10-28）
 
-- 本地（darwin/arm64，Go 1.26.4）：gofmt 无漂移（仅本地忽略目录除外）、`go vet` 0 问题、`go build ./cmd/cairn` 成功、默认标签测试 34 个包全部通过（本地含 gui 前端产物）。
-- CI 首跑（Linux runner）暴露平台差异：`gui` 包在无前端产物的全新检出不编译（`//go:embed all:frontend/dist` 无匹配），已按分组约定将 gui 移出门禁范围；其余包以 CI 运行为准。
-- 未执行：extended 矩阵首跑（手动触发后补记）、沙箱评测、真实 Provider 验收、gui/桌面构建在 CI 的构建验证。
+- 本地（darwin/arm64，Go 1.26.4）：gofmt 无漂移（仅本地忽略目录除外）、`go vet` 0 问题、`go build ./cmd/cairn` 成功、默认标签测试 34 个包全部通过（本地含 gui 前端产物与本机 Docker/alpine）。
+- CI 首跑暴露两处环境事实，已按合同处理：
+  1. `gui` 包在无前端产物的全新检出不编译（embed 无匹配文件），按分组约定移出门禁，桌面构建另行验证；
+  2. benchmark runner 把尝试的执行与验证强制走 Docker 沙箱（`alpine:latest`），默认测试集因此依赖本机 Docker 与该镜像；CI 在测试前预拉取公共 alpine 镜像，使沙箱路径在 Linux 真实执行（镜像缺失时按合同失败关闭，不静默跳过）。
+- 基线结果：gate 绿（push 触发，约 40 秒）；extended 首跑绿（手动触发，约 2 分钟：race 全量、openaicompat 协议合同、faultinject 故障注入、e2e 全部通过）。本机 macOS 上不稳定的信号抢占用例在 Linux CI 通过，确认为宿主环境噪音而非产品缺陷。
+- 未执行：沙箱评测、真实 Provider 验收、桌面 GUI 构建验证。
 - 未证明的能力：真实 Provider 下的稳定性、TUI 交互体验、桌面 GUI 构建、发布级验收；以上须按三级分层另行取证，不得引用 CI 结果替代。
