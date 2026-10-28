@@ -32,6 +32,11 @@ type Journal struct {
 }
 
 // Open 创建或打开可写日志，并在首次打开时执行受校验的 schema 迁移。
+// 连接 DSN 以 _txlock=immediate 打开：追加事务在读日志头之前即取写锁，使
+// 同库多连接（根运行与异步子运行家族）的并发追加由 busy_timeout 串行化，
+// 杜绝 WAL 下延迟事务先读后写遭遇的立即 BUSY（升级死锁/快照失效）。驱动
+// 对非 file: 前缀 DSN 按字节截取 '?' 之前的路径且不做 URI 解码，故此处用
+// 纯拼接保留路径原样（含空格等字符），不得经 url.URL 转义。
 func Open(path string) (*Journal, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("journal path is required")
@@ -39,7 +44,7 @@ func Open(path string) (*Journal, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create journal directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite journal: %w", err)
 	}

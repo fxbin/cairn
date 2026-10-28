@@ -18,9 +18,12 @@ const DelegateTaskName = "delegate_task"
 const DelegateMaxTurnsLimit = 100
 
 // DelegateRequest 是模型可见的委派参数；仅封闭字段，不含工具子集或令牌额度。
+// Async 为 true 时要求运行配置显式启用 tools.delegate_async，且以异步方式派发：
+// 工具立即返回子运行标识与运行中状态，父运行不被同步等待阻塞。
 type DelegateRequest struct {
 	Task     string `json:"task"`
 	MaxTurns int    `json:"max_turns,omitempty"`
+	Async    bool   `json:"async,omitempty"`
 }
 
 // DelegateTask 是模型侧委派工具；执行必须经 Agent Loop 注入父运行身份，
@@ -31,8 +34,8 @@ type DelegateTask struct{}
 func (DelegateTask) Spec() ports.ToolSpec {
 	return ports.ToolSpec{
 		Name:        DelegateTaskName,
-		Description: "Delegate a bounded subtask to a child agent run sharing this workspace with a narrowed tool set (child tools are a subset of the parent surface). Blocks until the child finishes or pauses for approval. Requires task text and optional max_turns (1-100) within the parent budget.",
-		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"required":["task"],"properties":{"task":{"type":"string","minLength":1},"max_turns":{"type":"integer","minimum":1,"maximum":100}}}`),
+		Description: "Delegate a bounded subtask to a child agent run sharing this workspace with a narrowed tool set (child tools are a subset of the parent surface). Blocks until the child finishes or pauses for approval. Set async=true to return immediately with the child run id in state running (requires the tools.delegate_async configuration; at most one active async child, and parent side-effect tools are refused until it settles). Requires task text and optional max_turns (1-100) within the parent budget.",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"required":["task"],"properties":{"task":{"type":"string","minLength":1},"max_turns":{"type":"integer","minimum":1,"maximum":100},"async":{"type":"boolean","description":"Dispatch the child asynchronously and return immediately; requires tools.delegate_async to be enabled."}}}`),
 	}
 }
 

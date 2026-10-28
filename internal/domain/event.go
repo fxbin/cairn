@@ -156,8 +156,10 @@ var payloadSchemas = map[EventType]map[string]struct{}{
 	},
 	EventVerificationFinished: {"payload_version": {}, "verification_id": {}, "ok": {}, "evidence_ref": {}, "verified_mutation_seq": {}, "workspace_observation": {}, "result_fingerprint": {}},
 	// P3a 安全点 steering：输入经制品脱敏落盘，事件只带引用与幂等标识。
+	// kind 可选区分 steer（用户补充指导）与 subagent_result（异步子终态摘要
+	// 下轮交付），旧事件缺省视为 steer。
 	EventSteeringInputSubmitted: {"payload_version": {}, "input_id": {}, "content_ref": {}, "kind": {}},
-	EventSteeringInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}},
+	EventSteeringInputConsumed:  {"payload_version": {}, "input_id": {}, "content_ref": {}, "outcome": {}, "kind": {}},
 	// P3b 持久后续队列：workspace 级 queue 命名空间，RunID 哨兵 "queue"。
 	EventQueueInputSubmitted: {"payload_version": {}, "input_id": {}, "content_ref": {}, "kind": {}},
 	EventSubagentDelegated:   {"payload_version": {}, "child_run_id": {}, "task_digest": {}, "budget": {}},
@@ -950,7 +952,7 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 		if err := validateOptionalPayloadObject(eventType, object, "content_ref"); err != nil {
 			return err
 		}
-		if payload.Kind != nil && !oneOf(*payload.Kind, "steer") {
+		if payload.Kind != nil && !oneOf(*payload.Kind, "steer", "subagent_result") {
 			return fmt.Errorf("%s kind %q is invalid", eventType, *payload.Kind)
 		}
 	case EventSteeringInputConsumed:
@@ -958,6 +960,7 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 			InputID    *string         `json:"input_id"`
 			ContentRef json.RawMessage `json:"content_ref"`
 			Outcome    *string         `json:"outcome"`
+			Kind       *string         `json:"kind"`
 		}
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return fmt.Errorf("decode steering_input_consumed payload semantics: %w", err)
@@ -970,6 +973,9 @@ func validatePayloadSemantics(eventType EventType, raw json.RawMessage, object m
 		}
 		if payload.Outcome == nil || !oneOf(*payload.Outcome, "applied", "rejected") {
 			return fmt.Errorf("%s outcome must be applied or rejected", eventType)
+		}
+		if payload.Kind != nil && !oneOf(*payload.Kind, "steer", "subagent_result") {
+			return fmt.Errorf("%s kind %q is invalid", eventType, *payload.Kind)
 		}
 	case EventQueueInputSubmitted:
 		var payload struct {

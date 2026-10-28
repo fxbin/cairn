@@ -435,6 +435,20 @@ func (loop *Loop) appendResume(ctx context.Context, projection *domain.RunProjec
 
 // resumeFinalModelResponse 在恢复时重新处理已完成模型响应的最终回复或工具调用。
 func (loop *Loop) resumeFinalModelResponse(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, response modelResponsePayload, events []domain.Event) (Result, error) {
+	// 异步委派开启时，子事实未收束（非终态子或未交付完成子）的最终响应
+	// 不得终态化运行：按继续轮次收束并回到 run()，由安全点交付与停靠推进。
+	if loop.AsyncDelegateEnabled && asyncAdvanceRequired(projection, events) {
+		if !hasAssistantMessage(events, turnID) {
+			if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: mustJSON(domain.AssistantMessagePayload{Text: response.Text})}); err != nil {
+				return Result{}, err
+			}
+		}
+		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})}); err != nil {
+			return Result{}, err
+		}
+		input.Task = projection.Task
+		return loop.run(ctx, input)
+	}
 	if !hasAssistantMessage(events, turnID) {
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: mustJSON(domain.AssistantMessagePayload{Text: response.Text})}); err != nil {
 			return Result{}, err

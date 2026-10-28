@@ -301,7 +301,18 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	} else {
 		// 模型侧委派仅绑定根运行（子运行不嵌套委派）；回调复用本次装配的
 		// Journal 与配置，父 Loop 在工具执行期间阻塞等待子终态或审批暂停。
-		boot.Loop.Delegator = service.delegatorFor(boot, options)
+		// 异步委派显式启用时装配进程内运行时：子完成信号登记表接入父 Loop，
+		// 派发 goroutine 由 asyncRuntime 跟踪并在本 Run 返回前回收。
+		var asyncRuntime *asyncDelegateRuntime
+		if options.Config.Tools.DelegateAsync {
+			asyncRuntime = newAsyncDelegateRuntime(&boot.Loop)
+		}
+		boot.Loop.Delegator = service.delegatorFor(boot, options, asyncRuntime)
+		defer func() {
+			if asyncRuntime != nil {
+				asyncRuntime.recallAsyncChildren()
+			}
+		}()
 	}
 	configFingerprint := options.Config.Fingerprint()
 	frozenConfig, err := marshalFrozenRunConfig(options.Config, configFingerprint)

@@ -203,12 +203,13 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				messages = append(messages, ports.Message{Role: "user", Content: payload.Text})
 			}
 		case domain.EventSteeringInputConsumed:
-			// 已生效 steering 按事件顺序重建为用户补充指导；正文从受保护制品
-			// 严格解引用，缺失或损坏失败关闭。
+			// 已生效 steering 按事件顺序重建为用户补充指导或异步子终态摘要；
+			// 正文从受保护制品严格解引用，缺失或损坏失败关闭。
 			var payload struct {
 				InputID    string          `json:"input_id"`
 				ContentRef json.RawMessage `json:"content_ref"`
 				Outcome    string          `json:"outcome"`
+				Kind       string          `json:"kind"`
 			}
 			if json.Unmarshal(event.Payload, &payload) != nil {
 				continue
@@ -227,7 +228,11 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 			if err != nil {
 				return nil, fmt.Errorf("steering input %s content: %w", payload.InputID, err)
 			}
-			messages = append(messages, ports.Message{Role: "user", Content: "[用户补充当前任务指导]\n" + content})
+			prefix := "[用户补充当前任务指导]\n"
+			if payload.Kind == steeringKindSubagentResult {
+				prefix = asyncChildResultMessagePrefix
+			}
+			messages = append(messages, ports.Message{Role: "user", Content: prefix + content})
 		}
 	}
 	return messages, nil

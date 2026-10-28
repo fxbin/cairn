@@ -69,6 +69,14 @@ type Loop struct {
 	// 失败关闭；回调期间应用层会向本 run Journal 追加 delegated/completed
 	// 事实，Loop 在回调返回后先再同步投影再继续追加。
 	Delegator DelegatorFunc
+	// AsyncDelegateEnabled 显式启用异步委派语义（tools.delegate_async）：
+	// 父 Loop 在非终态异步子存在时停靠安全点等待、拒绝父侧副作用工具，并在
+	// 安全点把子终态摘要作为 steering 事实一次性交付。默认关闭时行为与既有
+	// 同步委派完全一致。
+	AsyncDelegateEnabled bool
+	// AsyncChildren 登记本进程内活跃异步子运行的完成信号，供停靠等待与
+	// 失败关闭判定；由应用层在装配委派回调时注入，nil 时异步停靠不可达。
+	AsyncChildren *AsyncChildSet
 	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
 	// 同时进入创建事件以支持 resume 回放。
 	PriorContext    string
@@ -314,6 +322,13 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		if err != nil {
 			return Result{RunID: input.RunID}, err
 		}
+		// 异步委派开启时，同一安全点吸收子完成事实并交付未交付的终态摘要。
+		if loop.AsyncDelegateEnabled {
+			messages, err = loop.deliverCompletedAsyncChildren(ctx, &projection, input, messages)
+			if err != nil {
+				return Result{RunID: input.RunID}, err
+			}
+		}
 		turnID := domain.NewTurnID()
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnOpened, TurnID: &turnID, Payload: mustJSON(struct {
 			Turn int `json:"turn"`
@@ -416,6 +431,25 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		}
 		messages = append(messages, ports.Message{Role: "assistant", Content: response.Text, ToolCalls: response.ToolCalls, ProtocolBlocks: response.ProtocolBlocks})
 		if len(response.ToolCalls) == 0 {
+			// 异步委派开启时：存在非终态子或未交付完成子则停靠安全点，
+			// 不终态化 run、不进入验证与最终回复；全子收束后按既有流程收尾。
+			if loop.AsyncDelegateEnabled {
+				parked, parkErr := loop.parkForPendingAsyncChildren(ctx, &projection, input, turnID, response.Text)
+				if parkErr != nil {
+					return Result{RunID: input.RunID}, parkErr
+				}
+				if parked {
+					parkedEvents, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
+					if loadErr != nil {
+						return Result{RunID: input.RunID}, loadErr
+					}
+					messages, err = loop.messagesFromEvents(parkedEvents, input.Task)
+					if err != nil {
+						return Result{RunID: input.RunID}, err
+					}
+					continue
+				}
+			}
 			if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventAssistantMessageAppended, TurnID: &turnID, Payload: mustJSON(domain.AssistantMessagePayload{Text: response.Text})}); err != nil {
 				return Result{}, err
 			}
@@ -590,7 +624,7 @@ func (loop *Loop) consumeSteeringAtSafetyPoint(ctx context.Context, projection *
 			outcome = "rejected"
 		}
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventSteeringInputConsumed, Payload: mustJSON(steeringConsumedPayload{
-			InputID: request.InputID, ContentRef: contentRef, Outcome: outcome,
+			InputID: request.InputID, ContentRef: contentRef, Outcome: outcome, Kind: steeringKindSteer,
 		})}); err != nil {
 			return messages, err
 		}
@@ -612,11 +646,14 @@ type steeringInputPayload struct {
 	Kind       string        `json:"kind"`
 }
 
-// steeringConsumedPayload 是 steering_input_consumed 的业务字段。
+// steeringConsumedPayload 是 steering_input_consumed 的业务字段；Kind 标记
+// 输入种类（steer 用户指导、subagent_result 异步子终态摘要），旧事件缺省
+// 视为 steer。
 type steeringConsumedPayload struct {
 	InputID    string        `json:"input_id"`
 	ContentRef *artifact.Ref `json:"content_ref,omitempty"`
 	Outcome    string        `json:"outcome"`
+	Kind       string        `json:"kind,omitempty"`
 }
 
 // steeringConsumedIDs 返回已消费 InputID 集合视图；仅读用途，空源返回空映射。
@@ -645,7 +682,9 @@ func steeringConsumedFromEvents(events []domain.Event) map[string]struct{} {
 }
 
 // requeueUnconsumedSteering 把已提交但未消费的 steering 输入重新投递回收件箱，
-// 冷恢复后仍能在安全点生效；正文从制品解引用，损坏则跳过并留待对账。
+// 冷恢复后仍能在安全点生效；正文从制品解引用，损坏则跳过并留待对账。仅用户
+// 指导（kind=steer 或旧事件缺省）回放：异步子结果交付由安全点按父投影另行
+// 持久化交付，不经收件箱重放，避免崩溃窗口把子摘要误当用户指导注入。
 func (loop *Loop) requeueUnconsumedSteering(events []domain.Event) {
 	if loop.steeringInbox == nil {
 		loop.steeringInbox = make(chan SteeringRequest, 64)
@@ -657,8 +696,12 @@ func (loop *Loop) requeueUnconsumedSteering(events []domain.Event) {
 		var payload struct {
 			InputID    string          `json:"input_id"`
 			ContentRef json.RawMessage `json:"content_ref"`
+			Kind       string          `json:"kind"`
 		}
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.InputID == "" {
+			continue
+		}
+		if payload.Kind != "" && payload.Kind != steeringKindSteer {
 			continue
 		}
 		if _, consumed := loop.steeringConsumed[payload.InputID]; consumed {
