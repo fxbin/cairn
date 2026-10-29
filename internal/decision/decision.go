@@ -4,7 +4,7 @@
 // 当前状态：合同脚手架，尚无运行时消费方（Agent Loop、CLI 与 Journal 均未
 // 接线）。决策账本不是运行事实源，不授予权限，不决定运行终态；注入上下文的
 // 项目知识位于 Policy 之下，不能覆盖上层授权。生产接入前需先打通授权链并
-// 补齐模型级评测（ADR-0022）。
+// 补齐模型级评测（ADR-0023）。
 //
 // Author: fxbin
 package decision
@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
@@ -122,6 +121,8 @@ var (
 	ErrInvalidTransition = errors.New("decision transition is not permitted")
 	// ErrNotHumanApproval 表示确认缺少人工来源，候选不能自行生效。
 	ErrNotHumanApproval = errors.New("decision activation requires human approval")
+	// ErrNotAuthorized 表示主体无权改写目标记录。
+	ErrNotAuthorized = errors.New("decision write is not authorized for this principal")
 )
 
 // DecisionRecord 是一条项目级决策记录。正文一经创建不可改写：变更一律通过
@@ -425,19 +426,6 @@ func validateText(field, value string, maxRunes int) error {
 		return fmt.Errorf("decision %s contains an absolute or escaping path", field)
 	}
 	return nil
-}
-
-// containsControlRune 判断文本是否含有除换行与制表符以外的控制字符。
-func containsControlRune(value string) bool {
-	for _, character := range value {
-		if character == '\n' || character == '\t' {
-			continue
-		}
-		if unicode.IsControl(character) {
-			return true
-		}
-	}
-	return false
 }
 
 // validIdentifier 仅接受固定 ASCII 标识，阻断路径分隔符、空白与自由文本。

@@ -56,7 +56,7 @@ func TestLedgerProposeConfirmRevokeKeepsHistory(t *testing.T) {
 	if confirmed.Status != StatusActive || confirmed.ReviewedAt == nil {
 		t.Fatalf("expected an active record with a review time, got %s", confirmed.Status)
 	}
-	revoked, err := ledger.Revoke(confirmed.ID, RevokeReasonEvidenceInvalid, fixtureTime.Add(2*time.Hour))
+	revoked, err := ledger.Revoke(confirmed.ID, RevokeReasonEvidenceInvalid, fixtureApprover, fixtureTime.Add(2*time.Hour))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,10 +76,10 @@ func TestLedgerProposeConfirmRevokeKeepsHistory(t *testing.T) {
 	if audits[2].Reason != RevokeReasonEvidenceInvalid {
 		t.Fatalf("expected the revocation reason to be kept, got %q", audits[2].Reason)
 	}
-	if _, err := ledger.Revoke(confirmed.ID, RevokeReasonEvidenceInvalid, fixtureTime.Add(3*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := ledger.Revoke(confirmed.ID, RevokeReasonEvidenceInvalid, fixtureApprover, fixtureTime.Add(3*time.Hour)); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected a revoked record to reject a second revocation, got %v", err)
 	}
-	if _, err := ledger.Revoke(confirmed.ID, "because_i_said_so", fixtureTime.Add(3*time.Hour)); err == nil {
+	if _, err := ledger.Revoke(confirmed.ID, "because_i_said_so", fixtureApprover, fixtureTime.Add(3*time.Hour)); err == nil {
 		t.Fatal("expected an unknown revocation reason to be rejected")
 	}
 }
@@ -124,7 +124,7 @@ func TestLedgerSupersedeReplacesActiveDecision(t *testing.T) {
 }
 
 // TestLedgerSupersedeRejectsCrossProjectTarget 锁定作用域：不得跨项目替代
-// 既有决策。
+// 既有决策。检查落在最早的写入点，替代声明连录入都不允许。
 func TestLedgerSupersedeRejectsCrossProjectTarget(t *testing.T) {
 	ledger := NewLedger()
 	original, err := ledger.Propose(fixtureProposal())
@@ -140,11 +140,7 @@ func TestLedgerSupersedeRejectsCrossProjectTarget(t *testing.T) {
 	successor.Decision = "跨项目替代尝试"
 	successor.Supersedes = original.ID
 	successor.Now = fixtureTime.Add(time.Hour)
-	proposed, err := ledger.Propose(successor)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, err := ledger.Confirm(proposed.ID, fixtureApproval()); !errors.Is(err, ErrConflict) {
+	if _, err := ledger.Propose(successor); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected a cross-project supersession to be rejected, got %v", err)
 	}
 	replaced, err := ledger.Get(original.ID)
@@ -301,13 +297,17 @@ func TestProjectContextEnforcesTokenBudget(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		confirmed, err := ledger.Confirm(record.ID, fixtureApproval())
+		approval, err := NewHumanApproval(fixtureApprover, proposal.Now.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		confirmed, err := ledger.Confirm(record.ID, approval)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		records = append(records, confirmed)
 	}
-	projection, err := ProjectContext(records, 1, fixtureTime.Add(4*time.Hour))
+	projection, err := ProjectContext(fixtureProject, fixtureOwner, records, 1, fixtureTime.Add(4*time.Hour))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -317,10 +317,10 @@ func TestProjectContextEnforcesTokenBudget(t *testing.T) {
 	if !projection.Truncated || projection.DroppedCount != 3 {
 		t.Fatalf("expected three dropped entries, got %d truncated=%t", projection.DroppedCount, projection.Truncated)
 	}
-	if _, err := ProjectContext(records, MaxContextTokenBudget+1, fixtureTime.Add(4*time.Hour)); err == nil {
+	if _, err := ProjectContext(fixtureProject, fixtureOwner, records, MaxContextTokenBudget+1, fixtureTime.Add(4*time.Hour)); err == nil {
 		t.Fatal("expected an oversized context budget to be rejected")
 	}
-	full, err := ProjectContext(records, MaxContextTokenBudget, fixtureTime.Add(4*time.Hour))
+	full, err := ProjectContext(fixtureProject, fixtureOwner, records, MaxContextTokenBudget, fixtureTime.Add(4*time.Hour))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,10 +347,10 @@ func TestProjectContextExcludesInactiveRecords(t *testing.T) {
 	if _, err := ledger.Confirm(revoked.ID, fixtureApproval()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := ledger.Revoke(revoked.ID, RevokeReasonHumanRequest, fixtureTime.Add(2*time.Minute)); err != nil {
+	if _, err := ledger.Revoke(revoked.ID, RevokeReasonHumanRequest, fixtureApprover, fixtureTime.Add(2*time.Minute)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	projection, err := ProjectContext([]DecisionRecord{proposed, revoked}, DefaultContextTokenBudget, fixtureTime.Add(3*time.Minute))
+	projection, err := ProjectContext(fixtureProject, fixtureOwner, []DecisionRecord{proposed, revoked}, DefaultContextTokenBudget, fixtureTime.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -461,5 +461,160 @@ func TestLedgerConcurrentAccessIsSafe(t *testing.T) {
 	}
 	if len(records) != 8 {
 		t.Fatalf("expected eight records, got %d", len(records))
+	}
+}
+
+// TestLedgerRejectsCrossPrincipalSupersedeOfPrivatePreference 锁定写入侧的
+// 主体隔离：他人的私有偏好不可被替代，录入与确认两个环节都必须失败，且
+// 被针对的偏好保持现行。
+func TestLedgerRejectsCrossPrincipalSupersedeOfPrivatePreference(t *testing.T) {
+	ledger := NewLedger()
+	preference := fixtureProposal()
+	preference.Kind = KindPreference
+	preference.Owner = "user_private"
+	preference.Decision = "个人偏好：优先阅读中文注释"
+	preference.Now = fixtureTime
+	owned, err := ledger.Propose(preference)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ownerApproval, err := NewHumanApproval("user_private", fixtureTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	active, err := ledger.Confirm(owned.ID, ownerApproval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	successor := fixtureProposal()
+	successor.Owner = "user_other"
+	successor.Decision = "他人的权威记录试图替代他人私有偏好"
+	successor.Supersedes = active.ID
+	successor.Now = fixtureTime.Add(time.Hour)
+	if _, err := ledger.Propose(successor); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("expected the cross-principal supersede to be rejected, got %v", err)
+	}
+	unchanged, err := ledger.Get(active.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if unchanged.Status != StatusActive {
+		t.Fatalf("expected the private preference to stay active, got %s", unchanged.Status)
+	}
+}
+
+// TestLedgerRejectsCrossPrincipalConfirmAndRevoke 锁定写入侧的主体隔离：
+// 私有偏好的确认与撤销都只能由其所有者发起。
+func TestLedgerRejectsCrossPrincipalConfirmAndRevoke(t *testing.T) {
+	ledger := NewLedger()
+	preference := fixtureProposal()
+	preference.Kind = KindPreference
+	preference.Owner = "user_private"
+	preference.Decision = "个人偏好：优先阅读中文注释"
+	preference.Now = fixtureTime
+	owned, err := ledger.Propose(preference)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	otherApproval, err := NewHumanApproval("user_other", fixtureTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ledger.Confirm(owned.ID, otherApproval); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("expected a cross-principal confirmation to be rejected, got %v", err)
+	}
+	if _, err := ledger.Revoke(owned.ID, RevokeReasonHumanRequest, "user_other", fixtureTime.Add(time.Minute)); !errors.Is(err, ErrNotAuthorized) {
+		t.Fatalf("expected a cross-principal revocation to be rejected, got %v", err)
+	}
+	stored, err := ledger.Get(owned.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stored.Status != StatusProposed {
+		t.Fatalf("expected the candidate to stay proposed, got %s", stored.Status)
+	}
+}
+
+// TestProjectContextFiltersForeignScopeItself 锁定投影的自我过滤：即使传入
+// 未过滤的记录集合，跨项目记录与他人私有偏好都不得进入注入上下文。
+func TestProjectContextFiltersForeignScopeItself(t *testing.T) {
+	ledger := NewLedger()
+	authoritative := fixtureProposal()
+	authoritative.Now = fixtureTime
+	if _, err := ledger.Propose(authoritative); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	preference := fixtureProposal()
+	preference.Kind = KindPreference
+	preference.Owner = "user_private"
+	preference.Decision = "个人偏好正文不得进入他人上下文"
+	preference.Now = fixtureTime
+	if _, err := ledger.Propose(preference); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	foreign := fixtureProposal()
+	foreign.Project = "proj_other"
+	foreign.Owner = "user_other"
+	foreign.Decision = "另一个项目的决策正文不得进入本项目上下文"
+	foreign.Now = fixtureTime
+	if _, err := ledger.Propose(foreign); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	now := fixtureTime.Add(time.Hour)
+	unfiltered, err := ledger.Query(Query{Project: fixtureProject, Principal: "user_private", Now: now})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	other, err := ledger.Query(Query{Project: "proj_other", Principal: "user_other", Now: now})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	combined := append(append([]DecisionRecord(nil), unfiltered...), other...)
+	projection, err := ProjectContext(fixtureProject, "user_other", combined, MaxContextTokenBudget, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, entry := range projection.Entries {
+		if strings.Contains(entry.Decision, "个人偏好正文") {
+			t.Fatal("another principal's private preference entered the projection")
+		}
+		if strings.Contains(entry.Decision, "另一个项目") {
+			t.Fatal("a foreign project record entered the projection")
+		}
+	}
+	if _, err := ProjectContext("", "user_other", combined, MaxContextTokenBudget, now); err == nil {
+		t.Fatal("expected an empty project scope to be rejected")
+	}
+	if _, err := ProjectContext(fixtureProject, "", combined, MaxContextTokenBudget, now); err == nil {
+		t.Fatal("expected an empty principal scope to be rejected")
+	}
+}
+
+// TestConfirmRejectsRecordViolatingItsOwnContract 锁定落库前的合同复核：确认
+// 时刻早于创建时刻时记录不合合同，账本不得持有这样的记录。
+func TestConfirmRejectsRecordViolatingItsOwnContract(t *testing.T) {
+	ledger := NewLedger()
+	proposal := fixtureProposal()
+	proposal.Now = fixtureTime.Add(time.Hour)
+	record, err := ledger.Propose(proposal)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	early, err := NewHumanApproval(fixtureApprover, fixtureTime)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ledger.Confirm(record.ID, early); err == nil {
+		t.Fatal("expected a confirmation earlier than the creation time to be rejected")
+	}
+	stored, err := ledger.Get(record.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stored.Status != StatusProposed {
+		t.Fatalf("expected the candidate to stay proposed, got %s", stored.Status)
+	}
+	if err := stored.Validate(); err != nil {
+		t.Fatalf("expected the stored record to satisfy its own contract, got %v", err)
 	}
 }

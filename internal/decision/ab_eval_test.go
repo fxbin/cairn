@@ -223,7 +223,7 @@ func abBuildLedger(t *testing.T, facts map[string]abFact, states map[string]abLe
 		case abLedgerRevoked:
 			record := abPropose(t, ledger, fact, fact.Statement, []EvidenceRef{fact.Support}, "", fixtureTime)
 			abConfirm(t, ledger, record.ID, fixtureTime.Add(time.Hour))
-			if _, err := ledger.Revoke(record.ID, RevokeReasonHumanRequest, fixtureTime.Add(2*time.Hour)); err != nil {
+			if _, err := ledger.Revoke(record.ID, RevokeReasonHumanRequest, fixtureApprover, fixtureTime.Add(2*time.Hour)); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		case abLedgerExpired:
@@ -328,7 +328,7 @@ func abRunLedgerArm(t *testing.T, ledger *Ledger, tasks []abTask, facts map[stri
 				}
 			}
 		} else {
-			projection, err := ProjectContext(records, config.Budget, abNow)
+			projection, err := ProjectContext(fixtureProject, fixtureOwner, records, config.Budget, abNow)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -447,7 +447,7 @@ func TestDecisionLedgerABEvaluation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	projection, err := ProjectContext(current, MaxContextTokenBudget, abNow)
+	projection, err := ProjectContext(fixtureProject, fixtureOwner, current, MaxContextTokenBudget, abNow)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

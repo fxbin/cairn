@@ -1,9 +1,8 @@
-// Package decision 补充决策账本的证据模型：证据定位只引用既有事实源的稳定
-// 标识与摘要，不复制证据正文。核查由外部解析器完成，解析器必须基于 Journal、
-// Artifact、Git 或测试结果判定存在性，不能凭记录自身断言。
-//
-// Author: fxbin
 package decision
+
+// 本文件补充决策账本的证据模型：证据定位只引用既有事实源的稳定标识与摘要，
+// 不复制证据正文。核查由外部解析器完成，解析器必须基于 Journal、Artifact、
+// Git 或测试结果判定存在性，不能凭记录自身断言。
 
 import (
 	"context"

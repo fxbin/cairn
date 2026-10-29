@@ -64,6 +64,10 @@ func TestNewProposalRejectsPrivatePathAndCredentialInBody(t *testing.T) {
 		{name: "密钥赋值", field: "decision", value: "接入时写入 api_key=sk-abcdefghijklmnopqrst"},
 		{name: "令牌赋值", field: "rationale", value: "保存 token=abcdefghijklmnopqrstuvwx"},
 		{name: "Bearer 凭据", field: "decision", value: "调用时带上 Bearer abcdefghijklmnop"},
+		{name: "云厂商访问密钥", field: "decision", value: "AKIAIOSFODNN7EXAMPLE"},
+		{name: "代码托管令牌", field: "decision", value: "ghp_abcdefghijklmnopqrstuvwxyz012345"},
+		{name: "裸令牌串", field: "rationale", value: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"},
+		{name: "凭据词干后的裸值", field: "decision", value: "密码是 password hunter2"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -99,6 +103,44 @@ func TestNewProposalAcceptsBoundedRelativeContext(t *testing.T) {
 	}
 	if record.ID == "" {
 		t.Fatal("expected a derived record identifier")
+	}
+}
+
+// TestNewProposalAcceptsCredentialWordsWithoutSecretValues 锁定凭据守卫的
+// 误伤边界：出现凭据词干但没有凭据形态值的正常表述必须被接受，否则账本
+// 无法记录与令牌、密钥、密码有关的真实决策。
+func TestNewProposalAcceptsCredentialWordsWithoutSecretValues(t *testing.T) {
+	cases := []string{
+		"token 过期后不再冒充现行事实",
+		"secret 轮换周期按项目约定执行",
+		"password 策略由安全负责人另行约定",
+		"决定：证据来源限定为 journal_event 与 artifact 两类",
+	}
+	for _, value := range cases {
+		proposal := fixtureProposal()
+		proposal.Decision = value
+		if _, err := NewProposal(proposal); err != nil {
+			t.Fatalf("expected %q to be accepted, got %v", value, err)
+		}
+	}
+}
+
+// TestNewProposalRejectsBareSecretMaterial 锁定裸密钥守卫：不带键名的固定
+// 格式凭据与凭据词干后的裸值都必须被显式拒绝，否则它们会随正文进入注入
+// 上下文。
+func TestNewProposalRejectsBareSecretMaterial(t *testing.T) {
+	cases := []string{
+		"AKIAIOSFODNN7EXAMPLE",
+		"ghp_abcdefghijklmnopqrstuvwxyz012345",
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+		"password hunter2",
+	}
+	for _, value := range cases {
+		proposal := fixtureProposal()
+		proposal.Decision = value
+		if _, err := NewProposal(proposal); err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
 	}
 }
 

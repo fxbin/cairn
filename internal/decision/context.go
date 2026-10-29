@@ -1,9 +1,9 @@
-// Package decision 补充决策账本的上下文投影：注入上下文的只有决策陈述与
-// 证据定位，并受固定 token 预算约束。投影不含任何工具、权限或审批字段，
-// 项目知识因此无法覆盖上层 Policy；放不下的条目被丢弃并如实标记截断。
-//
-// Author: fxbin
 package decision
+
+// 本文件补充决策账本的上下文投影：注入上下文的只有决策陈述与证据定位，
+// 并受固定 token 预算约束。投影自行按项目与主体过滤，不含任何工具、权限
+// 或审批字段，项目知识因此无法覆盖上层 Policy；放不下的条目被丢弃并如实
+// 标记截断。
 
 import (
 	"encoding/json"
@@ -56,10 +56,17 @@ type ContextProjection struct {
 	Truncated bool `json:"truncated"`
 }
 
-// ProjectContext 把决策记录投影为可注入上下文的受限条目。候选、未确认、
-// 已撤销、已被替代与已过期的记录一律不进入投影；预算不足时按固定顺序
-// 丢弃并如实计数，不静默截断。
-func ProjectContext(records []DecisionRecord, budget int, now time.Time) (ContextProjection, error) {
+// ProjectContext 把决策记录投影为可注入上下文的受限条目。投影自行按项目与
+// 主体过滤：跨项目记录与他人私有偏好不会进入上下文，不依赖调用方先过滤。
+// 候选、未确认、已撤销、已被替代与已过期的记录一律不进入投影；预算不足时
+// 按固定顺序丢弃并如实计数，不静默截断。
+func ProjectContext(project, principal string, records []DecisionRecord, budget int, now time.Time) (ContextProjection, error) {
+	if !validIdentifier(project) {
+		return ContextProjection{}, errors.New("decision context projection requires a valid project identifier")
+	}
+	if !validIdentifier(principal) {
+		return ContextProjection{}, errors.New("decision context projection requires a valid principal identifier")
+	}
 	if budget == 0 {
 		budget = DefaultContextTokenBudget
 	}
@@ -72,6 +79,9 @@ func ProjectContext(records []DecisionRecord, budget int, now time.Time) (Contex
 	projection := ContextProjection{Entries: []ContextEntry{}}
 	candidates := make([]DecisionRecord, 0, len(records))
 	for _, record := range records {
+		if record.Project != project || !record.VisibleTo(project, principal) {
+			continue
+		}
 		if record.EffectiveStatus(now) == StatusActive {
 			candidates = append(candidates, record)
 		}

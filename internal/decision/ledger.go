@@ -1,9 +1,8 @@
-// Package decision 补充决策账本的进程内实现：受控录入、状态迁移与只读查询
-// 都在此完成。账本不写 Event Journal、不落数据库、不接入 Agent Loop，因此
-// 不能成为运行事实源；所有查询都按项目与主体作用域过滤。
-//
-// Author: fxbin
 package decision
+
+// 本文件补充决策账本的进程内实现：受控录入、状态迁移与只读查询都在此完成。
+// 账本不写 Event Journal、不落数据库、不接入 Agent Loop，因此不能成为运行
+// 事实源；所有查询都按项目与主体作用域过滤，写入侧同样按主体隔离。
 
 import (
 	"errors"
@@ -91,6 +90,19 @@ func (ledger *Ledger) Propose(proposal Proposal) (DecisionRecord, error) {
 			return DecisionRecord{}, fmt.Errorf("%w: %s", ErrDuplicateDecision, existing.ID)
 		}
 	}
+	if proposal.Supersedes != "" {
+		targetIndex, targetFound := ledger.byID[proposal.Supersedes]
+		if !targetFound {
+			return DecisionRecord{}, fmt.Errorf("%w: superseded record %s", ErrNotFound, proposal.Supersedes)
+		}
+		target := ledger.records[targetIndex]
+		if target.Project != record.Project {
+			return DecisionRecord{}, fmt.Errorf("%w: superseded record belongs to another project", ErrConflict)
+		}
+		if target.Kind == KindPreference && target.Owner != record.Owner {
+			return DecisionRecord{}, fmt.Errorf("%w: personal preference %s belongs to another principal", ErrNotAuthorized, target.ID)
+		}
+	}
 	ledger.records = append(ledger.records, record)
 	ledger.byID[record.ID] = len(ledger.records) - 1
 	ledger.byDigest[digest] = len(ledger.records) - 1
@@ -119,6 +131,9 @@ func (ledger *Ledger) Confirm(id string, approval HumanApproval) (DecisionRecord
 	if err := ValidTransition(record.EffectiveStatus(approval.At), StatusActive); err != nil {
 		return DecisionRecord{}, err
 	}
+	if err := authorizeRecordWrite(record, approval.Approver); err != nil {
+		return DecisionRecord{}, err
+	}
 	if record.Supersedes != "" {
 		targetIndex, targetFound := ledger.byID[record.Supersedes]
 		if !targetFound {
@@ -128,6 +143,12 @@ func (ledger *Ledger) Confirm(id string, approval HumanApproval) (DecisionRecord
 		if target.Project != record.Project {
 			return DecisionRecord{}, fmt.Errorf("%w: superseded record belongs to another project", ErrConflict)
 		}
+		if err := authorizeRecordWrite(target, approval.Approver); err != nil {
+			return DecisionRecord{}, err
+		}
+		if target.Kind == KindPreference && target.Owner != record.Owner {
+			return DecisionRecord{}, fmt.Errorf("%w: personal preference %s belongs to another principal", ErrNotAuthorized, target.ID)
+		}
 		if err := ValidTransition(target.EffectiveStatus(approval.At), StatusSuperseded); err != nil {
 			return DecisionRecord{}, err
 		}
@@ -135,6 +156,9 @@ func (ledger *Ledger) Confirm(id string, approval HumanApproval) (DecisionRecord
 	record.Status = StatusActive
 	reviewedAt := approval.At.UTC()
 	record.ReviewedAt = &reviewedAt
+	if err := record.Validate(); err != nil {
+		return DecisionRecord{}, err
+	}
 	ledger.records[index] = record
 	ledger.audits = append(ledger.audits, AuditEntry{
 		RecordID:   record.ID,
@@ -175,6 +199,9 @@ func (ledger *Ledger) Review(id string, approval HumanApproval, ttl time.Duratio
 		return DecisionRecord{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	record := ledger.records[index]
+	if err := authorizeRecordWrite(record, approval.Approver); err != nil {
+		return DecisionRecord{}, err
+	}
 	if record.EffectiveStatus(approval.At) != StatusActive {
 		return DecisionRecord{}, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, record.EffectiveStatus(approval.At), StatusActive)
 	}
@@ -195,8 +222,9 @@ func (ledger *Ledger) Review(id string, approval HumanApproval, ttl time.Duratio
 }
 
 // Revoke 撤销一条记录。撤销理由只接受封闭词表；记录本身保留在账本中，
-// 历史、来源与作废链都可追溯，撤销后的记录不再代表现行事实。
-func (ledger *Ledger) Revoke(id, reason string, at time.Time) (DecisionRecord, error) {
+// 历史、来源与作废链都可追溯，撤销后的记录不再代表现行事实。撤销必须由
+// 有权改写该记录的主体发起：个人偏好只允许其所有者撤销。
+func (ledger *Ledger) Revoke(id, reason, actor string, at time.Time) (DecisionRecord, error) {
 	if !validRevokeReason(reason) {
 		return DecisionRecord{}, fmt.Errorf("decision revocation reason %q is invalid", reason)
 	}
@@ -210,6 +238,9 @@ func (ledger *Ledger) Revoke(id, reason string, at time.Time) (DecisionRecord, e
 		return DecisionRecord{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	record := ledger.records[index]
+	if err := authorizeRecordWrite(record, actor); err != nil {
+		return DecisionRecord{}, err
+	}
 	if err := ValidTransition(record.EffectiveStatus(at), StatusRevoked); err != nil {
 		return DecisionRecord{}, err
 	}
@@ -219,13 +250,15 @@ func (ledger *Ledger) Revoke(id, reason string, at time.Time) (DecisionRecord, e
 		RecordID:   record.ID,
 		Action:     ActionRevoked,
 		Reason:     reason,
+		Actor:      actor,
 		OccurredAt: at.UTC(),
 	})
 	return record, nil
 }
 
 // Reject 拒绝一条候选。拒绝理由只接受封闭词表；被拒绝的候选不可再确认。
-func (ledger *Ledger) Reject(id, reason string, at time.Time) (DecisionRecord, error) {
+// 拒绝必须由有权改写该记录的主体发起：个人偏好只允许其所有者拒绝。
+func (ledger *Ledger) Reject(id, reason, actor string, at time.Time) (DecisionRecord, error) {
 	if reason != RejectReasonNotApproved {
 		return DecisionRecord{}, fmt.Errorf("decision rejection reason %q is invalid", reason)
 	}
@@ -239,6 +272,9 @@ func (ledger *Ledger) Reject(id, reason string, at time.Time) (DecisionRecord, e
 		return DecisionRecord{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	record := ledger.records[index]
+	if err := authorizeRecordWrite(record, actor); err != nil {
+		return DecisionRecord{}, err
+	}
 	if err := ValidTransition(record.EffectiveStatus(at), StatusRejected); err != nil {
 		return DecisionRecord{}, err
 	}
@@ -248,9 +284,24 @@ func (ledger *Ledger) Reject(id, reason string, at time.Time) (DecisionRecord, e
 		RecordID:   record.ID,
 		Action:     ActionRejected,
 		Reason:     reason,
+		Actor:      actor,
 		OccurredAt: at.UTC(),
 	})
 	return record, nil
+}
+
+// authorizeRecordWrite 判断主体是否可以改写目标记录。个人偏好只允许其
+// 所有者改写，防止他人以替代或撤销的方式静默处置他人的私有记录；项目级
+// 记录允许同项目主体改写，以保留项目账本的纠错能力。项目成员关系不在本
+// 切片的合同内，跨项目隔离由记录的项目标识与只读查询过滤保证。
+func authorizeRecordWrite(target DecisionRecord, actor string) error {
+	if !validIdentifier(actor) {
+		return fmt.Errorf("%w: actor identifier is invalid", ErrNotAuthorized)
+	}
+	if target.Kind == KindPreference && target.Owner != actor {
+		return fmt.Errorf("%w: personal preference %s belongs to another principal", ErrNotAuthorized, target.ID)
+	}
+	return nil
 }
 
 // Get 返回指定记录；不存在时返回 ErrNotFound。
