@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -650,8 +651,8 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return console, nil
 }
 
-// persistQueueCmd 把运行结束后仍留在内存的排队输入批量写入持久队列。
-// 每条独立 input_id；确认前不自动启动为新 run。
+// receiveResult 消费一次运行（或恢复）的结果：等待审批转入审批模式；等待
+// 对账给出显式人工动作指引；其余进入终态判定。
 func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea.Cmd) {
 	var waiting *ports.WaitingApprovalError
 	console.finishOperation()
@@ -662,6 +663,9 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 		console.appendLine(warnStyle.Render("⏸ 等待审批: " + waiting.Summary))
 		console.appendLine(dimStyle.Render("  指纹 " + waiting.Fingerprint + " · Enter 批准 / Esc 拒绝 / v 差异"))
 		return console, noMessageCmd
+	}
+	if console.waitingReconcile(finished.err) {
+		return console.receiveReconcilePause(finished)
 	}
 	console.mode = consoleDone
 	console.result = finished.result
@@ -682,6 +686,40 @@ func (console RunConsole) receiveResult(finished runFinishedMsg) (tea.Model, tea
 		console.appendLine(dimStyle.Render("run " + string(console.result.ID) + "（cairn inspect 查证）"))
 	}
 	return console, nil
+}
+
+// waitingReconcile 判断运行是否停在"悬而未决副作用待人工对账"上；它只读
+// 错误事实，不改变任何事件或授权状态。
+func (console RunConsole) waitingReconcile(err error) bool {
+	if err == nil {
+		return false
+	}
+	var reconcile *ports.WaitingReconcileError
+	if errors.As(err, &reconcile) {
+		return true
+	}
+	return errors.Is(err, ports.ErrWaitingReconcile) || errors.Is(err, app.ErrWaitingReconcile)
+}
+
+// receiveReconcilePause 展示等待对账的显式提示：阶段词与动作指引都取自
+// contract 词表，与 CLI 的恢复指引一致。运行尚未收束，因此不推进会话链尾。
+func (console RunConsole) receiveReconcilePause(finished runFinishedMsg) (tea.Model, tea.Cmd) {
+	console.mode = consoleDone
+	console.result = finished.result
+	console.runErr = finished.err
+	console.stopWait = true
+	phase := contract.RunPhaseLabel(string(contract.RunPhaseWaitingReconcile))
+	var reconcile *ports.WaitingReconcileError
+	if errors.As(finished.err, &reconcile) {
+		console.appendLine(warnStyle.Render("等待对账: 操作 " + string(reconcile.OperationID) + " 未确认终态（" + phase + "）"))
+	} else {
+		console.appendLine(warnStyle.Render("等待对账: 存在未确认终态的副作用（" + phase + "）"))
+	}
+	console.appendLine(dimStyle.Render("对账动作: " + contract.ReconcileActionHint))
+	if console.result != nil && console.result.ID != "" {
+		console.appendLine(dimStyle.Render("run " + string(console.result.ID) + "（cairn inspect 查证）"))
+	}
+	return console, noMessageCmd
 }
 
 // receiveRewindResult 消费一次工作区回退（或其审批续跑）的结果：等待审批转

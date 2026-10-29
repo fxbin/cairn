@@ -91,6 +91,9 @@ type RunHistoryView struct {
 	WaitingApproval bool `json:"waiting_approval"`
 	// WaitingReconcile 表示存在悬而未决副作用。
 	WaitingReconcile bool `json:"waiting_reconcile"`
+	// PhaseLabel 是阶段展示词，由 Go 侧统一词表产出；前端只渲染，不自行
+	// 映射中文。
+	PhaseLabel string `json:"phase_label"`
 }
 
 // StartRunRequest 启动一次新任务。
@@ -185,6 +188,9 @@ type RunDetail struct {
 	Summary   app.RunSummary        `json:"summary"`
 	Manifest  *contract.RunManifest `json:"manifest,omitempty"`
 	Events    []domain.Event        `json:"events,omitempty"`
+	// PhaseLabel 与 StateLabel 是统一词表产出的展示词；前端只渲染。
+	PhaseLabel string `json:"phase_label,omitempty"`
+	StateLabel string `json:"state_label,omitempty"`
 }
 
 // StreamEvent 是推送给前端的增量通知信封。
@@ -212,6 +218,9 @@ type RunStatusView struct {
 	ResponsePreview  string `json:"response_preview,omitempty"`
 	ErrorCode        string `json:"error_code,omitempty"`
 	ErrorMessage     string `json:"error_message,omitempty"`
+	// PhaseLabel 与 StateLabel 是统一词表产出的展示词；前端只渲染。
+	PhaseLabel string `json:"phase_label,omitempty"`
+	StateLabel string `json:"state_label,omitempty"`
 }
 
 // SteeringRequest 向运行中的任务投递立即补充输入；与后续队列语义分离。

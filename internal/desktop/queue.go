@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -216,6 +217,11 @@ type EvidenceView struct {
 	Trusted      bool                 `json:"trusted"`
 	Verification EvidenceVerification `json:"verification"`
 	Metrics      EvidenceMetrics      `json:"metrics"`
+	// StateLabel、OutcomeLabel 与 TrustLabel 是统一词表产出的展示词；前端只
+	// 渲染，不再自行把状态与可信度映射成中文。
+	StateLabel   string `json:"state_label,omitempty"`
+	OutcomeLabel string `json:"outcome_label,omitempty"`
+	TrustLabel   string `json:"trust_label,omitempty"`
 }
 
 // Evidence 查询运行完成证据（不以自然语言回复代替）。
@@ -224,6 +230,12 @@ func (api *API) Evidence(ctx context.Context, request InspectRequest) (EvidenceV
 	if err != nil {
 		return EvidenceView{}, err
 	}
+	return evidenceViewFrom(result), nil
+}
+
+// evidenceViewFrom 把合同结果投影为桌面完成证据视图；状态、结果与完成证据
+// 可信等级的展示词由统一词表产出，前端只渲染。
+func evidenceViewFrom(result contract.Result) EvidenceView {
 	return EvidenceView{
 		State:        result.State,
 		Outcome:      result.Outcome,
@@ -243,7 +255,10 @@ func (api *API) Evidence(ctx context.Context, request InspectRequest) (EvidenceV
 			ContextCompactions: result.Metrics.ContextCompactions,
 			WallTimeMS:         result.Metrics.WallTimeMS,
 		},
-	}, nil
+		StateLabel:   contract.RunPhaseLabel(result.State),
+		OutcomeLabel: contract.RunPhaseLabel(result.Outcome),
+		TrustLabel:   contract.CompletionTrustLabel(contract.CompletionTrustOf(result.Evidence)),
+	}
 }
 
 func newInputID() string {

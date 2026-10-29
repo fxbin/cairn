@@ -12,6 +12,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -425,6 +426,11 @@ func (controller *RunController) statusFromOutcome(runID string, outcome app.Run
 		SessionID: outcome.SessionID,
 		State:     resultState(outcome, err),
 	}
+	if outcome.Result != nil && outcome.Result.Outcome != "" {
+		view.Phase = outcome.Result.Outcome
+		view.PhaseLabel = contract.RunPhaseLabel(view.Phase)
+	}
+	view.StateLabel = contract.RunPhaseLabel(view.State)
 	if outcome.Response != "" {
 		view.ResponsePreview = previewResponse(outcome.Response)
 	}

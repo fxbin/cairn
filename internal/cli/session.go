@@ -127,7 +127,7 @@ func (command Command) sessionShow(ctx context.Context, arguments []string) int 
 	if session == "" {
 		session = "未分组"
 	}
-	fmt.Fprintf(command.Stdout, "run: %s\nsession: %s\nstate: %s\ntask: %s\n", node.ID, session, node.Phase, node.Task)
+	fmt.Fprintf(command.Stdout, "run: %s\nsession: %s\nstate: %s (%s)\ntask: %s\n", node.ID, session, contract.RunPhaseLabel(node.Phase), node.Phase, node.Task)
 	if node.PrevRunID != "" {
 		fmt.Fprintf(command.Stdout, "prev: %s\n", node.PrevRunID)
 	}

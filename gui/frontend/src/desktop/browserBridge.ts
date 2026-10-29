@@ -41,6 +41,23 @@ const workspace: WorkspaceStatus = {
   config_fingerprint: "demo",
 };
 
+/**
+ * 浏览器演示桥接：它代替 Go 桥接下发展示词，因此在这里复刻一份运行展示
+ * 词表。真实桌面桥接的展示词由 Go 侧 contract 词表产出，前端只渲染。
+ */
+const DEMO_PHASE_LABELS: Record<string, string> = {
+  created: "已创建",
+  running: "执行中",
+  cancelling: "收尾取消中",
+  completed: "运行完成",
+  failed: "运行失败",
+  cancelled: "已取消",
+  waiting_approval: "待审批",
+  waiting_reconcile: "待对账",
+};
+
+const demoPhaseLabel = (phase: string): string => DEMO_PHASE_LABELS[phase] ?? "未知";
+
 let runs: RunHistoryView[] = [
   {
     run_id: "run-demo-1",
@@ -48,6 +65,7 @@ let runs: RunHistoryView[] = [
     task: "修复登录问题",
     state: "completed",
     phase: "completed",
+    phase_label: "运行完成",
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     title: "修复登录问题",
@@ -186,6 +204,8 @@ export function createBrowserBridge() {
         session_id: "s1",
         state: "completed",
         phase: "completed",
+        phase_label: "运行完成",
+        state_label: "运行完成",
         task: "修复登录问题",
         summary: {},
         events: request.include_events ? eventsByRun.get(request.run_id) || [] : [],
@@ -196,6 +216,9 @@ export function createBrowserBridge() {
       return {
         state: "completed",
         outcome: "completed",
+        state_label: "运行完成",
+        outcome_label: "运行完成",
+        trust_label: "可信",
         trusted: true,
         verification: { verification_seq: 2, verification_ok: true },
         metrics: {
@@ -236,6 +259,7 @@ export function createBrowserBridge() {
           task: request.task,
           state: "running",
           phase: "running",
+          phase_label: demoPhaseLabel("running"),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           title: request.task.slice(0, 24),
@@ -281,6 +305,9 @@ export function createBrowserBridge() {
           status: {
             run_id: runId,
             state: "completed",
+            phase: "completed",
+            phase_label: demoPhaseLabel("completed"),
+            state_label: demoPhaseLabel("completed"),
             waiting_approval: false,
             waiting_reconcile: false,
             response_preview: "已完成",
