@@ -73,6 +73,12 @@ func (service Service) WorkflowStatus(ctx context.Context, workspacePath, stateD
 	if err != nil {
 		return WorkflowStatusView{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	return workflowViewFromSnapshot(snapshot), nil
+}
+
+// workflowViewFromSnapshot 把链重放投影转换为对外只读状态视图；本函数不做
+// 任何 IO，供只读查询与执行入口渲染同一口径。
+func workflowViewFromSnapshot(snapshot *workflow.Snapshot) WorkflowStatusView {
 	view := WorkflowStatusView{
 		WorkflowID:        string(snapshot.WorkflowID),
 		WorkspaceHash:     snapshot.WorkspaceHash,
@@ -99,7 +105,7 @@ func (service Service) WorkflowStatus(ctx context.Context, workspacePath, stateD
 			EndedAt:    step.EndedAt,
 		}
 	}
-	return view, nil
+	return view
 }
 
 // workflowDBPath 返回工作区专属工作流存储路径，与 runs.db、memory.db 同目录。

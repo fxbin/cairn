@@ -63,6 +63,13 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	} else if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, Approval: options.Approval, OnEvent: options.OnEvent})
 	}
+	// 工作流验证 run 同样不进入模型续跑：以零调用脚本化计划收束冻结验证，
+	// 审批决定由本入口透传，避免产生计划外的模型操作。
+	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
+		return RunResult{ID: options.RunID}, verifyErr
+	} else if isWorkflowVerify {
+		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, options)
+	}
 	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
@@ -239,6 +246,12 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	// 回退 run 对账后仍由脚本化执行器续跑，禁止落入模型 Loop 产生计划外操作。
 	if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, rewindPlan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
+	}
+	// 工作流验证 run 对账后同样以零调用脚本化计划收束，不进入模型续跑。
+	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
+		return RunResult{ID: options.RunID}, verifyErr
+	} else if isWorkflowVerify {
+		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, ResumeOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
 	}
 
 	// 对账后继续模型续跑同样受异步子门禁约束：非终态子未收束前不续跑父运行。
