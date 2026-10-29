@@ -1,8 +1,8 @@
 //go:build darwin || linux
 
 // exec_workspace_boundary_test.go 锁定 exec_command 的工作区写边界：
-// 写入工作区父目录必须被显式拒绝，合法的工作区内写入与工作区外只读
-// 引用不受影响。
+// 工作区父目录不在临时写范围之内时，写入父目录必须被显式拒绝；合法的工作
+// 区内写入与工作区外只读引用不受影响。
 // Author: fxbin
 package tools
 
@@ -16,8 +16,7 @@ import (
 	"testing"
 )
 
-// execBoundaryFixture 是一次越界写实验的目录布局：工作区位于 root 之下，
-// 工作区父目录就是 root，与受控对照实验的快照根一致。
+// execBoundaryFixture 是一次写边界实验的目录布局：工作区位于 root 之下。
 type execBoundaryFixture struct {
 	// Root 是工作区的父目录。
 	Root string
@@ -26,9 +25,31 @@ type execBoundaryFixture struct {
 }
 
 // newExecBoundaryFixture 在临时根下建立 root/ws 布局并返回可用的工作区。
+// 临时根下的父目录由临时写规则管辖，不施加父目录拒绝。
 func newExecBoundaryFixture(t *testing.T) execBoundaryFixture {
 	t.Helper()
 	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "ws")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(workspaceRoot, nil, 1024, 100, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return execBoundaryFixture{Root: root, Workspace: workspace}
+}
+
+// newNonTempBoundaryFixture 建立一个父目录不在临时写范围之内的工作区：父目录
+// 拒绝规则此时生效，越界写必须被沙箱挡住。夹具建在包目录下并在测试结束清理，
+// 避免把"工作区之外不可写"的验证建立在临时目录的例外之上。
+func newNonTempBoundaryFixture(t *testing.T) execBoundaryFixture {
+	t.Helper()
+	root, err := os.MkdirTemp(".", "boundary-root-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	workspaceRoot := filepath.Join(root, "ws")
 	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
 		t.Fatal(err)
@@ -57,7 +78,9 @@ func TestExecCommandRejectsWriteToWorkspaceParent(t *testing.T) {
 	if !OSSandboxAvailable() {
 		t.Skip("当前平台没有 OS 沙箱，host 后端本就没有可强制的写边界")
 	}
-	fixture := newExecBoundaryFixture(t)
+	fixture := newNonTempBoundaryFixture(t)
+	escaped := filepath.Join(fixture.Root, "escaped.txt")
+	t.Cleanup(func() { _ = os.Remove(escaped) })
 	tool := ExecCommand{Workspace: fixture.Workspace, HostConfined: true, HostWrite: true}
 	result := tool.Execute(context.Background(), json.RawMessage(`{"argv":["/bin/sh","-c","printf escaped > ../escaped.txt"]}`))
 	if result.OK {
@@ -73,7 +96,7 @@ func TestExecCommandRejectsWriteToWorkspaceParent(t *testing.T) {
 	if !strings.Contains(strings.ToLower(output.Stderr), "not permitted") && !strings.Contains(strings.ToLower(output.Stderr), "no such file") {
 		t.Fatalf("失败没有给出拒绝证据: stderr=%s", output.Stderr)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.Root, "escaped.txt")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(escaped); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("工作区父目录被写入: %v", err)
 	}
 }

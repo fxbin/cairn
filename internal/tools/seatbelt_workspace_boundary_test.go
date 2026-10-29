@@ -1,66 +1,77 @@
 //go:build darwin
 
-// seatbelt_workspace_boundary_test.go 锁定工作区父目录的写边界规则：拒绝规则
-// 必须排在临时目录放行之后、工作区放行之前，否则越界写要么被临时规则放行，
-// 要么连工作区内的合法写入一起被拒。
+// seatbelt_workspace_boundary_test.go 锁定 host 后端的写范围：可写集合只能是
+// 临时目录根与工作区本身，工作区之外默认不可写；同时任何拒绝规则都不得覆盖
+// 临时写范围——那会连带拒绝编译器缓存与验证子进程的临时写。
 // Author: fxbin
 package tools
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// TestSeatbeltProfileDeniesWorkspaceParentWrite 锁定父目录写边界的规则顺序。
-func TestSeatbeltProfileDeniesWorkspaceParentWrite(t *testing.T) {
-	const root = "/private/var/folders/ab/T/root/ws"
+// seatbeltWriteAllowPattern 匹配写放行规则，捕获其 subpath。
+var seatbeltWriteAllowPattern = regexp.MustCompile(`\(allow file-write[^)]*\(subpath "([^"]+)"\)`)
+
+// seatbeltWriteDenyPattern 匹配写拒绝规则，捕获其 subpath。
+var seatbeltWriteDenyPattern = regexp.MustCompile(`\(deny file-write[^)]*\(subpath "([^"]+)"\)`)
+
+// TestSeatbeltProfileWriteScopeIsTempRootsAndWorkspace 锁定写范围：放行集合
+// 只能是临时目录根与工作区根。工作区位于真实目录时，其父目录不在放行集合内，
+// 越界写因此被默认拒绝规则挡住。
+func TestSeatbeltProfileWriteScopeIsTempRootsAndWorkspace(t *testing.T) {
+	const root = "/Users/example/project/ws"
 	profile, err := SeatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteWorkspace})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tempRule := `(allow file-write* (subpath "/private/var/folders"))`
-	parentRule := `(deny file-write* (subpath "/private/var/folders/ab/T/root"))`
-	workspaceRule := `(allow file-write* (subpath "` + root + `"))`
-	tempIndex := strings.Index(profile, tempRule)
-	parentIndex := strings.Index(profile, parentRule)
-	workspaceIndex := strings.Index(profile, workspaceRule)
-	if tempIndex < 0 || parentIndex < 0 || workspaceIndex < 0 {
-		t.Fatalf("profile 缺少写边界规则:\n%s", profile)
+	allowed := map[string]bool{root: true}
+	for _, tempRoot := range seatbeltAlwaysWritableRoots {
+		allowed[tempRoot] = true
 	}
-	if parentIndex < tempIndex {
-		t.Fatalf("父目录拒绝必须排在临时目录放行之后:\n%s", profile)
+	for _, match := range seatbeltWriteAllowPattern.FindAllStringSubmatch(profile, -1) {
+		if !allowed[match[1]] {
+			t.Fatalf("写范围越界：%s 不在临时根与工作区之列:\n%s", match[1], profile)
+		}
 	}
-	if workspaceIndex < parentIndex {
-		t.Fatalf("工作区放行必须排在父目录拒绝之后:\n%s", profile)
+	if !strings.Contains(profile, `(allow file-write* (subpath "`+root+`"))`) {
+		t.Fatalf("工作区写入未被放行:\n%s", profile)
 	}
 }
 
-// TestSeatbeltProfileSkipsParentBoundaryForAlwaysWritableRoots 确认工作区直接
-// 位于临时目录根之下时不叠加父目录拒绝：拒绝临时目录根会连带拒绝临时写。
-func TestSeatbeltProfileSkipsParentBoundaryForAlwaysWritableRoots(t *testing.T) {
-	for _, root := range []string{"/private/var/folders/ws", "/private/tmp/ws", "/ws"} {
-		profile, err := SeatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteWorkspace})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(profile, "(deny file-write*") {
-			t.Fatalf("工作区 %s 不应叠加父目录拒绝规则:\n%s", root, profile)
-		}
-	}
-}
-
-// TestSeatbeltProfileReadOnlyAlsoDeniesWorkspaceParent 锁定只读档同样拒绝
-// 工作区父目录：只读档仍保留临时目录写，越界写不得因此被放行。
-func TestSeatbeltProfileReadOnlyAlsoDeniesWorkspaceParent(t *testing.T) {
-	const root = "/private/var/folders/ab/T/root/ws"
+// TestSeatbeltProfileReadOnlyDoesNotAllowWorkspaceWrite 锁定只读档：工作区写入
+// 不得放行，写范围只剩临时目录根。
+func TestSeatbeltProfileReadOnlyDoesNotAllowWorkspaceWrite(t *testing.T) {
+	const root = "/Users/example/project/ws"
 	profile, err := SeatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteNone})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(profile, `(deny file-write* (subpath "/private/var/folders/ab/T/root"))`) {
-		t.Fatalf("只读档缺少父目录写边界:\n%s", profile)
+	if strings.Contains(profile, `(allow file-write* (subpath "`+root+`"))`) {
+		t.Fatalf("只读档不得放行工作区写入:\n%s", profile)
 	}
-	if strings.Contains(profile, root) {
-		t.Fatalf("只读 profile 不得放行工作区写入:\n%s", profile)
+}
+
+// TestSeatbeltProfileNeverDeniesTempWriteScope 锁定临时写范围不被拒绝规则覆盖：
+// 在临时根之下拒绝某棵子树会连带拒绝编译器缓存与验证子进程的临时写，之前
+// 粗粒度的父目录拒绝就是这样打断端到端流程的。
+func TestSeatbeltProfileNeverDeniesTempWriteScope(t *testing.T) {
+	for _, root := range []string{
+		"/private/var/folders/ab/T/root/ws",
+		"/Users/example/project/ws",
+	} {
+		profile, err := SeatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteWorkspace})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range seatbeltWriteDenyPattern.FindAllStringSubmatch(profile, -1) {
+			for _, tempRoot := range seatbeltAlwaysWritableRoots {
+				if strings.HasPrefix(match[1], tempRoot) {
+					t.Fatalf("拒绝规则 %s 覆盖临时写范围 %s:\n%s", match[1], tempRoot, profile)
+				}
+			}
+		}
 	}
 }
