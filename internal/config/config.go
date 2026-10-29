@@ -48,8 +48,10 @@ type Config struct {
 	Output       OutputConfig         `yaml:"output"`
 	Cancellation CancellationConfig   `yaml:"cancellation"`
 	Sandbox      SandboxConfig        `yaml:"sandbox"`
-	MCP          *MCPConfig           `yaml:"mcp,omitempty" json:"mcp,omitempty"`
-	Skills       *SkillsConfig        `yaml:"skills,omitempty" json:"skills,omitempty"`
+	// Telemetry 控制可选语义观测导出；默认关闭，关闭时零网络导出。
+	Telemetry TelemetryConfig `yaml:"telemetry,omitempty"`
+	MCP       *MCPConfig      `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Skills    *SkillsConfig   `yaml:"skills,omitempty" json:"skills,omitempty"`
 	// Resolution 是解析过程生成的非敏感 Resolved Execution Plan（字段→值→来源），
 	// 只读派生事实：不参与 YAML 解码、不进入配置指纹（语义已由解析后的字段承载），
 	// 随冻结配置制品持久化，供诊断与可访问性视图使用。
@@ -464,6 +466,7 @@ func Defaults() Config {
 		Output:       OutputConfig{MaxPreviewBytes: 16 * 1024, MaxArtifactBytes: 10 * 1024 * 1024},
 		Cancellation: CancellationConfig{TerminateGrace: "5s"},
 		Sandbox:      SandboxConfig{Backend: "host", MaxPIDs: 64},
+		Telemetry:    TelemetryConfig{Enabled: false, SamplePercent: DefaultTelemetrySamplePercent},
 	}
 }
 

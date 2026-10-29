@@ -21,6 +21,9 @@ func Validate(config Config) error {
 	if err := validateMCP(config.MCP, config.Preset); err != nil {
 		return err
 	}
+	if err := validateTelemetry(config.Telemetry); err != nil {
+		return err
+	}
 	if config.Version != CurrentVersion {
 		return fmt.Errorf("unsupported config version %d", config.Version)
 	}

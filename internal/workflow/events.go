@@ -82,18 +82,23 @@ const (
 	StepKindAccept  = "accept"
 )
 
-// RunCreatedPayload 是 workflow_run_created 的负载。
+// RunCreatedPayload 是 workflow_run_created 的负载。Task 为可选的任务制品
+// 绑定：执行链写入方必须提供，缺失时恢复入口失败关闭而不是猜测任务正文。
 type RunCreatedPayload struct {
 	Steps               []StepSpec `json:"steps"`
 	PlanSHA256          string     `json:"plan_sha256"`
 	ConfigFingerprint   string     `json:"config_fingerprint"`
 	AuthorizationSource string     `json:"authorization_source"`
+	Task                StepIO     `json:"task,omitempty"`
 }
 
-// StepStartedPayload 是 workflow_step_started 的负载。
+// StepStartedPayload 是 workflow_step_started 的负载。RunID 可选绑定驱动该
+// 步骤的子运行；AuthorizationSource 可选记录显式授权来源（人工门步骤必填）。
 type StepStartedPayload struct {
-	StepID string `json:"step_id"`
-	Input  StepIO `json:"input,omitempty"`
+	StepID              string `json:"step_id"`
+	Input               StepIO `json:"input,omitempty"`
+	RunID               string `json:"run_id,omitempty"`
+	AuthorizationSource string `json:"authorization_source,omitempty"`
 }
 
 // StepFinishedPayload 是 workflow_step_finished 的负载。
@@ -285,10 +290,14 @@ type Snapshot struct {
 	ConfigFingerprint   string
 	PlanSHA256          string
 	AuthorizationSource string
+	Task                StepIO
 	CreatedAt           time.Time
 	Steps               []Step
 	// Kinds 按步骤 ID 映射创建事件声明的步骤种类。
-	Kinds             map[string]string
+	Kinds map[string]string
+	// StepRuns 按步骤 ID 映射 step_started 声明的子运行标识；仅执行与验证
+	// 步骤携带，人工门步骤为空。
+	StepRuns          map[string]string
 	Finished          bool
 	FinishState       string
 	ResumeIndex       int
@@ -328,8 +337,10 @@ func Project(events []Event) (*Snapshot, error) {
 		ConfigFingerprint:   created.ConfigFingerprint,
 		PlanSHA256:          created.PlanSHA256,
 		AuthorizationSource: created.AuthorizationSource,
+		Task:                created.Task,
 		CreatedAt:           events[0].OccurredAt,
 		Kinds:               kinds,
+		StepRuns:            make(map[string]string, len(created.Steps)),
 		ResumeIndex:         -1,
 	}
 	stepIndex := make(map[string]int, len(created.Steps))
@@ -347,6 +358,9 @@ func Project(events []Event) (*Snapshot, error) {
 			}
 			if err := ensureSequentialStart(plan, stepIndex, started.StepID); err != nil {
 				return nil, err
+			}
+			if started.RunID != "" {
+				snapshot.StepRuns[started.StepID] = started.RunID
 			}
 			if err := plan.MarkStep(started.StepID, StepRunning, started.Input, StepIO{}, "", event.OccurredAt); err != nil {
 				return nil, fmt.Errorf("workflow step %q: %w", started.StepID, err)

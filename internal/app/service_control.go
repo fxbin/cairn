@@ -19,11 +19,22 @@ import (
 
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
+	// 语义观测导出是可选旁路：导出失败不改变恢复语义与运行终态。
+	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
+	if telemetryErr != nil {
+		// 观测面接线不成立：运行照常执行且不导出，原因在 doctor 的
+		// semantic 状态与原因字段可见。
+		runtime = nil
+	}
+	defer closeTelemetry(runtime)
+	defer flushTelemetry(runtime)
+	options.OnEvent = composeTelemetrySink(options.OnEvent, runtime)
 	boot, err := service.assembleBoot(options.Workspace, options.StateDir, options.Config, options.OnEvent)
 	if err != nil {
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
 	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
@@ -63,6 +74,13 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	} else if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, Approval: options.Approval, OnEvent: options.OnEvent})
 	}
+	// 工作流验证 run 同样不进入模型续跑：以零调用脚本化计划收束冻结验证，
+	// 审批决定由本入口透传，避免产生计划外的模型操作。
+	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
+		return RunResult{ID: options.RunID}, verifyErr
+	} else if isWorkflowVerify {
+		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, options)
+	}
 	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
@@ -87,6 +105,16 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 // 返回前关闭 Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
+	// 语义观测导出是可选旁路：导出失败不改变对账判定与运行终态。
+	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
+	if telemetryErr != nil {
+		// 观测面接线不成立：运行照常执行且不导出，原因在 doctor 的
+		// semantic 状态与原因字段可见。
+		runtime = nil
+	}
+	defer closeTelemetry(runtime)
+	defer flushTelemetry(runtime)
+	options.OnEvent = composeTelemetrySink(options.OnEvent, runtime)
 	var boot *Boot
 	if options.Verdict == "abort_run" {
 		boot, err = assembleRecoveryBoot(options.Workspace, options.StateDir, options.Config)
@@ -97,6 +125,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
 	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err
@@ -240,6 +269,12 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, rewindPlan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
 	}
+	// 工作流验证 run 对账后同样以零调用脚本化计划收束，不进入模型续跑。
+	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
+		return RunResult{ID: options.RunID}, verifyErr
+	} else if isWorkflowVerify {
+		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, ResumeOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
+	}
 
 	// 对账后继续模型续跑同样受异步子门禁约束：非终态子未收束前不续跑父运行。
 	if err := rejectResumeWithUnfinishedAsyncChildren(options.Config.Tools.DelegateAsync, events); err != nil {
@@ -264,6 +299,16 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 // cancelling 运行的唯一恢复出口：进程在 run_created/run_started 之间或取消序列中途
 // 崩溃后，工作区会被非终态 run 永久阻塞，此处按状态机允许的起点补写终态。
 func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome RunResult, err error) {
+	// 语义观测导出是可选旁路：导出失败不改变收尾判定与运行终态。
+	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
+	if telemetryErr != nil {
+		// 观测面接线不成立：运行照常执行且不导出，原因在 doctor 的
+		// semantic 状态与原因字段可见。
+		runtime = nil
+	}
+	defer closeTelemetry(runtime)
+	defer flushTelemetry(runtime)
+	options.OnEvent = composeTelemetrySink(options.OnEvent, runtime)
 	if strings.TrimSpace(options.Reason) == "" {
 		return RunResult{}, errors.New("abort reason is required")
 	}
@@ -272,6 +317,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
 	events, err := boot.Journal.Load(ctx, options.RunID)
 	if err != nil {
 		return RunResult{}, err

@@ -7,16 +7,25 @@ import (
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// TelemetrySink 只消费已经成功追加到事件日志的领域事件并派生语义观测信号。
-// 遥测可以丢失、采样或停用，永远不能决定 completed、replay、resume、reconcile
-// 或 verifier 结果——事件日志是唯一运行事实源（路线图 AB-O1 事实合同）。
+// TelemetrySink 是早期语义遥测的窄端口：只消费已经成功追加到事件日志的领域
+// 事件并派生语义观测信号。遥测可以丢失、采样或停用，永远不能决定 completed、
+// replay、resume、reconcile 或 verifier 结果——事件日志是唯一运行事实源
+// （路线图 AB-O1 事实合同）。
+//
+// 已被 internal/telemetry.Sink 取代：现行运行路径只使用 internal/telemetry 的
+// 聚合与导出面。本接口与其参考实现保留为历史参考，不再接入任何运行路径，
+// 也不得被新的代码引用。
 type TelemetrySink interface {
 	ObserveRunEvent(event domain.Event)
 }
 
-// SemanticTelemetry 是 TelemetrySink 的参考实现：从已持久化事件派生 Run、Turn、
-// Operation、Verifier 与 Budget 维度的聚合语义计数。它无状态副作用、不落盘，
-// 供诊断与后续 OTLP 导出器复用；默认不接入任何运行路径。
+// SemanticTelemetry 是 TelemetrySink 的历史参考实现：从已持久化事件派生 Run、
+// Turn、Operation、Verifier 与 Budget 维度的聚合语义计数。它无状态副作用、
+// 不落盘。
+//
+// 已被 internal/telemetry 取代：现行语义观测面在 internal/telemetry 内实现，
+// 额外承担 Trace 关联、度量口径、维度白名单、隐私守卫与可选导出。本实现保留
+// 只为说明既有合同，现已没有调用方。
 type SemanticTelemetry struct {
 	RunID          string
 	Turns          int
