@@ -56,6 +56,10 @@ type providerGenerationFingerprint struct {
 // Fingerprint 生成可写入事件日志的 v2 冻结非敏感配置摘要。Provider 段使用
 // ProviderSelection 身份投影；endpoint_digest 是规范化身份，不是保密手段。
 // 落盘值只有 "sha256:<hex>"，禁止从中推断算法版本。
+//
+// 运维字段（输出体积、取消宽限、Provider 超时、可选语义观测导出等）刻意不
+// 进入指纹：它们不改变执行语义、权限边界或预算判定，开启或关闭观测不应让
+// 既有运行的冻结指纹失效。
 func (config Config) Fingerprint() string {
 	profile := config.Profile
 	if profile == "" {

@@ -101,6 +101,10 @@ type PolicyHealth struct {
 type TelemetryHealth struct {
 	Status string `json:"status"`
 	OTLP   string `json:"otlp,omitempty"`
+	// Semantic 是可选语义观测导出面的接线状态：disabled 表示未启用（默认）；
+	// instrumented 表示导出已接线且连接事实合法——它只说明观测面就绪，绝不
+	// 宣称已经成功采集；config_error 表示显式启用但连接事实不受支持。
+	Semantic string `json:"semantic,omitempty"`
 }
 
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性，并返回环境可运行性
@@ -128,7 +132,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 		MemoryState:       "absent",
-		Telemetry:         TelemetryHealth{Status: "disabled", OTLP: buildinfo.TelemetryMode()},
+		Telemetry:         TelemetryHealth{Status: "disabled", OTLP: buildinfo.TelemetryMode(), Semantic: telemetrySemanticStatus(configuration)},
 	}
 	report.BuildRevision = report.Build.Revision
 	if err := report.Build.Validate(); err != nil {
@@ -211,7 +215,7 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.MemoryState, report.MemoryOK = memoryState, memoryOK
-	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState), OTLP: buildinfo.TelemetryMode()}
+	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState), OTLP: buildinfo.TelemetryMode(), Semantic: telemetrySemanticStatus(configuration)}
 	report.probeSandboxAndEvaluateReadiness(configuration)
 	return report, nil
 }

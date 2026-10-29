@@ -135,6 +135,8 @@ func Load(path string, overrides Overrides) (Config, error) {
 	if err := resolvePromptFile(&config); err != nil {
 		return Config{}, err
 	}
+	// 语义观测抽样比例未声明（0）时按默认值归一，使配置视图与生效行为一致。
+	config.Telemetry.SamplePercent = config.Telemetry.EffectiveSamplePercent()
 	if err := Validate(config); err != nil {
 		return Config{}, err
 	}
