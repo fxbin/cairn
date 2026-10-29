@@ -27,6 +27,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/tools/`、`internal/policy/`、`internal/artifact/`、`internal/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
 | `internal/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
 | `internal/memory/`、`internal/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
+| `internal/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
 
 ## 不可绕过的边界
@@ -36,6 +37,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 内置工具由 `tools.NewRegistry` 静态注册；MCP 客户端由配置和 Composition Root 显式装配，发现目录及工具暴露状态从成功的 Journal 结果投影。外部调用保持完整授权链，目录/schema 漂移失败关闭，不自动重试结果不确定的调用。保持窄边界，不引入普通插件、daemon/RPC 或 Team 实体。
 - Skill 是本地 `SKILL.md` 内容包，由配置显式启用并通过固定 `skill` 工具按需读取；正文激活只来自成功的 Journal 回执，压缩与冷恢复保留历史正文，资源读取绑定来源与摘要。技能的 `allowed-tools`、hooks、模型或子代理声明不能授予权限或执行代码；脚本仍走工作区、Policy、审批和沙箱边界。管理命令只写原生目录，跨客户端共享目录仅作显式只读来源。
 - 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
+- 语义观测是可选旁路：只消费已成功持久化的 Journal 事件，导出失败不改变 Run 终态、Replay、Resume 或对账语义；默认关闭，关闭时零网络导出。指标维度只允许受限枚举，run 标识只作关联属性；Prompt、密钥、原始工具结果、验证证据与绝对路径不得进入观测内容。doctor 如实区分 instrumented、disabled 与 config_error，不宣称采集成功。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
 - `exec_session` 仅在显式启用时注册：提供受控 tmux 会话（open/write/read/close），会话独立 ID、工作目录与环境白名单；建会话与敏感动词需授权，取消用 SIGHUP+进程组回收；Journal 记录会话生命周期与输入摘要，不记录按键原文；默认禁用，不继承 `exec_command` 审批豁免。
