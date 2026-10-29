@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
@@ -374,7 +375,21 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	fmt.Fprintf(command.Stdout, "tools: %s\n", strings.Join(report.Tools, ", "))
 	fmt.Fprintf(command.Stdout, "budget: turns %d, tool calls %d, input %d, output %d, wall %s\n", report.Capabilities.Budget.MaxTurns, report.Capabilities.Budget.MaxToolCalls, report.Capabilities.Budget.MaxInputTokens, report.Capabilities.Budget.MaxOutputTokens, report.Capabilities.Budget.MaxWallTime)
 	fmt.Fprintf(command.Stdout, "verification: %d command(s) %s\n", report.Capabilities.Verification.Commands, report.Capabilities.Verification.Fingerprint)
-	fmt.Fprintf(command.Stdout, "telemetry: %s\n", report.Telemetry.Status)
+	// 三个观测面分面呈现：记忆侧只读聚合、语义面（Journal 事件投影）与
+	// SDK 面（otelc 构建形态）互不替代，读者不会把其中一面当成采集成功。
+	fmt.Fprintf(command.Stdout, "telemetry memory: %s\n", report.Telemetry.Status)
+	fmt.Fprintf(command.Stdout, "telemetry semantic: %s", report.Telemetry.Semantic)
+	if report.Telemetry.SemanticSignals != "" {
+		fmt.Fprintf(command.Stdout, " signals=%s", report.Telemetry.SemanticSignals)
+	}
+	if report.Telemetry.SemanticReason != "" {
+		fmt.Fprintf(command.Stdout, " reason=%s", report.Telemetry.SemanticReason)
+	}
+	fmt.Fprintln(command.Stdout)
+	fmt.Fprintf(command.Stdout, "telemetry otlp: %s\n", report.Telemetry.OTLP)
+	if exports := report.Telemetry.SemanticExports; exports != nil {
+		fmt.Fprintf(command.Stdout, "telemetry exports: exported=%d failed=%d dropped=%d at=%s\n", exports.Exported, exports.Failed, exports.Dropped, exports.UpdatedAt.UTC().Format(time.RFC3339))
+	}
 	fmt.Fprintf(command.Stdout, "verification commands: %d\n", report.VerificationCount)
 	for _, entry := range report.Resolution {
 		fmt.Fprintf(command.Stdout, "resolved %s = %s (%s)\n", entry.Field, entry.Value, entry.Source)
