@@ -1,3 +1,7 @@
+//go:build interop
+
+// 本文件属于 interop 标签档：它驱动真实 Claude Code 进程，依赖外部 CLI
+// 安装与进程负载，因此不进入默认门禁。
 package interop
 
 import (

@@ -1,3 +1,7 @@
+//go:build interop
+
+// 本文件属于 interop 标签档：能力矩阵探测要拉起真实外部 CLI 进程，
+// 依赖外部 CLI 安装与进程负载，因此不进入默认门禁。
 package interop
 
 import (
@@ -46,18 +50,34 @@ var edgeProbes = []capabilityProbe{
 	{Capability: "", Probe: probeFileModificationEvent},
 }
 
-// ProbeMatrix 对一组外壳执行完整的能力与边界场景探测。
-func ProbeMatrix(ctx context.Context, harnesses []Harness, stub *Stub) Matrix {
+// ProbeHarness 对单个外壳执行完整的能力与边界场景探测。逐外壳探测让调用
+// 方可以对单个外部 CLI 单独判定可用性：该 CLI 缺失时只跳过它自己的行。
+func ProbeHarness(ctx context.Context, harness Harness, stub *Stub) Matrix {
 	matrix := Matrix{}
-	for _, harness := range harnesses {
-		for _, probe := range capabilityProbes {
-			matrix.Add(probe.Probe(ctx, harness, stub))
-		}
-		for _, probe := range edgeProbes {
-			matrix.Add(probe.Probe(ctx, harness, stub))
-		}
+	for _, probe := range capabilityProbes {
+		matrix.Add(probe.Probe(ctx, harness, stub))
+	}
+	for _, probe := range edgeProbes {
+		matrix.Add(probe.Probe(ctx, harness, stub))
 	}
 	return matrix
+}
+
+// UnavailableObservations 为一个不可用的外壳生成整列"不可得"标注：原因
+// 写明为什么这一列在本机不可得，而不是留空。
+func UnavailableObservations(cli string, reason string) []Observation {
+	observations := make([]Observation, 0, len(AllCapabilities())+len(AllEdgeScenarios()))
+	for _, capability := range AllCapabilities() {
+		observations = append(observations, Observation{
+			Capability: capability, CLI: cli, Status: StatusUnavailable, Reason: reason,
+		})
+	}
+	for _, scenario := range AllEdgeScenarios() {
+		observations = append(observations, Observation{
+			Scenario: scenario, CLI: cli, Status: StatusUnavailable, Reason: reason,
+		})
+	}
+	return observations
 }
 
 // probeWorkspace 为一次探测准备独立工作区，并返回工作区与快照根。

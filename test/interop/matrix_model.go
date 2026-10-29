@@ -2,7 +2,6 @@ package interop
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -169,18 +168,4 @@ func (matrix Matrix) Render(clis []string) string {
 		}
 	}
 	return builder.String()
-}
-
-// SortedCLIs 返回矩阵中出现过的 CLI 名称，按字典序排列，保证渲染稳定。
-func (matrix Matrix) SortedCLIs() []string {
-	seen := map[string]bool{}
-	for _, observation := range matrix.Observations {
-		seen[observation.CLI] = true
-	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }

@@ -1,3 +1,6 @@
+//go:build interop
+
+// 本文件属于 interop 标签档：对照实验需要真实外部 CLI 进程。
 package interop
 
 import (
@@ -5,30 +8,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
-
-// requireCLI 在外壳可执行文件缺失时跳过整段对照实验：外部 CLI 不在机器上
-// 时，实验结论不可得，而不是"失败"。
-func requireCLI(t *testing.T, name string, command string) {
-	t.Helper()
-	if _, err := lookPath(command); err != nil {
-		t.Skipf("外部 CLI %s 不可用（%v），对照实验不可得", name, err)
-	}
-}
-
-// lookPath 在 PATH 中查找可执行文件。
-func lookPath(name string) (string, error) {
-	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
-		candidate := filepath.Join(directory, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", os.ErrNotExist
-}
 
 // moduleRoot 返回当前模块根目录。
 func moduleRoot(t *testing.T) string {
@@ -76,6 +58,9 @@ func buildHarnesses(t *testing.T, ctx context.Context) ([]Harness, *Stub) {
 // TestHarnessPlumbing 校验三侧外壳都能在零凭据条件下启动并完成一次最小
 // 受控运行：这是对照实验的前置条件，不是产品结论。
 func TestHarnessPlumbing(t *testing.T) {
+	requireCLI(t, "codex", "codex")
+	requireCLI(t, "claude", "claude")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	harnesses, stub := buildHarnesses(t, ctx)
@@ -177,24 +162,4 @@ func writeExperimentArtifacts(t *testing.T, outcomes []ExperimentOutcome, reques
 	if err := os.WriteFile(filepath.Join(directory, "experiment.md"), []byte(report), 0o644); err != nil {
 		t.Logf("write experiment artifacts: %v", err)
 	}
-}
-
-// truncate 截断长文本，供失败信息使用。
-func truncate(text string, limit int) string {
-	if len(text) <= limit {
-		return text
-	}
-	return text[:limit] + "…"
-}
-
-// lastResultLine 返回输出中最后一条 result 事件行，供失败诊断使用。
-func lastResultLine(stdout string) string {
-	lines := strings.Split(stdout, "\n")
-	for index := len(lines) - 1; index >= 0; index-- {
-		line := strings.TrimSpace(lines[index])
-		if strings.Contains(line, `"type":"result"`) {
-			return line
-		}
-	}
-	return "(无 result 行)"
 }
