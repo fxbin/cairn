@@ -157,8 +157,8 @@ func TestServiceRunWithoutTelemetryKeepsZeroExport(t *testing.T) {
 }
 
 // TestDoctorDistinguishesSemanticTelemetryStatus 锁定诊断如实性：语义观测导出
-// 面的状态必须区分 disabled、instrumented 与 config_error，且 instrumented
-// 只表示接线就绪，不宣称采集成功。
+// 面的状态必须区分 disabled、sdk_disabled、no_signal、instrumented 与
+// config_error，且 instrumented 只表示接线就绪，不宣称采集成功。
 func TestDoctorDistinguishesSemanticTelemetryStatus(t *testing.T) {
 	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -180,6 +180,22 @@ func TestDoctorDistinguishesSemanticTelemetryStatus(t *testing.T) {
 	if report.Telemetry.Semantic != TelemetrySemanticInstrumented {
 		t.Fatalf("semantic status = %q, want instrumented", report.Telemetry.Semantic)
 	}
+	if report.Telemetry.SemanticSignals != "traces,metrics" {
+		t.Fatalf("semantic signals = %q", report.Telemetry.SemanticSignals)
+	}
+	// 被 OTel 全局关闭开关禁用必须与"未启用"和"配置不合法"分开报告。
+	t.Setenv(telemetry.EnvSDKDisabled, "true")
+	report, err = service.Doctor(context.Background(), workspace, stateDir, enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Telemetry.Semantic != TelemetrySemanticSDKDisabled {
+		t.Fatalf("semantic status = %q, want sdk_disabled", report.Telemetry.Semantic)
+	}
+	if report.Telemetry.SemanticReason != telemetry.ReasonSDKDisabled {
+		t.Fatalf("semantic reason = %q", report.Telemetry.SemanticReason)
+	}
+	t.Setenv(telemetry.EnvSDKDisabled, "")
 	t.Setenv(telemetry.EnvEndpoint, "not-a-url")
 	report, err = service.Doctor(context.Background(), workspace, stateDir, enabled)
 	if err != nil {
@@ -187,5 +203,138 @@ func TestDoctorDistinguishesSemanticTelemetryStatus(t *testing.T) {
 	}
 	if report.Telemetry.Semantic != TelemetrySemanticConfigError {
 		t.Fatalf("semantic status = %q, want config_error", report.Telemetry.Semantic)
+	}
+	if report.Telemetry.SemanticReason != telemetry.ReasonInvalidTracesEndpoint {
+		t.Fatalf("semantic reason = %q", report.Telemetry.SemanticReason)
+	}
+}
+
+// TestServiceRunWithGlobalSDKDisableExportsNothing 锁定全局关闭合同：OTEL 全局
+// 关闭开关为真时，语义面不得发出任何请求，运行照常完成。
+func TestServiceRunWithGlobalSDKDisableExportsNothing(t *testing.T) {
+	receiver := newTelemetryReceiver(t)
+	t.Setenv(telemetry.EnvEndpoint, receiver.server.URL)
+	t.Setenv(telemetry.EnvSDKDisabled, "true")
+	configuration := withTestProvider(config.Defaults())
+	configuration.Telemetry.Enabled = true
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	result, err := service.Run(context.Background(), RunOptions{Task: telemetryTaskMarker, Workspace: workspace, StateDir: stateDir, Config: configuration})
+	if err != nil {
+		t.Fatalf("a globally disabled telemetry plane must not break the run: %v", err)
+	}
+	if result.Response != "done" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(receiver.body("/v1/traces")) != 0 || len(receiver.body("/v1/metrics")) != 0 {
+		t.Fatal("a globally disabled telemetry plane must not export anything")
+	}
+}
+
+// TestServiceRunWithTracesExporterNoneSendsNoTrace 锁定 exporter 选择语义：
+// OTEL_TRACES_EXPORTER=none 时不得有 trace 请求，指标信号照常发送。
+func TestServiceRunWithTracesExporterNoneSendsNoTrace(t *testing.T) {
+	receiver := newTelemetryReceiver(t)
+	t.Setenv(telemetry.EnvEndpoint, receiver.server.URL)
+	t.Setenv(telemetry.EnvTracesExporter, "none")
+	configuration := withTestProvider(config.Defaults())
+	configuration.Telemetry.Enabled = true
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	if _, err := service.Run(context.Background(), RunOptions{Task: telemetryTaskMarker, Workspace: workspace, StateDir: stateDir, Config: configuration}); err != nil {
+		t.Fatal(err)
+	}
+	if len(receiver.body("/v1/traces")) != 0 {
+		t.Fatal("OTEL_TRACES_EXPORTER=none must not produce a trace request")
+	}
+	if len(receiver.body("/v1/metrics")) == 0 {
+		t.Fatal("the metrics signal must still be delivered")
+	}
+}
+
+// TestDoctorReportsExportFailuresFromPersistedStats 锁定导出故障的可观测性：
+// 接收器不可用时的失败计数必须落盘并在 doctor 的语义面可见。
+func TestDoctorReportsExportFailuresFromPersistedStats(t *testing.T) {
+	t.Setenv(telemetry.EnvEndpoint, "http://127.0.0.1:1")
+	configuration := withTestProvider(config.Defaults())
+	configuration.Telemetry.Enabled = true
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return finalProvider{}, nil }}
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	if _, err := service.Run(context.Background(), RunOptions{Task: telemetryTaskMarker, Workspace: workspace, StateDir: stateDir, Config: configuration}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := service.Doctor(context.Background(), workspace, stateDir, configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Telemetry.Semantic != TelemetrySemanticInstrumented {
+		t.Fatalf("semantic status = %q", report.Telemetry.Semantic)
+	}
+	if report.Telemetry.SemanticExports == nil {
+		t.Fatal("doctor must report the recorded export counts")
+	}
+	if report.Telemetry.SemanticExports.Failed == 0 {
+		t.Fatalf("export failures must be visible in doctor: %+v", report.Telemetry.SemanticExports)
+	}
+	if report.Telemetry.SemanticExports.Exported != 0 {
+		t.Fatalf("no export can succeed against a closed port: %+v", report.Telemetry.SemanticExports)
+	}
+}
+
+// TestSemanticTelemetryDecisionAgreesBetweenRuntimeAndDoctor 锁定运行路径与
+// doctor 的判定同源：同一组环境变量下，运行时是否装配导出器与 doctor 报告
+// 的语义面状态必须一致，不会出现"doctor 说可用、运行却不导出"的分叉。
+func TestSemanticTelemetryDecisionAgreesBetweenRuntimeAndDoctor(t *testing.T) {
+	cases := []struct {
+		name        string
+		enabled     bool
+		environment map[string]string
+		wantStatus  string
+	}{
+		{name: "未启用", enabled: false, wantStatus: telemetry.ExportStatusDisabled},
+		{name: "全局关闭", enabled: true, environment: map[string]string{telemetry.EnvSDKDisabled: "true"}, wantStatus: telemetry.ExportStatusSDKDisabled},
+		{name: "端点非法", enabled: true, environment: map[string]string{telemetry.EnvEndpoint: "not-a-url"}, wantStatus: telemetry.ExportStatusConfigError},
+		{name: "协议不受支持", enabled: true, environment: map[string]string{telemetry.EnvProtocol: "grpc"}, wantStatus: telemetry.ExportStatusConfigError},
+		{name: "exporter 取值非法", enabled: true, environment: map[string]string{telemetry.EnvTracesExporter: "OTLP"}, wantStatus: telemetry.ExportStatusConfigError},
+		{name: "两个信号都被关闭", enabled: true, environment: map[string]string{telemetry.EnvTracesExporter: "none", telemetry.EnvMetricsExporter: "none"}, wantStatus: telemetry.ExportStatusNoSignal},
+		{name: "接线就绪", enabled: true, environment: map[string]string{telemetry.EnvEndpoint: "http://127.0.0.1:4318"}, wantStatus: telemetry.ExportStatusInstrumented},
+	}
+	service := Service{NewProvider: func(config.Config) (ports.Provider, error) { return &finalProvider{}, nil }}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv(telemetry.EnvSDKDisabled, "")
+			t.Setenv(telemetry.EnvEndpoint, "")
+			t.Setenv(telemetry.EnvTracesExporter, "")
+			t.Setenv(telemetry.EnvMetricsExporter, "")
+			t.Setenv(telemetry.EnvProtocol, "")
+			t.Setenv(telemetry.EnvTracesProtocol, "")
+			for name, value := range testCase.environment {
+				t.Setenv(name, value)
+			}
+			configuration := withTestProvider(config.Defaults())
+			configuration.Telemetry.Enabled = testCase.enabled
+			workspace, stateDir := t.TempDir(), t.TempDir()
+			report, err := service.Doctor(context.Background(), workspace, stateDir, configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Telemetry.Semantic != testCase.wantStatus {
+				t.Fatalf("doctor semantic status = %q, want %q", report.Telemetry.Semantic, testCase.wantStatus)
+			}
+			runtime, plan, err := newTelemetryRuntime(configuration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Status != report.Telemetry.Semantic {
+				t.Fatalf("runtime plan status %q diverges from doctor status %q", plan.Status, report.Telemetry.Semantic)
+			}
+			wantRuntime := testCase.wantStatus == telemetry.ExportStatusInstrumented
+			if (runtime != nil) != wantRuntime {
+				t.Fatalf("runtime assembled = %t, want %t for status %q", runtime != nil, wantRuntime, plan.Status)
+			}
+			if runtime != nil {
+				_ = runtime.Close()
+			}
+		})
 	}
 }

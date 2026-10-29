@@ -199,8 +199,10 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	// 语义观测导出是可选旁路：未启用时不建立任何连接；启用后也只消费已经
 	// 成功持久化的事件，导出失败不影响本次运行的结果与终态。
-	runtime, telemetryErr := newTelemetryRuntime(options.Config)
+	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
 	if telemetryErr != nil {
+		// 观测面接线不成立：运行照常执行且不导出，原因在 doctor 的
+		// semantic 状态与原因字段可见。
 		runtime = nil
 	}
 	defer closeTelemetry(runtime)
@@ -217,6 +219,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
 	// 嵌套运行恢复：委派回调会在本 Run 内嵌套子 Run，子 Run 会覆盖进程级
 	// 回调绑定；先保存外层绑定并在返回时恢复，保证父 Loop 后续 send_message
 	// 与 memory_recall 仍指向父 Boot 的存活资源。

@@ -46,6 +46,19 @@ func (receiver *otlpReceiver) body(path string) []byte {
 	return append([]byte(nil), receiver.received[path]...)
 }
 
+// receiverPlan 构造指向本地接收器的接线判定：端点换成本地接收器，其余判定
+// 沿用真实解析结果。
+func receiverPlan(t *testing.T, receiver *otlpReceiver) Plan {
+	t.Helper()
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q, want instrumented", plan.Status)
+	}
+	plan.Config.TracesEndpoint = receiver.server.URL + "/v1/traces"
+	plan.Config.MetricsEndpoint = receiver.server.URL + "/v1/metrics"
+	return plan
+}
+
 // TestOTLPExporterDeliversTraceToLocalReceiver 锁定真实导出：开启后本地接收器
 // 必须收到一条结构合法的运行 Trace 与一组语义度量，追踪标识使用十六进制。
 func TestOTLPExporterDeliversTraceToLocalReceiver(t *testing.T) {
@@ -55,10 +68,7 @@ func TestOTLPExporterDeliversTraceToLocalReceiver(t *testing.T) {
 	if !ok {
 		t.Fatal("offline rebuild must produce a snapshot")
 	}
-	exporter, err := NewOTLPExporter(OTLPConfig{
-		TracesEndpoint:  receiver.server.URL + "/v1/traces",
-		MetricsEndpoint: receiver.server.URL + "/v1/metrics",
-	})
+	exporter, err := NewOTLPExporter(receiverPlan(t, receiver))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +147,7 @@ func TestOTLPExporterDeliversTraceToLocalReceiver(t *testing.T) {
 	for _, metric := range metricsDecoded.ResourceMetrics[0].ScopeMetrics[0].Metrics {
 		names[metric.Name] = true
 	}
-	for _, expected := range []string{MetricRunTurns, MetricRunDurationMS, MetricRunInputTokens, MetricBudgetTurnsUsed} {
+	for _, expected := range []string{MetricRunTurns, MetricRunDurationMS, MetricRunInputTokens, MetricBudgetTurnsUsed, MetricBudgetMaxTurns} {
 		if !names[expected] {
 			t.Fatalf("metrics request misses %q, got %+v", expected, names)
 		}
@@ -153,10 +163,7 @@ func TestOTLPExportNeverCarriesSensitivePayloads(t *testing.T) {
 	if !ok {
 		t.Fatal("offline rebuild must produce a snapshot")
 	}
-	exporter, err := NewOTLPExporter(OTLPConfig{
-		TracesEndpoint:  receiver.server.URL + "/v1/traces",
-		MetricsEndpoint: receiver.server.URL + "/v1/metrics",
-	})
+	exporter, err := NewOTLPExporter(receiverPlan(t, receiver))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,57 +183,192 @@ func TestOTLPExportNeverCarriesSensitivePayloads(t *testing.T) {
 	}
 }
 
-// TestOTLPConfigFromEnvRejectsUnsupportedInput 锁定连接事实的失败关闭：非法
-// 端点与非法请求头都不允许进入导出路径。
-func TestOTLPConfigFromEnvRejectsUnsupportedInput(t *testing.T) {
-	t.Setenv(EnvTracesEndpoint, "not-a-url")
-	if _, err := OTLPConfigFromEnv(); err == nil {
-		t.Fatal("invalid traces endpoint must fail closed")
+// TestResolvePlanHonorsGlobalSDKDisable 锁定全局关闭合同：OTEL_SDK_DISABLED
+// 为真时语义面不得导出任何数据，判定状态如实报告为被全局关闭。
+func TestResolvePlanHonorsGlobalSDKDisable(t *testing.T) {
+	t.Setenv(EnvSDKDisabled, "true")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusSDKDisabled {
+		t.Fatalf("plan status = %q, want %q", plan.Status, ExportStatusSDKDisabled)
 	}
-	t.Setenv(EnvTracesEndpoint, "ftp://127.0.0.1:4318/v1/traces")
-	if _, err := OTLPConfigFromEnv(); err == nil {
-		t.Fatal("unsupported scheme must fail closed")
+	if plan.Reason != ReasonSDKDisabled {
+		t.Fatalf("plan reason = %q", plan.Reason)
 	}
-	t.Setenv(EnvTracesEndpoint, "http://127.0.0.1:4318/v1/traces")
-	t.Setenv(EnvHeaders, "broken-header")
-	if _, err := OTLPConfigFromEnv(); err == nil {
-		t.Fatal("malformed headers must fail closed")
+	if len(plan.Signals) != 0 {
+		t.Fatalf("a globally disabled plane must send no signal, got %+v", plan.Signals)
 	}
-	t.Setenv(EnvHeaders, "authorization=Bearer local-token")
-	configuration, err := OTLPConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if configuration.TracesEndpoint != "http://127.0.0.1:4318/v1/traces" {
-		t.Fatalf("traces endpoint = %q", configuration.TracesEndpoint)
-	}
-	if len(configuration.Headers) != 1 || configuration.Headers[0].Name != "authorization" {
-		t.Fatalf("headers = %+v", configuration.Headers)
+	if _, err := NewOTLPExporter(plan); err == nil {
+		t.Fatal("a globally disabled plane must not be exportable")
 	}
 }
 
-// TestOTLPConfigFromEnvDerivesTracesEndpoint 锁定端点推导：只给基础端点时
-// 导出面必须自行拼接 trace 路径，缺省时回退到本地标准端口。
-func TestOTLPConfigFromEnvDerivesTracesEndpoint(t *testing.T) {
-	t.Setenv(EnvTracesEndpoint, "")
-	t.Setenv(EnvEndpoint, "http://127.0.0.1:4318/")
-	configuration, err := OTLPConfigFromEnv()
+// TestResolvePlanKeepsDisabledWhenNotEnabled 锁定配置门：未显式启用时判定为
+// disabled，不解析端点也不产生任何信号。
+func TestResolvePlanKeepsDisabledWhenNotEnabled(t *testing.T) {
+	t.Setenv(EnvSDKDisabled, "true")
+	plan := ResolvePlan(false)
+	if plan.Status != ExportStatusDisabled {
+		t.Fatalf("plan status = %q, want %q", plan.Status, ExportStatusDisabled)
+	}
+	if plan.Reason != ReasonNotEnabled {
+		t.Fatalf("plan reason = %q", plan.Reason)
+	}
+}
+
+// TestResolvePlanHonorsExporterNone 锁定 exporter 选择语义：none 表示对应
+// 信号不导出；两个信号都为 none 时没有任何数据外发。
+func TestResolvePlanHonorsExporterNone(t *testing.T) {
+	t.Setenv(EnvTracesExporter, "none")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if len(plan.Signals) != 1 || plan.Signals[0] != SignalMetrics {
+		t.Fatalf("signals = %+v, want metrics only", plan.Signals)
+	}
+	if plan.Config.TracesEnabled {
+		t.Fatal("traces must be disabled by OTEL_TRACES_EXPORTER=none")
+	}
+	t.Setenv(EnvMetricsExporter, "none")
+	plan = ResolvePlan(true)
+	if plan.Status != ExportStatusNoSignal {
+		t.Fatalf("plan status = %q, want %q", plan.Status, ExportStatusNoSignal)
+	}
+	if plan.Reason != ReasonNoSignal {
+		t.Fatalf("plan reason = %q", plan.Reason)
+	}
+	if len(plan.Signals) != 0 {
+		t.Fatalf("signals = %+v, want none", plan.Signals)
+	}
+}
+
+// TestOTLPExporterSkipsDisabledSignals 锁定信号开关的实际效果：被关闭的信号
+// 不发出任何请求，另一个信号照常送达。
+func TestOTLPExporterSkipsDisabledSignals(t *testing.T) {
+	receiver := newOTLPReceiver(t)
+	events := telemetryFixture(t)
+	snapshot, ok := Aggregate(events, fixtureLimits(), 100)
+	if !ok {
+		t.Fatal("offline rebuild must produce a snapshot")
+	}
+	plan := receiverPlan(t, receiver)
+	plan.Config.TracesEnabled = false
+	plan.Signals = []string{SignalMetrics}
+	exporter, err := NewOTLPExporter(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.TracesEndpoint != "http://127.0.0.1:4318/v1/traces" {
-		t.Fatalf("traces endpoint = %q", configuration.TracesEndpoint)
+	if err := exporter.Export(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
 	}
-	if configuration.MetricsEndpoint != "http://127.0.0.1:4318/v1/metrics" {
-		t.Fatalf("metrics endpoint = %q", configuration.MetricsEndpoint)
+	if len(receiver.body("/v1/traces")) != 0 {
+		t.Fatal("a disabled trace signal must not reach the receiver")
+	}
+	if len(receiver.body("/v1/metrics")) == 0 {
+		t.Fatal("the enabled metrics signal must still be delivered")
+	}
+}
+
+// TestResolvePlanRejectsUnsupportedExporter 锁定 exporter 取值的严格性：不受
+// 支持的名称失败关闭，不被静默当作默认。
+func TestResolvePlanRejectsUnsupportedExporter(t *testing.T) {
+	t.Setenv(EnvTracesExporter, "OTLP")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusConfigError {
+		t.Fatalf("plan status = %q, want %q", plan.Status, ExportStatusConfigError)
+	}
+	if plan.Reason != ReasonInvalidExporter {
+		t.Fatalf("plan reason = %q", plan.Reason)
+	}
+	t.Setenv(EnvTracesExporter, "otlp")
+	t.Setenv(EnvMetricsExporter, "prometheus")
+	plan = ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if len(plan.Signals) != 1 || plan.Signals[0] != SignalTraces {
+		t.Fatalf("signals = %+v, want traces only", plan.Signals)
+	}
+}
+
+// TestResolvePlanRejectsUnsupportedProtocol 锁定传输协议边界：语义面只实现
+// OTLP/HTTP+JSON，显式声明 gRPC 时失败关闭而不是静默用错协议。
+func TestResolvePlanRejectsUnsupportedProtocol(t *testing.T) {
+	t.Setenv(EnvProtocol, "grpc")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusConfigError {
+		t.Fatalf("plan status = %q, want %q", plan.Status, ExportStatusConfigError)
+	}
+	if plan.Reason != ReasonUnsupportedProtocol {
+		t.Fatalf("plan reason = %q", plan.Reason)
+	}
+	t.Setenv(EnvProtocol, ProtocolHTTPJSON)
+	plan = ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+}
+
+// TestResolvePlanAttributesInvalidEndpointToItsVariable 锁定端点错误的归因：
+// trace 端点与指标端点的错误分别归到各自的变量，不得互相错挂。
+func TestResolvePlanAttributesInvalidEndpointToItsVariable(t *testing.T) {
+	t.Setenv(EnvTracesEndpoint, "not-a-url")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusConfigError {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if plan.Reason != ReasonInvalidTracesEndpoint {
+		t.Fatalf("plan reason = %q, want %q", plan.Reason, ReasonInvalidTracesEndpoint)
+	}
+	t.Setenv(EnvTracesEndpoint, "http://127.0.0.1:4318/v1/traces")
+	t.Setenv(EnvMetricsEndpoint, "not-a-url")
+	plan = ResolvePlan(true)
+	if plan.Reason != ReasonInvalidMetricsEndpoint {
+		t.Fatalf("plan reason = %q, want %q", plan.Reason, ReasonInvalidMetricsEndpoint)
+	}
+}
+
+// TestResolvePlanDerivesEndpoints 锁定端点推导：只给基础端点时导出面自行
+// 拼接信号路径，缺省时回退到本地标准端口。
+func TestResolvePlanDerivesEndpoints(t *testing.T) {
+	t.Setenv(EnvTracesEndpoint, "")
+	t.Setenv(EnvMetricsEndpoint, "")
+	t.Setenv(EnvEndpoint, "http://127.0.0.1:4318/")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if plan.Config.TracesEndpoint != "http://127.0.0.1:4318/v1/traces" {
+		t.Fatalf("traces endpoint = %q", plan.Config.TracesEndpoint)
+	}
+	if plan.Config.MetricsEndpoint != "http://127.0.0.1:4318/v1/metrics" {
+		t.Fatalf("metrics endpoint = %q", plan.Config.MetricsEndpoint)
 	}
 	t.Setenv(EnvEndpoint, "")
-	configuration, err = OTLPConfigFromEnv()
-	if err != nil {
-		t.Fatal(err)
+	plan = ResolvePlan(true)
+	if plan.Config.TracesEndpoint != DefaultOTLPTracesEndpoint || plan.Config.MetricsEndpoint != DefaultOTLPMetricsEndpoint {
+		t.Fatalf("default endpoints = %+v", plan.Config)
 	}
-	if configuration.TracesEndpoint != DefaultOTLPTracesEndpoint || configuration.MetricsEndpoint != DefaultOTLPMetricsEndpoint {
-		t.Fatalf("default endpoints = %+v", configuration)
+}
+
+// TestResolvePlanRejectsMalformedHeaders 锁定请求头解析：格式错误失败关闭，
+// 合法请求头只保留键值，不进入任何诊断输出。
+func TestResolvePlanRejectsMalformedHeaders(t *testing.T) {
+	t.Setenv(EnvHeaders, "broken-header")
+	plan := ResolvePlan(true)
+	if plan.Status != ExportStatusConfigError {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if plan.Reason != ReasonInvalidHeaders {
+		t.Fatalf("plan reason = %q", plan.Reason)
+	}
+	t.Setenv(EnvHeaders, "authorization=Bearer local-token")
+	plan = ResolvePlan(true)
+	if plan.Status != ExportStatusInstrumented {
+		t.Fatalf("plan status = %q", plan.Status)
+	}
+	if len(plan.Config.Headers) != 1 || plan.Config.Headers[0].Name != "authorization" {
+		t.Fatalf("headers = %+v", plan.Config.Headers)
 	}
 }
 

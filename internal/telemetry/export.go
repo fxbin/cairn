@@ -29,6 +29,19 @@ const (
 	EnvEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	// EnvHeaders 是 OTLP 请求头的标准环境变量名。
 	EnvHeaders = "OTEL_EXPORTER_OTLP_HEADERS"
+	// EnvSDKDisabled 是 OTel 全局关闭开关；为真时任何观测导出都不得发生，
+	// 语义面与 SDK 面共用它。
+	EnvSDKDisabled = "OTEL_SDK_DISABLED"
+	// EnvTracesExporter 是 trace 信号 exporter 选择的标准环境变量名。
+	EnvTracesExporter = "OTEL_TRACES_EXPORTER"
+	// EnvMetricsExporter 是 metrics 信号 exporter 选择的标准环境变量名。
+	EnvMetricsExporter = "OTEL_METRICS_EXPORTER"
+	// EnvProtocol 是 OTLP 传输协议的标准环境变量名。
+	EnvProtocol = "OTEL_EXPORTER_OTLP_PROTOCOL"
+	// EnvTracesProtocol 是 trace 信号传输协议的标准环境变量名。
+	EnvTracesProtocol = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
+	// ProtocolHTTPJSON 是语义面唯一实现的 OTLP 传输协议。
+	ProtocolHTTPJSON = "http/json"
 	// DefaultOTLPTracesEndpoint 是没有显式端点时的本地 trace 接收地址。
 	DefaultOTLPTracesEndpoint = "http://127.0.0.1:4318/v1/traces"
 	// DefaultOTLPMetricsEndpoint 是没有显式端点时的本地指标接收地址。
@@ -43,6 +56,52 @@ const (
 	exportMaxResponseBytes = 1 << 20
 )
 
+// 语义导出面的接线状态取值。doctor 只报告这些状态，绝不据此宣称已经成功
+// 采集到观测数据。
+const (
+	// ExportStatusDisabled 表示语义观测导出未被显式启用（默认状态）。
+	ExportStatusDisabled = "disabled"
+	// ExportStatusSDKDisabled 表示被 OTel 全局关闭开关禁用：此时不得导出
+	// 任何观测数据。
+	ExportStatusSDKDisabled = "sdk_disabled"
+	// ExportStatusConfigError 表示显式启用但连接事实不受支持，导出失败关闭。
+	ExportStatusConfigError = "config_error"
+	// ExportStatusNoSignal 表示接线就绪，但两个信号都被 exporter 选择关闭，
+	// 本次不会有任何数据外发。
+	ExportStatusNoSignal = "no_signal"
+	// ExportStatusInstrumented 表示导出接线就绪且至少一个信号会被发送。
+	ExportStatusInstrumented = "instrumented"
+)
+
+// 语义导出面的稳定原因取值；只描述原因类别与出错的变量归属，不含端点、
+// 请求头取值或任何本机路径。
+const (
+	// ReasonNotEnabled 表示调用方没有显式开启语义观测导出。
+	ReasonNotEnabled = "not_enabled"
+	// ReasonSDKDisabled 表示 OTEL_SDK_DISABLED 全局关闭了观测。
+	ReasonSDKDisabled = "sdk_disabled"
+	// ReasonInvalidExporter 表示 exporter 选择不受支持。
+	ReasonInvalidExporter = "invalid_exporter"
+	// ReasonUnsupportedProtocol 表示声明的传输协议不被语义面实现。
+	ReasonUnsupportedProtocol = "unsupported_protocol"
+	// ReasonInvalidTracesEndpoint 表示 trace 端点非法。
+	ReasonInvalidTracesEndpoint = "invalid_traces_endpoint"
+	// ReasonInvalidMetricsEndpoint 表示指标端点非法。
+	ReasonInvalidMetricsEndpoint = "invalid_metrics_endpoint"
+	// ReasonInvalidHeaders 表示请求头格式非法。
+	ReasonInvalidHeaders = "invalid_headers"
+	// ReasonNoSignal 表示两个信号都被 exporter 选择关闭。
+	ReasonNoSignal = "no_signal"
+)
+
+// 语义导出面的信号名。
+const (
+	// SignalTraces 是 trace 信号。
+	SignalTraces = "traces"
+	// SignalMetrics 是 metrics 信号。
+	SignalMetrics = "metrics"
+)
+
 // Exporter 导出一个运行的语义快照。实现必须只输出快照中的受限字段，
 // 绝不能把事件负载、Prompt、工具结果或本机路径写进导出内容。
 type Exporter interface {
@@ -55,17 +114,104 @@ type Header struct {
 	Value string
 }
 
-// OTLPConfig 是语义导出面的连接事实：端点与请求头都来自标准 OTel 环境变量。
+// OTLPConfig 是语义导出面的连接事实：端点与请求头都来自标准 OTel 环境变量，
+// 两个信号各自带开关。
 type OTLPConfig struct {
 	TracesEndpoint  string
 	MetricsEndpoint string
 	Headers         []Header
 	Timeout         time.Duration
+	// TracesEnabled 表示 trace 信号会被发送。
+	TracesEnabled bool
+	// MetricsEnabled 表示 metrics 信号会被发送。
+	MetricsEnabled bool
 }
 
-// OTLPConfigFromEnv 读取标准 OTel 环境变量并给出导出连接事实。没有显式端点
-// 时回退到本地标准端口；端点非法或请求头格式错误时失败关闭。
-func OTLPConfigFromEnv() (OTLPConfig, error) {
+// Plan 描述语义导出面的接线判定结果：状态、实际会发送的信号、连接事实与
+// 稳定原因。运行路径与 doctor 共用它，保证两侧判定不会分叉。
+type Plan struct {
+	// Status 是接线状态，取 ExportStatus* 之一。
+	Status string
+	// Signals 列出实际会发送的信号；为空表示本次没有任何数据外发。
+	Signals []string
+	// Config 是接线合法时的连接事实。
+	Config OTLPConfig
+	// Reason 是稳定原因取值，说明状态为何如此。
+	Reason string
+}
+
+// ResolvePlan 按启用开关与标准 OTel 环境变量判定语义导出接线。它是唯一的
+// 判定入口：运行路径据此决定是否装配导出器，doctor 据此报告状态。
+//
+// 判定顺序：未启用 → disabled；OTEL_SDK_DISABLED 为真 → sdk_disabled（全局
+// 关闭，任何数据都不得导出）；exporter 选择或传输协议不受支持 →
+// config_error；端点或请求头非法 → config_error；两个信号都被关闭 →
+// no_signal；其余 → instrumented。
+func ResolvePlan(enabled bool) Plan {
+	if !enabled {
+		return Plan{Status: ExportStatusDisabled, Reason: ReasonNotEnabled}
+	}
+	if strings.EqualFold(os.Getenv(EnvSDKDisabled), "true") {
+		return Plan{Status: ExportStatusSDKDisabled, Reason: ReasonSDKDisabled}
+	}
+	traces, tracesSupported := exporterEnabled(os.Getenv(EnvTracesExporter), false)
+	metrics, metricsSupported := exporterEnabled(os.Getenv(EnvMetricsExporter), true)
+	if !tracesSupported || !metricsSupported {
+		return Plan{Status: ExportStatusConfigError, Reason: ReasonInvalidExporter}
+	}
+	if !protocolSupported(os.Getenv(EnvProtocol)) || !protocolSupported(os.Getenv(EnvTracesProtocol)) {
+		return Plan{Status: ExportStatusConfigError, Reason: ReasonUnsupportedProtocol}
+	}
+	configuration, reason, err := resolveOTLPConfig()
+	if err != nil {
+		return Plan{Status: ExportStatusConfigError, Reason: reason}
+	}
+	configuration.TracesEnabled = traces
+	configuration.MetricsEnabled = metrics
+	plan := Plan{Status: ExportStatusInstrumented, Config: configuration}
+	if traces {
+		plan.Signals = append(plan.Signals, SignalTraces)
+	}
+	if metrics {
+		plan.Signals = append(plan.Signals, SignalMetrics)
+	}
+	if len(plan.Signals) == 0 {
+		plan.Status = ExportStatusNoSignal
+		plan.Reason = ReasonNoSignal
+	}
+	return plan
+}
+
+// exporterEnabled 按上游 autoexport 的精确语义解析单个信号 exporter：空值
+// 采用 otlp；none 表示该信号不导出；metrics 的 prometheus 由 SDK 面承担，
+// 语义面不实现，按不导出处理；其它取值不受支持，失败关闭。名称严格区分
+// 大小写且不裁剪，与 SDK 面保持同一口径。
+func exporterEnabled(value string, allowPrometheus bool) (bool, bool) {
+	switch value {
+	case "":
+		return true, true
+	case "otlp":
+		return true, true
+	case "none":
+		return false, true
+	case "prometheus":
+		return false, allowPrometheus
+	default:
+		return false, false
+	}
+}
+
+// protocolSupported 判定语义面能否使用给定的 OTLP 传输协议。语义面只实现
+// OTLP/HTTP+JSON，不引入 gRPC 依赖；显式声明其它协议时失败关闭，避免把
+// JSON 发到 gRPC 端口造成静默失败。
+func protocolSupported(value string) bool {
+	return value == "" || value == ProtocolHTTPJSON
+}
+
+// resolveOTLPConfig 解析导出连接事实：端点与请求头只来自标准 OTel 环境变量，
+// 没有显式端点时回退到本地标准端口；非法端点或请求头失败关闭，并给出
+// 稳定原因与出错的变量归属。
+func resolveOTLPConfig() (OTLPConfig, string, error) {
 	base := strings.TrimSpace(os.Getenv(EnvEndpoint))
 	configuration := OTLPConfig{
 		TracesEndpoint:  strings.TrimSpace(os.Getenv(EnvTracesEndpoint)),
@@ -86,16 +232,16 @@ func OTLPConfigFromEnv() (OTLPConfig, error) {
 	}
 	headers, err := parseExportHeaders(os.Getenv(EnvHeaders))
 	if err != nil {
-		return OTLPConfig{}, err
+		return OTLPConfig{}, ReasonInvalidHeaders, err
 	}
 	configuration.Headers = headers
 	if err := validateEndpoint(configuration.TracesEndpoint); err != nil {
-		return OTLPConfig{}, fmt.Errorf("%s: %w", EnvTracesEndpoint, err)
+		return OTLPConfig{}, ReasonInvalidTracesEndpoint, fmt.Errorf("%s: %w", EnvTracesEndpoint, err)
 	}
 	if err := validateEndpoint(configuration.MetricsEndpoint); err != nil {
-		return OTLPConfig{}, fmt.Errorf("%s: %w", EnvEndpoint, err)
+		return OTLPConfig{}, ReasonInvalidMetricsEndpoint, fmt.Errorf("%s: %w", EnvMetricsEndpoint, err)
 	}
-	return configuration, nil
+	return configuration, "", nil
 }
 
 // parseExportHeaders 解析标准 OTel 请求头串（逗号分隔的键值对）；空串表示
@@ -143,25 +289,30 @@ type OTLPExporter struct {
 	client        *http.Client
 }
 
-// NewOTLPExporter 校验连接事实并创建导出器；非法端点失败关闭。
-func NewOTLPExporter(configuration OTLPConfig) (*OTLPExporter, error) {
-	if err := validateEndpoint(configuration.TracesEndpoint); err != nil {
-		return nil, fmt.Errorf("traces endpoint: %w", err)
+// NewOTLPExporter 按接线判定创建导出器。只有 instrumented 的判定才允许装配
+// 导出器：被全局关闭、配置不合法或没有信号可发时一律拒绝，杜绝绕过判定
+// 直接导出数据。
+func NewOTLPExporter(plan Plan) (*OTLPExporter, error) {
+	if plan.Status != ExportStatusInstrumented {
+		return nil, fmt.Errorf("semantic telemetry export is %s, not instrumented", plan.Status)
 	}
-	if err := validateEndpoint(configuration.MetricsEndpoint); err != nil {
-		return nil, fmt.Errorf("metrics endpoint: %w", err)
+	if err := validateEndpoint(plan.Config.TracesEndpoint); err != nil {
+		return nil, fmt.Errorf("%s: %w", EnvTracesEndpoint, err)
 	}
-	timeout := configuration.Timeout
+	if err := validateEndpoint(plan.Config.MetricsEndpoint); err != nil {
+		return nil, fmt.Errorf("%s: %w", EnvMetricsEndpoint, err)
+	}
+	timeout := plan.Config.Timeout
 	if timeout <= 0 {
 		timeout = DefaultExportTimeout
 	}
-	return &OTLPExporter{configuration: configuration, client: &http.Client{Timeout: timeout}}, nil
+	return &OTLPExporter{configuration: plan.Config, client: &http.Client{Timeout: timeout}}, nil
 }
 
 // Export 导出一个快照的跨度与度量；任一信号失败都返回错误，调用方只记录
-// 失败事实，不改变运行终态。
+// 失败事实，不改变运行终态。被 exporter 选择关闭的信号不会发出任何请求。
 func (exporter *OTLPExporter) Export(ctx context.Context, snapshot Snapshot) error {
-	if len(snapshot.Spans) > 0 {
+	if exporter.configuration.TracesEnabled && len(snapshot.Spans) > 0 {
 		body, err := encodeTraceRequest(snapshot)
 		if err != nil {
 			return err
@@ -170,14 +321,16 @@ func (exporter *OTLPExporter) Export(ctx context.Context, snapshot Snapshot) err
 			return fmt.Errorf("export traces: %w", err)
 		}
 	}
-	points := snapshot.MetricPoints()
-	if len(points) > 0 {
-		body, err := encodeMetricRequest(snapshot, points)
-		if err != nil {
-			return err
-		}
-		if err := exporter.post(ctx, exporter.configuration.MetricsEndpoint, body); err != nil {
-			return fmt.Errorf("export metrics: %w", err)
+	if exporter.configuration.MetricsEnabled {
+		points := snapshot.MetricPoints()
+		if len(points) > 0 {
+			body, err := encodeMetricRequest(snapshot, points)
+			if err != nil {
+				return err
+			}
+			if err := exporter.post(ctx, exporter.configuration.MetricsEndpoint, body); err != nil {
+				return fmt.Errorf("export metrics: %w", err)
+			}
 		}
 	}
 	return nil

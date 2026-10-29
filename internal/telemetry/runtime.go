@@ -18,6 +18,7 @@ type Runtime struct {
 	exporter   Exporter
 	mu         sync.Mutex
 	exported   map[domain.RunID]bool
+	recorder   func(ExportStats)
 }
 
 // NewRuntime 创建语义观测运行时；exporter 为 nil 时运行时只聚合不导出。
@@ -72,17 +73,48 @@ func (runtime *Runtime) RunIDs() []domain.RunID {
 	return runtime.aggregator.RunIDs()
 }
 
+// SetStatsRecorder 装配导出统计的落盘回调。运行边界收束时用它记录成功、
+// 失败与丢弃计数，使导出故障在诊断面可见；回调失败不影响运行结果。
+func (runtime *Runtime) SetStatsRecorder(recorder func(ExportStats)) {
+	if runtime == nil {
+		return
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.recorder = recorder
+}
+
+// Stats 返回本次运行的导出统计；导出器不支持统计时返回零值。
+func (runtime *Runtime) Stats() ExportStats {
+	if runtime == nil || runtime.exporter == nil {
+		return ExportStats{}
+	}
+	provider, supported := runtime.exporter.(interface{ Stats() ExportStats })
+	if !supported {
+		return ExportStats{}
+	}
+	return provider.Stats()
+}
+
 // Flush 收束已投递的导出；导出器不支持收束时立即返回。超时或失败只记录
-// 事实，调用方不得据此改变运行结果。
+// 事实，调用方不得据此改变运行结果。收束完成后把导出统计交给落盘回调，
+// 使诊断面能如实看到导出失败与丢弃。
 func (runtime *Runtime) Flush(ctx context.Context) error {
 	if runtime == nil || runtime.exporter == nil {
 		return nil
 	}
+	var flushErr error
 	flusher, supportsFlush := runtime.exporter.(interface{ Flush(context.Context) error })
-	if !supportsFlush {
-		return nil
+	if supportsFlush {
+		flushErr = flusher.Flush(ctx)
 	}
-	return flusher.Flush(ctx)
+	runtime.mu.Lock()
+	recorder := runtime.recorder
+	runtime.mu.Unlock()
+	if recorder != nil {
+		recorder(runtime.Stats())
+	}
+	return flushErr
 }
 
 // Close 关闭运行时持有的导出器（如果有）。它只影响观测面，不改变运行终态；

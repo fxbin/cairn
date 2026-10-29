@@ -14,6 +14,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/telemetry"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -99,12 +100,24 @@ type PolicyHealth struct {
 // 仅非 OTLP exporter 启用；config_error 表示配置不受注入 SDK 支持。端点与认证
 // 只存在于环境，本投影永远不携带其值。
 type TelemetryHealth struct {
+	// Status 是记忆体系的只读聚合快照状态（既有语义，不变）。
 	Status string `json:"status"`
-	OTLP   string `json:"otlp,omitempty"`
-	// Semantic 是可选语义观测导出面的接线状态：disabled 表示未启用（默认）；
-	// instrumented 表示导出已接线且连接事实合法——它只说明观测面就绪，绝不
-	// 宣称已经成功采集；config_error 表示显式启用但连接事实不受支持。
+	// OTLP 是 SDK 面（otelc 构建形态）的运行级导出状态（既有语义，不变）。
+	OTLP string `json:"otlp,omitempty"`
+	// Semantic 是语义面（Journal 事件投影）的接线状态：disabled 表示未启用；
+	// sdk_disabled 表示被 OTel 全局关闭开关禁用；config_error 表示显式启用
+	// 但连接事实不受支持；no_signal 表示接线就绪但两个信号都被关闭；
+	// instrumented 表示接线就绪且至少一个信号会被发送——它只说明观测面
+	// 就绪，绝不宣称已经成功采集。
 	Semantic string `json:"semantic,omitempty"`
+	// SemanticSignals 列出语义面实际会发送的信号（traces、metrics）。
+	SemanticSignals string `json:"semantic_signals,omitempty"`
+	// SemanticReason 是语义面状态的稳定原因取值，只描述原因类别与出错的
+	// 变量归属，不含端点、请求头取值或本机路径。
+	SemanticReason string `json:"semantic_reason,omitempty"`
+	// SemanticExports 汇总最近一次运行记录的语义导出计数与记录时间；文件
+	// 缺失时为空，表示还没有可对账的导出记录。
+	SemanticExports *TelemetryExportRecord `json:"semantic_exports,omitempty"`
 }
 
 // Doctor 以只读模式验证工作区对应日志和制品引用的完整性，并返回环境可运行性
@@ -112,6 +125,9 @@ type TelemetryHealth struct {
 // 新工作区没有 journal 时不报错，journal_state=absent 并继续给出 ready 判定。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
 	validationErr := config.Validate(configuration)
+	// 语义观测接线判定与运行路径同源：doctor 报告的状态与运行时是否导出
+	// 永远一致，不会出现"doctor 说可用、运行却不导出"的分叉。
+	semanticPlan := telemetrySemanticPlan(configuration)
 	report := DoctorReport{
 		ConfigValid:   validationErr == nil,
 		Preset:        configuration.Preset,
@@ -132,7 +148,13 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		VerificationCount: len(configuration.Verification.Commands),
 		JournalState:      "absent",
 		MemoryState:       "absent",
-		Telemetry:         TelemetryHealth{Status: "disabled", OTLP: buildinfo.TelemetryMode(), Semantic: telemetrySemanticStatus(configuration)},
+		Telemetry: TelemetryHealth{
+			Status:          "disabled",
+			OTLP:            buildinfo.TelemetryMode(),
+			Semantic:        semanticPlan.Status,
+			SemanticSignals: telemetrySemanticSignals(semanticPlan),
+			SemanticReason:  semanticPlan.Reason,
+		},
 	}
 	report.BuildRevision = report.Build.Revision
 	if err := report.Build.Validate(); err != nil {
@@ -164,6 +186,11 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, err
 	}
 	report.WorkspaceHash = hash
+	// 导出计数只在语义面接线就绪时对账：被关闭或配置不合法时旧的计数
+	// 不代表当前行为，宁可不报也不误报。
+	if semanticPlan.Status == telemetry.ExportStatusInstrumented {
+		report.Telemetry.SemanticExports = readTelemetryStats(stateDir, hash)
+	}
 	report.Admission, _ = checkAdmissionGate(stateDir, hash, configuration)
 	if _, err := execToolFor(workspace, configuration); err != nil {
 		return report, err
@@ -215,7 +242,14 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		return report, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
 	report.MemoryState, report.MemoryOK = memoryState, memoryOK
-	report.Telemetry = TelemetryHealth{Status: telemetryStatusForMemory(memoryState), OTLP: buildinfo.TelemetryMode(), Semantic: telemetrySemanticStatus(configuration)}
+	report.Telemetry = TelemetryHealth{
+		Status:          telemetryStatusForMemory(memoryState),
+		OTLP:            buildinfo.TelemetryMode(),
+		Semantic:        semanticPlan.Status,
+		SemanticSignals: telemetrySemanticSignals(semanticPlan),
+		SemanticReason:  semanticPlan.Reason,
+		SemanticExports: report.Telemetry.SemanticExports,
+	}
 	report.probeSandboxAndEvaluateReadiness(configuration)
 	return report, nil
 }
