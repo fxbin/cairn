@@ -206,7 +206,7 @@ export function SettingsDrawer({
                 <div className="mono-block" style={{ marginTop: 6 }}>
                   {workspace?.config_path || "未检测到 .agent/config.yaml"}
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
                   解析顺序：安全默认 → Profile → YAML → 环境 → CLI；界面不绕过指纹与准入。
                 </div>
               </div>
@@ -221,11 +221,11 @@ export function SettingsDrawer({
                       <div className="meta">
                         {doc.source === "user" ? "用户全局" : "项目"} · {doc.bytes ?? 0} bytes
                       </div>
-                      <div className="muted" style={{ fontSize: 11 }}>{doc.excerpt}</div>
+                      <div className="muted" style={{ fontSize: "var(--fs-body)" }}>{doc.excerpt}</div>
                     </div>
                   ))
                 )}
-                <div className="muted" style={{ fontSize: 11 }}>正文是用户级指导，不能授予权限或自动执行命令。</div>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>正文是用户级指导，不能授予权限或自动执行命令。</div>
                 <button
                   type="button"
                   className="btn-sm"
@@ -264,7 +264,7 @@ export function SettingsDrawer({
                       }`
                     : "加载中"}
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
                   运行时版本与模型目录以 Provider/诊断为准；此处不猜测未知版本。
                 </div>
               </div>
@@ -280,7 +280,7 @@ export function SettingsDrawer({
             <div className="field">
               <span>配置向导</span>
               <div className="list-card" data-testid="config-wizard">
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
                   生成 v2 配置；密钥值保存在工作区 .agent/keys.env 或用户 ~/.cairn/keys.env（权限 600），此处只填变量名。覆盖既有配置需 CLI 显式 --overwrite。
                 </div>
                 <input
@@ -432,7 +432,7 @@ export function SettingsDrawer({
                   }}>{admissionBusy ? "记录中…" : "确认准入此 Provider"}</button>
                 </div>
               )}
-              <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+              <div className="muted" style={{ fontSize: "var(--fs-body)", marginTop: 6 }}>
                 打开页面不会自动探测或消耗额度；探测结论与准入分开。
               </div>
             </div>
@@ -564,7 +564,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
         ) : (
           <div className="meta">能力卡：{report.provider_card_error ? String(report.provider_card_error) : "未声明"}</div>
         )}
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           目录建议 ≠ 能力验证；准入与实测证据分开。
         </div>
       </div>
@@ -577,7 +577,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
           密钥环境变量 {String(provider.api_key_env || "—")} ·{" "}
           {provider.api_key_present ? "可用" : "未配置（不显示密钥）"}
         </div>
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           密钥只经环境变量引用；前端、日志与导出不返回密钥内容。
         </div>
         {report.provider_card_error ? (
@@ -614,7 +614,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
             </div>
           ))
         )}
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           不显示密钥；切换预设对下一新 run 生效。
         </div>
       </div>
@@ -639,7 +639,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
           turns {String(budget.max_turns ?? resolved.get("budget.max_turns") ?? "—")} · tools {String(budget.max_tool_calls ?? resolved.get("budget.max_tool_calls") ?? "—")} · wall{" "}
           {String(budget.max_wall_time ?? resolved.get("budget.max_wall_time") ?? "—")}
         </div>
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           提高预算必须显式并进入指纹；运行超限失败关闭，不静默放宽。
         </div>
       </div>
@@ -648,7 +648,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
         <div className="meta">
           写入 {String(asRecord(report.policy).write || "—")} · 执行 {String(asRecord(report.policy).exec || "—")}
         </div>
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           界面不代批、不扩大权限；保护路径与审批仍由核心 Policy 强制。
         </div>
       </div>
@@ -663,7 +663,7 @@ function DoctorCards({ report, presets, onUsePreset }: { report: Record<string, 
           {String(asRecord(report.sandbox).image_available ?? "unknown")}
           <span className="muted">（unknown 不伪装为可用）</span>
         </div>
-        <div className="muted" style={{ fontSize: 11 }}>
+        <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
           交互终端（PTY）与 argv-only 执行合同冲突，当前 blocked；不提供绕过授权的宿主 shell。
         </div>
       </div>
@@ -717,7 +717,7 @@ function MCPCards({ data }: { data: unknown }) {
               传输 {String(item.transport || "—")} · 连接策略 {String(item.connect_policy || "—")} · 调用策略{" "}
               {String(item.call_policy || "—")}
             </div>
-            <div className="muted" style={{ fontSize: 11 }}>
+            <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
               未连接探测不会显示“在线”；列表不启动外部进程。工具目录仅在成功 Journal 回执后展示；schema 漂移失败关闭。
               resources/prompts 仅对协议适配器实际支持的能力提供浏览，不造条目。
               导入前审查 argv/权限/身份；导出不含凭据，导入不自动启动。

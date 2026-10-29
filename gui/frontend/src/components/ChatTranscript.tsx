@@ -133,13 +133,13 @@ function ApprovalCard({
         <span>⚠</span> 需要你的确认
       </h3>
       <div className="approval-summary">{block.summary || "（无摘要）"}</div>
-      <div className="muted" style={{ fontSize: 12 }}>
+      <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
         运行 {block.runId}
         {block.operationId ? ` · 操作 ${block.operationId}` : ""}
       </div>
       <details style={{ marginTop: 8 }}>
-        <summary style={{ fontSize: 12, cursor: "pointer" }}>影响与指纹</summary>
-        <div className="mono-block" style={{ marginTop: 6, fontSize: 11 }}>
+        <summary style={{ fontSize: "var(--fs-meta)", cursor: "pointer" }}>影响与指纹</summary>
+        <div className="mono-block" style={{ marginTop: 6, fontSize: "var(--fs-code)" }}>
           fingerprint: {block.fingerprint || "—"}
         </div>
       </details>
@@ -147,7 +147,7 @@ function ApprovalCard({
         <div
           className="muted"
           style={{
-            fontSize: 12.5,
+            fontSize: "var(--fs-body)",
             fontWeight: 700,
             color: block.resolved === "approved" ? "var(--c-success)" : "var(--c-danger)",
           }}
