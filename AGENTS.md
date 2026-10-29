@@ -27,7 +27,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/tools/`、`internal/policy/`、`internal/artifact/`、`internal/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
 | `internal/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
 | `internal/memory/`、`internal/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
-| `internal/decision/` | 项目决策账本的合同与状态机（ADR-0022）；**当前无运行时消费方，不得宣称已注入上下文** |
+| `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
 | `internal/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
 
 ## 不可绕过的边界
