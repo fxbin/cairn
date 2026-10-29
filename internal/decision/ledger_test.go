@@ -536,12 +536,15 @@ func TestLedgerRejectsCrossPrincipalConfirmAndRevoke(t *testing.T) {
 }
 
 // TestProjectContextFiltersForeignScopeItself 锁定投影的自我过滤：即使传入
-// 未过滤的记录集合，跨项目记录与他人私有偏好都不得进入注入上下文。
+// 未过滤的记录集合，跨项目记录与他人私有偏好都不得进入注入上下文。三条
+// 记录都先置为现行状态，使它们只能被作用域过滤排除，而不会被状态过滤
+// 顺带挡掉。
 func TestProjectContextFiltersForeignScopeItself(t *testing.T) {
 	ledger := NewLedger()
 	authoritative := fixtureProposal()
 	authoritative.Now = fixtureTime
-	if _, err := ledger.Propose(authoritative); err != nil {
+	shared, err := ledger.Propose(authoritative)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	preference := fixtureProposal()
@@ -549,7 +552,8 @@ func TestProjectContextFiltersForeignScopeItself(t *testing.T) {
 	preference.Owner = "user_private"
 	preference.Decision = "个人偏好正文不得进入他人上下文"
 	preference.Now = fixtureTime
-	if _, err := ledger.Propose(preference); err != nil {
+	owned, err := ledger.Propose(preference)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	foreign := fixtureProposal()
@@ -557,7 +561,29 @@ func TestProjectContextFiltersForeignScopeItself(t *testing.T) {
 	foreign.Owner = "user_other"
 	foreign.Decision = "另一个项目的决策正文不得进入本项目上下文"
 	foreign.Now = fixtureTime
-	if _, err := ledger.Propose(foreign); err != nil {
+	external, err := ledger.Propose(foreign)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sharedApproval, err := NewHumanApproval(fixtureApprover, fixtureTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ledger.Confirm(shared.ID, sharedApproval); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ownerApproval, err := NewHumanApproval("user_private", fixtureTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ledger.Confirm(owned.ID, ownerApproval); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	externalApproval, err := NewHumanApproval("user_other", fixtureTime.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ledger.Confirm(external.ID, externalApproval); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	now := fixtureTime.Add(time.Hour)
@@ -570,9 +596,15 @@ func TestProjectContextFiltersForeignScopeItself(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	combined := append(append([]DecisionRecord(nil), unfiltered...), other...)
+	if len(combined) != 3 {
+		t.Fatalf("expected three current records in the unfiltered set, got %d", len(combined))
+	}
 	projection, err := ProjectContext(fixtureProject, "user_other", combined, MaxContextTokenBudget, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(projection.Entries) != 1 {
+		t.Fatalf("expected only the project decision to enter the projection, got %d entries", len(projection.Entries))
 	}
 	for _, entry := range projection.Entries {
 		if strings.Contains(entry.Decision, "个人偏好正文") {
