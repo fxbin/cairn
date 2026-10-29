@@ -1,6 +1,13 @@
 import type { HealthResult, WorkspaceStatus } from "../desktop/types";
 
-/** 底栏：健康状态、工作区与加载指示。 */
+/**
+ * 底栏：健康状态、工作区与加载指示。
+ *
+ * 当前未接线：应用外壳没有底栏，App.tsx 虽然调用 desktop.health() 并存入
+ * state.health，但界面从不渲染它，桥接版本与健康状态因此没有可见出口。
+ * 保留本组件作为接线候选，接入位置（底栏常驻还是并入设置抽屉）属于产品范围决定，
+ * 未确定前不擅自接线。
+ */
 export function StatusBar({
   health,
   workspace,

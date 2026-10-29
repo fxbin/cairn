@@ -21,8 +21,8 @@
 
   /* 语义映射 */
   --rail-width: 320px;
+  --sidebar-width: 280px;
   --c-bg: var(--ds-bg-1);
-  --c-bg-elevated: var(--ds-bg-2);
   --c-bg-panel: var(--ds-bg-2);
   --c-bg-hover: var(--ds-gray-100);
   --c-bg-active: var(--ds-gray-200);
@@ -38,7 +38,6 @@
   --c-accent: #0070f3;
   --c-accent-hover: #0060d0;
   --c-accent-soft: rgba(0, 112, 243, 0.12);
-  --c-accent-glow: rgba(0, 112, 243, 0.35);
   --c-on-accent: #ffffff;
 
   --c-success: #45a557;
@@ -49,19 +48,16 @@
   --c-danger-soft: rgba(229, 72, 77, 0.12);
 
   --c-user-bubble: var(--ds-gray-100);
-  --c-card-gradient: none;
 
   /* 圆角：控件 6 / 卡片 8 / 浮层 12 */
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
-  --radius-xl: 16px;
 
   --font-ui: "SF Pro Text", -apple-system, "PingFang SC", "Segoe UI", system-ui, sans-serif;
   --font-display: "SF Pro Display", -apple-system, "PingFang SC", "Segoe UI", system-ui, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.4);
   --ring: 0 0 0 2px var(--c-accent);
@@ -95,10 +91,10 @@ a { color: var(--c-accent); text-decoration: none; }
 /* ===== 布局 ===== */
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) auto;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) auto;
   height: 100%;
 }
-.app-shell[data-rail="closed"] { grid-template-columns: 280px minmax(0, 1fr) 0; }
+.app-shell[data-rail="closed"] { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0; }
 
 .sidebar {
   display: flex; flex-direction: column; min-height: 0;
@@ -110,7 +106,7 @@ a { color: var(--c-accent); text-decoration: none; }
   background: var(--c-bg);
 }
 .rail {
-  width: var(--rail-width, 320px);
+  width: var(--rail-width);
   border-left: 1px solid var(--c-border);
   background: var(--ds-bg-2);
   display: flex; flex-direction: column; min-height: 0;
