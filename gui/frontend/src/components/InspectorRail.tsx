@@ -213,6 +213,8 @@ export function InspectorRail({
   const loadGenerationRef = useRef(0);
   const fileGenerationRef = useRef(0);
   const [runPhase, setRunPhase] = useState("");
+  // runPhaseLabel 是桥接下发的阶段展示词；前端只渲染，不再自造中文。
+  const [runPhaseLabel, setRunPhaseLabel] = useState("");
   const [reviewNotes, setReviewNotes] = useState<Array<{ id: string; relative: string; line?: string; body: string }>>([]);
 
   const reportError = useCallback((error: unknown) => {
@@ -229,6 +231,7 @@ export function InspectorRail({
     setContextUsage({ compactionCount: 0, estimatedUnitsBefore: 0, estimatedUnitsAfter: 0, lastTrigger: "", lastProviderPromptTokens: 0 });
     setCompactions([]);
     setRunPhase("");
+    setRunPhaseLabel("");
     if (!workspace?.path || !workspace.exists) return;
     const [treeResult, changeResult, queueResult, evidenceResult, detailResult] = await Promise.allSettled([
       desktop.listFileTree(workspace.path),
@@ -250,6 +253,7 @@ export function InspectorRail({
       setContextUsage(toContextUsage(detailResult.value.events || []));
       setCompactions(toContextCompactions(detailResult.value.events || []));
       setRunPhase(detailResult.value.phase || detailResult.value.state);
+      setRunPhaseLabel(detailResult.value.phase_label || "");
     }
     const relevant = tab === "files" ? treeResult : tab === "changes" ? changeResult : tab === "queue" ? queueResult : detailResult;
     if (relevant.status === "rejected") reportError(relevant.reason);
@@ -565,14 +569,14 @@ export function InspectorRail({
                       fontSize: 11,
                     }}
                   >
-                    {evidence.trusted ? "可信" : "非可信"}
+                    {evidence.trust_label}
                   </span>
                 </div>
                 <div className="meta" style={{ marginBottom: 8 }}>
                   验证 OK：{!evidence.verification.verification_seq ? "未运行" : evidence.verification.verification_ok ? "通过" : "失败"}
                   {evidence.failure_class ? ` · ${evidence.failure_class}` : ""}
                 {runPhase === "waiting_reconcile" ? (
-                  <span style={{ marginLeft: 8, color: "var(--c-warning)", fontWeight: 700, fontSize: 11 }}>待对账</span>
+                  <span style={{ marginLeft: 8, color: "var(--c-warning)", fontWeight: 700, fontSize: 11 }}>{runPhaseLabel}</span>
                 ) : null}
                 </div>
                 <div className="meta">用量（未知显示为 —）</div>
@@ -598,8 +602,7 @@ export function InspectorRail({
                 </div>
                 <div className="meta" style={{ marginTop: 6 }} data-testid="reliability">
                   验证 OK {!evidence.verification.verification_seq ? "未运行" : evidence.verification.verification_ok ? "通过" : "失败"} · seq{" "}
-                  {evidence.verification.verification_seq ?? "—"} ·{" "}
-                  {evidence.trusted ? "可信" : "非可信"}
+                  {evidence.verification.verification_seq ?? "—"} · {evidence.trust_label}
                 </div>
               </div>
             ) : (
@@ -1044,7 +1047,7 @@ export function InspectorRail({
               <button
                 type="button"
                 className="btn-sm danger"
-                disabled={!runId || !runPhase || ["completed", "failed", "cancelled", "waiting_reconcile"].includes(runPhase) || statusLabel === "执行中"}
+                disabled={!runId || !runPhase || ["completed", "failed", "cancelled", "waiting_reconcile"].includes(runPhase) || statusLabel === "执行中" || runPhase === "running"}
                 title="仅对已停止执行且无待对账操作的非终态运行收尾"
                 data-testid="abort-run"
                 onClick={() => {

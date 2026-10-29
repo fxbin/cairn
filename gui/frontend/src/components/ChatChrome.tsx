@@ -155,6 +155,8 @@ export function ThreadSidebar({
     session_id?: string;
     title: string;
     phase?: string;
+    /** 阶段展示词，由桥接下发；前端只渲染。 */
+    phase_label?: string;
     state: string;
     updated_at: string;
     waiting_approval?: boolean;
@@ -219,7 +221,7 @@ export function ThreadSidebar({
                   className="thread-dot"
                   data-state={thread.waiting_approval ? "waiting_approval" : thread.state}
                 />
-                <span>{thread.waiting_approval ? "待审批" : thread.phase || thread.state}</span>
+                <span>{thread.phase_label || thread.phase || thread.state}</span>
                 <span>{new Date(thread.updated_at).toLocaleDateString("zh-CN")}</span>
               </div>
             </button>

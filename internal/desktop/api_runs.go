@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
@@ -26,8 +27,14 @@ func (api *API) InspectRun(ctx context.Context, request InspectRequest) (RunDeta
 	if err != nil {
 		return RunDetail{}, err
 	}
+	return runDetailFrom(request.RunID, inspected), nil
+}
+
+// runDetailFrom 把检查结果投影为桌面运行详情；阶段与状态的展示词由统一词表
+// 产出，前端只渲染，不再自行映射中文。
+func runDetailFrom(runID string, inspected app.InspectResult) RunDetail {
 	detail := RunDetail{
-		RunID:     request.RunID,
+		RunID:     runID,
 		SessionID: inspected.Projection.SessionID,
 		State:     inspected.Projection.State,
 		Phase:     inspected.Projection.Phase(),
@@ -36,7 +43,9 @@ func (api *API) InspectRun(ctx context.Context, request InspectRequest) (RunDeta
 		Manifest:  inspected.Manifest,
 		Events:    inspected.Events,
 	}
-	return detail, nil
+	detail.PhaseLabel = contract.RunPhaseLabel(detail.Phase)
+	detail.StateLabel = contract.RunPhaseLabel(string(detail.State))
+	return detail
 }
 
 // EvidenceFor 返回指定运行的完成证据。

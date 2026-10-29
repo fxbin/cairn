@@ -65,6 +65,8 @@ export interface RunHistoryView {
   archived: boolean;
   waiting_approval: boolean;
   waiting_reconcile: boolean;
+  /** 阶段展示词，由 Go 侧统一词表下发；前端只渲染。 */
+  phase_label?: string;
 }
 
 export interface StartRunRequest {
@@ -143,6 +145,9 @@ export interface RunStatusView {
   response_preview?: string;
   error_code?: string;
   error_message?: string;
+  /** 阶段与状态的展示词，由 Go 侧统一词表下发；前端只渲染。 */
+  phase_label?: string;
+  state_label?: string;
 }
 
 export interface DomainEvent {
@@ -273,6 +278,10 @@ export interface EvidenceView {
   trusted: boolean;
   verification: EvidenceVerification;
   metrics: EvidenceMetrics;
+  /** 状态、结果与完成证据可信度的展示词，由 Go 侧统一词表下发；前端只渲染。 */
+  state_label?: string;
+  outcome_label?: string;
+  trust_label?: string;
 }
 
 export interface RunSummary {
@@ -288,6 +297,9 @@ export interface RunDetail {
   task?: string;
   summary: RunSummary;
   events?: DomainEvent[];
+  /** 阶段与状态的展示词，由 Go 侧统一词表下发；前端只渲染。 */
+  phase_label?: string;
+  state_label?: string;
 }
 
 export interface SteeringRequest {

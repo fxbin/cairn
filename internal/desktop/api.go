@@ -2,13 +2,14 @@ package desktop
 
 import (
 	"context"
-	"github.com/fxbin/cairn/internal/config"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // DirectoryPicker 由桌面入口注入原生目录选择对话框；desktop 包不依赖 Wails。
@@ -152,6 +153,7 @@ func (api *API) ListRuns(ctx context.Context, request WorkspaceRequest) ([]RunHi
 			continue
 		}
 		view := RunHistoryView{RunHistoryItem: item, Title: firstLine(item.Task)}
+		view.PhaseLabel = contract.RunPhaseLabel(item.Phase)
 		if hasMeta {
 			view.Pinned = meta.Pinned
 			view.Archived = meta.Archived

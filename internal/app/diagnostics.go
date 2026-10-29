@@ -499,13 +499,13 @@ func cloneBuildIdentity(identity *domain.BuildIdentity) *domain.BuildIdentity {
 }
 
 // nextActionFor 依据投影状态给出可发现的恢复动作提示；与 Run 的 ErrActiveRun
-// 指引保持同一语义。
+// 指引保持同一语义。对账提示复用 contract 的共用词表，避免各界面自造措辞。
 func nextActionFor(projection domain.RunProjection) string {
 	if projection.PendingApproval != nil {
 		return "resume <run-id> --approve <fingerprint>"
 	}
 	if projection.PendingOperation != nil && (projection.PendingOperation.SideEffectClass == "workspace" || projection.PendingOperation.SideEffectClass == "process") {
-		return "resume <run-id> --resolve <operation-id>=<verdict> --note <text> --evidence <ref>"
+		return contract.ReconcileActionHint
 	}
 	switch projection.State {
 	case domain.RunRunning:

@@ -48,6 +48,26 @@ func exitFor(err error) int {
 	return ExitFailed
 }
 
+// completionTrustNote 解释完成证据等级；它只描述证据边界，不改变等级判定。
+func completionTrustNote(trust contract.CompletionTrust) string {
+	switch trust {
+	case contract.CompletionTrustTrusted:
+		return "verification binds all mutations"
+	case contract.CompletionTrustUntrusted:
+		return "verification does not bind all mutations"
+	default:
+		return "no verification evidence"
+	}
+}
+
+// lastVerificationSeq 返回最近一次验证的序号；没有验证事实时为 0。
+func lastVerificationSeq(fact *app.VerificationFact) uint64 {
+	if fact == nil {
+		return 0
+	}
+	return fact.Seq
+}
+
 func writeBuildIdentity(writer io.Writer, label string, identity domain.BuildIdentity) {
 	revision := identity.Revision
 	if revision == "" {

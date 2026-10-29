@@ -457,18 +457,27 @@ export default function App() {
     return items;
   }, [state.runs]);
 
+  // 运行状态一律渲染桥接下发的展示词；前端不自行把机器状态映射成中文。
   const statusLabel = useMemo(() => {
-    if (running) {
-      return "执行中";
+    const approvalPending =
+      Boolean(selectedRun?.waiting_approval) || blocks.some((b) => b.kind === "approval" && !b.resolved);
+    const approvalEntry = state.runs.find((item) => item.waiting_approval);
+    const runningEntry = state.runs.find((item) => item.phase === "running");
+    const detail = state.runDetail;
+    const label =
+      selectedRun?.phase_label ||
+      (approvalPending ? approvalEntry?.phase_label : "") ||
+      runningEntry?.phase_label ||
+      (detail?.phase === "running" ? detail.phase_label || detail.phase : "") ||
+      selectedRun?.phase ||
+      selectedRun?.state ||
+      "";
+    if (running || approvalPending || selectedRun) {
+      return label;
     }
-    if (selectedRun?.waiting_approval || blocks.some((b) => b.kind === "approval" && !b.resolved)) {
-      return "待审批";
-    }
-    if (selectedRun) {
-      return selectedRun.phase || selectedRun.state;
-    }
+    // 未选中运行时的空态提示不是运行事实，因此不来自运行词表。
     return "就绪";
-  }, [running, selectedRun, blocks]);
+  }, [running, selectedRun, blocks, state.runs, state.runDetail]);
 
   const submitTask = async () => {
     if (!workspacePath || !draft.trim() || runningRef.current) return;
@@ -682,6 +691,7 @@ export default function App() {
           pinned: Boolean(run.pinned),
           title: run.title,
           phase: run.phase,
+          phase_label: run.phase_label,
           state: run.state,
           updated_at: run.updated_at,
           waiting_approval: run.waiting_approval,

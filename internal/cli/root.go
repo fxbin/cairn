@@ -14,6 +14,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/tui"
 	"github.com/mattn/go-isatty"
@@ -223,7 +224,8 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 	if *jsonOutput {
 		return command.writeJSONOutput("inspect", result)
 	} else {
-		fmt.Fprintf(command.Stdout, "run: %s\nstate: %s\nlast sequence: %d\n", result.Projection.ID, result.Projection.Phase(), result.Projection.LastSeq)
+		phase := result.Projection.Phase()
+		fmt.Fprintf(command.Stdout, "run: %s\nstate: %s (%s)\nlast sequence: %d\n", result.Projection.ID, contract.RunPhaseLabel(phase), phase, result.Projection.LastSeq)
 		summary := result.Summary
 		if summary.ConfigFingerprint != "" {
 			fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", summary.ConfigFingerprint)
@@ -253,9 +255,8 @@ func (command Command) inspect(ctx context.Context, arguments []string) int {
 		if summary.LastVerification != nil {
 			fmt.Fprintf(command.Stdout, "last verification: seq %d ok=%t (last mutation seq %d)\n", summary.LastVerification.Seq, summary.LastVerification.OK, summary.LastMutationSeq)
 		}
-		if summary.CompletionTrusted {
-			fmt.Fprintln(command.Stdout, "completion: trusted (verification binds all mutations)")
-		}
+		trust := contract.ClassifyCompletionTrust(summary.CompletionTrusted, lastVerificationSeq(summary.LastVerification))
+		fmt.Fprintf(command.Stdout, "completion: %s (%s)\n", contract.CompletionTrustLabel(trust), completionTrustNote(trust))
 		if summary.NextAction != "" {
 			fmt.Fprintf(command.Stdout, "next: %s\n", summary.NextAction)
 		}
@@ -298,7 +299,7 @@ func (command Command) evidence(ctx context.Context, arguments []string) int {
 		fmt.Fprintf(command.Stdout, "provider card: %s protocol=%s tool_calls=%t streaming_usage=%t context=%d output=%d stops=%s source=%s\n", card.Model, card.Protocol, card.ToolCalls, card.StreamingUsage, card.ContextWindowTokens, card.MaxOutputTokens, strings.Join(card.StopReasons, "/"), card.Source)
 	}
 	writeRunManifest(command.Stdout, result.Manifest)
-	fmt.Fprintf(command.Stdout, "outcome: %s (state %s)\n", result.Outcome, result.State)
+	fmt.Fprintf(command.Stdout, "outcome: %s (state %s, %s)\n", result.Outcome, result.State, contract.RunPhaseLabel(result.Outcome))
 	if result.FailureClass != "" {
 		fmt.Fprintf(command.Stdout, "failure class: %s\n", result.FailureClass)
 	}
@@ -306,7 +307,7 @@ func (command Command) evidence(ctx context.Context, arguments []string) int {
 		fmt.Fprintf(command.Stdout, "stop reason: %s\n", result.StopReason)
 	}
 	fmt.Fprintf(command.Stdout, "metrics: turns %d, tool calls %d, tokens %d in / %d out (estimated=%t), compactions %d\n", result.Metrics.Turns, result.Metrics.ToolCalls, result.Metrics.InputTokens, result.Metrics.OutputTokens, result.Metrics.UsageEstimated, result.Metrics.ContextCompactions)
-	fmt.Fprintf(command.Stdout, "completion evidence: verification seq %d ok=%t, last mutation seq %d, trusted=%t\n", result.Evidence.VerificationSeq, result.Evidence.VerificationOK, result.Evidence.LastMutationSeq, result.Evidence.Trusted)
+	fmt.Fprintf(command.Stdout, "completion evidence: verification seq %d ok=%t, last mutation seq %d, trusted=%t (%s)\n", result.Evidence.VerificationSeq, result.Evidence.VerificationOK, result.Evidence.LastMutationSeq, result.Evidence.Trusted, contract.CompletionTrustLabel(contract.CompletionTrustOf(result.Evidence)))
 	return ExitOK
 }
 

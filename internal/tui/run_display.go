@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -104,10 +105,12 @@ func (console RunConsole) verdictText() string {
 	if console.result == nil || console.result.Result == nil {
 		return "结束（投影缺失）"
 	}
-	return runStateText(console.result.Result.State)
+	return contract.RunPhaseLabel(console.result.Result.Outcome)
 }
 
-// verdictLine 生成终态判定行：成功展示结果摘要，失败展示错误与失败分类。
+// verdictLine 生成终态判定行：展示统一阶段词、完成证据可信等级，并在失败
+// 时补充错误分类。阶段词与可信等级都取自 contract 词表，TUI 不自造第二套
+// 说法。
 func (console RunConsole) verdictLine() string {
 	if console.runErr != nil {
 		return errStyle.Render("● 运行失败: " + console.runErr.Error())
@@ -116,25 +119,13 @@ func (console RunConsole) verdictLine() string {
 		return errStyle.Render("● 运行结束（结果投影缺失）")
 	}
 	summary := console.result.Result
-	verdict := okStyle.Render(fmt.Sprintf("● %s（outcome=%s", runStateText(summary.State), summary.Outcome))
+	phase := contract.RunPhaseLabel(summary.Outcome)
+	trust := contract.CompletionTrustLabel(contract.CompletionTrustOf(summary.Evidence))
+	verdict := okStyle.Render(fmt.Sprintf("● %s（outcome=%s，完成证据=%s", phase, summary.Outcome, trust))
 	if summary.FailureClass != "" {
-		verdict = errStyle.Render(fmt.Sprintf("● %s（outcome=%s，failure=%s", runStateText(summary.State), summary.Outcome, summary.FailureClass))
+		verdict = errStyle.Render(fmt.Sprintf("● %s（outcome=%s，failure=%s，完成证据=%s", phase, summary.Outcome, summary.FailureClass, trust))
 	}
 	return verdict + "）"
-}
-
-// runStateText 把运行终态映射为中文短语。
-func runStateText(state string) string {
-	switch state {
-	case "completed":
-		return "运行完成"
-	case "failed":
-		return "运行失败"
-	case "cancelled":
-		return "已取消"
-	default:
-		return "运行结束（" + state + "）"
-	}
 }
 
 // eventPayload 把事件 payload 解码到目标结构；解码失败返回 false，由调用
