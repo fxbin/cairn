@@ -37,6 +37,7 @@ func telemetryFixture(t *testing.T) []domain.Event {
 	secondTurn := domain.TurnID("turn-2")
 	failedOperation := domain.OperationID("op-failed")
 	succeededOperation := domain.OperationID("op-succeeded")
+	cancelledOperation := domain.OperationID("op-cancelled")
 	base := time.Unix(1_700_000_000, 0).UTC()
 	event := func(seq uint64, kind domain.EventType, turn *domain.TurnID, operation *domain.OperationID, payload string) domain.Event {
 		return domain.Event{
@@ -67,10 +68,13 @@ func telemetryFixture(t *testing.T) []domain.Event {
 		event(15, domain.EventVerificationStarted, &secondTurn, nil, `{"verification_id":"v2"}`),
 		event(16, domain.EventVerificationFinished, &secondTurn, nil, `{"verification_id":"v2","ok":true}`),
 		event(17, domain.EventTurnClosed, &secondTurn, nil, `{"outcome":"continue","operation_signature":"sig-a","progress_fingerprint":"fp-a"}`),
-		event(18, domain.EventRunCancelRequested, &secondTurn, nil, `{"cause":"user_interrupt"}`),
-		event(19, domain.EventRunResumed, nil, nil, `{"invocation":"invoke-1","from_seq":17,"workspace_observation":"sha256:obs"}`),
-		event(20, domain.EventOperationReconciled, &secondTurn, &failedOperation, `{"verdict":"applied_success","actor":"human","note":"raw-tool-result-marker"}`),
-		event(21, domain.EventRunCancelled, nil, nil, `{"cause":"user_interrupt"}`),
+		event(18, domain.EventOperationCancelled, &secondTurn, &cancelledOperation, `{"tool_name":"exec_command","cause":"user_interrupt"}`),
+		event(19, domain.EventModelRequestFailed, &secondTurn, nil, `{"error_class":"provider_timeout","retryable":true}`),
+		event(20, domain.EventContextCompacted, &secondTurn, nil, `{"through_seq":9,"summary":"checkpoint","strategy":"summary"}`),
+		event(21, domain.EventRunCancelRequested, &secondTurn, nil, `{"cause":"user_interrupt"}`),
+		event(22, domain.EventRunResumed, nil, nil, `{"invocation":"invoke-1","from_seq":17,"workspace_observation":"sha256:obs"}`),
+		event(23, domain.EventOperationReconciled, &secondTurn, &failedOperation, `{"verdict":"applied_success","actor":"human","note":"raw-tool-result-marker"}`),
+		event(24, domain.EventRunCancelled, nil, nil, `{"cause":"user_interrupt"}`),
 	}
 }
 
@@ -117,7 +121,7 @@ func TestAggregateMatchesLiveObservation(t *testing.T) {
 	if liveSnapshot.Metrics.Outcome != OutcomeCancelled {
 		t.Fatalf("outcome = %q", liveSnapshot.Metrics.Outcome)
 	}
-	if liveSnapshot.Metrics.DurationMS != 20_000 {
+	if liveSnapshot.Metrics.DurationMS != 23_000 {
 		t.Fatalf("duration = %d", liveSnapshot.Metrics.DurationMS)
 	}
 }
@@ -216,6 +220,82 @@ func TestMetricLabelsStayBounded(t *testing.T) {
 			if label.Value == string(events[0].RunID) {
 				t.Fatalf("metric %q must not carry the run id as a label", point.Name)
 			}
+		}
+	}
+}
+
+// TestMetricPointsIncludeBudgetCeilings 锁定预算上限出口：采集端只拿到消耗
+// 就算不出利用率，因此预算上限必须与消耗一起导出。
+func TestMetricPointsIncludeBudgetCeilings(t *testing.T) {
+	events := telemetryFixture(t)
+	snapshot, ok := Aggregate(events, fixtureLimits(), 100)
+	if !ok {
+		t.Fatal("offline rebuild must produce a snapshot")
+	}
+	values := map[string]int64{}
+	for _, point := range snapshot.MetricPoints() {
+		values[point.Name] = point.Value
+	}
+	expected := map[string]int64{
+		MetricBudgetMaxTurns:        40,
+		MetricBudgetMaxToolCalls:    100,
+		MetricBudgetMaxInputTokens:  500_000,
+		MetricBudgetMaxOutputTokens: 100_000,
+		MetricBudgetMaxWallTimeMS:   1_800_000,
+	}
+	for name, want := range expected {
+		got, exists := values[name]
+		if !exists {
+			t.Fatalf("metric %q is missing from the exported points", name)
+		}
+		if got != want {
+			t.Fatalf("metric %q = %d, want %d", name, got, want)
+		}
+	}
+}
+
+// TestMetricPointsCoverAggregatedCounters 锁定度量出口完整性：issue 要求
+// 观察到的每个聚合计数都必须有对应的度量，否则采集端看不到。
+func TestMetricPointsCoverAggregatedCounters(t *testing.T) {
+	events := telemetryFixture(t)
+	snapshot, ok := Aggregate(events, fixtureLimits(), 100)
+	if !ok {
+		t.Fatal("offline rebuild must produce a snapshot")
+	}
+	values := map[string]int64{}
+	for _, point := range snapshot.MetricPoints() {
+		values[point.Name] += point.Value
+	}
+	expected := map[string]int64{
+		MetricRunDurationMS:             23_000,
+		MetricRunTurns:                  2,
+		MetricRunOperations:             2,
+		MetricRunOperationFailures:      1,
+		MetricRunOperationCancellations: 1,
+		MetricRunModelFailures:          1,
+		MetricRunContextCompactions:     1,
+		MetricRunVerificationPassed:     1,
+		MetricRunVerificationFailed:     1,
+		MetricRunCancellations:          1,
+		MetricRunResumes:                1,
+		MetricRunReconciliations:        1,
+		MetricRunDuplicateAttempts:      1,
+		MetricRunRetriedRequests:        1,
+		MetricRunInputTokens:            160,
+		MetricRunOutputTokens:           40,
+		MetricBudgetTurnsUsed:           2,
+		MetricBudgetToolCallsUsed:       2,
+		MetricBudgetInputTokensUsed:     160,
+		MetricBudgetOutputTokensUsed:    40,
+		MetricBudgetWallTimeMS:          23_000,
+	}
+	for name, want := range expected {
+		got, exists := values[name]
+		if !exists {
+			t.Fatalf("metric %q is missing from the exported points", name)
+		}
+		if got != want {
+			t.Fatalf("metric %q = %d, want %d", name, got, want)
 		}
 	}
 }

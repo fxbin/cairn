@@ -92,6 +92,12 @@ const (
 	MetricRunOperations = "cairn.run.operations"
 	// MetricRunOperationFailures 是失败的工具操作数量。
 	MetricRunOperationFailures = "cairn.run.operation_failures"
+	// MetricRunOperationCancellations 是被取消的工具操作数量。
+	MetricRunOperationCancellations = "cairn.run.operation_cancellations"
+	// MetricRunModelFailures 是失败的模型请求数量。
+	MetricRunModelFailures = "cairn.run.model_failures"
+	// MetricRunContextCompactions 是上下文压缩次数。
+	MetricRunContextCompactions = "cairn.run.context_compactions"
 	// MetricRunVerificationPassed 是验证通过次数。
 	MetricRunVerificationPassed = "cairn.run.verification.passed"
 	// MetricRunVerificationFailed 是验证失败次数。
@@ -120,6 +126,16 @@ const (
 	MetricBudgetOutputTokensUsed = "cairn.run.budget.output_tokens_used"
 	// MetricBudgetWallTimeMS 是已消耗的墙钟预算（毫秒）。
 	MetricBudgetWallTimeMS = "cairn.run.budget.wall_time_ms"
+	// MetricBudgetMaxTurns 是轮次预算上限。
+	MetricBudgetMaxTurns = "cairn.run.budget.max_turns"
+	// MetricBudgetMaxToolCalls 是工具调用预算上限。
+	MetricBudgetMaxToolCalls = "cairn.run.budget.max_tool_calls"
+	// MetricBudgetMaxInputTokens 是输入 token 预算上限。
+	MetricBudgetMaxInputTokens = "cairn.run.budget.max_input_tokens"
+	// MetricBudgetMaxOutputTokens 是输出 token 预算上限。
+	MetricBudgetMaxOutputTokens = "cairn.run.budget.max_output_tokens"
+	// MetricBudgetMaxWallTimeMS 是墙钟预算上限（毫秒）。
+	MetricBudgetMaxWallTimeMS = "cairn.run.budget.max_wall_time_ms"
 )
 
 // Sink 接收已经成功追加到事件日志的领域事件。
@@ -133,7 +149,8 @@ type Attribute struct {
 	Value string `json:"value"`
 }
 
-// Limits 是冻结配置中的预算上限投影；观测面只用它换算预算消耗比例。
+// Limits 是冻结配置中的预算上限投影；观测面把它作为分母导出，使采集端能
+// 自行换算预算利用率，而不必再回读配置。
 type Limits struct {
 	MaxTurns        int   `json:"max_turns"`
 	MaxToolCalls    int   `json:"max_tool_calls"`
@@ -219,6 +236,9 @@ func (snapshot Snapshot) MetricPoints() []Metric {
 		{Name: MetricRunTurns, Value: int64(snapshot.Metrics.Turns), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
 		{Name: MetricRunOperations, Value: int64(snapshot.Metrics.Operations), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
 		{Name: MetricRunOperationFailures, Value: int64(snapshot.Metrics.OperationFailures), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
+		{Name: MetricRunOperationCancellations, Value: int64(snapshot.Metrics.OperationCancelled), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
+		{Name: MetricRunModelFailures, Value: int64(snapshot.Metrics.ModelFailures), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
+		{Name: MetricRunContextCompactions, Value: int64(snapshot.Metrics.ContextCompactions), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
 		{Name: MetricRunVerificationPassed, Value: int64(snapshot.Metrics.VerifierPassed), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
 		{Name: MetricRunVerificationFailed, Value: int64(snapshot.Metrics.VerifierFailed), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
 		{Name: MetricRunCancellations, Value: int64(snapshot.Metrics.CancelRequests), Labels: []Attribute{{Key: "outcome", Value: outcome}}},
@@ -235,6 +255,11 @@ func (snapshot Snapshot) MetricPoints() []Metric {
 		{Name: MetricBudgetInputTokensUsed, Value: snapshot.Budget.InputTokensUsed},
 		{Name: MetricBudgetOutputTokensUsed, Value: snapshot.Budget.OutputTokensUsed},
 		{Name: MetricBudgetWallTimeMS, Value: snapshot.Budget.WallTimeMS},
+		{Name: MetricBudgetMaxTurns, Value: int64(snapshot.Budget.MaxTurns)},
+		{Name: MetricBudgetMaxToolCalls, Value: int64(snapshot.Budget.MaxToolCalls)},
+		{Name: MetricBudgetMaxInputTokens, Value: int64(snapshot.Budget.MaxInputTokens)},
+		{Name: MetricBudgetMaxOutputTokens, Value: int64(snapshot.Budget.MaxOutputTokens)},
+		{Name: MetricBudgetMaxWallTimeMS, Value: snapshot.Budget.MaxWallTimeMS},
 	}
 	return points
 }
