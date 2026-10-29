@@ -826,7 +826,7 @@ export default function App() {
                   <div className="list-card" key={cmd.name}>
                     <div className="title">{cmd.name}</div>
                     <div className="meta">{cmd.description}</div>
-                    <div className="muted" style={{ fontSize: 11 }}>作用域 {cmd.scope}</div>
+                    <div className="muted" style={{ fontSize: "var(--fs-body)" }}>作用域 {cmd.scope}</div>
                   </div>
                 ))}
               </div>
@@ -975,7 +975,7 @@ export default function App() {
               <p className="muted">
                 单次运行的 turns / tools / tokens 在检查器展示。完整统计面板待 STA 工作包接入；未知用量不显示为零。
               </p>
-              <div className="muted" style={{ fontSize: 11, marginBottom: 8 }} data-testid="export-safety">
+              <div className="muted" style={{ fontSize: "var(--fs-body)", marginBottom: 8 }} data-testid="export-safety">
                 导出仅含展示摘要；不含密钥、环境变量值或未脱敏正文。
               </div>
               <div className="list-card" data-testid="usage-overview">
@@ -983,7 +983,7 @@ export default function App() {
                 <div className="meta">
                   近期运行 {state.runs.length} · 待处理 {pendingItems.length}
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
                   跨运行 token/费用聚合依赖 Journal 证据；未知不显示为零。
                   费用估算需价格来源；无来源时不编造金额。
                 </div>
@@ -1039,7 +1039,7 @@ export default function App() {
                 <div className="meta">
                   偏好：~/.cairn/gui-preferences.json · 运行事实：Journal（不在此删除）
                 </div>
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "var(--fs-body)" }}>
                   清理缓存不会删除 Journal；删除历史必须走明确授权的对账/管理命令。
                 </div>
               </div>
@@ -1052,7 +1052,7 @@ export default function App() {
                     <div className="list-card" key={`${item.at}-${index}`}>
                       <div className="title">{item.code}</div>
                       <div className="meta">{item.message}</div>
-                      <div className="muted" style={{ fontSize: 11 }}>{item.at}</div>
+                      <div className="muted" style={{ fontSize: "var(--fs-label)" }}>{item.at}</div>
                     </div>
                   ))
                 )}
@@ -1169,7 +1169,7 @@ export default function App() {
         <header className="chat-header">
           <h1>
             {selectedRun?.title || "新任务"}
-            {forkFromRunId ? <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>· 将从所选会话分支</span> : null}
+            {forkFromRunId ? <span className="muted" style={{ fontSize: "var(--fs-body)", marginLeft: 8 }}>· 将从所选会话分支</span> : null}
           </h1>
           <div className="header-actions">
             <span className="status-pill" data-state={running ? "running" : selectedRun ? selectedRun.state : "idle"}>

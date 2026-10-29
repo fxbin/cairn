@@ -87,7 +87,7 @@ export function Composer({
             style={{ display: "none" }}
             data-read-only={readOnly ? "1" : "0"}
           />
-          <span className="muted" style={{ fontSize: 11 }} data-testid="mode-label">
+          <span className="muted" style={{ fontSize: "var(--fs-body)" }} data-testid="mode-label">
             {readOnly ? "只读" : "可写"}
           </span>
           <span className="spacer" />
@@ -201,7 +201,7 @@ export function ThreadSidebar({
       <div className="sidebar-section-title">最近</div>
       <div className="thread-list" data-testid="thread-list">
         {threads.length === 0 && (
-          <div className="muted" style={{ padding: "8px 12px", fontSize: 12 }}>
+          <div className="muted" style={{ padding: "8px 12px", fontSize: "var(--fs-body)" }}>
             暂无会话
           </div>
         )}
@@ -260,7 +260,7 @@ export function ThreadSidebar({
         <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath} data-testid="workspace-chip">
           <span className="ws-icon">⌂</span>
           <span className="path">{workspaceLabel || "选择工作区"}</span>
-          <span className="muted" style={{ fontSize: 11 }}>更换</span>
+          <span className="muted" style={{ fontSize: "var(--fs-body)" }}>更换</span>
         </button>
       </div>
     </aside>

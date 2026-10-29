@@ -384,10 +384,10 @@ export function InspectorRail({
           <div className="rail-section">
             <h3>工作区 / 工件</h3>
             {workspace?.path && <OpenLocationMenu workspace={workspace.path} relative={diffPath || "."} label="打开位置" />}
-            <div className="muted" style={{ marginBottom: 8, fontSize: 12 }}>
+            <div className="muted" style={{ marginBottom: 8, fontSize: "var(--fs-body)" }}>
               预览经路径与敏感边界；二进制/超大文件截断或拒绝。
             </div>
-            <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
+            <div className="muted" style={{ marginBottom: 10, fontSize: "var(--fs-body)" }}>
               {workspace?.path || "未选择"}
             </div>
             {tree ? <FileTree node={tree} onFile={(rel) => void openPreview(rel)} /> : <div className="empty-sm">加载中…</div>}
@@ -436,7 +436,7 @@ export function InspectorRail({
                     <button type="button" className="btn-sm" onClick={() => void openDiff(entry.relative)}>
                       Diff
                     </button>
-                    <span className="muted" style={{ fontSize: 11, alignSelf: "center" }}>
+                    <span className="muted" style={{ fontSize: "var(--fs-body)", alignSelf: "center" }}>
                       文件回退需 before 快照；隔离工作树集成走授权链，不并行争写
                     </span>
                   </div>
@@ -541,7 +541,7 @@ export function InspectorRail({
             )}
             <h3>运行状态</h3>
             <div className="list-card">
-              <div className="title" style={{ fontSize: 13 }}>
+              <div className="title" style={{ fontSize: "var(--fs-body)" }}>
                 {statusLabel}
               </div>
               <div className="meta">{runId ? `run ${runId}` : "未选择运行"}</div>
@@ -566,7 +566,7 @@ export function InspectorRail({
                       marginLeft: 8,
                       color: evidence.trusted ? "var(--c-success)" : "var(--c-warning)",
                       fontWeight: 700,
-                      fontSize: 11,
+                      fontSize: "var(--fs-body)",
                     }}
                   >
                     {evidence.trust_label}
@@ -576,7 +576,7 @@ export function InspectorRail({
                   验证 OK：{!evidence.verification.verification_seq ? "未运行" : evidence.verification.verification_ok ? "通过" : "失败"}
                   {evidence.failure_class ? ` · ${evidence.failure_class}` : ""}
                 {runPhase === "waiting_reconcile" ? (
-                  <span style={{ marginLeft: 8, color: "var(--c-warning)", fontWeight: 700, fontSize: 11 }}>{runPhaseLabel}</span>
+                  <span style={{ marginLeft: 8, color: "var(--c-warning)", fontWeight: 700, fontSize: "var(--fs-meta)" }}>{runPhaseLabel}</span>
                 ) : null}
                 </div>
                 <div className="meta">用量（未知显示为 —）</div>
@@ -626,7 +626,7 @@ export function InspectorRail({
                   {evidence.metrics.wall_time_ms ?? "—"}ms
                 </div>
               ) : null}
-              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              <div className="muted" style={{ fontSize: "var(--fs-body)", marginTop: 6 }}>
                 注入以 Journal 事件为准；未知容量不填假百分比。
               </div>
             </div>
@@ -656,13 +656,13 @@ export function InspectorRail({
                     }}
                   >
                     {!timeline.some((item) => item.seq === view.seq) && (
-                      <div className="meta" data-testid={`compaction-seq-misalign-${view.seq}`} style={{ color: "var(--c-warning)", fontSize: 11 }}>
+                      <div className="meta" data-testid={`compaction-seq-misalign-${view.seq}`} style={{ color: "var(--c-warning)", fontSize: "var(--fs-body)" }}>
                         seq 与时间线未对齐
                       </div>
                     )}
                     <div
                       className="title"
-                      style={{ fontSize: 12, cursor: "pointer" }}
+                      style={{ fontSize: "var(--fs-meta)", cursor: "pointer" }}
                       data-testid={`compaction-scroll-${view.seq}`}
                       title="定位到时间线"
                       onClick={() => scrollToTimelineSeq(view.seq)}
@@ -743,7 +743,7 @@ export function InspectorRail({
                                     setExpandedCompaction(null);
                                   }
                                 }}
-                                style={{ whiteSpace: "pre-wrap", fontSize: 11, marginTop: 6, maxHeight: 160, overflow: "auto", outlineColor: "var(--c-accent)" }}
+                                style={{ whiteSpace: "pre-wrap", fontSize: "var(--fs-code)", marginTop: 6, maxHeight: 160, overflow: "auto", outlineColor: "var(--c-accent)" }}
                               >
                                 {view.summaryFull}
                               </pre>
@@ -870,7 +870,7 @@ export function InspectorRail({
                       }
                     }}
                   >
-                    <div className="title" style={{ fontSize: 12 }}>
+                    <div className="title" style={{ fontSize: "var(--fs-body)" }}>
                       {view.childRunId}
                     </div>
                     {view.parentRunId && view.parentRunId !== view.childRunId ? (
@@ -880,11 +880,11 @@ export function InspectorRail({
                     ) : null}
                     <div className="meta">
                       {view.state === "delegated" ? (
-                        <span data-testid={`state-running-${view.childRunId}`} aria-live="polite" style={{ color: "var(--c-accent)", fontWeight: 600, fontSize: 11 }}>
+                        <span data-testid={`state-running-${view.childRunId}`} aria-live="polite" style={{ color: "var(--c-accent)", fontWeight: 600, fontSize: "var(--fs-meta)" }}>
                           进行中
                         </span>
                       ) : view.state === "completed" ? (
-                        <span data-testid={`state-completed-${view.childRunId}`} aria-live="polite" style={{ color: "var(--c-success)", fontWeight: 600, fontSize: 11 }}>
+                        <span data-testid={`state-completed-${view.childRunId}`} aria-live="polite" style={{ color: "var(--c-success)", fontWeight: 600, fontSize: "var(--fs-meta)" }}>
                           已完成
                         </span>
                       ) : (
@@ -971,7 +971,7 @@ export function InspectorRail({
                       工具 {view.usageReported || view.toolCalls ? view.toolCalls : "—"}
                       {view.usageReported
                         ? ` · in ${view.promptTokens} / out ${view.completionTokens} tok`
-                        : <>{" "}<span data-testid="usage-unreported" aria-live="polite" style={{ color: "var(--c-warning)", fontWeight: 600, fontSize: 11 }}>未回报</span></>}
+                        : <>{" "}<span data-testid="usage-unreported" aria-live="polite" style={{ color: "var(--c-warning)", fontWeight: 600, fontSize: "var(--fs-meta)" }}>未回报</span></>}
                     </div>
                   </div>
                 ))
@@ -990,7 +990,7 @@ export function InspectorRail({
                   {(() => {
                     const unreported = subagentViews.filter((v) => !v.usageReported).length;
                     return unreported > 0 ? (
-                      <span data-testid="summary-unreported" aria-label="未回报用量子运行计数" style={{ color: "var(--c-warning)", fontWeight: 600, fontSize: 11 }}>
+                      <span data-testid="summary-unreported" aria-label="未回报用量子运行计数" style={{ color: "var(--c-warning)", fontWeight: 600, fontSize: "var(--fs-meta)" }}>
                         {" "}· 未回报 {unreported}
                       </span>
                     ) : null;
