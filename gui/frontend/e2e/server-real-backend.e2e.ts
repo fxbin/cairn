@@ -1,10 +1,12 @@
 /**
  * server 模式真实后端闭环（issue #25 增量 7）。
  *
- * 以 -tags server 构建的桌面后端在 127.0.0.1:8099 暴露静态资源与
- * /wails/runtime，浏览器客户端经 HTTP 传输通道驱动真实 App/Journal：
- * 新建任务 → 写操作触发审批停点（HTTP 模式下由投影轮询感知）→ 批准 →
- * 运行完成 → 检查器展示完成证据。
+ * 以 -tags server 构建的桌面后端在 127.0.0.1:8099 暴露静态资源、
+ * /wails/runtime 调用通道与 /wails/events 事件广播，浏览器客户端经
+ * HTTP 传输通道驱动真实 App/Journal：新建任务 → 写操作触发审批停点 →
+ * 批准 → 运行完成 → 检查器展示完成证据。停点感知走与原生 WebView 相同的
+ * 事件通道（runtime 自动装载 /wails/custom.js 接入 WebSocket 广播），
+ * 本用例因此同时是浏览器端事件通道的真实闭环验证。
  *
  * 前置条件缺失（二进制未构建、密钥未注入、显式跳过）时如实跳过并说明
  * 原因，不写 PASS；真实模型调用依赖网络与配额，失败即失败，不重试伪装。
@@ -164,7 +166,7 @@ test("真实后端：新建任务→审批停点→批准→完成→证据", as
   await page.getByTestId("composer-send").click();
   await expect(page.getByTestId("composer-stop")).toBeVisible();
 
-  // 审批停点：HTTP 模式没有事件推送，审批卡只能来自投影轮询感知的 Journal 事实
+  // 审批停点：事件经 /wails/events WebSocket 广播送达，审批卡由流事件即时渲染
   const approval = page.getByTestId("approval-card");
   await expect(approval).toBeVisible();
   await page.screenshot({ path: `${evidenceDir}/02-approval-pending.png`, fullPage: true });
@@ -172,7 +174,7 @@ test("真实后端：新建任务→审批停点→批准→完成→证据", as
   await page.getByTestId("approval-allow").click();
   await expect(approval.getByText("已允许并继续")).toBeVisible();
 
-  // 完成停点：投影轮询感知终态，运行指示收口
+  // 完成停点：run.finished 事件收口运行指示
   await expect(page.getByTestId("composer-stop")).toBeHidden({ timeout: 240_000 });
 
   // 证据展示：检查器详情页签呈现真实 Journal 的结果分层与用量

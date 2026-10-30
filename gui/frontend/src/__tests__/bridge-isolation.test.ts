@@ -70,11 +70,14 @@ describe("N01 真实桥接与 Mock 隔离", () => {
     await expect(mod.Bindings.Health()).rejects.toBeInstanceOf(mod.BridgeUnavailableError);
   });
 
-  it("事件订阅在 HTTP 传输通道退化为空句柄，不注入假事件源", async () => {
+  it("事件订阅在 HTTP 传输通道走 Wails Events 通道，不注入假事件源", async () => {
     const events = await import("../desktop/events");
-    // HTTP 传输通道没有事件通道，但订阅本身不应拖垮界面。
+    // 订阅复用 runtime 的 Events 通道（server 模式经 /wails/events WebSocket
+    // 广播送达后端事件），返回可重复调用的清理句柄；不安装演示桥钩子。
+    // 经 dispatchWailsEvent 的深度分发验证见 http-events-channel.test.ts。
     const off = events.subscribeStream(() => undefined);
     expect(typeof off).toBe("function");
+    expect((window as unknown as { __CAIRN_SUBSCRIBE__?: unknown }).__CAIRN_SUBSCRIBE__).toBeUndefined();
     off();
   });
 
