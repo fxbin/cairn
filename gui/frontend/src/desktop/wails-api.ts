@@ -91,8 +91,13 @@ interface DesktopBindings {
   InspectMemory(workspace: string, candidateID: string): Promise<{ candidate: { id: string; run_id?: string; outcome: string; status: string }; audit?: string[] }>;
 }
 
-/** 后端连接模式：真实 Wails、显式演示桥、或不可用。 */
-export type BridgeMode = "wails" | "demo" | "unavailable";
+/**
+ * 后端连接模式：原生 Wails、显式演示桥、HTTP 传输通道的浏览器客户端、或不可用。
+ *
+ * "http" 表示前端有真实绑定可用、经 runtime 的 HTTP 传输通道调用真实后端；
+ * 该后端是否真的可达由调用结果决定，模式本身不作断言。
+ */
+export type BridgeMode = "wails" | "demo" | "http" | "unavailable";
 
 interface WailsGlobals {
   _wails?: { dispatchWailsEvent?: unknown };
@@ -143,6 +148,28 @@ export function detectDemoBridge(): boolean {
   }
 }
 
+/**
+ * hasRawBindings 判断真实绑定是否可用。
+ *
+ * 绑定的存在只说明前端有真实调用通道；后端是否真的连得上，由调用结果决定。
+ */
+function hasRawBindings(): boolean {
+  const raw = RawAPI as unknown as Record<string, unknown>;
+  return typeof raw.Health === "function";
+}
+
+/**
+ * detectHttpTransport 判断当前只能经 HTTP 传输通道访问真实后端。
+ *
+ * 浏览器里的客户端没有宿主注入标记，但 @wailsio/runtime 默认就走
+ * POST {origin}/wails/runtime 的 fetch 通道：wails3 的 server 模式把这条传输
+ * 挂在同一端口上，因此浏览器也能驱动真实后端。这里只判断「有没有真实绑定
+ * 可用」，可达性交给调用结果。
+ */
+export function detectHttpTransport(): boolean {
+  return !detectWailsRuntime() && !detectDemoBridge() && hasRawBindings();
+}
+
 /** bridgeMode 返回当前后端连接模式，供 UI 标识演示身份。 */
 export function bridgeMode(): BridgeMode {
   if (detectWailsRuntime()) {
@@ -151,20 +178,75 @@ export function bridgeMode(): BridgeMode {
   if (detectDemoBridge()) {
     return "demo";
   }
+  if (hasRawBindings()) {
+    return "http";
+  }
   return "unavailable";
 }
 
 /** BridgeUnavailableError 表示缺少真实桌面后端且未显式启用演示桥。 */
 export class BridgeUnavailableError extends Error {
   readonly code = "bridge_unavailable";
-  constructor(method: string) {
-    super(`desktop bridge unavailable: ${method} requires Wails runtime or an explicit demo bridge (?cairn-demo=1)`);
+  constructor(method: string, detail = "") {
+    super(
+      detail
+        ? `桌面后端不可用：${method} ${detail}`
+        : `桌面后端不可用：${method} 需要 Wails 运行时或显式演示入口（?cairn-demo=1）`,
+    );
     this.name = "BridgeUnavailableError";
   }
 }
 
 function failClosed(method: string): Promise<never> {
   return Promise.reject(new BridgeUnavailableError(method));
+}
+
+/**
+ * isBackendError 判断错误是否来自桌面后端自身的响应。
+ *
+ * @wailsio/runtime 解析后端的 JSON 错误信封时会挂上 cause 字段；响应不是
+ * 协议格式时它把响应正文原样作为错误消息抛出，没有这个字段。据此把
+ * 「后端答错了」与「没连上后端」分开：前者原样透传，后者转成
+ * BridgeUnavailableError。
+ */
+function isBackendError(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    // 网络层失败一律是 TypeError：浏览器报「Failed to fetch」，Node 报
+    // 「fetch failed」（后者还带 cause，不能只看 cause 判断）。
+    return false;
+  }
+  return typeof error === "object" && error !== null && "cause" in error;
+}
+
+/**
+ * withTransportGuard 给 HTTP 传输通道的调用补上失败关闭语义。
+ *
+ * 传输层不可达时原始报错是浏览器的网络错误或一段非协议响应正文，对使用者
+ * 没有意义；这里统一转成 BridgeUnavailableError 说明桌面后端连不上。后端
+ * 自己返回的错误原样透传，不改写内容。
+ */
+function withTransportGuard(bindings: Record<string, unknown>): Record<string, unknown> {
+  const guarded: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(bindings)) {
+    if (typeof value !== "function") {
+      guarded[name] = value;
+      continue;
+    }
+    const method = value as (...args: unknown[]) => unknown;
+    guarded[name] = (...args: unknown[]) => {
+      const result = method.apply(bindings, args);
+      if (!result || typeof (result as Promise<unknown>).catch !== "function") {
+        return result;
+      }
+      return (result as Promise<unknown>).catch((error: unknown) => {
+        if (!isBackendError(error)) {
+          throw new BridgeUnavailableError(String(name), "无法通过 HTTP 传输通道连接 /wails/runtime");
+        }
+        throw error;
+      });
+    };
+  }
+  return guarded;
 }
 
 let cachedDemo: DesktopBindings | null = null;
@@ -185,6 +267,10 @@ function resolveBindings(): DesktopBindings {
       }
     }
     return cachedDemo;
+  }
+  if (hasRaw) {
+    // 浏览器客户端：真实绑定经 runtime 的 HTTP 传输通道调用真实后端。
+    return withTransportGuard(raw) as unknown as DesktopBindings;
   }
   return new Proxy({} as DesktopBindings, {
     get(_target, prop: string) {

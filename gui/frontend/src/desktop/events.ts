@@ -4,7 +4,7 @@
  */
 import { Events as WailsEvents } from "@wailsio/runtime";
 import type { StreamEvent } from "./types";
-import { detectDemoBridge, detectWailsRuntime } from "./wails-api";
+import { detectDemoBridge, detectHttpTransport, detectWailsRuntime } from "./wails-api";
 
 export const STREAM_EVENT_NAME = "cairn:stream";
 
@@ -37,8 +37,15 @@ export function subscribeStream(handler: Handler): () => void {
     return () => undefined;
   }
 
+  if (detectHttpTransport()) {
+    // HTTP 传输通道没有事件通道：wails3 的 HTTP 传输只挂 /wails/runtime，
+    // 事件由宿主注入的派发函数送达，浏览器侧收不到。这里退化为按 Journal
+    // 投影刷新，不注入假事件源，也不让订阅失败拖垮界面。
+    return () => undefined;
+  }
+
   // 无 Wails 且无演示桥：不自动注入假事件源。
-  throw new Error("event stream unavailable: requires Wails runtime or an explicit demo bridge");
+  throw new Error("事件流不可用：需要 Wails 运行时或显式演示入口");
 }
 
 function extractStreamEvent(payload: unknown): StreamEvent | null {
