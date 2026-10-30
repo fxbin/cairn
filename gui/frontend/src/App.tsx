@@ -59,6 +59,25 @@ type Action =
   | { type: "settings"; open: boolean }
   | { type: "context"; run: { id: string; title: string; sessionId: string; pinned: boolean } | null };
 
+/**
+ * narrowBreakpoint 是三栏布局不再成立的宽度。
+ *
+ * 侧栏与检查器固定占用 280px + 320px，低于该宽度时三栏并排会把主列挤到
+ * 一百多像素，输入框被压成一字一行。窄窗口下检查器改为浮层（见 styles.css），
+ * 并默认收起。
+ */
+const narrowBreakpoint = 1024;
+
+/**
+ * isNarrowViewport 判断当前视口是否窄到三栏并排不成立。
+ *
+ * 没有视口信息时按宽处理，保留既有展开状态。
+ */
+function isNarrowViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth <= narrowBreakpoint;
+}
+
 const initialState: AppState = {
   health: null,
   workspace: null,
@@ -71,7 +90,7 @@ const initialState: AppState = {
   loading: true,
   booting: true,
   error: null,
-  railOpen: true,
+  railOpen: !isNarrowViewport(),
   railTab: "details",
   settingsOpen: false,
   contextRun: null,
@@ -226,6 +245,19 @@ export default function App() {
     }
     selectCurrentRun(childRunId);
   }, [selectCurrentRun]);
+
+  // 窗口收窄到三栏并排不成立时收起检查器：窄窗口下它会浮在主列之上，
+  // 继续展开就会盖住输入区。只在跨入窄窗口时收起一次，不跟随用户的显式操作反复开合。
+  useEffect(() => {
+    let wasNarrow = isNarrowViewport();
+    const onResize = () => {
+      const narrow = isNarrowViewport();
+      if (narrow && !wasNarrow) dispatch({ type: "railOpen", value: false });
+      wasNarrow = narrow;
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const backToParentRun = useCallback(() => {
     setRunReturnStack((stack) => {
@@ -722,6 +754,8 @@ export default function App() {
         workspaceLabel={state.workspace?.path ? workspacePath.split("/").pop() || workspacePath : workspacePath}
         recent={state.recent}
         onSwitchWorkspace={changeWorkspace}
+        workspaceDirty={Boolean(state.workspace?.dirty)}
+        health={state.health}
       />
 
       {navView !== "workbench" && (

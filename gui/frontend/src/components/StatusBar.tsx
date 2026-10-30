@@ -1,33 +1,17 @@
-import type { HealthResult, WorkspaceStatus } from "../desktop/types";
+import type { HealthResult } from "../desktop/types";
 
 /**
- * 底栏：健康状态、工作区与加载指示。
+ * 状态行：桥接健康的可见出口。
  *
- * 当前未接线：应用外壳没有底栏，App.tsx 虽然调用 desktop.health() 并存入
- * state.health，但界面从不渲染它，桥接版本与健康状态因此没有可见出口。
- * 保留本组件作为接线候选，接入位置（底栏常驻还是并入设置抽屉）属于产品范围决定，
- * 未确定前不擅自接线。
+ * 健康结果由桌面服务下发（桥接可用性与只读环境摘要）。应用此前取到结果却不渲染，
+ * 桥接版本与连通状态没有出口，这里把它放进侧栏底部常驻可见的位置。
+ * 未连通时如实说明，不拿版本号之类的占位内容冒充已连接。
  */
-export function StatusBar({
-  health,
-  workspace,
-  loading,
-}: {
-  health: HealthResult | null;
-  workspace: WorkspaceStatus | null;
-  loading: boolean;
-}) {
+export function StatusBar({ health }: { health: HealthResult | null }) {
+  const label = !health ? "桥接未连接" : health.ok ? `桥接 ${health.version}` : "桥接不可用";
   return (
-    <footer className="flex items-center gap-3 border-t border-[var(--c-border)] px-3 py-1.5 text-xs">
-      <span className="font-medium">Cairn</span>
-      <span className="muted">{health ? `桥接 ${health.version}` : "桥接未连接"}</span>
-      {workspace && (
-        <span className="muted truncate">
-          {workspace.branch ? `${workspace.branch} · ` : ""}
-          {workspace.path}
-        </span>
-      )}
-      <span className="ml-auto muted">{loading ? "加载中…" : "就绪"}</span>
-    </footer>
+    <div className="status-line" data-testid="bridge-status">
+      {label}
+    </div>
   );
 }

@@ -13,11 +13,30 @@ import type {
   ErrorBody,
   EvidenceView,
   FileNode,
+  FilePreview,
   QueueItem,
   WorkspaceStatus,
 } from "../desktop/types";
 
 export type RailTab = "files" | "changes" | "queue" | "details";
+
+/**
+ * formatBytes 把字节数格式化为可读体积。
+ *
+ * 体积只是展示信息；二进制与截断由后端在预览结果里标记，前端不自行判断。
+ */
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size < 0) return "未知大小";
+  if (size < 1024) return `${size} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = size / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
 
 /** CodeView 只读源码视图：CodeMirror 6，支持选择复制。 */
 function CodeView({ text, language }: { text: string; language?: string }) {
@@ -153,6 +172,8 @@ export function InspectorRail({
   const [diffPath, setDiffPath] = useState("");
   const [diff, setDiff] = useState("");
   const [preview, setPreview] = useState("");
+  // previewMeta 保存预览结果的元信息（语言、体积、是否截断/二进制），供预览区如实展示。
+  const [previewMeta, setPreviewMeta] = useState<FilePreview | null>(null);
   const [diffScope, setDiffScope] = useState<string>("all");
   const [timeline, setTimeline] = useState<ReturnType<typeof toTimeline>>([]);
   const timelineKindStorageKey = "cairn.timelineKind";
@@ -330,6 +351,7 @@ export function InspectorRail({
     const generation = ++fileGenerationRef.current;
     setDiffPath(relative);
     setPreview("");
+    setPreviewMeta(null);
     setDiff("");
     setReviewNotes([]);
     try {
@@ -348,9 +370,12 @@ export function InspectorRail({
     setDiffPath(relative);
     setDiff("");
     setPreview("");
+    setPreviewMeta(null);
     try {
       const p = await desktop.previewFile(workspace.path, relative);
-      if (generation === fileGenerationRef.current) setPreview(p.text || p.reason || "（空）");
+      if (generation !== fileGenerationRef.current) return;
+      setPreviewMeta(p);
+      setPreview(p.text || p.reason || "（空）");
     } catch (error) {
       if (generation !== fileGenerationRef.current) return;
       setPreview("无法预览");
@@ -394,7 +419,22 @@ export function InspectorRail({
             {preview && (
               <div className="rail-section">
                 <h3>预览 · {diffPath}</h3>
-                <CodeView text={preview.slice(0, 120000)} />
+                {previewMeta && (
+                  <div
+                    className="muted"
+                    style={{ fontSize: "var(--fs-body)", marginBottom: 6 }}
+                    data-testid="preview-meta"
+                  >
+                    {[
+                      previewMeta.language,
+                      formatBytes(previewMeta.size),
+                      previewMeta.binary ? "二进制未展示" : previewMeta.truncated ? "内容已截断" : null,
+                    ]
+                      .filter((item): item is string => Boolean(item))
+                      .join(" · ")}
+                  </div>
+                )}
+                <CodeView text={preview.slice(0, 120000)} language={previewMeta?.language} />
               </div>
             )}
           </div>
@@ -403,6 +443,16 @@ export function InspectorRail({
         {tab === "changes" && (
           <div className="rail-section">
             <h3>改动</h3>
+            {changes && (
+              <div
+                className="muted"
+                style={{ fontSize: "var(--fs-body)", marginBottom: 8 }}
+                data-testid="change-summary"
+              >
+                新增 {changes.added} · 修改 {changes.modified} · 删除 {changes.deleted} · 未跟踪{" "}
+                {changes.untracked}
+              </div>
+            )}
             <label className="field" style={{ marginBottom: 10 }}>
               <span>比较范围</span>
               <select

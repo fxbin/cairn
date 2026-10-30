@@ -110,6 +110,27 @@ a { color: var(--c-accent); text-decoration: none; }
 }
 .app-shell[data-rail="closed"] { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0; }
 
+/* 窄窗口：侧栏与检查器固定占 280px + 320px，三栏并排会把主列挤到一百多像素，
+   输入框被压成一字一行。低于该宽度时检查器改为浮层，不占用主列宽度。 */
+@media (max-width: 1024px) {
+  .app-shell {
+    position: relative;
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+  .app-shell[data-rail="closed"] { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+  .rail {
+    /* 浮层化后必须清掉网格定位，否则绝对定位元素的包含块仍是第 3 列区域。 */
+    grid-column: auto;
+    grid-row: auto;
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    z-index: 20;
+    width: min(var(--rail-width), 88vw);
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  }
+}
+
+
 .sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -246,6 +267,20 @@ a { color: var(--c-accent); text-decoration: none; }
   display: grid; place-items: center;
   background: var(--ds-gray-200); color: var(--c-text-secondary);
   font-family: var(--font-mono); font-size: var(--fs-label);
+}
+/* 状态行：桥接健康出口，与工作区标记同属侧栏底部常驻信息。 */
+.status-line {
+  font-size: var(--fs-label);
+  color: var(--c-text-secondary);
+}
+/* 未提交标记：工作区有未提交改动时出现，不改变布局行数。 */
+.ws-dirty {
+  flex-shrink: 0;
+  font-size: var(--fs-label);
+  color: var(--c-warning);
+  background: var(--c-warning-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
 }
 
 /* ===== 顶栏 ===== */
@@ -570,7 +605,12 @@ a { color: var(--c-accent); text-decoration: none; }
 .composer-toolbar {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px 10px;
+  /* 窄窗口下让工具条整体换行，而不是把「可写」「发送」压成竖排字。 */
+  flex-wrap: wrap;
 }
+.composer-toolbar .muted,
+.composer-toolbar .btn-sm,
+.composer-toolbar .btn-send { white-space: nowrap; }
 .composer-toolbar .spacer { flex: 1; }
 .chip-select {
   height: 28px; padding: 0 10px; border-radius: var(--radius-sm);
