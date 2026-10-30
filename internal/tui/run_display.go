@@ -403,6 +403,29 @@ func commandSuggestions(text string) []string {
 	return lines
 }
 
+// helpCommandLines 按命令清单生成 /help 的展示行，每行四条命令名。
+//
+// 名称取自 consoleCommands 这张表：/help 不再维护第二份手写副本，新增命令
+// 只登记一处，候选提示、Tab 补全与帮助不会漂移。命令说明在输入时的候选
+// 提示里逐条给出，这里只列命令名——控制台的滚动缓冲只有 maxConsoleLines
+// 行，命令清单必须连同提示行一起放得下，否则帮助的开头会被滚出屏幕。
+func helpCommandLines() []string {
+	const perLine = 4
+	lines := make([]string, 0, len(consoleCommands)/perLine+1)
+	for start := 0; start < len(consoleCommands); start += perLine {
+		end := start + perLine
+		if end > len(consoleCommands) {
+			end = len(consoleCommands)
+		}
+		names := make([]string, 0, end-start)
+		for _, command := range consoleCommands[start:end] {
+			names = append(names, command.name)
+		}
+		lines = append(lines, strings.Join(names, "  "))
+	}
+	return lines
+}
+
 // completeCommand 返回前缀匹配的补全结果：唯一匹配补全到完整命令，多
 // 匹配补全到公共前缀（比输入长时），零匹配返回空串——与 readline 的
 // Tab 行为一致。
