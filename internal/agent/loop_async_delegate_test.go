@@ -217,6 +217,71 @@ func TestParkForPendingAsyncChildrenFailsClosedWithoutLiveRunner(t *testing.T) {
 	}
 }
 
+// settlingJournal 在父追加轮次关闭事实之后让子运行完成：完成事实写入父
+// Journal，完成信号随即收束。用于确定性地复现父停靠再同步之后、查活跃信号
+// 之前的那段竞态窗口——此时父的投影仍把子记作已委派未完成，子却已经收束。
+type settlingJournal struct {
+	*memory.Journal
+	childRunID string
+	children   *AsyncChildSet
+	injected   bool
+}
+
+// Append 先按端口语义追加事件；父的轮次关闭事实落盘后立刻注入子完成。
+func (journal *settlingJournal) Append(ctx context.Context, expectedSeq uint64, draft domain.EventDraft) (domain.Event, error) {
+	event, err := journal.Journal.Append(ctx, expectedSeq, draft)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if journal.injected || draft.Type != domain.EventTurnClosed {
+		return event, nil
+	}
+	journal.injected = true
+	events, err := journal.Journal.Load(ctx, draft.RunID)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	completed := domain.EventDraft{
+		RunID:         draft.RunID,
+		WorkspaceHash: draft.WorkspaceHash,
+		Type:          domain.EventSubagentCompleted,
+		Payload:       mustJSON(map[string]any{"child_run_id": journal.childRunID, "outcome": "ok"}),
+	}
+	if _, err := journal.Journal.Append(ctx, uint64(len(events)), completed); err != nil {
+		return domain.Event{}, err
+	}
+	journal.children.Settle(journal.childRunID)
+	return event, nil
+}
+
+// TestParkForPendingAsyncChildrenAbsorbsChildSettledBeforeLookup 锁定停靠竞态：
+// 子运行在父再同步之后、查活跃信号之前完成（完成事实已落盘父 Journal、完成
+// 信号已收束）时，停靠不得误判「无存活 runner」让父运行失败，而应再同步投影
+// 后回到安全点交付子结果。
+func TestParkForPendingAsyncChildrenAbsorbsChildSettledBeforeLookup(t *testing.T) {
+	fixture := newAsyncFixture(t)
+	turnID := fixture.openTurn(t)
+	childRunID := string(domain.NewRunID())
+	fixture.appendChildFact(t, childRunID, false, "")
+	fixture.loop.AsyncDelegateEnabled = true
+	children := NewAsyncChildSet()
+	fixture.loop.AsyncChildren = children
+	children.Launch(childRunID)
+	journal := &settlingJournal{Journal: fixture.journal, childRunID: childRunID, children: children}
+	fixture.loop.Journal = journal
+	projection := fixture.projection(t)
+	parked, err := fixture.loop.parkForPendingAsyncChildren(context.Background(), &projection, RunInput{RunID: fixture.runID, WorkspaceHash: "ws"}, turnID, "等待子任务")
+	if err != nil {
+		t.Fatalf("park must not fail closed on a child that just settled: %v", err)
+	}
+	if !parked {
+		t.Fatal("park must return to the safe point to deliver the settled child result")
+	}
+	if !journal.injected {
+		t.Fatal("test must exercise the settle-before-lookup window")
+	}
+}
+
 // TestDeliverCompletedAsyncChildrenPersistsSingleDelivery 锁定安全点交付：
 // 已完成子以 steering submitted/consumed 对持久化一次，重复调用不重复注入；
 // 消费去重表从事件重建（resume 口径）后仍不重复，消息重建按 kind 注入子

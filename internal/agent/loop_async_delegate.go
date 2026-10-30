@@ -106,6 +106,25 @@ func pendingAsyncChildIDs(projection *domain.RunProjection) []string {
 	return pending
 }
 
+// asyncChildStillPending 报告指定子身份在投影中是否仍处于已委派未完成状态，
+// 与 pendingAsyncChildIDs 同口径：停靠缺少活跃信号时据此区分「子刚在本进程
+// 内收束」与「子确实没有存活 runner」。
+func asyncChildStillPending(projection *domain.RunProjection, childRunID string) bool {
+	record, exists := projection.Children[childRunID]
+	return exists && record.State == "delegated"
+}
+
+// absorbSettledAsyncChild 在父读到「无存活信号」时重新同步投影并判定该子是否
+// 已经收束：子运行完成时先把完成事实写进父 Journal，随后才关闭完成信号，
+// 父在这两步之间读到信号缺失时，投影尚未吸收终态事实。重新同步后仍为非终态
+// 的子才是真正没有存活 runner（进程重启遗留或同步审批暂停子）。
+func (loop *Loop) absorbSettledAsyncChild(ctx context.Context, projection *domain.RunProjection, childRunID string) (bool, error) {
+	if err := loop.resyncProjection(ctx, projection); err != nil {
+		return false, err
+	}
+	return !asyncChildStillPending(projection, childRunID), nil
+}
+
 // asyncChildDelivery 是一次待交付的子终态摘要。
 type asyncChildDelivery struct {
 	childRunID string
@@ -263,9 +282,10 @@ func truncateUTF8(text string, limit int) string {
 // parkForPendingAsyncChildren 在父模型无更多工具调用但异步子事实未收束时
 // 停靠：先把模型说明作为助手消息落盘并以 continue 关闭当前轮次（run 不
 // 终态化、不发模型请求），再等待全部非终态子完成或 steering 到达；仅有
-// 未交付完成子时不停靠等待，直接回到安全点交付。存在无活跃信号的非终态子
-// （进程重启遗留或同步审批暂停子）时失败关闭，引导显式恢复。返回 true 表示
-// 需要回到安全点继续；false 表示无异步子事实，按既有流程收尾。
+// 未交付完成子时不停靠等待，直接回到安全点交付。读到无活跃信号时先再同步
+// 投影：子已收束按已吸收处理，只有重新同步后仍是非终态的子（进程重启遗留
+// 或同步审批暂停子）才失败关闭并引导显式恢复。返回 true 表示需要回到安全点
+// 继续；false 表示无异步子事实，按既有流程收尾。
 func (loop *Loop) parkForPendingAsyncChildren(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, assistantText string) (bool, error) {
 	if err := loop.resyncProjection(ctx, projection); err != nil {
 		return false, err
@@ -294,7 +314,18 @@ func (loop *Loop) parkForPendingAsyncChildren(ctx context.Context, projection *d
 		for _, childID := range current {
 			signal, live := loop.AsyncChildren.Done(childID)
 			if !live {
-				return false, fmt.Errorf("async child run %s has no live runner; finish it explicitly (resume the child run, or resume %s --abort-run) before the parent can continue", childID, childID)
+				// 子可能刚在本进程内收束：完成事实已落盘父 Journal，但本函数
+				// 的投影只在再同步时吸收外部事实，仍把该子记作已委派未完成。
+				// 先再同步投影再判断：该子已收束就回到安全点交付其结果，只有
+				// 仍未收束的子才按「无存活 runner」失败关闭。
+				absorbed, err := loop.absorbSettledAsyncChild(ctx, projection, childID)
+				if err != nil {
+					return false, err
+				}
+				if !absorbed {
+					return false, fmt.Errorf("async child run %s has no live runner; finish it explicitly (resume the child run, or resume %s --abort-run) before the parent can continue", childID, childID)
+				}
+				return true, nil
 			}
 			if waitOn == nil {
 				waitOn = signal
