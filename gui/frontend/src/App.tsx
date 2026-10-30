@@ -1183,7 +1183,7 @@ export default function App() {
         {!demoBridgeActive() && bridgeMode() === "unavailable" && (
           <div className="error-banner" role="alert" data-testid="bridge-unavailable-banner">
             <span>
-              桌面后端不可用：需要 Wails 运行时或显式演示入口（?cairn-demo=1）。
+              桌面后端不可用：需要 Wails 运行时、真实 HTTP 传输后端或显式演示入口（?cairn-demo=1）。
               <span className="muted"> · bridge=unavailable</span>
             </span>
           </div>
