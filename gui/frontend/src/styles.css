@@ -247,6 +247,20 @@ a { color: var(--c-accent); text-decoration: none; }
   background: var(--ds-gray-200); color: var(--c-text-secondary);
   font-family: var(--font-mono); font-size: var(--fs-label);
 }
+/* 状态行：桥接健康出口，与工作区标记同属侧栏底部常驻信息。 */
+.status-line {
+  font-size: var(--fs-label);
+  color: var(--c-text-secondary);
+}
+/* 未提交标记：工作区有未提交改动时出现，不改变布局行数。 */
+.ws-dirty {
+  flex-shrink: 0;
+  font-size: var(--fs-label);
+  color: var(--c-warning);
+  background: var(--c-warning-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 6px;
+}
 
 /* ===== 顶栏 ===== */
 .chat-header {

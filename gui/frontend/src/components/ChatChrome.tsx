@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { StatusBar } from "./StatusBar";
+import type { HealthResult } from "../desktop/types";
 
 /** 底部 Composer：多行输入、IME 安全、模型/模式、发送/停止/入队。 */
 export function Composer({
@@ -149,6 +151,8 @@ export function ThreadSidebar({
   workspaceLabel,
   recent = [],
   onSwitchWorkspace,
+  workspaceDirty = false,
+  health = null,
 }: {
   threads: Array<{
     run_id: string;
@@ -173,6 +177,10 @@ export function ThreadSidebar({
   workspaceLabel: string;
   recent?: Array<{ path: string; name: string; archived?: boolean }>;
   onSwitchWorkspace?: (path: string) => void;
+  /** 工作区是否有未提交改动；有则在工作区标记上如实提示。 */
+  workspaceDirty?: boolean;
+  /** 桥接健康结果；为 null 表示尚未连通。 */
+  health?: HealthResult | null;
 }) {
   return (
     <aside className="sidebar">
@@ -260,8 +268,14 @@ export function ThreadSidebar({
         <button type="button" className="workspace-chip" onClick={onPickWorkspace} title={workspacePath} data-testid="workspace-chip">
           <span className="ws-icon">⌂</span>
           <span className="path">{workspaceLabel || "选择工作区"}</span>
+          {workspaceDirty && (
+            <span className="ws-dirty" data-testid="workspace-dirty" title="工作区有未提交改动">
+              未提交
+            </span>
+          )}
           <span className="muted" style={{ fontSize: "var(--fs-body)" }}>更换</span>
         </button>
+        <StatusBar health={health} />
       </div>
     </aside>
   );

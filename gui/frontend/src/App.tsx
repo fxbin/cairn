@@ -722,6 +722,8 @@ export default function App() {
         workspaceLabel={state.workspace?.path ? workspacePath.split("/").pop() || workspacePath : workspacePath}
         recent={state.recent}
         onSwitchWorkspace={changeWorkspace}
+        workspaceDirty={Boolean(state.workspace?.dirty)}
+        health={state.health}
       />
 
       {navView !== "workbench" && (
