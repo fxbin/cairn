@@ -70,6 +70,19 @@ func (log *orderLog) nthIndex(label string, nth int) int {
 	return len(log.events) + 1
 }
 
+// count 返回指定标签的出现次数；缺失返回 0。
+func (log *orderLog) count(label string) int {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	count := 0
+	for _, event := range log.events {
+		if event.label == label {
+			count++
+		}
+	}
+	return count
+}
+
 // labels 返回时序标签视图，供失败信息阅读。
 func (log *orderLog) labels() []string {
 	log.mu.Lock()
@@ -81,20 +94,47 @@ func (log *orderLog) labels() []string {
 	return labels
 }
 
+// providerCallBarrier 记录单次模型调用的进入与返回时刻：两个通道在对应时刻
+// 关闭，等待者无论早晚都立即观察到关闭，不会错过已经发生的事实，也不依赖
+// 墙钟轮询。
+type providerCallBarrier struct {
+	entered    chan struct{}
+	returned   chan struct{}
+	enterOnce  sync.Once
+	returnOnce sync.Once
+}
+
+// newProviderCallBarrier 创建一组空的进入与返回信号。
+func newProviderCallBarrier() *providerCallBarrier {
+	return &providerCallBarrier{entered: make(chan struct{}), returned: make(chan struct{})}
+}
+
+// markEntered 标记该次模型调用已进入。
+func (barrier *providerCallBarrier) markEntered() {
+	barrier.enterOnce.Do(func() { close(barrier.entered) })
+}
+
+// markReturned 标记该次模型调用已返回。
+func (barrier *providerCallBarrier) markReturned() {
+	barrier.returnOnce.Do(func() { close(barrier.returned) })
+}
+
 // orchestratingProvider 是异步委派测试的可编排 Provider：按脚本输出
 // delegate_task/exec 提议或文本，finalOnSummary 时仅在消息出现子结果摘要后
-// 收尾；可选阻塞释放与模拟工作时长模拟慢子运行。
+// 收尾；可选阻塞释放模拟被卡住的子运行。每次模型调用另有进入与返回两个
+// 同步点，供用例按因果顺序等待。
 type orchestratingProvider struct {
 	label          string
 	order          *orderLog
 	script         []scriptStep
 	blockUntil     <-chan struct{}
-	workPause      time.Duration
 	finalOnSummary bool
 	requests       []ports.ModelRequest
 	firstEntered   chan struct{}
 	enteredOnce    sync.Once
 	calls          atomic.Int32
+	barrierMu      sync.Mutex
+	barriers       []*providerCallBarrier
 }
 
 // newOrchestratingProvider 创建已初始化进入信号的编排 Provider。
@@ -102,22 +142,32 @@ func newOrchestratingProvider(label string, order *orderLog) *orchestratingProvi
 	return &orchestratingProvider{label: label, order: order, firstEntered: make(chan struct{})}
 }
 
+// callBarrier 返回第 index 次（从 1 起）模型调用的进入与返回屏障，按需创建；
+// 调用尚未发生时返回等待中的通道，已发生时返回已关闭的通道。
+func (provider *orchestratingProvider) callBarrier(index int) *providerCallBarrier {
+	provider.barrierMu.Lock()
+	defer provider.barrierMu.Unlock()
+	for len(provider.barriers) < index {
+		provider.barriers = append(provider.barriers, newProviderCallBarrier())
+	}
+	return provider.barriers[index-1]
+}
+
 // Stream 按脚本编排输出，并记录时序与请求镜像。
 func (provider *orchestratingProvider) Stream(ctx context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
 	callIndex := int(provider.calls.Add(1))
+	barrier := provider.callBarrier(callIndex)
+	defer func() {
+		provider.order.record(provider.label + "-done")
+		barrier.markReturned()
+	}()
 	provider.requests = append(provider.requests, request)
 	provider.enteredOnce.Do(func() { close(provider.firstEntered) })
 	provider.order.record(provider.label)
+	barrier.markEntered()
 	if provider.blockUntil != nil {
 		select {
 		case <-provider.blockUntil:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	if provider.workPause > 0 {
-		select {
-		case <-time.After(provider.workPause):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -627,59 +677,157 @@ func TestResumeParentDeliversCompletedChildResult(t *testing.T) {
 	}
 }
 
-// TestSyncVersusAsyncDelegationOrdering 锁定编排顺序与预算口径对比：同步委派
-// 阻塞父的后续模型调用（子先于父第二次调用），异步委派在子未完成时父已推进
-// 到停靠前的等待调用；两种口径的父事件预算汇总保持同构（单子、同委派额度）。
-func TestSyncVersusAsyncDelegationOrdering(t *testing.T) {
-	runScenario := func(async bool) (*orderLog, BudgetSummary) {
-		workspace, stateDir := t.TempDir(), t.TempDir()
-		configuration := asyncTestConfig()
-		order := &orderLog{}
-		release := make(chan struct{})
-		step := stepDelegateSync
-		if async {
-			step = stepDelegateAsync
-		}
-		parent := newOrchestratingProvider("parent", order)
-		parent.script = []scriptStep{step}
-		parent.finalOnSummary = true
-		var child *orchestratingProvider
-		if async {
-			child = newOrchestratingProvider("child", order)
-			child.blockUntil = release
-		} else {
-			child = newOrchestratingProvider("child", order)
-			child.workPause = 50 * time.Millisecond
-		}
-		service := Service{NewProvider: splitParentChildProvider(parent, child)}
-		if async {
-			go func() {
-				<-child.firstEntered
-				for parent.callCount() < 2 {
-					time.Sleep(time.Millisecond)
-				}
-				close(release)
-			}()
-		}
+// delegationOrderingTimeout 是编排顺序用例等待因果同步点的上限：超时即判定
+// 顺序约束被破坏，打印可诊断的模型调用顺序后失败，不做无限等待。
+const delegationOrderingTimeout = 10 * time.Second
+
+// delegationOrderingScenario 是一次委派编排场景的观测结果：模型调用顺序、
+// 父运行事件与预算汇总，供同步与异步两种口径对比断言。
+type delegationOrderingScenario struct {
+	order  *orderLog
+	events []domain.Event
+	budget BudgetSummary
+}
+
+// runDelegationOrderingScenario 跑一次委派编排场景并返回可断言的观测结果。
+// 同步口径下父在子 Run 完成后才进入下一步，异步口径下父在子被阻塞时推进到
+// 下一次模型调用；两条路径都由 channel 同步点推进，子是否完成与父是否推进
+// 之间不存在墙钟竞态。
+func runDelegationOrderingScenario(t *testing.T, async bool) delegationOrderingScenario {
+	t.Helper()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	configuration := asyncTestConfig()
+	order := &orderLog{}
+	release := make(chan struct{})
+	parent := newOrchestratingProvider("parent", order)
+	parent.finalOnSummary = true
+	child := newOrchestratingProvider("child", order)
+	child.blockUntil = release
+	if async {
+		parent.script = []scriptStep{stepDelegateAsync}
+	} else {
+		parent.script = []scriptStep{stepDelegateSync}
+	}
+	service := Service{NewProvider: splitParentChildProvider(parent, child)}
+	type runOutcome struct {
+		result RunResult
+		err    error
+	}
+	outcome := make(chan runOutcome, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
 		result, err := service.Run(context.Background(), RunOptions{Task: "parent task", Workspace: workspace, StateDir: stateDir, Config: configuration})
-		if err != nil {
-			t.Fatal(err)
+		outcome <- runOutcome{result: result, err: err}
+	}()
+	// 收尾：无条件释放子 Provider 并等待运行 goroutine 退出，既不留悬挂
+	// 等待，也不让一个场景的残留影响另一个场景。
+	var releaseOnce sync.Once
+	releaseChild := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseChild()
+		select {
+		case <-finished:
+		case <-time.After(delegationOrderingTimeout):
+			t.Errorf("delegation scenario did not finish within %s", delegationOrderingTimeout)
 		}
-		inspected, err := (Service{}).Inspect(context.Background(), workspace, stateDir, configuration, result.ID, true)
-		if err != nil {
-			t.Fatal(err)
+	})
+	// 子 Provider 进入首次模型调用后即被 release 阻塞：这是「子已开始、尚未
+	// 完成」的因果同步点，与调度次序无关。
+	waitForOrderingSignal(t, child.callBarrier(1).entered, "child first model call", order)
+	if async {
+		// 异步口径：子仍被阻塞时父必须已推进到下一次模型调用；若实现退化为
+		// 同步等待子完成，这里的有界等待会超时失败。
+		waitForOrderingSignal(t, parent.callBarrier(2).entered, "parent second model call while the child is blocked", order)
+	}
+	releaseChild()
+	waitForOrderingSignal(t, finished, "parent run completion", order)
+	completed := <-outcome
+	if completed.err != nil {
+		t.Fatalf("parent run failed: %v; model call order=%v", completed.err, order.labels())
+	}
+	inspected, err := (Service{}).Inspect(context.Background(), workspace, stateDir, configuration, completed.result.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return delegationOrderingScenario{order: order, events: inspected.Events, budget: SummarizeBudget(inspected.Events)}
+}
+
+// waitForOrderingSignal 等待一个因果同步点；超时即失败并打印可诊断的模型
+// 调用顺序，不做无限等待。
+func waitForOrderingSignal(t *testing.T, signal <-chan struct{}, description string, order *orderLog) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(delegationOrderingTimeout):
+		t.Fatalf("timed out after %s waiting for %s; model call order=%v", delegationOrderingTimeout, description, order.labels())
+	}
+}
+
+// assertOrderBefore 断言 first 的第 nth 次出现早于 second 的第 mth 次出现；
+// 任一标记缺失即失败，缺失不得当作通过。
+func assertOrderBefore(t *testing.T, log *orderLog, first string, nth int, second string, mth int, message string) {
+	t.Helper()
+	if log.count(first) < nth || log.count(second) < mth {
+		t.Fatalf("%s: missing order markers %s#%d or %s#%d in %v", message, first, nth, second, mth, log.labels())
+	}
+	firstIndex, secondIndex := log.nthIndex(first, nth), log.nthIndex(second, mth)
+	if firstIndex > secondIndex {
+		t.Fatalf("%s: %s#%d at %d must precede %s#%d at %d in %v", message, first, nth, firstIndex, second, mth, secondIndex, log.labels())
+	}
+}
+
+// turnOpenedSeq 返回父运行第 nth 次开放轮次的事件序号；缺失返回 0。
+func turnOpenedSeq(events []domain.Event, nth int) uint64 {
+	seen := 0
+	for _, event := range events {
+		if event.Type != domain.EventTurnOpened {
+			continue
 		}
-		return order, SummarizeBudget(inspected.Events)
+		seen++
+		if seen == nth {
+			return event.Seq
+		}
 	}
-	syncOrder, syncBudget := runScenario(false)
-	if syncOrder.nthIndex("child", 1) > syncOrder.nthIndex("parent", 2) {
-		t.Fatalf("sync delegation must block the parent behind the child: %v", syncOrder.labels())
+	return 0
+}
+
+// subagentCompletedSeq 返回父运行中首个子完成事实的事件序号；缺失返回 0。
+func subagentCompletedSeq(events []domain.Event) uint64 {
+	for _, event := range events {
+		if event.Type == domain.EventSubagentCompleted {
+			return event.Seq
+		}
 	}
-	asyncOrder, asyncBudget := runScenario(true)
-	if asyncOrder.nthIndex("parent", 2) > asyncOrder.nthIndex("child", 1) {
-		t.Fatalf("async parent must advance while the child is blocked: %v", asyncOrder.labels())
+	return 0
+}
+
+// TestSyncVersusAsyncDelegationOrdering 锁定编排顺序与预算口径对比：同步委派
+// 在子 Run 完成事实落盘前父不进入下一步，异步委派在子仍被阻塞时父已推进到
+// 下一次模型调用；两种口径的父事件预算汇总保持同构（单子、同委派额度）。
+// 顺序由 channel 同步点与父 Journal 事件序号给出，不依赖 goroutine 抢占次序。
+func TestSyncVersusAsyncDelegationOrdering(t *testing.T) {
+	syncScenario := runDelegationOrderingScenario(t, false)
+	syncCompletionSeq := subagentCompletedSeq(syncScenario.events)
+	syncSecondTurnSeq := turnOpenedSeq(syncScenario.events, 2)
+	if syncCompletionSeq == 0 || syncSecondTurnSeq == 0 {
+		t.Fatalf("sync scenario must record one child completion and two parent turns: %s", describeEvents(syncScenario.events))
 	}
-	if syncBudget.UniqueChildren != 1 || asyncBudget.UniqueChildren != 1 || syncBudget.DelegatedTurns != asyncBudget.DelegatedTurns {
-		t.Fatalf("budget summaries must stay comparable: sync=%+v async=%+v", syncBudget, asyncBudget)
+	if syncCompletionSeq > syncSecondTurnSeq {
+		t.Fatalf("sync delegation must keep the parent behind the child run: child completion seq=%d second turn seq=%d events=%s", syncCompletionSeq, syncSecondTurnSeq, describeEvents(syncScenario.events))
+	}
+	assertOrderBefore(t, syncScenario.order, "child", 1, "parent", 2, "sync delegation must block the parent behind the child")
+	asyncScenario := runDelegationOrderingScenario(t, true)
+	asyncCompletionSeq := subagentCompletedSeq(asyncScenario.events)
+	asyncSecondTurnSeq := turnOpenedSeq(asyncScenario.events, 2)
+	if asyncCompletionSeq == 0 || asyncSecondTurnSeq == 0 {
+		t.Fatalf("async scenario must record one child completion and two parent turns: %s", describeEvents(asyncScenario.events))
+	}
+	if asyncSecondTurnSeq > asyncCompletionSeq {
+		t.Fatalf("async parent must advance before the child run completes: second turn seq=%d child completion seq=%d events=%s", asyncSecondTurnSeq, asyncCompletionSeq, describeEvents(asyncScenario.events))
+	}
+	assertOrderBefore(t, asyncScenario.order, "parent", 2, "child-done", 1, "async parent must advance while the child is blocked")
+	if syncScenario.budget.UniqueChildren != 1 || asyncScenario.budget.UniqueChildren != 1 || syncScenario.budget.DelegatedTurns != asyncScenario.budget.DelegatedTurns {
+		t.Fatalf("budget summaries must stay comparable: sync=%+v async=%+v", syncScenario.budget, asyncScenario.budget)
 	}
 }
