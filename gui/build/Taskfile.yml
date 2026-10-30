@@ -191,17 +191,28 @@ tasks:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   generate:icons:
-    summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
+    summary: Generates the Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
     run: once
     dir: build
-    sources:
-      - "appicon.png"
-      - "appicon.icon"
-    generates:
-      - "darwin/icons.icns"
-      - "windows/icon.ico"
+    status:
+      # 只在源图标比已提交产物新时才重新生成。
+      # wails3 的图标产物依赖本机工具链（有完整 Xcode 26 时走 Icon Composer 产出
+      # Assets.car，没有时退回从 appicon.png 编码），不同机器写出的字节并不相同；
+      # 若每次构建都重写，干净检出后的工作树会立刻变脏。
+      #
+      # 这里不用 sources/generates：go-task 的 sources 判定与 status 是「与」关系，
+      # 而 sources 依赖 .task/checksum 里的缓存，新克隆没有该文件时判定为「需要更新」，
+      # status 就再也拦不住重写。改用 status 单独判定后，判定结果与本机缓存无关。
+      - test -f darwin/icons.icns && test appicon.png -ot darwin/icons.icns && test appicon.icon/icon.json -ot darwin/icons.icns
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico -iconcomposerinput appicon.icon -macassetdir darwin
+      # 只生成 macOS 需要的图标。wails3 的 `-windowsfilename` 默认值是
+      # `build/windows/icon.ico`，而本任务的工作目录是 `gui/build`，默认值会落到
+      # `gui/build/build/windows/icon.ico`；该目录不在仓库里，wails3 写文件时也不会
+      # 自动创建父目录，于是干净检出的 macOS 上本任务必然失败（open
+      # build/windows/icon.ico: no such file or directory），`wails3 dev` 与
+      # `wails3 build` 随之起不来。仓库没有 Windows 构建任务，Windows 图标没有
+      # 消费方，因此显式传空文件名关闭 Windows 输出。
+      - wails3 generate icons -input appicon.png -windowsfilename= -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin
 
   dev:frontend:
     summary: Runs the frontend in development mode

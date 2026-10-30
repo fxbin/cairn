@@ -177,7 +177,10 @@ tasks:
     summary: Ad-hoc signs the app bundle (macOS only)
     internal: true
     cmds:
-      - xattr -cr "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+      # macOS 26 的 xattr 已不再接受 -r（递归）选项，`xattr -cr` 会以
+      # "option -r not recognized" 失败，签名与启动环节随之中断。这里改用 find
+      # 逐个清理：xattr -c 单文件清理在所有 macOS 版本上都可用。
+      - find "{{.BIN_DIR}}/{{.APP_NAME}}.app" -exec xattr -c {} +
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.app"
       - codesign --verify --deep --strict "{{.BIN_DIR}}/{{.APP_NAME}}.app"
 
@@ -200,7 +203,7 @@ tasks:
         fi
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS"
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/Info.plist"
-      - xattr -cr "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
+      - find "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app" -exec xattr -c {} +
       - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
       - codesign --verify --deep --strict "{{.BIN_DIR}}/{{.APP_NAME}}.dev.app"
       - '"{{.BIN_DIR}}/{{.APP_NAME}}.dev.app/Contents/MacOS/{{.APP_NAME}}"'
