@@ -317,7 +317,11 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 	name, remainder, _ := strings.Cut(strings.TrimSpace(task), " ")
 	switch name {
 	case "/help", "/?":
-		console.appendLine(dimStyle.Render("命令: /help 帮助 · /model 模型配置 · /new 断链清屏 · /sessions 会话链 · /tree 会话树 · /history <run-id> 历史续链 · /fork <run-id> 从终态创建新分支 · /rewind 回退对话 · /rewind-files 回退工作区 · /status 配置与预算 · /cost 会话累计 · /editor 外部编辑 · /theme 主题 · /quit 退出"))
+		// 命令清单来自 consoleCommands：/help 与候选提示、Tab 补全共用同一张表，
+		// 不再手写第二份，避免新增命令后帮助里看不到。
+		for _, line := range helpCommandLines() {
+			console.appendLine(dimStyle.Render(line))
+		}
 		console.appendLine(dimStyle.Render("按键: Enter 提交 · Ctrl+J 换行 · Ctrl+O 事件 · v 审批/事件差异 · Esc/Ctrl+C 取消 · 运行中输入即排队 · 结束后 Ctrl+Q 转存持久队列"))
 		console.appendLine(dimStyle.Render("运行中: /steer <文本> 补充当前任务（安全点生效）· 其余输入排队为下一任务"))
 		console.appendLine(dimStyle.Render("队列: /queue add <任务> 持久入队 · /queue confirm <id> 确认启动 · /queue cancel <id> · /queue 列表"))
