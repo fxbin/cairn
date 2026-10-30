@@ -30,6 +30,9 @@ const (
 	ProjectInstructionsMaxEntries       = 100_000
 	ProjectInstructionsMaxSnapshotBytes = 1024 * 1024
 	projectInstructionsFilename         = "AGENTS.md"
+	// projectInstructionsGitIgnoreMaxBytes 限制读取 .gitignore 的字节数；超长时
+	// 只按前缀解析已读到的部分。
+	projectInstructionsGitIgnoreMaxBytes = 64 * 1024
 )
 
 // ProjectInstructionSource 区分用户全局来源与工作区来源；空值兼容旧版项目快照。
@@ -79,6 +82,10 @@ func LoadProjectInstructionsWithUser(workspace Workspace, userDirectory string) 
 	}
 	defer func() { err = errors.Join(err, root.Close()) }()
 	entries := 0
+	// 工作区 .gitignore 声明为本地材料的顶层目录不属于项目源码：其中的
+	// AGENTS.md 是别的项目（或别的任务）的规约，注入进来既污染上下文，也会
+	// 把无关规约的正文计入本次运行的指令预算。
+	localMaterial := projectInstructionsLocalMaterialDirs(workspace)
 	var visit func(string) error
 	visit = func(relative string) error {
 		_, resolved, resolveErr := workspace.Resolve(relative)
@@ -101,6 +108,9 @@ func LoadProjectInstructionsWithUser(workspace Workspace, userDirectory string) 
 		for _, child := range children {
 			candidate := path.Join(relative, child.Name())
 			if projectInstructionsIgnored(workspace, candidate) {
+				continue
+			}
+			if child.IsDir() && relative == "." && localMaterial[child.Name()] {
 				continue
 			}
 			if child.Name() == projectInstructionsFilename {
@@ -154,6 +164,36 @@ func readUserProjectInstruction(directory string) (document ProjectInstruction, 
 		document.Source = ProjectInstructionUser
 	}
 	return document, readBytes, err
+}
+
+// projectInstructionsLocalMaterialDirs 读取工作区根的 .gitignore，收集其中声明
+// 的顶层本地材料目录（形如 "/benchmarks/" 的根锚定目录模式）。只识别这种最简
+// 形式：其余 gitignore 语法一律不解释，宁可少跳过也不误判项目源码。被忽略的
+// 本地材料不属于项目源码，其中的 AGENTS.md 不作为本项目的规约。
+func projectInstructionsLocalMaterialDirs(workspace Workspace) map[string]bool {
+	names := map[string]bool{}
+	content, err := os.ReadFile(filepath.Join(workspace.Root, ".gitignore"))
+	if err != nil {
+		return names
+	}
+	if len(content) > projectInstructionsGitIgnoreMaxBytes {
+		content = content[:projectInstructionsGitIgnoreMaxBytes]
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "/") || !strings.HasSuffix(trimmed, "/") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(trimmed, "/"), "/")
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		names[name] = true
+	}
+	return names
 }
 
 // projectInstructionsIgnored 复用工具可见性，并排除仅供 Cairn 协作留证的运行态目录。
