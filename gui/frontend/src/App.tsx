@@ -78,6 +78,45 @@ function isNarrowViewport(): boolean {
   return window.innerWidth <= narrowBreakpoint;
 }
 
+/**
+ * httpProjectionPollIntervalMs 是 HTTP 传输通道下运行投影轮询的固定周期。
+ *
+ * 浏览器客户端没有事件推送（events.ts 在 HTTP 模式退化为空句柄，这是既定的
+ * 失败关闭语义），进度与审批停点只能按 Journal 投影刷新。2 秒是有界频率，
+ * 到达停点即停，恢复动作（审批/续跑）后重新起搏。
+ */
+const httpProjectionPollIntervalMs = 2000;
+
+/**
+ * runStopPointPhases 是运行投影的停点集合：两个等待停点与三个终态。
+ *
+ * 词汇来自后端 domain.RunState 与 RunProjection.Phase() 的下发值，与事件路径
+ * 的 run.finished / run.waiting_approval / run.waiting_reconcile 停点语义对齐；
+ * created / running / cancelling 不是停点。
+ */
+const runStopPointPhases = new Set([
+  "waiting_approval",
+  "waiting_reconcile",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+/**
+ * isRunStopPoint 判断一次运行的 Journal 投影是否已到达停点。
+ *
+ * 轮询路径用它决定是否收口运行指示与停止轮询；事件路径不经过它（事件种类
+ * 本身携带停点语义），两条路径的停点收口行为共用 settleStoppedRun。
+ */
+function isRunStopPoint(run: RunHistoryView): boolean {
+  return (
+    run.waiting_approval ||
+    run.waiting_reconcile ||
+    runStopPointPhases.has(run.phase) ||
+    runStopPointPhases.has(run.state)
+  );
+}
+
 const initialState: AppState = {
   health: null,
   workspace: null,
@@ -207,6 +246,22 @@ export default function App() {
   const activeRunsRef = useRef(new Set<string>());
   const settledRunsRef = useRef(new Set<string>());
   const queueBusyRef = useRef(new Set<number>());
+  // HTTP 模式的投影轮询心跳：活动运行期间每次轮询自增，驱动 runDetail 按
+  // Journal 重取；事件模式（wails/演示桥）不轮询，该值恒为 0、无副作用。
+  const [projectionTick, setProjectionTick] = useState(0);
+
+  // settleStoppedRun 记录运行到达停点：移出活动集、进入已收口集。
+  // 事件路径与 HTTP 轮询路径共用，避免两套停点语义漂移。
+  const settleStoppedRun = useCallback((runId: string) => {
+    activeRunsRef.current.delete(runId);
+    settledRunsRef.current.add(runId);
+  }, []);
+
+  // stopRunIndicator 收起运行中指示；复用事件路径停点后的指示语义。
+  const stopRunIndicator = useCallback(() => {
+    runningRef.current = false;
+    setRunning(false);
+  }, []);
 
   // 切换时立即推进世代；路径相同的 A→B→A 也不能接受第一次 A 的迟到响应。
   const changeWorkspace = useCallback((path: string) => {
@@ -302,19 +357,24 @@ export default function App() {
     return () => media.removeEventListener("change", apply);
   }, [theme]);
 
-  const refreshThreads = useCallback(async (path: string, query?: string) => {
+  // refreshThreads 拉取并下发运行历史；返回本次拉到的投影列表，请求被更新
+  // 的世代/序号取代或失败时返回 null。轮询路径在返回值上做停点检测，不重复
+  // 发起请求；既有调用方忽略返回值，行为不变。
+  const refreshThreads = useCallback(async (path: string, query?: string): Promise<RunHistoryView[] | null> => {
     const identity = workspaceIdentityRef.current;
-    if (!path || identity.path !== path) return;
+    if (!path || identity.path !== path) return null;
     const request = ++threadRequestRef.current;
     try {
       const runs = await desktop.listRuns({ workspace: path, query: query ?? threadQueryRef.current });
-      if (workspaceIdentityRef.current !== identity || threadRequestRef.current !== request) return;
+      if (workspaceIdentityRef.current !== identity || threadRequestRef.current !== request) return null;
       for (const run of runs) knownRunWorkspaceRef.current.set(run.run_id, path);
       dispatch({ type: "runs", runs });
+      return runs;
     } catch (error) {
       if (workspaceIdentityRef.current === identity && threadRequestRef.current === request) {
         dispatch({ type: "error", error: errorBodyOf(error) });
       }
+      return null;
     }
   }, []);
 
@@ -392,7 +452,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [workspacePath, state.selectedRunId, running, selectedRunPersisted]);
+    // projectionTick 只在 HTTP 轮询路径自增，活动运行期间驱动本投影按 Journal
+    // 重取；事件模式由流事件与 running 翻转驱动，不受该值影响。
+  }, [workspacePath, state.selectedRunId, running, selectedRunPersisted, projectionTick]);
 
   // 流必须同时匹配工作区身份与当前 run，后台项目完成不能改变当前任务状态。
   useEffect(() => {
@@ -405,8 +467,7 @@ export default function App() {
       if (event.run_id) knownRunWorkspaceRef.current.set(event.run_id, workspacePath);
       const stopped = event.kind === "run.finished" || event.kind === "run.waiting_approval" || event.kind === "run.waiting_reconcile";
       if (event.run_id && stopped) {
-        activeRunsRef.current.delete(event.run_id);
-        settledRunsRef.current.add(event.run_id);
+        settleStoppedRun(event.run_id);
       }
       if (stopped) void refreshThreads(workspacePath);
       if (selectedRunIdRef.current && event.run_id && selectedRunIdRef.current !== event.run_id) return;
@@ -416,8 +477,7 @@ export default function App() {
       }
       dispatch({ type: "stream", event });
       if (stopped) {
-        runningRef.current = false;
-        setRunning(false);
+        stopRunIndicator();
       } else if (event.run_id && event.kind === "run.event") {
         activeRunsRef.current.add(event.run_id);
         settledRunsRef.current.delete(event.run_id);
@@ -425,7 +485,41 @@ export default function App() {
         setRunning(true);
       }
     });
-  }, [workspacePath, refreshThreads]);
+  }, [workspacePath, refreshThreads, settleStoppedRun, stopRunIndicator]);
+
+  // HTTP 传输通道没有事件推送（events.ts 失败关闭），进度与审批停点改按
+  // Journal 投影有界轮询：仅 HTTP 模式且存在本会话发起的活动运行时启用，
+  // 到达停点即停；只刷新真实投影，不注入假事件源，wails 与演示桥模式不进入
+  // 此路径，事件驱动语义保持不变。
+  useEffect(() => {
+    if (bridgeMode() !== "http" || !workspacePath) return;
+    if (!running && activeRunsRef.current.size === 0) return;
+    const identity = workspaceIdentityRef.current;
+    const timer = window.setInterval(() => {
+      if (workspaceIdentityRef.current !== identity) return;
+      void refreshThreads(workspacePath).then((runs) => {
+        if (!runs || workspaceIdentityRef.current !== identity) return;
+        let selectedStopped = false;
+        for (const run of runs) {
+          if (!isRunStopPoint(run)) continue;
+          if (activeRunsRef.current.has(run.run_id)) settleStoppedRun(run.run_id);
+          if (selectedRunIdRef.current === run.run_id) selectedStopped = true;
+        }
+        if (selectedStopped) {
+          stopRunIndicator();
+          return;
+        }
+        if (runningRef.current && activeRunsRef.current.size === 0) {
+          stopRunIndicator();
+          return;
+        }
+        if (runningRef.current) {
+          setProjectionTick((tick) => tick + 1);
+        }
+      });
+    }, httpProjectionPollIntervalMs);
+    return () => window.clearInterval(timer);
+  }, [workspacePath, running, refreshThreads, settleStoppedRun, stopRunIndicator]);
 
   useEffect(() => {
     selectedRunIdRef.current = state.selectedRunId;
