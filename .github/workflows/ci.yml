@@ -5,7 +5,11 @@
 # - extended 仅在手动触发（workflow_dispatch）或每周定时运行：race、faultinject、e2e。
 # - 全程不配置任何密钥；fault/e2e 用例使用进程内脚本化 Provider 与回环端点，
 #   不会调用真实 Provider 或付费服务；缺环境时用例显式失败，而非跳过后报告通过。
-# - 恢复/审批场景矩阵与三级证据分层的完整文档在本地 docs/ci-verification-baseline.md
+# - frontend 是与 gate 并列的独立 job：只跑 gui/frontend 的 typecheck/test/build，
+#   依赖由 package-lock.json 固定并以 npm ci 全新安装，不借用开发机 node_modules；
+#   两个 job 不设 needs 依赖，各自跑在干净的 runner 上，互不影响也不互相降低覆盖。
+# - 恢复/审批场景矩阵与三级证据分层的完整文档在本地 docs/ci-verification-baseline.md，
+#   桌面端最小 smoke 与手动签收清单在本地 docs/desktop-smoke-checklist.md
 #   （按仓库约定不提交）；本文件的注释即上述边界的可提交表述。
 name: CI
 
@@ -56,6 +60,54 @@ jobs:
         run: docker pull alpine:latest
       - name: 默认标签全量测试
         run: go test ./cmd/... ./internal/... ./test/...
+
+  # 前端门禁：gui/frontend 的类型检查、单测与生产构建。
+  # 独立 job，不设 needs：与 Go gate 并行执行，任一失败只标记对应 job。
+  # 前端依赖与产物都不进入 Go 门禁的覆盖范围：
+  #   - gui/frontend/node_modules 与 gui/frontend/dist 由 gui/.gitignore 忽略，
+  #     干净检出里都不存在，构建后也只落在被忽略路径上；
+  #   - Go 门禁保持 go build ./cmd/cairn 的既有口径，不因本 job 降低或改动覆盖。
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: gui/frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          # Node 主版本固定为 24：gui/frontend/package.json 未声明 engines 字段，
+          # 本地三项门禁实测版本为 Node v24.15.0（npm 11.x），24 是当前 LTS 主线；
+          # Vite 5 与 Vitest 2 的 engines 下限为 Node ^18 || >=20，24 同时满足。
+          # 依赖版本由 package-lock.json 固定，Node 主版本固定后即可复现安装。
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: gui/frontend/package-lock.json
+      # npm ci 严格按锁文件安装，package.json 与锁文件不一致时直接失败；
+      # 不使用 --ignore-scripts：esbuild 的安装脚本是 vite 构建链的一环。
+      - name: 安装前端依赖
+        run: npm ci
+      - name: 类型检查
+        run: npm run typecheck
+      - name: 前端单测
+        run: npm test
+      - name: 前端构建
+        run: npm run build
+      # gui/main.go 以 //go:embed all:frontend/dist 嵌入前端产物。干净检出缺少该目录时，
+      # go build ./... 的失败原因只有这一条（基线既有事实），因此这里断言产物真的生成，
+      # 让构建链回归在 PR 阶段就暴露，而不是留到桌面打包阶段才被发现。
+      - name: 校验静态产物
+        run: test -f dist/index.html
+      # 前端构建只允许写入被忽略的目录；出现受版本控制的改动即判失败。
+      - name: 确认构建未改动受版本控制的文件
+        run: |
+          dirty=$(git status --porcelain)
+          if [ -n "$dirty" ]; then
+            echo "前端构建改动了受版本控制的文件："
+            echo "$dirty"
+            exit 1
+          fi
 
   # 扩展矩阵：race、协议合同、故障注入与端到端；仅显式入口触发
   extended:
