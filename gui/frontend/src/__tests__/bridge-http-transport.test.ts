@@ -52,11 +52,18 @@ describe("浏览器客户端经 HTTP 传输通道访问真实后端", () => {
   });
 
   it("传输层不可达时失败关闭并说明是桌面后端不可达", async () => {
+    // 浏览器报「Failed to fetch」，Node 报「fetch failed」且带 cause：
+    // 两种都要判成传输层失败，不能只看 cause。
     rawMock.Health.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const mod = await import("../desktop/wails-api");
     const failure = mod.Bindings.Health();
     await expect(failure).rejects.toBeInstanceOf(mod.BridgeUnavailableError);
     await expect(failure).rejects.toThrow(/桌面后端不可用/);
+
+    const nodeStyle = new TypeError("fetch failed");
+    (nodeStyle as TypeError & { cause?: unknown }).cause = new Error("ECONNREFUSED");
+    rawMock.Health.mockRejectedValueOnce(nodeStyle);
+    await expect(mod.Bindings.Health()).rejects.toBeInstanceOf(mod.BridgeUnavailableError);
   });
 
   it("响应不是协议格式时同样按桌面后端不可达处理", async () => {

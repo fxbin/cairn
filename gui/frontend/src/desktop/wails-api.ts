@@ -204,11 +204,17 @@ function failClosed(method: string): Promise<never> {
 /**
  * isBackendError 判断错误是否来自桌面后端自身的响应。
  *
- * @wailsio/runtime 解析后端的 JSON 错误信封时会挂上 cause 字段；传输层不可达
- * （网络失败）或响应根本不是协议格式时没有这个字段。据此把「后端答错了」与
- * 「没连上后端」分开：前者原样透传，后者转成 BridgeUnavailableError。
+ * @wailsio/runtime 解析后端的 JSON 错误信封时会挂上 cause 字段；响应不是
+ * 协议格式时它把响应正文原样作为错误消息抛出，没有这个字段。据此把
+ * 「后端答错了」与「没连上后端」分开：前者原样透传，后者转成
+ * BridgeUnavailableError。
  */
 function isBackendError(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    // 网络层失败一律是 TypeError：浏览器报「Failed to fetch」，Node 报
+    // 「fetch failed」（后者还带 cause，不能只看 cause 判断）。
+    return false;
+  }
   return typeof error === "object" && error !== null && "cause" in error;
 }
 
