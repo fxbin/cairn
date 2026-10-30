@@ -65,11 +65,13 @@ func main() {
 	})
 
 	window := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     "Cairn",
-		Width:     1280,
-		Height:    800,
-		MinWidth:  960,
-		MinHeight: 640,
+		Title:  "Cairn",
+		Width:  1280,
+		Height: 800,
+		// 最小尺寸对齐桌面端布局验收的窄窗口口径（720×480）：低于它三栏布局
+		// 的检查器与输入区会互相遮挡，最小尺寸因此就是布局下界的声明。
+		MinWidth:  720,
+		MinHeight: 480,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			TitleBar:                application.MacTitleBarHiddenInset,
