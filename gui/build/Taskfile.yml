@@ -253,6 +253,9 @@ tasks:
       Builds a production server binary by default: -tags server,production,
       -trimpath and a stripped binary, mirroring the desktop `build` task.
       Server mode runs as a pure HTTP server without native GUI dependencies.
+      The listen port defaults to 8080 and can be overridden with the
+      CAIRN_GUI_PORT environment variable (useful when 8080 is already taken
+      on the host).
 
       Usage: task build:server [DEV=true] [OBFUSCATED=true] [EXTRA_TAGS=tag1,tag2]
         DEV=true        development server (-tags server, no strip, inlining kept)
