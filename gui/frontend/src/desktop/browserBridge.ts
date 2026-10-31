@@ -4,6 +4,7 @@
  */
 import type {
   ChangeSet,
+  DomainEvent,
   EvidenceView,
   FileNode,
   HealthResult,
@@ -270,47 +271,57 @@ export function createBrowserBridge() {
         },
         ...runs,
       ];
+      // 演示事件按 Journal 事实追加，保证 InspectRun 投影与流视图一致。
+      const appendEvent = (event: DomainEvent) => {
+        const current = eventsByRun.get(runId) || [];
+        current.push(event);
+        eventsByRun.set(runId, current);
+        emit({ kind: "run.event", run_id: runId, seq: event.seq, event });
+      };
+      const patchRun = (patch: Partial<RunHistoryView>) => {
+        runs = runs.map((r) => (r.run_id === runId ? { ...r, ...patch, updated_at: new Date().toISOString() } : r));
+      };
       // 模拟流式推进
       setTimeout(() => {
-        emit({
-          kind: "run.event",
-          run_id: runId,
+        appendEvent({
+          ...created,
+          event_id: "e2",
           seq: 2,
-          event: {
-            ...created,
-            event_id: "e2",
-            seq: 2,
-            type: "assistant_message_appended",
-            payload: { text: "开始处理任务：" + request.task },
-          },
+          type: "assistant_message_appended",
+          payload: { text: "开始处理任务：" + request.task },
         });
-        emit({
-          kind: "run.event",
-          run_id: runId,
+        appendEvent({
+          ...created,
+          event_id: "e3",
           seq: 3,
-          event: {
-            ...created,
-            event_id: "e3",
-            seq: 3,
-            type: "tool_call_proposed",
-            operation_id: "op-new",
-            payload: { tool: "list_dir", summary: "." },
-          },
+          type: "tool_call_proposed",
+          operation_id: "op-new",
+          payload: { tool: "list_dir", summary: "." },
         });
       }, 200);
+      // 审批停点：真实闭环在等待人工批准时停在 waiting_approval，演示桥同样
+      // 停在这里，直到 ResumeRun 给出裁决。
       setTimeout(() => {
+        appendEvent({
+          ...created,
+          event_id: "e4",
+          seq: 4,
+          type: "approval_requested",
+          operation_id: "op-write",
+          payload: { fingerprint: `demo-fp-${runId}`, summary: "写入工作区文件 demo/out.txt" },
+        });
+        patchRun({ state: "running", phase: "waiting_approval", phase_label: demoPhaseLabel("waiting_approval"), waiting_approval: true });
         emit({
-          kind: "run.finished",
+          kind: "run.waiting_approval",
           run_id: runId,
           status: {
             run_id: runId,
-            state: "completed",
-            phase: "completed",
-            phase_label: demoPhaseLabel("completed"),
-            state_label: demoPhaseLabel("completed"),
-            waiting_approval: false,
+            state: "running",
+            phase: "waiting_approval",
+            phase_label: demoPhaseLabel("waiting_approval"),
+            state_label: demoPhaseLabel("running"),
+            waiting_approval: true,
             waiting_reconcile: false,
-            response_preview: "已完成",
           },
         });
       }, 600);
@@ -318,24 +329,87 @@ export function createBrowserBridge() {
     },
     ResumeRun: async (request: { run_id: string; approve: boolean; fingerprint: string }) => {
       record("ResumeRun", [request]);
-      emit({
-        kind: "run.event",
-        run_id: request.run_id,
-        seq: 99,
-        event: {
-          schema_version: 1,
-          event_id: "ap-ok",
-          run_id: request.run_id,
-          workspace_hash: "w",
-          seq: 99,
-          occurred_at: new Date().toISOString(),
-          type: request.approve ? "approval_granted" : "approval_denied",
-          payload: {},
-          prev_hash: "",
-          event_hash: "",
-        },
-      });
-      return { run_id: request.run_id, state: "resuming" };
+      const runId = request.run_id;
+      const base = {
+        schema_version: 1,
+        event_id: "ap-ok",
+        run_id: runId,
+        workspace_hash: "w",
+        occurred_at: new Date().toISOString(),
+        payload: {},
+        prev_hash: "",
+        event_hash: "",
+      };
+      const appendEvent = (event: DomainEvent) => {
+        const current = eventsByRun.get(runId) || [];
+        current.push(event);
+        eventsByRun.set(runId, current);
+        emit({ kind: "run.event", run_id: runId, seq: event.seq, event });
+      };
+      const patchRun = (patch: Partial<RunHistoryView>) => {
+        runs = runs.map((r) => (r.run_id === runId ? { ...r, ...patch, updated_at: new Date().toISOString() } : r));
+      };
+      appendEvent({ ...base, event_id: "ap-ok", seq: 90, type: request.approve ? "approval_granted" : "approval_denied" });
+      patchRun({ waiting_approval: false, phase: "running", phase_label: demoPhaseLabel("running") });
+      if (request.approve) {
+        setTimeout(() => {
+          appendEvent({
+            ...base,
+            event_id: "op-ok",
+            seq: 91,
+            type: "operation_succeeded",
+            operation_id: "op-write",
+            payload: { summary: "demo/out.txt" },
+          });
+          appendEvent({
+            ...base,
+            event_id: "done",
+            seq: 92,
+            type: "run_completed",
+            payload: { final_response: "演示任务已完成，产物写入 demo/out.txt" },
+          });
+          patchRun({ state: "completed", phase: "completed", phase_label: demoPhaseLabel("completed") });
+          emit({
+            kind: "run.finished",
+            run_id: runId,
+            status: {
+              run_id: runId,
+              state: "completed",
+              phase: "completed",
+              phase_label: demoPhaseLabel("completed"),
+              state_label: demoPhaseLabel("completed"),
+              waiting_approval: false,
+              waiting_reconcile: false,
+              response_preview: "演示任务已完成，产物写入 demo/out.txt",
+            },
+          });
+        }, 500);
+      } else {
+        setTimeout(() => {
+          appendEvent({
+            ...base,
+            event_id: "denied",
+            seq: 91,
+            type: "run_failed",
+            payload: { error: "操作被拒绝", failure_class: "approval_denied" },
+          });
+          patchRun({ state: "failed", phase: "failed", phase_label: demoPhaseLabel("failed") });
+          emit({
+            kind: "run.finished",
+            run_id: runId,
+            status: {
+              run_id: runId,
+              state: "failed",
+              phase: "failed",
+              phase_label: demoPhaseLabel("failed"),
+              state_label: demoPhaseLabel("failed"),
+              waiting_approval: false,
+              waiting_reconcile: false,
+            },
+          });
+        }, 500);
+      }
+      return { run_id: runId, state: "resuming" };
     },
     AbortRun: async (request: { run_id: string }) => {
       record("AbortRun", [request]);

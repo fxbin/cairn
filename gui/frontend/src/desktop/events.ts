@@ -16,10 +16,13 @@ interface DemoSubscribeWindow {
 
 /**
  * subscribeStream 订阅运行流事件，返回可重复调用的取消订阅函数。
- * 桌面路径使用 Wails Events.On 的清理句柄；无后端时失败关闭。
+ * 原生 WebView 与浏览器客户端共用 @wailsio/runtime 的 Events 通道：
+ * 原生模式由宿主注入的派发函数送达；server 模式下 runtime 在模块装载时
+ * 自动拉取 /wails/custom.js，经 /wails/events WebSocket 广播接收后端
+ * Event.Emit 的推送，两者都汇入 dispatchWailsEvent 按事件名分发。
  */
 export function subscribeStream(handler: Handler): () => void {
-  if (detectWailsRuntime()) {
+  if (detectWailsRuntime() || detectHttpTransport()) {
     return WailsEvents.On(STREAM_EVENT_NAME, (ev: { data?: unknown }) => {
       const event = extractStreamEvent(ev);
       if (event) {
@@ -34,13 +37,6 @@ export function subscribeStream(handler: Handler): () => void {
     if (typeof result === "function") {
       return result;
     }
-    return () => undefined;
-  }
-
-  if (detectHttpTransport()) {
-    // HTTP 传输通道没有事件通道：wails3 的 HTTP 传输只挂 /wails/runtime，
-    // 事件由宿主注入的派发函数送达，浏览器侧收不到。这里退化为按 Journal
-    // 投影刷新，不注入假事件源，也不让订阅失败拖垮界面。
     return () => undefined;
   }
 
