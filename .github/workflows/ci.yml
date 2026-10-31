@@ -7,7 +7,13 @@
 #   不会调用真实 Provider 或付费服务；缺环境时用例显式失败，而非跳过后报告通过。
 # - frontend 是与 gate 并列的独立 job：只跑 gui/frontend 的 typecheck/test/build，
 #   依赖由 package-lock.json 固定并以 npm ci 全新安装，不借用开发机 node_modules；
-#   两个 job 不设 needs 依赖，各自跑在干净的 runner 上，互不影响也不互相降低覆盖。
+#   gate/frontend/gui 三个 job 不设 needs 依赖，各自跑在干净的 runner 上，
+#   互不影响也不互相降低覆盖。
+# - gui 是 macOS 桌面壳门禁：gate 因 //go:embed 依赖前端产物而不编译 gui 包
+#   （见 gate 内注释的分组约定，该约定不变），GUI 壳的 Go 编译与 vet 回归因此
+#   远端抓不到。本 job 在 macos runner 上先构建前端产物，再编译、vet 并运行
+#   gui 包既有测试，作为桌面壳的远端兜底；不覆盖 Linux/Windows 桌面壳，
+#   也不含真机 E2E（后者依赖带 GUI 权限的桌面会话，见本地 smoke 清单）。
 # - 恢复/审批场景矩阵与三级证据分层的完整文档在本地 docs/ci-verification-baseline.md，
 #   桌面端最小 smoke 与手动签收清单在本地 docs/desktop-smoke-checklist.md
 #   （按仓库约定不提交）；本文件的注释即上述边界的可提交表述。
@@ -108,6 +114,44 @@ jobs:
             echo "$dirty"
             exit 1
           fi
+
+  # 桌面壳门禁：在 macOS 上编译 Wails 桌面端并运行 gui 包既有测试。
+  # 独立 job，不设 needs：与 gate/frontend 并行，任一失败只标记对应 job。
+  # 覆盖边界：只验 macOS 桌面壳的编译、vet 与既有测试，不改变 gate/frontend
+  # 的口径，不新增测试用例，也不代替真机 E2E 与 Linux/Windows 壳验证。
+  gui:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          # Node 主版本与 frontend job 同口径（24）：gui/frontend/package.json 无
+          # engines 声明，依赖由 package-lock.json 固定，主版本固定后即可复现安装。
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: gui/frontend/package-lock.json
+      # 前端产物是 gui 包的编译前置：gui/main.go 的 //go:embed all:frontend/dist
+      # 在干净检出里缺少 dist 时会让 go build/vet/test 全部失败，必须先构建。
+      - name: 安装前端依赖
+        working-directory: gui/frontend
+        run: npm ci
+      - name: 构建前端嵌入产物
+        working-directory: gui/frontend
+        run: npm run build
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # 输出必须显式 -o：裸 go build ./gui 会在仓库根生成名为 gui 的二进制，
+      # 与同名源目录冲突（build output "gui" already exists），构建必然失败。
+      - name: 编译桌面壳
+        run: go build -o /tmp/cairn-gui ./gui
+      - name: go vet 桌面壳
+        run: go vet ./gui
+      # 只运行 gui 包既有测试（server 端口解析等纯函数用例），不新增用例；
+      # wails3 依赖 cgo，macos runner 自带完整工具链。
+      - name: 桌面壳既有测试
+        run: go test ./gui
 
   # 扩展矩阵：race、协议合同、故障注入与端到端；仅显式入口触发
   extended:
