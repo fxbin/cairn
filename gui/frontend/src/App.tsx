@@ -21,6 +21,22 @@ import { Composer, ThreadSidebar } from "./components/ChatChrome";
 import { InspectorRail, type RailTab } from "./components/InspectorRail";
 import { SettingsDrawer, ThreadContextMenu } from "./components/SettingsDrawer";
 
+/**
+ * journalPollIntervalMs 是 HTTP 传输通道下按 Journal 投影轮询的间隔。
+ *
+ * 该通道没有事件通道：运行进度、审批停点与完成证据只能定期重新读取事实。
+ * 原生窗口由事件流驱动，不需要轮询。
+ */
+const journalPollIntervalMs = 2000;
+
+/**
+ * terminalRunStates 是运行的终态集合。
+ *
+ * 取值与 internal/contract 的阶段词表一致（completed / failed / cancelled）：
+ * 进入这些阶段后运行不再推进，界面据此收束运行态。
+ */
+const terminalRunStates = new Set(["completed", "failed", "cancelled"]);
+
 interface AppState {
   health: HealthResult | null;
   workspace: WorkspaceStatus | null;
@@ -393,6 +409,41 @@ export default function App() {
       cancelled = true;
     };
   }, [workspacePath, state.selectedRunId, running, selectedRunPersisted]);
+
+  // settleRunFromJournal 按 Journal 投影收束运行态：HTTP 通道没有事件流，
+// 只能依据轮询到的终态做记账。原生窗口由事件流收束，不走这里。
+  const settleRunFromJournal = useCallback((runId: string) => {
+    activeRunsRef.current.delete(runId);
+    settledRunsRef.current.add(runId);
+    if (selectedRunIdRef.current === runId) {
+      runningRef.current = false;
+      setRunning(false);
+    }
+  }, []);
+
+  // HTTP 传输通道没有事件通道：运行进度与审批停点只能按 Journal 投影轮询。
+  // 轮询只读取事实，不产生任何副作用；原生窗口由事件流驱动，不需要这条路径。
+  useEffect(() => {
+    if (bridgeMode() !== "http" || !workspacePath) return;
+    const identity = workspaceIdentityRef.current;
+    const timer = window.setInterval(() => {
+      if (workspaceIdentityRef.current !== identity) return;
+      void refreshThreads(workspacePath).catch(() => undefined);
+      const runId = selectedRunIdRef.current;
+      if (!runId) return;
+      void desktop
+        .inspectRun({ workspace: workspacePath, run_id: runId, include_events: true })
+        .then((detail) => {
+          if (workspaceIdentityRef.current !== identity) return;
+          dispatch({ type: "runDetail", detail });
+          if (terminalRunStates.has(detail.state)) {
+            settleRunFromJournal(runId);
+          }
+        })
+        .catch(() => undefined);
+    }, journalPollIntervalMs);
+    return () => window.clearInterval(timer);
+  }, [workspacePath, refreshThreads, settleRunFromJournal]);
 
   // 流必须同时匹配工作区身份与当前 run，后台项目完成不能改变当前任务状态。
   useEffect(() => {
