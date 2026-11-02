@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"sync"
 	"strings"
+	"sync"
 )
 
 // Workspace 是经过规范化和边界检查的工具可见文件系统视图。
