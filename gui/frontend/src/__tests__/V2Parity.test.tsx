@@ -2,7 +2,7 @@ import {beforeEach, describe, expect, it, vi} from "vitest";
 import {act, fireEvent, render, screen, waitFor} from "@testing-library/react";
 
 const bridge = vi.hoisted(() => ({
-  listFileTree: vi.fn(), previewFile: vi.fn(), openPathInEditor: vi.fn(),
+  listFileTree: vi.fn(), previewFile: vi.fn(), openPathInEditor: vi.fn(), listOpenLocations: vi.fn(), openInLocation: vi.fn(),
   listProviderPresets: vi.fn(), runProviderSetup: vi.fn(), probeProvider: vi.fn(), confirmProviderAdmission: vi.fn(), useProviderPreset: vi.fn(),
 }));
 vi.mock("../desktop/client", () => ({desktop:bridge}));
@@ -30,6 +30,8 @@ beforeEach(()=>{
     ?{relative:path,path:"/tmp/demo/icon.png",size:800,language:"png",binary:true,truncated:false}
     :{relative:path,path:"/tmp/demo/main.go",size:2048,language:"go",binary:false,truncated:true,text:"package main"});
   bridge.openPathInEditor.mockResolvedValue({ok:true});
+  bridge.listOpenLocations.mockResolvedValue([]);
+  bridge.openInLocation.mockResolvedValue({ok:true});
   bridge.listProviderPresets.mockResolvedValue([]);
   bridge.runProviderSetup.mockResolvedValue({config_path:"/tmp/demo/.agent/config.yaml",notes:[],probe_ran:false});
   bridge.probeProvider.mockResolvedValue({result:"inconclusive",model:"m",tool_roundtrip:"not_invoked"});
