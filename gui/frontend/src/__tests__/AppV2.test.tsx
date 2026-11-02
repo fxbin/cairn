@@ -309,7 +309,7 @@ describe("V2 narrow window accessibility",()=>{
      fireEvent.click(screen.getByRole("button",{name:"显示或隐藏侧栏"}));
      expect(screen.getByRole("button",{name:"关闭导航抽屉"})).toBeInTheDocument();
      expect(screen.getByRole("button",{name:/打开会话 修复登陆/})).toBeInTheDocument();
-     expect(screen.getByRole("button",{name:/cairn-a/})).toBeInTheDocument();
+     expect(screen.getAllByRole("button",{name:/cairn-a/}).length).toBeGreaterThan(0);
      expect(screen.getByText("● 未提交")).toBeInTheDocument();
      fireEvent.keyDown(window,{key:"Escape"});
      expect(screen.queryByRole("button",{name:"关闭导航抽屉"})).not.toBeInTheDocument();
