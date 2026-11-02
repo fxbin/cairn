@@ -3,7 +3,8 @@
  * 行级评论是本地 review metadata；真正修改仍必须由后续 Agent Run 执行。
  * Author: fxbin
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { desktop } from "../desktop/client";
 
 type Line = { key: number; kind: "add" | "delete" | "context" | "header"; number: number | null; text: string };
 
@@ -25,15 +26,18 @@ function linesOf(diff: string): Line[] {
   });
 }
 
-export default function DiffViewerV2({ text, relative, onComment }: {
+export default function DiffViewerV2({ text, relative, workspace, onComment }: {
   text: string;
   relative: string;
+  workspace: string;
   onComment: (line: string, body: string) => Promise<void>;
 }) {
   const [selected, setSelected] = useState<number | null>(null);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [existing, setExisting] = useState<Array<{id:string;relative:string;line?:string;body:string}>>([]);
+  useEffect(()=>{let active=true;void desktop.listReviewNotes(workspace,relative).then(data=>{if(active)setExisting(data);}).catch(()=>{if(active)setExisting([]);});return()=>{active=false;};},[workspace,relative]);
   const lines = useMemo(() => linesOf(text), [text]);
   return <div className="v2-diff-viewer">
     <div className="v2-diff-lines">
@@ -42,6 +46,7 @@ export default function DiffViewerV2({ text, relative, onComment }: {
         <code>{line.text || " "}</code>
       </div>)}
     </div>
+    {existing.length>0 && <div className="v2-review-notes" data-testid="v2-review-notes"><strong>已保存的审查备注</strong>{existing.map(item=><p key={item.id}>第 {item.line || "?"} 行 · {item.body}</p>)}</div>}
     {selected !== null && <div className="v2-line-comment">
       <div><strong>{relative}</strong><span>第 {selected} 行</span><button aria-label="关闭批注编辑" onClick={() => setSelected(null)}>×</button></div>
       <textarea aria-label="行级审查意见" value={note} onChange={(event) => setNote(event.target.value)} placeholder="描述需要进一步检查或修改的地方…" />
