@@ -270,14 +270,14 @@ export default function AppV2() {
     if (!workspace || !text || sending) return;
     const generation = generationRef.current;
     setSending(true);
+    setDraft("");
     try {
       const ack = await desktop.submitQueue({ workspace, content: text });
       if (generation !== generationRef.current) return;
-      setDraft("");
       setQueueRevision((n) => n + 1);
       setPanel("queue");
       setNotice(`已提交队列 ${ack.input_id}，仍需人工确认才会启动新运行。`);
-    } catch (e) { if (generation === generationRef.current) setNotice(textError(e)); }
+    } catch (e) { if (generation === generationRef.current) { setDraft((current)=>current ? text+"\n"+current : text);setNotice(textError(e));} }
     finally { if (generation === generationRef.current) setSending(false); }
   };
 
