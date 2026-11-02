@@ -97,3 +97,31 @@ func TestStatusViewCarriesContractLabels(t *testing.T) {
 		t.Fatalf("状态视图的状态展示词是 %q", view.StateLabel)
 	}
 }
+
+
+// TestRunHistoryWaitingFlags 与 GUI 入口同源：Waiting 状态必须随 ListRuns 投影。
+func TestRunHistoryWaitingFlags(t *testing.T) {
+	cases := []struct {
+		phase string
+		state domain.RunState
+		approval bool
+		reconcile bool
+	}{
+		{phase: string(contract.RunPhaseWaitingApproval), state: domain.RunRunning, approval: true},
+		{phase: string(contract.RunPhaseWaitingReconcile), state: domain.RunRunning, reconcile: true},
+		{phase: string(contract.RunPhaseRunning), state: domain.RunRunning},
+		{phase: string(contract.RunPhaseCompleted), state: domain.RunCompleted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.phase, func(t *testing.T) {
+			item := app.RunHistoryItem{Task: "测试任务", Phase: tc.phase, State: tc.state}
+			view := runHistoryViewFrom(item)
+			if view.WaitingApproval != tc.approval || view.WaitingReconcile != tc.reconcile {
+				t.Fatalf("phase=%s: approval=%t reconcile=%t", tc.phase, view.WaitingApproval, view.WaitingReconcile)
+			}
+			if view.PhaseLabel != contract.RunPhaseLabel(tc.phase) {
+				t.Fatalf("phase label mismatch for %s", tc.phase)
+			}
+		})
+	}
+}
