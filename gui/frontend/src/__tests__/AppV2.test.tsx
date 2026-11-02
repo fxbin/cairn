@@ -24,6 +24,7 @@ const mock = vi.hoisted(() => ({
   diffFile: vi.fn(),
   evidence: vi.fn(),
   saveReviewNote: vi.fn(),
+  listReviewNotes: vi.fn(async () => []),
   listProviderPresets: vi.fn(),
   listWorkflows: vi.fn(),
   onStream: vi.fn((_handler?: (event: unknown) => void) => () => {}),
