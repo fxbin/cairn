@@ -48,3 +48,20 @@ Scope: production entry uses V2 only; Go, Wails, Journal and Desktop Client rema
 - Typecheck + Vitest + production Vite build, Go gate and GUI build must pass on the **post-deletion commit**.
 - Native macOS/Windows app run, icon/window behavior and 720px/960px/1580px layout inspection remain prerequisites to merge.
 - Missing enhancement: full end-to-end trace for Workflow execution and all capability screens. This is a verification task, not a reason to restore unused legacy UI.
+
+## RC1 真实桌面验收缺陷修复（2026-11-02）
+
+- P0 waiting_reconcile 视图缺失：runHistoryViewFrom 从真实 Phase 填写 WaitingApproval / WaitingReconcile；Go 回归锁定等待状态。仍需真实后端 + 原生桌面核验人工对账提交/Abort。
+- P1 720px 导航不可达：抽屉、Esc/遮罩关闭、选会话后关闭、Dirty 状态可见；前端窄屏回归覆盖。
+- P1 审批延迟：Workspace.Observation 改有界并行、流式 SHA-256；仍遍历全量安全作用域，不以 .gitignore 隐式剔除文件；Go 测试锁定摘要不变与 gitignored 文件副作用可见。尚无 135 万文件工作区真实测速，不得宣称性能验收通过。
+- P2 文件树：改广度优先且有预算；单个海量目录不再遮挡根级文件，包含超过 2000 节点测试。
+- P2 Provider：目录命中、Notes 和定价警示可见；不把匹配失败的价格当成可靠报价。
+- P3 untracked Diff：二进制提示或有界文本预览；VS Code Mac 安装探测与实际打开方式一致。
+- DeepSeek 401 归入密钥配置诊断，不修改本地凭据、stash 或机器上的工作区。
+
+### PR #34 合并门禁
+
+1. 当前 Head 的 frontend、gate、gui 必需 CI 全绿；Extended 若跳过需明确说明。
+2. 真实 macOS 在 720px 验证侧栏抽屉；真实 waiting_reconcile 验证表单、明确对账及 Abort，事件必须以 Journal 为准。
+3. 使用原 135 万文件工作区复测允许/拒绝的 approval_granted 延迟与运行闭合总时长，和旧 224s/124s 基线比较，给出测量结果与可接受阈值。
+4. 以上通过后才能将 Draft PR 标为 Ready 并合入 main；目前不以小型 CI 用例替代真实验收。
