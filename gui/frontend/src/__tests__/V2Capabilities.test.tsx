@@ -30,7 +30,7 @@ describe("V2 workflow editor parity",()=>{
   render(<WorkflowsV2 workspace="/tmp/a" notify={vi.fn()}/>);
   fireEvent.change(screen.getByRole("textbox",{name:"工作流名称"}),{target:{value:"新任务链"}});
   fireEvent.change(screen.getByRole("textbox",{name:"第1步"}),{target:{value:"先验证代码"}});
-  fireEvent.click(screen.getByRole("button",{name:"＋ 添加步骤"}));
+  fireEvent.click(screen.getByRole("button",{name:/添加步骤/}));
   fireEvent.change(screen.getByRole("textbox",{name:"第2步"}),{target:{value:"再生成报告"}});
   fireEvent.click(screen.getByRole("button",{name:"保存工作流"}));
   await waitFor(()=>expect(mock.saveWorkflow).toHaveBeenCalledWith({id:undefined,workspace:"/tmp/a",name:"新任务链",steps:[{task:"先验证代码"},{task:"再生成报告"}]}));
