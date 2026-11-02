@@ -82,82 +82,66 @@ func ListFileTree(workspace string) (FileNode, error) {
 	if err != nil {
 		resolvedRoot = root
 	}
-	node, count, err := buildTree(resolvedRoot, resolvedRoot, 0, 0)
-	if err != nil {
-		return node, err
-	}
-	_ = count
-	node.Path = root
-	node.Relative = "."
-	return node, nil
-}
-
-func buildTree(root, current string, depth, count int) (FileNode, int, error) {
-	node := FileNode{Name: filepath.Base(current), Relative: relOf(root, current), Path: current, Kind: "dir"}
-	if depth >= maxTreeDepth {
-		node.Reason = "max_depth"
-		return node, count, nil
-	}
-	entries, err := os.ReadDir(current)
-	if err != nil {
-		node.Kind = "blocked"
-		node.Reason = "unreadable"
-		return node, count, nil
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir() != entries[j].IsDir() {
-			return entries[i].IsDir()
+	// 按层广度优先：先让根目录和同级文件全部可达，再消耗深入目录的预算。
+	// 不能让排序靠前的单个海量目录吃掉全部节点，使 README、go.mod 等消失。
+	node := FileNode{Name: filepath.Base(resolvedRoot), Relative: ".", Path: root, Kind: "dir"}
+	type pendingDir struct { node *FileNode; depth int }
+	queue := []pendingDir{{node: &node, depth: 0}}
+	count := 0
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if current.depth >= maxTreeDepth {
+			current.node.Reason = "max_depth"
+			continue
 		}
-		return entries[i].Name() < entries[j].Name()
-	})
-	for _, entry := range entries {
 		if count >= maxTreeEntries {
-			node.Reason = "truncated"
-			return node, count, nil
-		}
-		name := entry.Name()
-		if name == ".git" || name == "node_modules" || name == ".vidt" {
+			current.node.Reason = "truncated"
 			continue
 		}
-		full := filepath.Join(current, name)
-		// 禁止符号链接逃逸：解析后必须仍在 root 内。
-		resolved, resolveErr := filepath.EvalSymlinks(full)
-		if resolveErr != nil {
-			node.Children = append(node.Children, FileNode{Name: name, Relative: relOf(root, full), Path: full, Kind: "blocked", Reason: "symlink_unresolved"})
+		// ReadDir(n) 只读取预算范围内的目录项，避免对超大目录加载数百万项。
+		dir, openErr := os.Open(current.node.Path)
+		if openErr != nil { current.node.Kind = "blocked"; current.node.Reason = "unreadable"; continue }
+		entries, readErr := dir.ReadDir(maxTreeEntries-count+1)
+		closeErr := dir.Close()
+		if readErr != nil && !errors.Is(readErr, io.EOF) { current.node.Kind = "blocked"; current.node.Reason = "unreadable"; continue }
+		if closeErr != nil { return node, closeErr }
+		truncated := len(entries) > maxTreeEntries-count
+		if truncated { entries = entries[:maxTreeEntries-count] }
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].IsDir() != entries[j].IsDir() { return entries[i].IsDir() }
+			return entries[i].Name() < entries[j].Name()
+		})
+		current.node.Children = make([]FileNode, 0, len(entries))
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == ".git" || name == "node_modules" || name == ".vidt" { continue }
+			full := filepath.Join(current.node.Path, name)
+			relative := relOf(resolvedRoot, full)
+			child := FileNode{Name: name, Relative: relative, Path: full}
+			resolved, resolveErr := filepath.EvalSymlinks(full)
+			if resolveErr != nil { child.Kind = "blocked"; child.Reason = "symlink_unresolved" } else {
+				relResolved, relErr := filepath.Rel(resolvedRoot, resolved)
+				if relErr != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+					child.Kind = "blocked"; child.Reason = "symlink_escape"
+				} else if entry.IsDir() { child.Kind = "dir" } else if entry.Type()&os.ModeSymlink != 0 {
+					child.Kind = "symlink"; child.Reason = "symlink"
+				} else if isSensitiveRelative(relative) { child.Kind = "blocked"; child.Reason = "sensitive" } else {
+					child.Kind = "file"
+					if info, infoErr := entry.Info(); infoErr == nil { child.Size = info.Size() }
+				}
+			}
+			current.node.Children = append(current.node.Children, child)
 			count++
-			continue
 		}
-		relResolved, relErr := filepath.Rel(root, resolved)
-		if relErr != nil || strings.HasPrefix(relResolved, "..") {
-			node.Children = append(node.Children, FileNode{Name: name, Relative: relOf(root, full), Path: full, Kind: "blocked", Reason: "symlink_escape"})
-			count++
-			continue
+		if truncated { current.node.Reason = "truncated" }
+		for index := range current.node.Children {
+			if current.node.Children[index].Kind == "dir" {
+				queue = append(queue, pendingDir{node: &current.node.Children[index], depth: current.depth+1})
+			}
 		}
-		if entry.IsDir() {
-			child, nextCount, _ := buildTree(root, full, depth+1, count+1)
-			node.Children = append(node.Children, child)
-			count = nextCount
-			continue
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			node.Children = append(node.Children, FileNode{Name: name, Relative: relOf(root, full), Path: full, Kind: "symlink", Reason: "symlink"})
-			count++
-			continue
-		}
-		if isSensitiveRelative(relOf(root, full)) {
-			node.Children = append(node.Children, FileNode{Name: name, Relative: relOf(root, full), Path: full, Kind: "blocked", Reason: "sensitive"})
-			count++
-			continue
-		}
-		info, infoErr := entry.Info()
-		size := int64(0)
-		if infoErr == nil {
-			size = info.Size()
-		}
-		node.Children = append(node.Children, FileNode{Name: name, Relative: relOf(root, full), Path: full, Kind: "file", Size: size})
-		count++
 	}
-	return node, count, nil
+	return node, nil
 }
 
 // resolveReadableRelative 统一预览/Diff/外部打开的路径边界：
