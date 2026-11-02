@@ -66,7 +66,13 @@ func OpenInLocation(workspace, relative, target string) error {
 	case "terminal":
 		return openInTerminal(path)
 	case "vscode":
-		return openWithEditorCLI("code", path)
+		if commandExists("code") {
+			return openWithEditorCLI("code", path)
+		}
+		if runtime.GOOS == "darwin" && macAppExists("Visual Studio Code.app") {
+			return exec.Command("open", "-a", "Visual Studio Code", path).Start()
+		}
+		return errors.New("VS Code is not installed")
 	case "cursor":
 		return openWithEditorCLI("cursor", path)
 	case "idea":
