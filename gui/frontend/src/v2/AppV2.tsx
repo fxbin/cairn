@@ -95,12 +95,20 @@ export default function AppV2() {
   const [forkSource, setForkSource] = useState<string | null>(null);
   const [parentRun, setParentRun] = useState<string | null>(null);
   const [sessionTree, setSessionTree] = useState<import("../desktop/types").SessionTreeView | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 760);
   const projectRef = useRef("");
   const generationRef = useRef(0);
   const runRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const diffRequestRef = useRef(0);
+  const closeSmallNav = () => { if (typeof window !== "undefined" && window.innerWidth <= 760) setSidebarOpen(false); };
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth <= 760) setSidebarOpen(false); };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setSidebarOpen(false); };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("keydown", onKeyDown);
+    return () => { window.removeEventListener("resize", onResize); window.removeEventListener("keydown", onKeyDown); };
+  }, []);
 
   const refreshRuns = useCallback(async (path: string, generation: number) => {
     const data = await desktop.listRuns({ workspace: path });
@@ -134,6 +142,7 @@ export default function AppV2() {
     diffRequestRef.current += 1;
     setPage("home");
     setPanel("closed");
+    closeSmallNav();
     setNotice("");
     try {
       const [ws, history, health] = await Promise.all([desktop.observeWorkspace(path), desktop.listRuns({ workspace: path }), desktop.health().catch(() => null)]);
@@ -171,6 +180,7 @@ export default function AppV2() {
     setSendingText("");
     setPanel("closed");
     setPage("home");
+    if (typeof window !== "undefined" && window.innerWidth <= 760) setSidebarOpen(false);
   }, []);
 
   // HTTP bridge 也需要可用：按照现有 Journal 事实定期同步，不把 ACK 当成完成。
@@ -343,9 +353,9 @@ export default function AppV2() {
     } catch (err) { setNotice(textError(err)); }
   };
 
-  const openSettings = () => { setPage("settings"); setPanel("closed"); };
+  const openSettings = () => { setPage("settings"); setPanel("closed"); closeSmallNav(); };
 
-  const openWorkflow = () => {setPage("workflow");setPanel("closed");};
+  const openWorkflow = () => {setPage("workflow");setPanel("closed");closeSmallNav();};
 
   const updateSession = async (run: RunHistoryView, title?: string, flags?: {pinned:boolean;archived:boolean}) => {
     if (!run.session_id) throw new Error("运行缺少会话 ID，不能修改会话元数据。");
@@ -377,6 +387,7 @@ export default function AppV2() {
 
   const closeToSession = () => { setPage("home"); };
   return <div className={"v2-shell" + (sidebarOpen ? "" : " v2-sidebar-collapsed") + (expandedDiff ? " v2-review-expanded" : "")} data-testid="cairn-v2-shell">
+    {sidebarOpen && <button className="v2-sidebar-backdrop" aria-label="关闭导航抽屉" onClick={() => setSidebarOpen(false)}/>}
     <aside className="v2-sidebar" aria-label="项目与会话">
       <div className="v2-traffic"><span/><span/><span/></div>
       <div className="v2-brand"><img src={icon} alt="" /><strong>Cairn</strong><small>2.0</small></div>
@@ -398,7 +409,7 @@ export default function AppV2() {
     </aside>
     <main className="v2-stage">
       <header className="v2-toolbar">
-        <div><button className="v2-plain" title="显示或隐藏侧栏" onClick={() => setSidebarOpen((open) => !open)}>☷</button><span className="v2-crumb">{workspace.split("/").pop() || "Cairn"}{workspaceStatus?.dirty && <span className="v2-dirty" title="工作区存在未提交修改"> ● 未提交</span>}</span>{runId && <span className="v2-divider">/</span>}<strong>{page === "settings" ? "设置" : page === "workflow" ? "工作流" : runId ? selected?.title || "当前会话" : "新建任务"}</strong></div>
+        <div><button className="v2-plain" title="显示或隐藏侧栏" aria-label="显示或隐藏侧栏" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((open) => !open)}>☷</button><span className="v2-crumb">{workspace.split("/").pop() || "Cairn"}{workspaceStatus?.dirty && <span className="v2-dirty" title="工作区存在未提交修改"> ● 未提交</span>}</span>{runId && <span className="v2-divider">/</span>}<strong>{page === "settings" ? "设置" : page === "workflow" ? "工作流" : runId ? selected?.title || "当前会话" : "新建任务"}</strong></div>
         {page === "home" && runId && <div className="v2-toolbar-actions">
           <span className="v2-run-status">{statusName(selected)}</span>
           <button onClick={() => void openPanel("workbench")} aria-pressed={panel === "workbench"}>工作台</button>
