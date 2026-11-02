@@ -120,7 +120,7 @@ describe("V2 safety-first action panels", () => {
     render(<ReconciliationV2 workspace="/tmp/cairn-a" runId="r1" events={[]} onDone={vi.fn()} onError={vi.fn()} />);
     const submit = screen.getByRole("button", { name: "提交人工对账" });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByRole("textbox", { name: "操作 ID" }), { target: { value: "op1" } });
+    fireEvent.change(screen.getByLabelText("操作 ID"), { target: { value: "op1" } });
     fireEvent.change(screen.getByRole("textbox", { name: "人工核查说明" }), { target: { value: "已检查本地文件" } });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox", { name: "证据引用" }), { target: { value: "git:abcd" } });
