@@ -152,8 +152,8 @@ func (api *API) ListRuns(ctx context.Context, request WorkspaceRequest) ([]RunHi
 		if hasMeta && meta.Archived && !request.IncludeArchived {
 			continue
 		}
-		view := RunHistoryView{RunHistoryItem: item, Title: firstLine(item.Task)}
-		view.PhaseLabel = contract.RunPhaseLabel(item.Phase)
+		view := runHistoryViewFrom(item)
+
 		if hasMeta {
 			view.Pinned = meta.Pinned
 			view.Archived = meta.Archived
@@ -179,6 +179,18 @@ func (api *API) ListRuns(ctx context.Context, request WorkspaceRequest) ([]RunHi
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out, nil
+}
+
+// runHistoryViewFrom 只从已回放的 Phase 投影等待标志，不能用 State 猜测。
+// 未确认副作用的 State 可能仍是 running，但 Phase 是 waiting_reconcile。
+func runHistoryViewFrom(item app.RunHistoryItem) RunHistoryView {
+	return RunHistoryView{
+		RunHistoryItem:   item,
+		Title:            firstLine(item.Task),
+		PhaseLabel:       contract.RunPhaseLabel(item.Phase),
+		WaitingApproval:  item.Phase == string(contract.RunPhaseWaitingApproval),
+		WaitingReconcile: item.Phase == string(contract.RunPhaseWaitingReconcile),
+	}
 }
 
 // RenameSession 写入会话展示标题（不修改 Journal）。
