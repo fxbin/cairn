@@ -90,7 +90,7 @@ describe("Cairn Desktop 2.0 — real bridge contracts", () => {
     fireEvent.click(screen.getByRole("button", { name: /修复登陆/ }));
     fireEvent.click(screen.getByRole("button", { name: "检查变更" }));
     await waitFor(() => expect(mock.diffFile).toHaveBeenCalledWith("/tmp/cairn-a", "README.md"));
-    const lineButton = await screen.findByRole("button", { name: "为第 1 行添加意见" });
+    const lineButton = (await screen.findAllByRole("button", { name: "为第 1 行添加意见" }))[0];
     fireEvent.click(lineButton);
     await userEvent.type(screen.getByRole("textbox", { name: "行级审查意见" }), "请核对变更");
     fireEvent.click(screen.getByRole("button", { name: "保存并带回会话" }));
