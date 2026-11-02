@@ -25,6 +25,7 @@ export default function FilesPanelV2({ workspace, notify }: {workspace:string; n
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [locations, setLocations] = useState<Array<{id:string;label:string;available:boolean}>>([]);
   useEffect(() => {
     let current = true;
     setTree(null); setPreview(null); setSelected(""); setLoading(true);
@@ -33,6 +34,7 @@ export default function FilesPanelV2({ workspace, notify }: {workspace:string; n
       .finally(() => { if(current) setLoading(false); });
     return () => { current = false; };
   }, [workspace, notify]);
+  useEffect(() => {let alive=true;void desktop.listOpenLocations(workspace).then(items=>{if(alive)setLocations(items);}).catch(()=>{if(alive)setLocations([]);});return()=>{alive=false;};},[workspace]);
   useEffect(() => {
     let active = true;
     if (!selected) { setPreview(null); return; }
@@ -41,10 +43,10 @@ export default function FilesPanelV2({ workspace, notify }: {workspace:string; n
       .catch((e) => { if(active) notify(e instanceof Error ? e.message : String(e)); });
     return () => { active = false; };
   }, [workspace, selected, notify]);
-  const open = async () => {
+  const open = async (target?:string) => {
     if (!selected || busy) return;
     setBusy(true);
-    try { await desktop.openPathInEditor(workspace, selected); notify("已提交外部编辑器打开请求。"); }
+    try { if(target) await desktop.openInLocation(workspace,selected,target); else await desktop.openPathInEditor(workspace, selected); notify("已提交外部编辑器打开请求。"); }
     catch (e) {notify(e instanceof Error ? e.message : String(e));}
     finally { setBusy(false); }
   };
@@ -56,7 +58,7 @@ export default function FilesPanelV2({ workspace, notify }: {workspace:string; n
     </div>
     <div className="v2-files-preview">
       {selected ? <><div className="v2-diff-title">{selected}
-        <button aria-label="在编辑器中打开" disabled={busy} onClick={() => void open()}>在编辑器中打开</button>
+        <div className="v2-file-open-actions"><button aria-label="在编辑器中打开" disabled={busy} onClick={() => void open()}>在编辑器中打开</button>{locations.filter(x=>x.available).map(location=><button key={location.id} disabled={busy} onClick={()=>void open(location.id)}>用 {location.label} 打开</button>)}</div>
       </div>
         {!preview && <div className="v2-hint">正在读取文件预览…</div>}
         {preview && <><div className="v2-file-meta" data-testid="v2-file-meta">{preview.language || "未知语言"} · {humanSize(preview.size)} · {preview.truncated ? "内容已截断" : "完整预览"}{preview.binary ? " · 二进制文件" : ""}</div>
