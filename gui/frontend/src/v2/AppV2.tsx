@@ -15,6 +15,7 @@ import ProviderSettingsV2 from "./ProviderSettingsV2";
 import UsageV2 from "./UsageV2";
 import FilesPanelV2 from "./FilesPanelV2";
 import SessionRowV2 from "./SessionRowV2";
+import WorkflowsV2 from "./WorkflowsV2";
 import { toSubagentViews } from "../desktop/timeline";
 import { buildChatBlocks } from "../desktop/chatBlocks";
 import type { ChatBlock } from "../desktop/chatBlocks";
@@ -88,7 +89,6 @@ export default function AppV2() {
   const [diff, setDiff] = useState("");
   const [evidence, setEvidence] = useState<EvidenceView | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsCategory>("general");
-  const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; steps: Array<{task: string}> }>>([]);
   const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -345,14 +345,7 @@ export default function AppV2() {
 
   const openSettings = () => { setPage("settings"); setPanel("closed"); };
 
-  const openWorkflow = async () => {
-    setPage("workflow"); setPanel("closed");
-    if (!workspace) return;
-    try {
-      const items = await desktop.listWorkflows(workspace);
-      if (projectRef.current === workspace) setWorkflows(items);
-    } catch (err) { setNotice(textError(err)); }
-  };
+  const openWorkflow = () => {setPage("workflow");setPanel("closed");};
 
   const updateSession = async (run: RunHistoryView, title?: string, flags?: {pinned:boolean;archived:boolean}) => {
     if (!run.session_id) throw new Error("运行缺少会话 ID，不能修改会话元数据。");
@@ -433,8 +426,8 @@ export default function AppV2() {
         </div></div><div className="v2-session-composer">{compose}</div>
       </div>)}
       {page === "workflow" && <section className="v2-content-page">
-        <div className="v2-page-head"><span>WORKFLOWS</span><h1>工作流</h1><p>把可重复的工作组织成有序步骤。每步仍遵守 Cairn 的运行、权限和验证合同。</p></div>
-        {!workspace ? <p>请先选择工作区。</p> : workflows.length ? <div className="v2-data-list">{workflows.map((item) => <div key={item.id}><strong>{item.name}</strong><span>{item.steps.length} 个步骤</span><div className="v2-actions"><button onClick={() => void desktop.runWorkflow(workspace, item.id, true).then(() => setNotice("预演检查通过；尚未启动执行。")).catch((err) => setNotice(textError(err)))}>预演</button><button className="v2-primary" onClick={() => { if (!window.confirm("启动此工作流？每一步仍遵守真实运行与授权链。")) return; void desktop.runWorkflow(workspace, item.id, false).then((ack) => setNotice("工作流已受理：" + ack.workflow_id + " · " + ack.state + "。不代表验证通过。")).catch((err) => setNotice(textError(err))); }}>运行工作流</button></div></div>)}</div> : <div className="v2-empty">当前工作区没有已保存的工作流。</div>}
+        <div className="v2-page-head"><span>WORKFLOWS</span><h1>工作流</h1><p>创建可重复执行的有序步骤；预演不是成功验证。</p></div>
+        {workspace ? <WorkflowsV2 key={workspace} workspace={workspace} notify={onQueueError}/> : <p>请先选择工作区。</p>}
         <button className="v2-secondary" onClick={closeToSession}>返回工作区</button>
       </section>}
       {page === "settings" && <div className="v2-settings">
