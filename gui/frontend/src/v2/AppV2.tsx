@@ -84,10 +84,12 @@ export default function AppV2() {
   const generationRef = useRef(0);
   const runRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const diffRequestRef = useRef(0);
 
   const refreshRuns = useCallback(async (path: string, generation: number) => {
     const data = await desktop.listRuns({ workspace: path });
     if (generation === generationRef.current && projectRef.current === path) setRuns(data);
+    return data;
   }, []);
 
   const switchProject = useCallback(async (path: string) => {
@@ -104,6 +106,11 @@ export default function AppV2() {
     setSendingText("");
     setWorkspaceStatus(null);
     setRuns([]);
+    setChanges(null);
+    setSelectedFile("");
+    setDiff("");
+    setEvidence(null);
+    diffRequestRef.current += 1;
     setPage("home");
     setPanel("closed");
     setNotice("");
@@ -145,14 +152,14 @@ export default function AppV2() {
     const generation = generationRef.current;
     const poll = async () => {
       try {
-        await refreshRuns(workspace, generation);
+        const history = await refreshRuns(workspace, generation);
         const id = runRef.current;
-        if (!id) return;
+        if (!id || !history.some((item) => item.run_id === id)) return;
         const data = await desktop.inspectRun({ workspace, run_id: id, include_events: true });
         if (!cancelled && generationRef.current === generation && runRef.current === id) setDetail(data);
-      } catch {
-        // 刚收到创建 ACK 时 Journal 可能尚未完成落盘；下一轮重试读取。
-        // 可见错误以启动/操作响应为准，不将暂时未持久化视为运行失败。
+      } catch (err) {
+        // 已持久化运行的读取失败不可静默吞掉；特别是 Journal 损坏必须可见。
+        if (!cancelled && generationRef.current === generation) setNotice(textError(err));
       }
     };
     void poll();
@@ -232,14 +239,16 @@ export default function AppV2() {
     setPanel((active) => active === next ? "closed" : next);
     setExpandedDiff(false);
     if (!workspace || next === "closed") return;
+    const request = ++diffRequestRef.current;
     try {
       if (next === "changes" || next === "workbench") {
         const result = await desktop.listChanges(workspace);
-        if (projectRef.current !== workspace) return;
+        if (projectRef.current !== workspace || request !== diffRequestRef.current) return;
         setChanges(result);
         const first = result.entries[0]?.relative || "";
         setSelectedFile(first);
-        setDiff(first ? await desktop.diffFile(workspace, first) : "");
+        const resultDiff = first ? await desktop.diffFile(workspace, first) : "";
+        if (projectRef.current === workspace && request === diffRequestRef.current) setDiff(resultDiff);
       }
       if (next === "evidence" && runId) {
         const result = await desktop.evidence({ workspace, run_id: runId });
@@ -249,11 +258,12 @@ export default function AppV2() {
   };
 
   const chooseFile = async (relative: string) => {
+    const request = ++diffRequestRef.current;
     setSelectedFile(relative);
     setDiff("");
     try {
       const result = await desktop.diffFile(workspace, relative);
-      if (projectRef.current === workspace) setDiff(result);
+      if (projectRef.current === workspace && request === diffRequestRef.current) setDiff(result);
     } catch (err) { setNotice(textError(err)); }
   };
 
