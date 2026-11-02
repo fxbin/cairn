@@ -289,3 +289,46 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .v2-diff-title button {font:11px var(--v2-font);color:#a55a33;border:1px solid #e8d9c9;border-radius:7px;padding:6px 8px;}
 .v2-file-meta {padding:8px 13px;font-size:11px;color:#7e877c;border-bottom:1px solid #eeede7;}
 .v2-code {font:12px/1.65 var(--v2-mono);padding:16px;overflow:auto;white-space:pre;tab-size:2;color:#384b3c;flex:1;margin:0;}
+
+
+/* 720px 起可达的导航抽屉。桌面端依旧保留原来的常驻侧栏。 */
+.v2-sidebar-backdrop { display: none; }
+@media (max-width: 760px) {
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-sidebar {
+    display: flex;
+    position: fixed;
+    z-index: 31;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(286px, calc(100vw - 80px));
+    flex-basis: auto;
+    box-shadow: 12px 0 44px rgba(26, 27, 24, .18);
+  }
+  .v2-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(26, 28, 25, .28);
+    cursor: default;
+  }
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-brand strong,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-brand small,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-nav button span,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-sidebar-title,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-project-list,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-session-list,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-sidebar-bottom button span,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-sidebar-version { display: initial; }
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-project-list,
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-session-list { display: grid; }
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-sidebar-title { display: flex; }
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-brand { padding: 14px 22px 28px; }
+  .v2-shell:not(.v2-sidebar-collapsed) .v2-nav { margin-top: 0; }
+  .v2-sidebar-collapsed .v2-sidebar { display: none; }
+  .v2-toolbar .v2-crumb { display: inline-flex; gap: 3px; align-items: center; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .v2-toolbar .v2-dirty { color: #a96943; font-size: 10px; flex: 0 0 auto; }
+}
