@@ -280,3 +280,16 @@ describe("V2 Journal and workspace isolation",()=>{
   expect(screen.queryByRole("button",{name:/打开会话 STALE_A/})).not.toBeInTheDocument();
  });
 });
+
+describe("V2 read-only run boundary",()=>{
+ beforeEach(()=>{vi.clearAllMocks();setup();});
+ it("sends an explicit read-only mode with the new run rather than mutating a frozen run",async()=>{
+  mock.startRun.mockResolvedValue({run_id:"readonly-r",state:"starting"});
+  render(<AppV2/>);
+  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("checkbox",{name:"只读"}));
+  fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"只分析，不写文件"}});
+  fireEvent.click(screen.getByRole("button",{name:"提交任务"}));
+  await waitFor(()=>expect(mock.startRun).toHaveBeenCalledWith(expect.objectContaining({mode:"read-only",task:"只分析，不写文件"})));
+ });
+});
