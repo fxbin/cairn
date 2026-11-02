@@ -67,6 +67,7 @@ export default function AppV2() {
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [workspace, setWorkspace] = useState("");
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatus | null>(null);
+  const [bridgeStatus, setBridgeStatus] = useState<"connecting" | "healthy" | "disconnected">("connecting");
   const [runs, setRuns] = useState<RunHistoryView[]>([]);
   const [runId, setRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
@@ -121,6 +122,7 @@ export default function AppV2() {
     setLiveEvents([]);
     setSendingText("");
     setWorkspaceStatus(null);
+    setBridgeStatus("connecting");
     setRuns([]);
     setForkSource(null);
     setParentRun(null);
@@ -134,9 +136,10 @@ export default function AppV2() {
     setPanel("closed");
     setNotice("");
     try {
-      const [ws, history] = await Promise.all([desktop.observeWorkspace(path), desktop.listRuns({ workspace: path })]);
+      const [ws, history, health] = await Promise.all([desktop.observeWorkspace(path), desktop.listRuns({ workspace: path }), desktop.health().catch(() => null)]);
       if (generation !== generationRef.current) return;
       setWorkspaceStatus(ws);
+      setBridgeStatus(health?.ok ? "healthy" : "disconnected");
       setRuns(history);
       void desktop.sessionTree({workspace:path}).then(tree=>{ if(generation===generationRef.current) setSessionTree(tree); }).catch(()=>{ if(generation===generationRef.current) setSessionTree(null); });
       void desktop.rememberProject(path);
@@ -163,6 +166,7 @@ export default function AppV2() {
     runRef.current = id;
     setRunId(id);
     setDetail(null);
+    if(id && projectRef.current){ const currentWorkspace=projectRef.current;const generation=generationRef.current;void desktop.inspectRun({workspace:currentWorkspace,run_id:id,include_events:true}).then(result=>{if(generation===generationRef.current && runRef.current===id)setDetail(result);}).catch(error=>{if(generation===generationRef.current && runRef.current===id)setNotice(textError(error));}); }
     setLiveEvents([]);
     setSendingText("");
     setPanel("closed");
@@ -365,6 +369,7 @@ export default function AppV2() {
   const compose = <div className="v2-composer">
     {forkSource && <div className="v2-fork-source">从 Run {forkSource} 创建新分支 <button onClick={()=>setForkSource(null)} aria-label="取消分支">×</button></div>}
     <textarea aria-label="描述任务" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="描述一个任务、问题或你希望实现的功能…" onKeyDown={(event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {event.preventDefault();void submitQueued();return;}
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void startTask(); }
     }} />
     <div className="v2-compose-footer">
@@ -396,11 +401,11 @@ export default function AppV2() {
         <input aria-label="搜索会话" placeholder="搜索会话…" value={filter} onChange={(event) => setFilter(event.target.value)}/>
         {runs.filter((run) => run.archived===showArchived && (run.title + run.task).toLowerCase().includes(filter.toLowerCase())).slice(0,50).map((run)=><SessionRowV2 key={run.run_id} run={run} selected={runId===run.run_id} onSelect={()=>selectRun(run.run_id)} onRename={(title)=>updateSession(run,title)} onFlags={(pinned,archived)=>updateSession(run,undefined,{pinned,archived})} onFork={()=>forkRun(run.run_id)}/>)}
       </div>
-      <div className="v2-sidebar-bottom"><button onClick={() => void openSettings()}>⚙ <span>设置</span></button><span className="v2-sidebar-version">Cairn Desktop</span></div>
+      <div className="v2-sidebar-bottom"><button onClick={() => void openSettings()}>⚙ <span>设置</span></button><span className="v2-sidebar-version">Cairn Desktop · {bridgeStatus === "healthy" ? "桥接已连接" : bridgeStatus === "connecting" ? "连接中" : "桥接未连接"}</span></div>
     </aside>
     <main className="v2-stage">
       <header className="v2-toolbar">
-        <div><button className="v2-plain" title="显示或隐藏侧栏" onClick={() => setSidebarOpen((open) => !open)}>☷</button><span className="v2-crumb">{workspace.split("/").pop() || "Cairn"}</span>{runId && <span className="v2-divider">/</span>}<strong>{page === "settings" ? "设置" : page === "workflow" ? "工作流" : runId ? selected?.title || "当前会话" : "新建任务"}</strong></div>
+        <div><button className="v2-plain" title="显示或隐藏侧栏" onClick={() => setSidebarOpen((open) => !open)}>☷</button><span className="v2-crumb">{workspace.split("/").pop() || "Cairn"}{workspaceStatus?.dirty && <span className="v2-dirty" title="工作区存在未提交修改"> ● 未提交</span>}</span>{runId && <span className="v2-divider">/</span>}<strong>{page === "settings" ? "设置" : page === "workflow" ? "工作流" : runId ? selected?.title || "当前会话" : "新建任务"}</strong></div>
         {page === "home" && runId && <div className="v2-toolbar-actions">
           <span className="v2-run-status">{statusName(selected)}</span>
           <button onClick={() => void openPanel("workbench")} aria-pressed={panel === "workbench"}>工作台</button>
