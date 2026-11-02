@@ -186,3 +186,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .v2-settings-body { padding: 28px 15px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+
+/* Code review: line backgrounds are semantic, comments stay inside the same run. */
+.v2-diff-viewer { flex: 1; overflow: auto; min-height: 0; position: relative; }
+.v2-diff-lines { min-width: max-content; }
+.v2-diff-row { display: flex; align-items: stretch; font: 12px/1.68 var(--v2-mono); min-height: 25px; white-space: pre; }
+.v2-diff-row code { display: block; padding: 3px 12px 3px 9px; flex: 1; font: inherit; tab-size: 2; }
+.v2-diff-add { background: #eef6ed; color: #3f6247; }
+.v2-diff-delete { background: #fcf0ec; color: #9a544d; }
+.v2-diff-context { color: #68736a; }
+.v2-diff-header { background: #f6f5f1; color: #8a9188; }
+.v2-diff-line-number { font: 10.5px/1.68 var(--v2-mono); color: #a8ada5; border-right: 1px solid rgba(75,69,61,.08); text-align: right; width: 49px; flex: 0 0 49px; padding: 3px 9px 3px 2px; user-select: none; }
+.v2-diff-line-number:hover:enabled { background: rgba(207,113,62,.10); color: #a65531; }
+.v2-line-comment { position: sticky; left: 0; bottom: 0; width: 100%; background: #fffdfa; border-top: 1px solid #e9e3db; padding: 15px 16px; box-shadow: 0 -14px 25px rgba(50,45,38,.035); }
+.v2-line-comment > div:first-child { display: flex; align-items: center; gap: 10px; font: 11px var(--v2-mono); color: #8d958c; }
+.v2-line-comment > div:first-child strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #434b43; }
+.v2-line-comment > div:first-child button { margin-left: auto; font-size: 20px; }
+.v2-line-comment textarea { width: 100%; min-height: 72px; resize: vertical; margin-top: 12px; border: 1px solid #e3e0d7; background: #fff; color: var(--v2-ink); border-radius: 10px; padding: 11px; line-height: 1.6; }
+.v2-line-comment .v2-actions button { padding: 8px 10px; }
+.v2-line-comment p[role="alert"] { color: #a14537; font-size: 12px; }
