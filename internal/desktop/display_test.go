@@ -98,13 +98,12 @@ func TestStatusViewCarriesContractLabels(t *testing.T) {
 	}
 }
 
-
 // TestRunHistoryWaitingFlags 与 GUI 入口同源：Waiting 状态必须随 ListRuns 投影。
 func TestRunHistoryWaitingFlags(t *testing.T) {
 	cases := []struct {
-		phase string
-		state domain.RunState
-		approval bool
+		phase     string
+		state     domain.RunState
+		approval  bool
 		reconcile bool
 	}{
 		{phase: string(contract.RunPhaseWaitingApproval), state: domain.RunRunning, approval: true},
