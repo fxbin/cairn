@@ -8,11 +8,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { desktop } from "../desktop/client";
 import DiffViewerV2 from "./DiffViewerV2";
+import { ReconciliationV2, AbortRunV2 } from "./RecoveryV2";
+import { QueuePanelV2 } from "./QueuePanelV2";
+import { toSubagentViews } from "../desktop/timeline";
 import { buildChatBlocks } from "../desktop/chatBlocks";
 import type { ChatBlock } from "../desktop/chatBlocks";
 import type { ChangeSet, EvidenceView, RecentProject, RunDetail, RunHistoryView, StreamEvent, WorkspaceStatus } from "../desktop/types";
 
-type Panel = "closed" | "workbench" | "changes" | "evidence";
+type Panel = "closed" | "workbench" | "changes" | "evidence" | "queue" | "subagents";
 type Page = "home" | "workflow" | "settings";
 type SettingsCategory = "general" | "models" | "capabilities" | "usage";
 const finished = new Set(["completed", "failed", "cancelled"]);
@@ -66,6 +69,8 @@ export default function AppV2() {
   const [draft, setDraft] = useState("");
   const [sendingText, setSendingText] = useState("");
   const [sending, setSending] = useState(false);
+  const [queueRevision, setQueueRevision] = useState(0);
+  const [steeringText, setSteeringText] = useState("");
   const [model, setModel] = useState("");
   const [page, setPage] = useState<Page>("home");
   const [panel, setPanel] = useState<Panel>("closed");
@@ -187,6 +192,11 @@ export default function AppV2() {
 
   const selected = runs.find((run) => run.run_id === runId);
   const running = selected ? !finished.has(selected.state) && !selected.waiting_approval && !selected.waiting_reconcile : (sending || Boolean(runId));
+  const subagents = useMemo(() => toSubagentViews(detail?.events || []), [detail?.events]);
+  const onQueueError = useCallback((message: string) => setNotice(message), []);
+  const onRunFromQueue = useCallback((id: string) => {
+    if (id) { runRef.current = id; setRunId(id); setDetail(null); setLiveEvents([]); setPanel("closed"); setPage("home"); }
+  }, []);
   const blocks = useMemo(() => {
     const projected = buildChatBlocks(detail?.events || [], liveEvents);
     if (sendingText && !projected.some((block) => block.kind === "user" && block.text === sendingText)) {
@@ -226,6 +236,34 @@ export default function AppV2() {
         setSendingText("");
       }
     } finally { if (generation === generationRef.current) setSending(false); }
+  };
+
+  const submitQueued = async () => {
+    const text = draft.trim();
+    if (!workspace || !text || sending) return;
+    const generation = generationRef.current;
+    setSending(true);
+    try {
+      const ack = await desktop.submitQueue({ workspace, content: text });
+      if (generation !== generationRef.current) return;
+      setDraft("");
+      setQueueRevision((n) => n + 1);
+      setPanel("queue");
+      setNotice(`已提交队列 ${ack.input_id}，仍需人工确认才会启动新运行。`);
+    } catch (e) { if (generation === generationRef.current) setNotice(textError(e)); }
+    finally { if (generation === generationRef.current) setSending(false); }
+  };
+
+  const submitSteering = async () => {
+    const text = steeringText.trim();
+    if (!text || !runId || !running) return;
+    const generation = generationRef.current;
+    try {
+      await desktop.submitSteering({ run_id: runId, content: text });
+      if (generation !== generationRef.current) return;
+      setSteeringText("");
+      setNotice("补充指令已提交；由 Agent 在安全点消费。");
+    } catch (e) { if (generation === generationRef.current) setNotice(textError(e)); }
   };
 
   const decide = async (approve: boolean, fingerprint: string, requestedRunId: string) => {
@@ -303,6 +341,7 @@ export default function AppV2() {
     <div className="v2-compose-footer">
       <button title="选择工作区" onClick={() => void pickProject()}><span>⌁</span> {workspace.split("/").pop() || "选择工作区"}</button>
       <label>模型 <input aria-label="模型覆盖" placeholder="默认模型" value={model} onChange={(event) => setModel(event.target.value)} /></label>
+      {running && runId && <button className="v2-secondary v2-queue-draft" disabled={!draft.trim() || sending} onClick={() => void submitQueued()}>加入队列</button>}
       {running && runId ? <button className="v2-stop" onClick={() => void desktop.cancelRun({ run_id: runId, reason: "user stop" }).catch((err) => setNotice(textError(err)))}>停止</button> :
         <button className="v2-send" title="提交任务" aria-label="提交任务" disabled={!workspace || !draft.trim() || sending || selected?.waiting_approval || selected?.waiting_reconcile} onClick={() => void startTask()}>↑</button>}
     </div>
@@ -340,6 +379,8 @@ export default function AppV2() {
           <button onClick={() => void openPanel("workbench")} aria-pressed={panel === "workbench"}>工作台</button>
           <button onClick={() => void openPanel("changes")} aria-pressed={panel === "changes"}>检查变更</button>
           <button onClick={() => void openPanel("evidence")} aria-pressed={panel === "evidence"}>验证证据</button>
+          <button onClick={() => void openPanel("subagents")} aria-pressed={panel === "subagents"}>子智能体</button>
+          <button onClick={() => void openPanel("queue")} aria-pressed={panel === "queue"}>队列</button>
         </div>}
       </header>
       {notice && <div className="v2-notice" role="alert"><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice("")}>×</button></div>}
@@ -351,8 +392,9 @@ export default function AppV2() {
       </div> : <div className="v2-session">
         <div className="v2-session-scroll"><div className="v2-session-content">
           <div className="v2-task-heading"><span>当前任务</span><h1>{selected?.title || selected?.task || "Agent 会话"}</h1><p>{workspace.split("/").pop()} · {statusName(selected)}</p></div>
-          {selected?.waiting_reconcile && <div className="v2-reconcile"><strong>需要副作用对账</strong><p>该运行包含结果不确定的操作。此处不提供普通重试；须通过明确的对账流程处理后才能恢复。</p></div>}
+          {selected?.waiting_reconcile && runId && <><ReconciliationV2 key={runId} workspace={workspace} runId={runId} events={detail?.events || []} onDone={() => { setNotice("已提交人工对账，请查看 Journal 中的后续状态。"); void refreshRuns(workspace, generationRef.current); }} onError={onQueueError}/><AbortRunV2 key={"abort-"+runId} workspace={workspace} runId={runId} onDone={() => { setNotice("终止请求已提交，等待运行事实更新。"); void refreshRuns(workspace, generationRef.current); }} onError={onQueueError}/></>}
           {blocks.length ? <Transcript blocks={blocks} onApproval={decide}/> : <p className="v2-hint">正在等待 Journal 中的运行记录…</p>}
+          {running && runId && <div className="v2-steering"><label htmlFor="v2-steering">运行中补充指令</label><input id="v2-steering" value={steeringText} placeholder="在下一安全点让 Agent 参考…" onChange={(e) => setSteeringText(e.target.value)}/><button disabled={!steeringText.trim()} onClick={() => void submitSteering()}>提交 Steering</button></div>}
           <div ref={bottomRef}/>
         </div></div><div className="v2-session-composer">{compose}</div>
       </div>)}
@@ -374,7 +416,9 @@ export default function AppV2() {
       </div>}
     </main>
     {page === "home" && runId && panel !== "closed" && <aside className="v2-inspector" aria-label="会话右侧工作台">
-      <div className="v2-inspector-head"><strong>{panel === "workbench" ? "Agent 工作台" : panel === "changes" ? "检查变更" : "验证与证据"}</strong><div>{panel === "changes" && <button title={expandedDiff ? "恢复侧边栏" : "放大审查"} onClick={() => setExpandedDiff((open) => !open)}>{expandedDiff ? "还原" : "⛶"}</button>}<button aria-label="关闭右侧面板" onClick={() => { setPanel("closed"); setExpandedDiff(false); }}>×</button></div></div>
+      <div className="v2-inspector-head"><strong>{panel === "workbench" ? "Agent 工作台" : panel === "changes" ? "检查变更" : panel === "queue" ? "任务队列" : panel === "subagents" ? "子智能体" : "验证与证据"}</strong><div>{panel === "changes" && <button title={expandedDiff ? "恢复侧边栏" : "放大审查"} onClick={() => setExpandedDiff((open) => !open)}>{expandedDiff ? "还原" : "⛶"}</button>}<button aria-label="关闭右侧面板" onClick={() => { setPanel("closed"); setExpandedDiff(false); }}>×</button></div></div>
+      {panel === "queue" && <QueuePanelV2 workspace={workspace} revision={queueRevision} onRun={onRunFromQueue} onError={onQueueError}/>}
+      {panel === "subagents" && <div className="v2-panel-body"><div className="v2-label">Agent Delegate</div><h2>子智能体</h2>{subagents.length ? subagents.map((child) => <div className="v2-queue-entry" key={child.childRunId}><strong>{child.childRunId}</strong><p>{child.state} · {child.outcome || "尚无完成结论"} · {child.usageReported ? "已报告 Token 用量" : "用量未知"}</p><button className="v2-secondary" onClick={() => selectRun(child.childRunId)}>查看子运行</button></div>) : <div className="v2-empty">当前 Run 没有已记录的子智能体委派。</div>}</div>}
       {panel === "workbench" && <div className="v2-panel-body"><div className="v2-label">当前运行</div><h2>{selected?.title || "Agent 任务"}</h2><p>{statusName(selected)}</p><div className="v2-panel-separator"/><div className="v2-label">工作区变更</div><p>{changes ? changes.entries.length + " 个文件（工作区实时状态）" : "读取中…"}</p><button className="v2-secondary" onClick={() => void openPanel("changes")}>检查变更 →</button></div>}
       {panel === "changes" && <div className="v2-change-layout"><div className="v2-file-list">{changes?.entries.map((item) => <button key={item.relative} className={selectedFile === item.relative ? "current" : ""} onClick={() => void chooseFile(item.relative)}><span>{item.status}</span>{item.relative}</button>)}{changes?.entries.length === 0 && <div className="v2-hint">当前没有文件变更。</div>}</div><div className="v2-diff"><div className="v2-diff-title">{selectedFile || "请选择文件"}</div>{selectedFile ? <DiffViewerV2 text={diff} relative={selectedFile} onComment={async (line, body) => { await desktop.saveReviewNote({ workspace, relative: selectedFile, line, body }); setDraft((old) => old ? old + "\n\n" + "审查意见：" + selectedFile + ":" + line + " — " + body : "请根据这条代码审查意见进一步检查：" + selectedFile + ":" + line + " — " + body); setPanel("closed"); setExpandedDiff(false); setNotice("已保存行级审查备注，意见已带入当前会话输入框；尚未执行修改。"); }} /> : <div className="v2-empty">选择文件后查看变更。</div>}</div></div>}
       {panel === "evidence" && <div className="v2-panel-body">{!evidence ? <p>暂无已读取的证据。</p> : <><div className="v2-label">运行终态</div><h2>{evidence.state_label || evidence.state}</h2><div className="v2-setting-row"><strong>验证可信度</strong><span>{evidence.trust_label || (evidence.trusted ? "可信" : "未确认")}</span></div><div className="v2-setting-row"><strong>输入 Token</strong><span>{evidence.metrics.input_tokens.toLocaleString()}</span></div><div className="v2-setting-row"><strong>输出 Token</strong><span>{evidence.metrics.output_tokens.toLocaleString()}</span></div><p className="v2-hint">{evidence.metrics.usage_estimated ? "以上用量包含估算数据。" : "用量来自已记录的运行证据。"}费用不可用时不做推断。</p></>}</div>}
