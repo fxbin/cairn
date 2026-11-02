@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"sync"
 	"strings"
 )
 
@@ -187,8 +190,64 @@ func sensitivePath(relative string) bool {
 // Observation 计算当前视图的稳定摘要。模型审批使用 NewWorkspace，而
 // verifier 使用 ObservationView，确保工具级忽略不能掩盖测试写入。
 func (workspace Workspace) Observation() (string, error) {
+	// 保持完整工作区观测与既有 SHA-256 摘要算法：.gitignore 不是安全边界。
+	// 大型工作区包含大量小文件时，并行读取文件内容以降低单线程 IO 等待。
+	type fileJob struct {
+		path     string
+		relative string
+		mode     os.FileMode
+	}
+	workers := runtime.GOMAXPROCS(0) * 2
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	jobs := make(chan fileJob, workers*4)
 	entries := make([]string, 0)
-	err := filepath.WalkDir(workspace.Root, func(path string, entry os.DirEntry, walkErr error) error {
+	var mu sync.Mutex
+	var firstErr error
+	var group sync.WaitGroup
+	add := func(line string) {
+		mu.Lock()
+		entries = append(entries, line)
+		mu.Unlock()
+	}
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+	}
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			buffer := make([]byte, 32*1024)
+			for job := range jobs {
+				file, err := os.Open(job.path)
+				if err != nil {
+					fail(err)
+					continue
+				}
+				hash := sha256.New()
+				_, copyErr := io.CopyBuffer(hash, file, buffer)
+				closeErr := file.Close()
+				if copyErr != nil {
+					fail(copyErr)
+					continue
+				}
+				if closeErr != nil {
+					fail(closeErr)
+					continue
+				}
+				add(fmt.Sprintf("f\t%04o\t%s\t%s", job.mode, job.relative, hex.EncodeToString(hash.Sum(nil))))
+			}
+		}()
+	}
+	walkErr := filepath.WalkDir(workspace.Root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -212,7 +271,7 @@ func (workspace Workspace) Observation() (string, error) {
 		mode := info.Mode().Perm()
 		relative = filepath.ToSlash(relative)
 		if entry.IsDir() {
-			entries = append(entries, fmt.Sprintf("d\t%04o\t%s", mode, relative))
+			add(fmt.Sprintf("d\t%04o\t%s", mode, relative))
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -220,19 +279,19 @@ func (workspace Workspace) Observation() (string, error) {
 			if err != nil {
 				return err
 			}
-			entries = append(entries, fmt.Sprintf("l\t%04o\t%s\t%s", mode, relative, target))
+			add(fmt.Sprintf("l\t%04o\t%s\t%s", mode, relative, target))
 			return nil
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(content)
-		entries = append(entries, fmt.Sprintf("f\t%04o\t%s\t%s", mode, relative, hex.EncodeToString(digest[:])))
+		jobs <- fileJob{path: path, relative: relative, mode: mode}
 		return nil
 	})
-	if err != nil {
-		return "", fmt.Errorf("observe workspace: %w", err)
+	close(jobs)
+	group.Wait()
+	if walkErr != nil {
+		return "", fmt.Errorf("observe workspace: %w", walkErr)
+	}
+	if firstErr != nil {
+		return "", fmt.Errorf("observe workspace: %w", firstErr)
 	}
 	sort.Strings(entries)
 	digest := sha256.Sum256([]byte(strings.Join(entries, "\n")))
