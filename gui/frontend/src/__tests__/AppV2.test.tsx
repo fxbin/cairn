@@ -266,7 +266,7 @@ describe("V2 Journal and workspace isolation",()=>{
   });
   mock.observeWorkspace.mockImplementation(async(path:string)=>({path,has_config:true,exists:true,dirty:false,config_loaded:true}));
   let handler:((evt:unknown)=>void)|null=null;
-  mock.onStream.mockImplementation((cb:(evt:unknown)=>void)=>{handler=cb;return ()=>{};});
+  mock.onStream.mockImplementation((cb?: (evt:unknown)=>void)=>{handler=cb || null;return ()=>{};});
   render(<AppV2/>);
   await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith({workspace:a}));
   fireEvent.click(screen.getByRole("button",{name:/cairn-b/}));
