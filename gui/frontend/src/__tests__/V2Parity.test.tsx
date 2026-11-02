@@ -49,6 +49,14 @@ describe("V2 files parity with former InspectorRail",()=>{
   fireEvent.click(screen.getByRole("button",{name:"在编辑器中打开"}));
   await waitFor(()=>expect(bridge.openPathInEditor).toHaveBeenCalledWith("/tmp/demo","main.go"));
  });
+ it("lists only supported editor locations and routes the action through the desktop bridge",async()=>{
+  bridge.listOpenLocations.mockResolvedValue([{id:"vscode",label:"VS Code",available:true},{id:"missing",label:"Uninstalled",available:false}]);
+  render(<FilesPanelV2 workspace="/tmp/demo" notify={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole("button",{name:/main.go/}));
+  fireEvent.click(await screen.findByRole("button",{name:"用 VS Code 打开"}));
+  await waitFor(()=>expect(bridge.openInLocation).toHaveBeenCalledWith("/tmp/demo","main.go","vscode"));
+  expect(screen.queryByRole("button",{name:"用 Uninstalled 打开"})).not.toBeInTheDocument();
+ });
  it("marks binary files and does not expose a text preview",async()=>{
   render(<FilesPanelV2 workspace="/tmp/demo" notify={vi.fn()}/>);
   fireEvent.click(await screen.findByRole("button",{name:/icon.png/}));
