@@ -83,7 +83,6 @@ export default function AppV2() {
   const [diff, setDiff] = useState("");
   const [evidence, setEvidence] = useState<EvidenceView | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsCategory>("general");
-  const [providerItems, setProviderItems] = useState<Array<{ name: string; model: string; active: boolean; admission: string }>>([]);
   const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; steps: Array<{task: string}> }>>([]);
   const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState("");
@@ -321,14 +320,7 @@ export default function AppV2() {
     } catch (err) { setNotice(textError(err)); }
   };
 
-  const openSettings = async () => {
-    setPage("settings"); setPanel("closed");
-    if (!workspace) return;
-    try {
-      const items = await desktop.listProviderPresets({ workspace });
-      if (projectRef.current === workspace) setProviderItems(items);
-    } catch { setProviderItems([]); }
-  };
+  const openSettings = () => { setPage("settings"); setPanel("closed"); };
 
   const openWorkflow = async () => {
     setPage("workflow"); setPanel("closed");
