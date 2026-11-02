@@ -12,6 +12,7 @@ import { ReconciliationV2, AbortRunV2 } from "./RecoveryV2";
 import { QueuePanelV2 } from "./QueuePanelV2";
 import CapabilitySettingsV2 from "./CapabilitySettingsV2";
 import ProviderSettingsV2 from "./ProviderSettingsV2";
+import UsageV2 from "./UsageV2";
 import { toSubagentViews } from "../desktop/timeline";
 import { buildChatBlocks } from "../desktop/chatBlocks";
 import type { ChatBlock } from "../desktop/chatBlocks";
@@ -411,7 +412,7 @@ export default function AppV2() {
           {settingsTab === "general" && <><div className="v2-setting-row"><div><strong>外观</strong><p>Cairn 的宣纸白主题。深色模式与系统同步仍待适配。</p></div><span>纸白</span></div><div className="v2-setting-row"><div><strong>基础字号</strong><p>字体缩放保存于本机，仅影响桌面界面。</p></div><label><input aria-label="基础字号" type="range" min="12" max="19" step="1" value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))}/><span>{fontSize}px</span></label></div></>}
           {settingsTab === "models" && <ProviderSettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
           {settingsTab === "capabilities" && <CapabilitySettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
-          {settingsTab === "usage" && <div className="v2-empty">跨运行 Token / 费用聚合接口尚未接入。本界面不会显示估算或虚构的成本数字。</div>}
+          {settingsTab === "usage" && <UsageV2 key={workspace} workspace={workspace} notify={onQueueError} />}
           <button className="v2-secondary" onClick={closeToSession}>返回工作区</button>
         </div>
       </div>}
