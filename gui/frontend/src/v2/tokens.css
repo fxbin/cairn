@@ -206,3 +206,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .v2-line-comment textarea { width: 100%; min-height: 72px; resize: vertical; margin-top: 12px; border: 1px solid #e3e0d7; background: #fff; color: var(--v2-ink); border-radius: 10px; padding: 11px; line-height: 1.6; }
 .v2-line-comment .v2-actions button { padding: 8px 10px; }
 .v2-line-comment p[role="alert"] { color: #a14537; font-size: 12px; }
+
+
+/* Reliable run control: reconciliation, queue, steering and subagent details. */
+.v2-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-top: 18px; }
+.v2-form-grid label, .v2-abort label { display: flex; flex-direction: column; gap: 6px; color: #7c6251; font-size: 12px; }
+.v2-form-grid label:nth-child(n+3) { grid-column: 1 / -1; }
+.v2-form-grid input, .v2-form-grid select, .v2-form-grid textarea, .v2-abort input { width: 100%; border: 1px solid #e5d8ca; border-radius: 9px; min-width: 0; padding: 9px 10px; color: var(--v2-title); background: #fffdfa; }
+.v2-form-grid textarea { min-height: 65px; resize: vertical; }
+.v2-abort { border-bottom: 1px solid var(--v2-line); padding: 12px 3px 22px; color: #805c4f; }
+.v2-abort p { font-size: 12px; }
+.v2-abort button { margin-top: 10px; border: 1px solid #dcae9d; padding: 8px 12px; border-radius: 8px; color: #a85842; }
+.v2-steering { display: flex; align-items: center; gap: 10px; margin-top: 17px; border-top: 1px dashed #e7e0d7; padding: 12px 0; }
+.v2-steering label { font-size: 11px; color: var(--v2-muted); flex: 0 0 auto; }
+.v2-steering input { flex: 1; min-width: 0; border: 1px solid #e5e1d8; padding: 7px 10px; border-radius: 8px; background: #fff; }
+.v2-steering button { background: #f5e8de; border-radius: 8px; color: #a55f3d; padding: 7px 12px; font-size: 12px; }
+.v2-queue-draft { margin: 0; padding: 6px 8px; flex: 0 0 auto; }
+.v2-queue-entry { padding: 15px 0; border-bottom: 1px solid var(--v2-line); overflow-wrap: anywhere; }
+.v2-queue-entry strong { font-size: 12px; font-family: var(--v2-mono); }
+.v2-queue-entry .v2-actions { padding: 8px 0; }
+.v2-queue-entry .v2-actions button { font-size: 12px; }
+@media(max-width: 760px) {
+  .v2-toolbar-actions button { padding: 7px 4px; }
+  .v2-form-grid { grid-template-columns: 1fr; }
+  .v2-steering { flex-wrap: wrap; }
+  .v2-steering input { flex-basis: 100%; }
+}
