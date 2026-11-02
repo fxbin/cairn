@@ -75,6 +75,7 @@ export default function AppV2() {
   const [steeringText, setSteeringText] = useState("");
   const [model, setModel] = useState("");
   const [readOnly, setReadOnly] = useState(false);
+  const [fontSize, setFontSize] = useState(() => Math.min(19, Math.max(12, Number(localStorage.getItem("cairn.v2.fontSize") || 14))));
   const [page, setPage] = useState<Page>("home");
   const [panel, setPanel] = useState<Panel>("closed");
   const [expandedDiff, setExpandedDiff] = useState(false);
@@ -132,6 +133,8 @@ export default function AppV2() {
       if (generation === generationRef.current) setNotice(textError(err));
     }
   }, []);
+
+  useEffect(() => { document.documentElement.style.setProperty("--v2-font-size-base", fontSize + "px"); localStorage.setItem("cairn.v2.fontSize", String(fontSize)); }, [fontSize]);
 
   useEffect(() => {
     let alive = true;
@@ -405,7 +408,7 @@ export default function AppV2() {
         <nav aria-label="设置分类">{([["general","通用与外观"],["models","模型与 Provider"],["capabilities","Agent 能力"],["usage","用量与成本"]] as const).map(([key,label]) => <button className={settingsTab === key ? "current" : ""} key={key} onClick={() => setSettingsTab(key)}>{label}</button>)}</nav>
         <div className="v2-settings-body">
           <div className="v2-page-head"><span>SETTINGS</span><h1>{settingsTab === "general" ? "通用与外观" : settingsTab === "models" ? "模型与 Provider" : settingsTab === "capabilities" ? "Agent 能力" : "用量与成本"}</h1></div>
-          {settingsTab === "general" && <div className="v2-setting-row"><div><strong>外观</strong><p>当前预览采用 Cairn 纸白主题。深色模式与系统同步将在后续开发阶段接入。</p></div><span>纸白</span></div>}
+          {settingsTab === "general" && <><div className="v2-setting-row"><div><strong>外观</strong><p>Cairn 的宣纸白主题。深色模式与系统同步仍待适配。</p></div><span>纸白</span></div><div className="v2-setting-row"><div><strong>基础字号</strong><p>字体缩放保存于本机，仅影响桌面界面。</p></div><label><input aria-label="基础字号" type="range" min="12" max="19" step="1" value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))}/><span>{fontSize}px</span></label></div></>}
           {settingsTab === "models" && <ProviderSettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
           {settingsTab === "capabilities" && <CapabilitySettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
           {settingsTab === "usage" && <div className="v2-empty">跨运行 Token / 费用聚合接口尚未接入。本界面不会显示估算或虚构的成本数字。</div>}
