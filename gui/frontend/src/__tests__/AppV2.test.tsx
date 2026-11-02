@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mock = vi.hoisted(() => ({
@@ -143,5 +143,92 @@ describe("V2 safety-first action panels", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认启动" }));
     await waitFor(() => expect(mock.confirmQueue).toHaveBeenCalledWith({ workspace: "/tmp/cairn-a", input_id: "q1" }));
     await waitFor(() => expect(onRun).toHaveBeenCalledWith("r3"));
+  });
+});
+
+
+describe("V2 interaction parity — no legacy App imports", () => {
+  beforeEach(() => {vi.clearAllMocks();setup();});
+  const event=(runId:string,seq:number,type:string,payload:Record<string,unknown>={},operation_id?:string)=>({
+    schema_version:1,event_id:runId+":"+seq,run_id:runId,workspace_hash:"w",seq,
+    occurred_at:"2026-11-02T04:00:00Z",type,payload,operation_id,prev_hash:"",event_hash:"",
+  });
+  it("Ctrl+Enter queues exactly once and never invokes startRun",async()=>{
+    mock.submitQueue.mockResolvedValue({input_id:"q",state:"pending"});
+    render(<AppV2/>);
+    await screen.findByRole("heading",{name:"今天想让 Cairn 做什么？"});
+    await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
+    const draft=screen.getByRole("textbox",{name:"描述任务"});
+    fireEvent.change(draft,{target:{value:"排队执行测试"}});
+    fireEvent.keyDown(draft,{key:"Enter",ctrlKey:true});
+    await waitFor(()=>expect(mock.submitQueue).toHaveBeenCalledTimes(1));
+    expect(mock.startRun).not.toHaveBeenCalled();
+  });
+  it("queue error restores submitted text and preserves new user input",async()=>{
+    let reject!:(e:Error)=>void;
+    mock.submitQueue.mockImplementation(()=>new Promise((_,r)=>{reject=r;}));
+    render(<AppV2/>);
+    await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
+    const draft=screen.getByRole("textbox",{name:"描述任务"});
+    fireEvent.change(draft,{target:{value:"original"}});
+    fireEvent.keyDown(draft,{key:"Enter",ctrlKey:true});
+    await waitFor(()=>expect(mock.submitQueue).toHaveBeenCalledTimes(1));
+    fireEvent.change(draft,{target:{value:"new draft"}});
+    await act(async()=>reject(new Error("queue transport failed")));
+    expect(draft).toHaveValue("original\nnew draft");
+    expect(screen.getByRole("alert")).toHaveTextContent("queue transport failed");
+  });
+  it("approval transport failure retains fingerprint and lets user retry",async()=>{
+    mock.listRuns.mockResolvedValue([{...sampleRun("running"),waiting_approval:true}]);
+    mock.inspectRun.mockResolvedValue({run_id:"r1",state:"running",summary:{},events:[
+      event("r1",1,"run_created",{task:"修复登陆"}),
+      event("r1",2,"approval_requested",{fingerprint:"fp-x",summary:"编辑文件"},"op-1")
+    ]});
+    mock.resumeRun.mockRejectedValueOnce(new Error("transport failed")).mockResolvedValue({run_id:"r1",state:"resuming"});
+    render(<AppV2/>);
+    fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
+    const allow=await screen.findByRole("button",{name:"允许并继续"});
+    fireEvent.click(allow);
+    await waitFor(()=>expect(screen.getByRole("alert")).toHaveTextContent("transport failed"));
+    fireEvent.click(allow);
+    await waitFor(()=>expect(mock.resumeRun).toHaveBeenCalledTimes(2));
+    expect(mock.resumeRun.mock.calls[0][0]).toEqual(expect.objectContaining({run_id:"r1",fingerprint:"fp-x",approve:true}));
+    expect(mock.resumeRun.mock.calls[0][0]).not.toHaveProperty("mode");
+  });
+  it("clears previous run's content before the next inspection resolves",async()=>{
+    const run2={...sampleRun(),run_id:"r2",title:"第二个任务",task:"第二个任务"};
+    mock.listRuns.mockResolvedValue([sampleRun(),run2]);
+    mock.inspectRun.mockImplementation(({run_id}:{run_id:string})=>
+      run_id==="r1" ? Promise.resolve({run_id,state:"completed",summary:{},events:[event("r1",1,"run_created",{task:"OLD_RUN_SECRET"})]}) : new Promise(()=>{}));
+    render(<AppV2/>);
+    fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
+    await screen.findByText("OLD_RUN_SECRET");
+    fireEvent.click(screen.getByRole("button",{name:/打开会话 第二个任务/}));
+    expect(document.querySelector(".v2-transcript")?.textContent||"").not.toContain("OLD_RUN_SECRET");
+  });
+  it("opens explicit fork from a run without silently continuing its original session",async()=>{
+    mock.startRun.mockResolvedValue({run_id:"fork-r2",state:"starting"});
+    render(<AppV2/>);
+    await screen.findByRole("button",{name:/打开会话 修复登陆/});
+    fireEvent.click(screen.getByRole("button",{name:"管理会话 r1"}));
+    fireEvent.click(screen.getByRole("button",{name:"从此 Run 创建分支"}));
+    expect(screen.getByText(/从 Run r1 创建新分支/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"独立重构分支"}});
+    fireEvent.click(screen.getByRole("button",{name:"提交任务"}));
+    await waitFor(()=>expect(mock.startRun).toHaveBeenCalledWith(expect.objectContaining({fork_source_run_id:"r1",task:"独立重构分支"})));
+    const req=mock.startRun.mock.calls[0][0];
+    expect(req.session_id).toBeUndefined();
+    expect(req.require_session_tail).toBe(false);
+  });
+  it("shows real dirty state, bridge health and server-supplied Git counts",async()=>{
+    mock.observeWorkspace.mockResolvedValue({path:"/tmp/cairn-a",exists:true,has_config:true,dirty:true,config_loaded:true});
+    mock.listChanges.mockResolvedValue({root:"/tmp/cairn-a",entries:[],added:7,modified:3,deleted:2,untracked:4});
+    render(<AppV2/>);
+    await waitFor(()=>expect(screen.getByText("● 未提交")).toBeInTheDocument());
+    expect(screen.getByText(/桥接已连接/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:/打开会话 修复登陆/}));
+    fireEvent.click(screen.getByRole("button",{name:"工作台"}));
+    expect(await screen.findByTestId("v2-change-summary")).toHaveTextContent("新增 7");
+    expect(screen.getByTestId("v2-change-summary")).toHaveTextContent("未跟踪 4");
   });
 });
