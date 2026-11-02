@@ -13,12 +13,14 @@ import { QueuePanelV2 } from "./QueuePanelV2";
 import CapabilitySettingsV2 from "./CapabilitySettingsV2";
 import ProviderSettingsV2 from "./ProviderSettingsV2";
 import UsageV2 from "./UsageV2";
+import FilesPanelV2 from "./FilesPanelV2";
+import SessionRowV2 from "./SessionRowV2";
 import { toSubagentViews } from "../desktop/timeline";
 import { buildChatBlocks } from "../desktop/chatBlocks";
 import type { ChatBlock } from "../desktop/chatBlocks";
 import type { ChangeSet, EvidenceView, RecentProject, RunDetail, RunHistoryView, StreamEvent, WorkspaceStatus } from "../desktop/types";
 
-type Panel = "closed" | "workbench" | "changes" | "evidence" | "queue" | "subagents";
+type Panel = "closed" | "workbench" | "changes" | "evidence" | "queue" | "subagents" | "files";
 type Page = "home" | "workflow" | "settings";
 type SettingsCategory = "general" | "models" | "capabilities" | "usage";
 const finished = new Set(["completed", "failed", "cancelled"]);
@@ -88,6 +90,10 @@ export default function AppV2() {
   const [workflows, setWorkflows] = useState<Array<{ id: string; name: string; steps: Array<{task: string}> }>>([]);
   const [notice, setNotice] = useState("");
   const [filter, setFilter] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [forkSource, setForkSource] = useState<string | null>(null);
+  const [parentRun, setParentRun] = useState<string | null>(null);
+  const [sessionTree, setSessionTree] = useState<import("../desktop/types").SessionTreeView | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const projectRef = useRef("");
   const generationRef = useRef(0);
@@ -116,6 +122,9 @@ export default function AppV2() {
     setSendingText("");
     setWorkspaceStatus(null);
     setRuns([]);
+    setForkSource(null);
+    setParentRun(null);
+    setSessionTree(null);
     setChanges(null);
     setSelectedFile("");
     setDiff("");
@@ -129,6 +138,7 @@ export default function AppV2() {
       if (generation !== generationRef.current) return;
       setWorkspaceStatus(ws);
       setRuns(history);
+      void desktop.sessionTree({workspace:path}).then(tree=>{ if(generation===generationRef.current) setSessionTree(tree); }).catch(()=>{ if(generation===generationRef.current) setSessionTree(null); });
       void desktop.rememberProject(path);
     } catch (err) {
       if (generation === generationRef.current) setNotice(textError(err));
@@ -148,6 +158,8 @@ export default function AppV2() {
   }, [switchProject]);
 
   const selectRun = useCallback((id: string | null) => {
+    setForkSource(null);
+    setParentRun(null);
     runRef.current = id;
     setRunId(id);
     setDetail(null);
@@ -218,7 +230,7 @@ export default function AppV2() {
     const content = draft.trim();
     if (!workspace || !content || sending || running || selected?.waiting_approval || selected?.waiting_reconcile) return;
     const generation = generationRef.current;
-    const previous = selected && finished.has(selected.state) ? selected : null;
+    const previous = !forkSource && selected && finished.has(selected.state) ? selected : null;
     setSending(true);
     setSendingText(content);
     setDraft("");
@@ -229,10 +241,13 @@ export default function AppV2() {
         session_id: previous?.session_id,
         prev_run_id: previous?.run_id,
         require_session_tail: Boolean(previous),
+        fork_source_run_id: forkSource || undefined,
       });
       if (generation !== generationRef.current) return;
       runRef.current = ack.run_id;
       setRunId(ack.run_id);
+      setForkSource(null);
+      setParentRun(null);
       setDetail(null);
       setLiveEvents([]);
       setPage("home");
@@ -335,7 +350,20 @@ export default function AppV2() {
     } catch (err) { setNotice(textError(err)); }
   };
 
+  const updateSession = async (run: RunHistoryView, title?: string, flags?: {pinned:boolean;archived:boolean}) => {
+    if (!run.session_id) throw new Error("运行缺少会话 ID，不能修改会话元数据。");
+    const generation = generationRef.current;
+    try {
+      if (title!==undefined) await desktop.renameSession(run.session_id,title);
+      if (flags) await desktop.setSessionFlags(run.session_id,flags.pinned,flags.archived);
+      await refreshRuns(workspace,generation);
+    } catch (e) { setNotice(textError(e)); throw e; }
+  };
+  const forkRun = (id:string) => {selectRun(null);setForkSource(id);setDraft("");setNotice("新会话将从选定 Run 分支创建，而不是续接原会话。");};
+  const openChild = (childId:string) => { if (!runId) return;setParentRun(runId);selectRun(childId);setParentRun(runId);};
+
   const compose = <div className="v2-composer">
+    {forkSource && <div className="v2-fork-source">从 Run {forkSource} 创建新分支 <button onClick={()=>setForkSource(null)} aria-label="取消分支">×</button></div>}
     <textarea aria-label="描述任务" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="描述一个任务、问题或你希望实现的功能…" onKeyDown={(event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void startTask(); }
     }} />
@@ -363,13 +391,10 @@ export default function AppV2() {
         {recent.map((project) => <button key={project.path} className={workspace === project.path ? "current" : ""} onClick={() => void switchProject(project.path)}><span>▤</span><span>{project.name || project.path.split("/").pop()}</span></button>)}
         {!recent.length && <div className="v2-hint">尚未添加工作区</div>}
       </div>
-      <div className="v2-sidebar-title">最近会话</div>
+      <div className="v2-sidebar-title">最近会话 <button aria-label="切换已归档会话" onClick={()=>setShowArchived(v=>!v)}>{showArchived?"显示活跃":"查看归档"}</button></div>
       <div className="v2-session-list">
         <input aria-label="搜索会话" placeholder="搜索会话…" value={filter} onChange={(event) => setFilter(event.target.value)}/>
-        {runs.filter((run) => (run.title + run.task).toLowerCase().includes(filter.toLowerCase())).slice(0, 50).map((run) => <button key={run.run_id} className={runId === run.run_id ? "current" : ""} onClick={() => selectRun(run.run_id)}>
-          <span className="v2-session-name">{run.title || run.task || run.run_id}</span>
-          {(run.waiting_approval || run.waiting_reconcile) && <span className="v2-dot-warning" title="需要处理"/>}
-        </button>)}
+        {runs.filter((run) => run.archived===showArchived && (run.title + run.task).toLowerCase().includes(filter.toLowerCase())).slice(0,50).map((run)=><SessionRowV2 key={run.run_id} run={run} selected={runId===run.run_id} onSelect={()=>selectRun(run.run_id)} onRename={(title)=>updateSession(run,title)} onFlags={(pinned,archived)=>updateSession(run,undefined,{pinned,archived})} onFork={()=>forkRun(run.run_id)}/>)}
       </div>
       <div className="v2-sidebar-bottom"><button onClick={() => void openSettings()}>⚙ <span>设置</span></button><span className="v2-sidebar-version">Cairn Desktop</span></div>
     </aside>
@@ -383,6 +408,7 @@ export default function AppV2() {
           <button onClick={() => void openPanel("evidence")} aria-pressed={panel === "evidence"}>验证证据</button>
           <button onClick={() => void openPanel("subagents")} aria-pressed={panel === "subagents"}>子智能体</button>
           <button onClick={() => void openPanel("queue")} aria-pressed={panel === "queue"}>队列</button>
+          <button onClick={() => void openPanel("files")} aria-pressed={panel === "files"}>文件</button>
         </div>}
       </header>
       {notice && <div className="v2-notice" role="alert"><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice("")}>×</button></div>}
@@ -393,6 +419,7 @@ export default function AppV2() {
         {workspaceStatus && !workspaceStatus.has_config && <p className="v2-config-warning">当前工作区尚未完成 Agent 配置。请先在设置中检查 Provider 与准入状态。</p>}
       </div> : <div className="v2-session">
         <div className="v2-session-scroll"><div className="v2-session-content">
+          {parentRun && <button className="v2-parent-run" onClick={()=>selectRun(parentRun)}>← 返回父运行 {parentRun}</button>}
           <div className="v2-task-heading"><span>当前任务</span><h1>{selected?.title || selected?.task || "Agent 会话"}</h1><p>{workspace.split("/").pop()} · {statusName(selected)}</p></div>
           {selected?.waiting_reconcile && runId && <><ReconciliationV2 key={runId} workspace={workspace} runId={runId} events={detail?.events || []} onDone={() => { setNotice("已提交人工对账，请查看 Journal 中的后续状态。"); void refreshRuns(workspace, generationRef.current); }} onError={onQueueError}/><AbortRunV2 key={"abort-"+runId} workspace={workspace} runId={runId} onDone={() => { setNotice("终止请求已提交，等待运行事实更新。"); void refreshRuns(workspace, generationRef.current); }} onError={onQueueError}/></>}
           {blocks.length ? <Transcript blocks={blocks} onApproval={decide}/> : <p className="v2-hint">正在等待 Journal 中的运行记录…</p>}
@@ -418,9 +445,10 @@ export default function AppV2() {
       </div>}
     </main>
     {page === "home" && runId && panel !== "closed" && <aside className="v2-inspector" aria-label="会话右侧工作台">
-      <div className="v2-inspector-head"><strong>{panel === "workbench" ? "Agent 工作台" : panel === "changes" ? "检查变更" : panel === "queue" ? "任务队列" : panel === "subagents" ? "子智能体" : "验证与证据"}</strong><div>{panel === "changes" && <button title={expandedDiff ? "恢复侧边栏" : "放大审查"} onClick={() => setExpandedDiff((open) => !open)}>{expandedDiff ? "还原" : "⛶"}</button>}<button aria-label="关闭右侧面板" onClick={() => { setPanel("closed"); setExpandedDiff(false); }}>×</button></div></div>
+      <div className="v2-inspector-head"><strong>{panel === "workbench" ? "Agent 工作台" : panel === "changes" ? "检查变更" : panel === "queue" ? "任务队列" : panel === "subagents" ? "子智能体" : panel === "files" ? "项目文件" : "验证与证据"}</strong><div>{panel === "changes" && <button title={expandedDiff ? "恢复侧边栏" : "放大审查"} onClick={() => setExpandedDiff((open) => !open)}>{expandedDiff ? "还原" : "⛶"}</button>}<button aria-label="关闭右侧面板" onClick={() => { setPanel("closed"); setExpandedDiff(false); }}>×</button></div></div>
+      {panel === "files" && <FilesPanelV2 workspace={workspace} notify={onQueueError}/>}
       {panel === "queue" && <QueuePanelV2 workspace={workspace} revision={queueRevision} onRun={onRunFromQueue} onError={onQueueError}/>}
-      {panel === "subagents" && <div className="v2-panel-body"><div className="v2-label">Agent Delegate</div><h2>子智能体</h2>{subagents.length ? subagents.map((child) => <div className="v2-queue-entry" key={child.childRunId}><strong>{child.childRunId}</strong><p>{child.state} · {child.outcome || "尚无完成结论"} · {child.usageReported ? "已报告 Token 用量" : "用量未知"}</p><button className="v2-secondary" onClick={() => selectRun(child.childRunId)}>查看子运行</button></div>) : <div className="v2-empty">当前 Run 没有已记录的子智能体委派。</div>}</div>}
+      {panel === "subagents" && <div className="v2-panel-body"><div className="v2-label">Agent Delegate</div><h2>子智能体</h2>{subagents.length ? subagents.map((child) => <div className="v2-queue-entry" key={child.childRunId}><strong>{child.childRunId}</strong><p>{child.state} · {child.outcome || "尚无完成结论"} · {child.usageReported ? "已报告 Token 用量" : "用量未知"}</p><button className="v2-secondary" onClick={() => openChild(child.childRunId)}>查看子运行</button></div>) : <div className="v2-empty">当前 Run 没有已记录的子智能体委派。</div>}</div>}
       {panel === "workbench" && <div className="v2-panel-body"><div className="v2-label">当前运行</div><h2>{selected?.title || "Agent 任务"}</h2><p>{statusName(selected)}</p><div className="v2-panel-separator"/><div className="v2-label">工作区变更</div><p>{changes ? changes.entries.length + " 个文件（工作区实时状态）" : "读取中…"}</p><button className="v2-secondary" onClick={() => void openPanel("changes")}>检查变更 →</button></div>}
       {panel === "changes" && <div className="v2-change-layout"><div className="v2-file-list">{changes?.entries.map((item) => <button key={item.relative} className={selectedFile === item.relative ? "current" : ""} onClick={() => void chooseFile(item.relative)}><span>{item.status}</span>{item.relative}</button>)}{changes?.entries.length === 0 && <div className="v2-hint">当前没有文件变更。</div>}</div><div className="v2-diff"><div className="v2-diff-title">{selectedFile || "请选择文件"}</div>{selectedFile ? <DiffViewerV2 text={diff} relative={selectedFile} onComment={async (line, body) => { await desktop.saveReviewNote({ workspace, relative: selectedFile, line, body }); setDraft((old) => old ? old + "\n\n" + "审查意见：" + selectedFile + ":" + line + " — " + body : "请根据这条代码审查意见进一步检查：" + selectedFile + ":" + line + " — " + body); setPanel("closed"); setExpandedDiff(false); setNotice("已保存行级审查备注，意见已带入当前会话输入框；尚未执行修改。"); }} /> : <div className="v2-empty">选择文件后查看变更。</div>}</div></div>}
       {panel === "evidence" && <div className="v2-panel-body">{!evidence ? <p>暂无已读取的证据。</p> : <><div className="v2-label">运行终态</div><h2>{evidence.state_label || evidence.state}</h2><div className="v2-setting-row"><strong>验证可信度</strong><span>{evidence.trust_label || (evidence.trusted ? "可信" : "未确认")}</span></div><div className="v2-setting-row"><strong>输入 Token</strong><span>{evidence.metrics.input_tokens.toLocaleString()}</span></div><div className="v2-setting-row"><strong>输出 Token</strong><span>{evidence.metrics.output_tokens.toLocaleString()}</span></div><p className="v2-hint">{evidence.metrics.usage_estimated ? "以上用量包含估算数据。" : "用量来自已记录的运行证据。"}费用不可用时不做推断。</p></>}</div>}
