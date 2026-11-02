@@ -105,6 +105,18 @@ describe("V2 Provider safety parity",()=>{
   expect(bridge.runProviderSetup).not.toHaveBeenCalled();
   expect(screen.getByRole("button",{name:"生成配置"})).toBeDisabled();
  });
+ it("shows every setup catalog warning instead of treating a mismatched gateway price as verified",async()=>{
+  bridge.runProviderSetup.mockResolvedValue({config_path:"/tmp/demo/.agent/config.yaml",catalog_matched:false,probe_ran:false,notes:["目录命中 2 个候选，取第一个","定价可能属于其他网关"]});
+  render(<ProviderSettingsV2 workspace="/tmp/demo" notify={vi.fn()}/>);
+  fireEvent.change(screen.getByRole("textbox",{name:"Provider Base URL"}),{target:{value:"https://provider.invalid/v1"}});
+  fireEvent.change(screen.getByRole("textbox",{name:"Provider 模型 ID"}),{target:{value:"glm-4.6"}});
+  fireEvent.change(screen.getByRole("textbox",{name:"API Key 环境变量名称"}),{target:{value:"MODEL_API_KEY"}});
+  fireEvent.click(screen.getByRole("button",{name:"生成配置"}));
+  const evidence=await screen.findByTestId("v2-provider-setup-evidence");
+  expect(evidence).toHaveTextContent("目录未可靠命中");
+  expect(evidence).toHaveTextContent("目录命中 2 个候选");
+  expect(evidence).toHaveTextContent("定价可能属于其他网关");
+ });
  it("configuration creation does NOT imply probe passed or admission",async()=>{
   const notify=vi.fn();
   render(<ProviderSettingsV2 workspace="/tmp/demo" notify={notify}/>);
