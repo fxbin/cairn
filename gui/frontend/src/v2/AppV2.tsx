@@ -95,6 +95,8 @@ export default function AppV2() {
     projectRef.current = path;
     runRef.current = null;
     setWorkspace(path);
+    setDraft("");
+    setModel("");
     setRunId(null);
     setDetail(null);
     setLiveEvents([]);
@@ -176,7 +178,7 @@ export default function AppV2() {
   }, [workspace, refreshRuns]);
 
   const selected = runs.find((run) => run.run_id === runId);
-  const running = selected ? !finished.has(selected.state) && !selected.waiting_approval && !selected.waiting_reconcile : sending;
+  const running = selected ? !finished.has(selected.state) && !selected.waiting_approval && !selected.waiting_reconcile : (sending || Boolean(runId));
   const blocks = useMemo(() => {
     const projected = buildChatBlocks(detail?.events || [], liveEvents);
     if (sendingText && !projected.some((block) => block.kind === "user" && block.text === sendingText)) {
