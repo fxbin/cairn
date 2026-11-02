@@ -84,7 +84,7 @@ func ListFileTree(workspace string) (FileNode, error) {
 	}
 	// 按层广度优先：先让根目录和同级文件全部可达，再消耗深入目录的预算。
 	// 不能让排序靠前的单个海量目录吃掉全部节点，使 README、go.mod 等消失。
-	node := FileNode{Name: filepath.Base(resolvedRoot), Relative: ".", Path: root, Kind: "dir"}
+	node := FileNode{Name: filepath.Base(resolvedRoot), Relative: ".", Path: resolvedRoot, Kind: "dir"}
 	type pendingDir struct { node *FileNode; depth int }
 	queue := []pendingDir{{node: &node, depth: 0}}
 	count := 0
@@ -141,6 +141,7 @@ func ListFileTree(workspace string) (FileNode, error) {
 			}
 		}
 	}
+	node.Path = root
 	return node, nil
 }
 
