@@ -26,7 +26,7 @@ const mock = vi.hoisted(() => ({
   saveReviewNote: vi.fn(),
   listProviderPresets: vi.fn(),
   listWorkflows: vi.fn(),
-  onStream: vi.fn(() => () => {}),
+  onStream: vi.fn((_handler?: (event: unknown) => void) => () => {}),
 }));
 vi.mock("../desktop/client", () => ({ desktop: mock }));
 import AppV2 from "../v2/AppV2";
