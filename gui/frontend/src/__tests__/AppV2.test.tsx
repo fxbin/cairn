@@ -293,3 +293,29 @@ describe("V2 read-only run boundary",()=>{
   await waitFor(()=>expect(mock.startRun).toHaveBeenCalledWith(expect.objectContaining({mode:"read-only",task:"只分析，不写文件"})));
  });
 });
+
+
+describe("V2 narrow window accessibility",()=>{
+ beforeEach(()=>{vi.clearAllMocks();setup();});
+ it("720px exposes projects and session list via a real drawer and keeps dirty status",async()=>{
+   const previous=window.innerWidth;
+   Object.defineProperty(window,"innerWidth",{configurable:true,value:720,writable:true});
+   try {
+     mock.observeWorkspace.mockResolvedValue({path:"/tmp/cairn-a",exists:true,has_config:true,config_loaded:true,dirty:true});
+     const {unmount}=render(<AppV2/>);
+     await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
+     expect(screen.getByRole("button",{name:"显示或隐藏侧栏"})).toHaveAttribute("aria-expanded","false");
+     expect(screen.queryByRole("button",{name:"关闭导航抽屉"})).not.toBeInTheDocument();
+     fireEvent.click(screen.getByRole("button",{name:"显示或隐藏侧栏"}));
+     expect(screen.getByRole("button",{name:"关闭导航抽屉"})).toBeInTheDocument();
+     expect(screen.getByRole("button",{name:/打开会话 修复登陆/})).toBeInTheDocument();
+     expect(screen.getByRole("button",{name:/cairn-a/})).toBeInTheDocument();
+     expect(screen.getByText("● 未提交")).toBeInTheDocument();
+     fireEvent.keyDown(window,{key:"Escape"});
+     expect(screen.queryByRole("button",{name:"关闭导航抽屉"})).not.toBeInTheDocument();
+     unmount();
+   } finally {
+     Object.defineProperty(window,"innerWidth",{configurable:true,value:previous,writable:true});
+   }
+ });
+});
