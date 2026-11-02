@@ -8,15 +8,15 @@ Scope: production entry uses V2 only; Go, Wails, Journal and Desktop Client rema
 | Journal transcript, approvals, cancel | V2 active | live run regression |
 | Reconciliation & abort | V2 active | run with uncertain side-effect |
 | Steering and explicit queue confirmation | V2 active | real local workflow |
-| Subagent overview and navigation | Basic V2 | parent breadcrumb and tree |
+| Subagent overview and navigation | V2 active (parent tree + breadcrumb) | live subagent run regression |
 | Diff and line review | V2 active | editor / binary / untracked cases |
 | Evidence and trust | V2 read-only | evidence failure handling |
 | Workflow list, dry-run and run | V2 basic | editing and replay status |
 | Provider setup / probe / admission | V2 active | secure credential path / E2E |
 | Skills, MCP, memory, commands, hooks | V2 basic | granular permissions / tests |
 | Token totals from Run Evidence | V2 basic | pricing and model allocation |
-| Session rename, pin, archive, fork | Not migrated | preserve legacy tests |
-| Full file preview and open in editor | Not migrated | independent V2 file pane |
+| Session rename, pin, archive, fork | V2 active (inline rename, pin, archive view, fork entry) | native visual E2E |
+| Full file preview and open in editor | V2 active (tree, preview, open locations) | live editor round-trip on macOS |
 | React 19 / Tailwind 4 / HeroUI v3 | Not migrated | compatibility gate |
 | Wails real macOS/Windows packaging | Not verified | physical test |
 
@@ -33,3 +33,6 @@ Scope: production entry uses V2 only; Go, Wails, Journal and Desktop Client rema
 5. Unknown provider pricing cannot be represented as an exact cost.
 6. CI frontend/gate/gui plus live Wails and visual regression are required before the PR leaves Draft.
 7. Do not delete legacy tests merely to hide feature regressions.
+8. Fork is not continuation: fork sends `fork_source_run_id` without a session chain; continuation sends `session_id` + `prev_run_id` + `require_session_tail` and never both.
+9. Archive is list-view filtering via `include_archived` only; pin changes ordering only; neither deletes Journal data.
+10. File preview states binary/truncated/refusal honestly; open-location fails closed (unavailable targets disabled, errors visible, no fabricated success).
