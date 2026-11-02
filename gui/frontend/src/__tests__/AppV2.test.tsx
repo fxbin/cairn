@@ -232,3 +232,50 @@ describe("V2 interaction parity — no legacy App imports", () => {
     expect(screen.getByTestId("v2-change-summary")).toHaveTextContent("未跟踪 4");
   });
 });
+
+
+describe("V2 Journal and workspace isolation",()=>{
+ beforeEach(()=>{vi.clearAllMocks();setup();});
+ it("polls selected Journal run again so a late approval stop becomes visible",async()=>{
+  let reads=0;
+  mock.inspectRun.mockImplementation(async()=>{
+    reads++;
+    const events=reads<2 ? [] : [{
+      schema_version:1,event_id:"approval-event",run_id:"r1",workspace_hash:"w",seq:2,
+      occurred_at:"2026-11-02T04:01:00Z",type:"approval_requested",payload:{fingerprint:"fp-late",summary:"写入文件"},prev_hash:"",event_hash:"",
+    }];
+    return {run_id:"r1",state:"waiting_approval",summary:{},events};
+  });
+  render(<AppV2/>);
+  fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
+  await waitFor(()=>expect(mock.inspectRun).toHaveBeenCalled());
+  await new Promise(resolve=>setTimeout(resolve,2120));
+  expect(mock.inspectRun.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(await screen.findByRole("button",{name:"允许并继续"})).toBeInTheDocument();
+ },8500);
+ it("drops stale A→B→A workspace data instead of overwriting the current project",async()=>{
+  const a="/tmp/cairn-a",b="/tmp/cairn-b";
+  mock.listRecentProjects.mockResolvedValue([
+    {path:a,name:"cairn-a",pinned:false,archived:false,last_used:""},
+    {path:b,name:"cairn-b",pinned:false,archived:false,last_used:""}
+  ]);
+  let oldA!: (value:unknown)=>void; let aCalls=0;
+  mock.listRuns.mockImplementation(({workspace}:{workspace:string})=>{
+    if(workspace===a&&++aCalls===1) return new Promise(resolve=>{oldA=resolve;});
+    return Promise.resolve([{...sampleRun(),title:workspace===a?"CURRENT_A":"CURRENT_B",task:workspace===a?"CURRENT_A":"CURRENT_B"}]);
+  });
+  mock.observeWorkspace.mockImplementation(async(path:string)=>({path,has_config:true,exists:true,dirty:false,config_loaded:true}));
+  let handler:((evt:unknown)=>void)|null=null;
+  mock.onStream.mockImplementation((cb:(evt:unknown)=>void)=>{handler=cb;return ()=>{};});
+  render(<AppV2/>);
+  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith({workspace:a}));
+  fireEvent.click(screen.getByRole("button",{name:/cairn-b/}));
+  await screen.findByRole("button",{name:/打开会话 CURRENT_B/});
+  if(handler)await act(async()=>{handler!({kind:"run.event",workspace:a,run_id:"foreign",event:{run_id:"foreign",seq:1,event_id:"for",type:"assistant_message_appended",payload:{text:"FOREIGN_BODY"}}});});
+  expect(document.querySelector(".v2-transcript")?.textContent||"").not.toContain("FOREIGN_BODY");
+  fireEvent.click(screen.getByRole("button",{name:/cairn-a/}));
+  await screen.findByRole("button",{name:/打开会话 CURRENT_A/});
+  await act(async()=>oldA([{...sampleRun(),title:"STALE_A",task:"STALE_A"}]));
+  expect(screen.queryByRole("button",{name:/打开会话 STALE_A/})).not.toBeInTheDocument();
+ });
+});
