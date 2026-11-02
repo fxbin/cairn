@@ -10,6 +10,8 @@ import { desktop } from "../desktop/client";
 import DiffViewerV2 from "./DiffViewerV2";
 import { ReconciliationV2, AbortRunV2 } from "./RecoveryV2";
 import { QueuePanelV2 } from "./QueuePanelV2";
+import CapabilitySettingsV2 from "./CapabilitySettingsV2";
+import ProviderSettingsV2 from "./ProviderSettingsV2";
 import { toSubagentViews } from "../desktop/timeline";
 import { buildChatBlocks } from "../desktop/chatBlocks";
 import type { ChatBlock } from "../desktop/chatBlocks";
@@ -72,6 +74,7 @@ export default function AppV2() {
   const [queueRevision, setQueueRevision] = useState(0);
   const [steeringText, setSteeringText] = useState("");
   const [model, setModel] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
   const [page, setPage] = useState<Page>("home");
   const [panel, setPanel] = useState<Panel>("closed");
   const [expandedDiff, setExpandedDiff] = useState(false);
@@ -105,6 +108,7 @@ export default function AppV2() {
     setWorkspace(path);
     setDraft("");
     setModel("");
+    setReadOnly(false);
     setRunId(null);
     setDetail(null);
     setLiveEvents([]);
@@ -218,6 +222,7 @@ export default function AppV2() {
     try {
       const ack = await desktop.startRun({
         workspace, task: content, model: model.trim() || undefined,
+        mode: readOnly ? "read-only" : "default",
         session_id: previous?.session_id,
         prev_run_id: previous?.run_id,
         require_session_tail: Boolean(previous),
@@ -341,6 +346,7 @@ export default function AppV2() {
     <div className="v2-compose-footer">
       <button title="选择工作区" onClick={() => void pickProject()}><span>⌁</span> {workspace.split("/").pop() || "选择工作区"}</button>
       <label>模型 <input aria-label="模型覆盖" placeholder="默认模型" value={model} onChange={(event) => setModel(event.target.value)} /></label>
+      <label className="v2-read-only"><input type="checkbox" checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)}/>只读</label>
       {running && runId && <button className="v2-secondary v2-queue-draft" disabled={!draft.trim() || sending} onClick={() => void submitQueued()}>加入队列</button>}
       {running && runId ? <button className="v2-stop" onClick={() => void desktop.cancelRun({ run_id: runId, reason: "user stop" }).catch((err) => setNotice(textError(err)))}>停止</button> :
         <button className="v2-send" title="提交任务" aria-label="提交任务" disabled={!workspace || !draft.trim() || sending || selected?.waiting_approval || selected?.waiting_reconcile} onClick={() => void startTask()}>↑</button>}
@@ -400,7 +406,7 @@ export default function AppV2() {
       </div>)}
       {page === "workflow" && <section className="v2-content-page">
         <div className="v2-page-head"><span>WORKFLOWS</span><h1>工作流</h1><p>把可重复的工作组织成有序步骤。每步仍遵守 Cairn 的运行、权限和验证合同。</p></div>
-        {!workspace ? <p>请先选择工作区。</p> : workflows.length ? <div className="v2-data-list">{workflows.map((item) => <div key={item.id}><strong>{item.name}</strong><span>{item.steps.length} 个步骤</span><button onClick={() => void desktop.runWorkflow(workspace, item.id, true).then(() => setNotice("预演检查通过；尚未启动执行。")).catch((err) => setNotice(textError(err)))}>预演</button></div>)}</div> : <div className="v2-empty">当前工作区没有已保存的工作流。</div>}
+        {!workspace ? <p>请先选择工作区。</p> : workflows.length ? <div className="v2-data-list">{workflows.map((item) => <div key={item.id}><strong>{item.name}</strong><span>{item.steps.length} 个步骤</span><div className="v2-actions"><button onClick={() => void desktop.runWorkflow(workspace, item.id, true).then(() => setNotice("预演检查通过；尚未启动执行。")).catch((err) => setNotice(textError(err)))}>预演</button><button className="v2-primary" onClick={() => { if (!window.confirm("启动此工作流？每一步仍遵守真实运行与授权链。")) return; void desktop.runWorkflow(workspace, item.id, false).then((ack) => setNotice("工作流已受理：" + ack.workflow_id + " · " + ack.state + "。不代表验证通过。")).catch((err) => setNotice(textError(err))); }}>运行工作流</button></div></div>)}</div> : <div className="v2-empty">当前工作区没有已保存的工作流。</div>}
         <button className="v2-secondary" onClick={closeToSession}>返回工作区</button>
       </section>}
       {page === "settings" && <div className="v2-settings">
@@ -408,8 +414,8 @@ export default function AppV2() {
         <div className="v2-settings-body">
           <div className="v2-page-head"><span>SETTINGS</span><h1>{settingsTab === "general" ? "通用与外观" : settingsTab === "models" ? "模型与 Provider" : settingsTab === "capabilities" ? "Agent 能力" : "用量与成本"}</h1></div>
           {settingsTab === "general" && <div className="v2-setting-row"><div><strong>外观</strong><p>当前预览采用 Cairn 纸白主题。深色模式与系统同步将在后续开发阶段接入。</p></div><span>纸白</span></div>}
-          {settingsTab === "models" && <>{providerItems.length ? providerItems.map((item) => <div className="v2-setting-row" key={item.name}><div><strong>{item.name}</strong><p>{item.model} · {item.admission}</p></div><span>{item.active ? "当前连接" : "未启用"}</span></div>) : <div className="v2-empty">尚无可显示的 Provider 预设，请使用现有配置向导。</div>}</>}
-          {settingsTab === "capabilities" && <div className="v2-data-list">{["MCP 服务器","技能 Skills","记忆","子智能体","命令","钩子 Hooks"].map((name) => <div key={name}><strong>{name}</strong><span>需要连接实际能力目录与管理接口</span></div>)}</div>}
+          {settingsTab === "models" && <ProviderSettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
+          {settingsTab === "capabilities" && <CapabilitySettingsV2 key={workspace} workspace={workspace} notify={onQueueError} />}
           {settingsTab === "usage" && <div className="v2-empty">跨运行 Token / 费用聚合接口尚未接入。本界面不会显示估算或虚构的成本数字。</div>}
           <button className="v2-secondary" onClick={closeToSession}>返回工作区</button>
         </div>
