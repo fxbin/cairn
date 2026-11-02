@@ -31,6 +31,19 @@ function textError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Git 无法为未跟踪二进制文件生成文本差异；在真实文件预览权限内展示降级状态。
+async function reviewFileText(workspace: string, relative: string, status: string): Promise<string> {
+  try { return await desktop.diffFile(workspace, relative); }
+  catch (error) {
+    if (status !== "untracked") throw error;
+    const preview = await desktop.previewFile(workspace, relative);
+    if (preview.binary) return "未跟踪二进制文件（无法生成文本 Diff）\\n请在「文件」页查看属性或使用外部编辑器打开。";
+    if (!preview.text) return "未跟踪文件无可预览的文本内容。";
+    const lines = preview.text.replace(/\\n$/, "").split("\\n");
+    return ["diff --git a/" + relative + " b/" + relative, "new file mode (preview only)", "--- /dev/null", "+++ b/" + relative, "@@ -0,0 +" + "1," + lines.length + " @@", ...lines.map(line => "+" + line), ...(preview.truncated ? ["… 内容已截断，仅预览前 256KB"] : [])].join("\\n");
+  }
+}
+
 function statusName(run: RunHistoryView | undefined): string {
   if (!run) return "就绪";
   // 运行状态文本优先使用服务端投影，不在 UI 猜测事件终态。
@@ -322,7 +335,7 @@ export default function AppV2() {
         setChanges(result);
         const first = result.entries[0]?.relative || "";
         setSelectedFile(first);
-        const resultDiff = first ? await desktop.diffFile(workspace, first) : "";
+        const resultDiff = first ? await reviewFileText(workspace, first, result.entries[0]?.status || "") : "";
         if (projectRef.current === workspace && request === diffRequestRef.current) setDiff(resultDiff);
       }
       if (next === "evidence" && runId) {
@@ -337,7 +350,7 @@ export default function AppV2() {
     setSelectedFile(relative);
     setDiff("");
     try {
-      const result = await desktop.diffFile(workspace, relative);
+      const result = await reviewFileText(workspace, relative, changes?.entries.find(e => e.relative === relative)?.status || "");
       if (projectRef.current === workspace && request === diffRequestRef.current) setDiff(result);
     } catch (err) { setNotice(textError(err)); }
   };
