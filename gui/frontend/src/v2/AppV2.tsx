@@ -205,7 +205,7 @@ export default function AppV2() {
     return projected;
   }, [detail, liveEvents, sendingText]);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" }); }, [blocks.length, runId]);
+  useEffect(() => { if (typeof bottomRef.current?.scrollIntoView === "function") bottomRef.current.scrollIntoView({ block: "end", behavior: "auto" }); }, [blocks.length, runId]);
 
   const startTask = async () => {
     const content = draft.trim();
