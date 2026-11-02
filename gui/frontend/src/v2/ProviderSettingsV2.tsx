@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { desktop } from "../desktop/client";
 import type { ProviderProbeView } from "../desktop/types";
 
@@ -12,6 +12,8 @@ export default function ProviderSettingsV2({ workspace, notify }: { workspace: s
   const [probe, setProbe] = useState<ProviderProbeView | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
+  const workspaceGeneration = useRef(0);
+  useEffect(() => {workspaceGeneration.current++; setProbe(null); setReason("");setPresets([]);}, [workspace]);
   useEffect(() => {
     let alive = true;
     void desktop.listProviderPresets({workspace}).then((items) => { if(alive)setPresets(items); })
@@ -21,8 +23,9 @@ export default function ProviderSettingsV2({ workspace, notify }: { workspace: s
   const perform = async (action:()=>Promise<unknown>, notice:string) => {
     if (busy) return;
     setBusy(true);
-    try { await action(); notify(notice); setRevision(n=>n+1); }
-    catch (e) { notify(e instanceof Error?e.message:String(e)); }
+    const generation=workspaceGeneration.current;
+    try { await action(); if(generation===workspaceGeneration.current){notify(notice); setRevision(n=>n+1);} }
+    catch (e) { if(generation===workspaceGeneration.current) notify(e instanceof Error?e.message:String(e)); }
     finally { setBusy(false); }
   };
   const validEnv = /^[A-Z_][A-Z0-9_]*$/.test(keyEnv);
@@ -44,8 +47,9 @@ export default function ProviderSettingsV2({ workspace, notify }: { workspace: s
         setProbe(null);
       },"已生成连接配置；仍需独立探测和准入。")}>生成配置</button>
       <button disabled={busy||!workspace} onClick={()=>void perform(async()=>{
+        const generation=workspaceGeneration.current;
         const result=await desktop.probeProvider({workspace});
-        setProbe(result);
+        if(generation===workspaceGeneration.current)setProbe(result);
       },"探测已完成，请根据回执判定是否准入。")}>探测当前 Provider</button>
     </div>
     {probe&&<div className="v2-provider-probe" role="status">
