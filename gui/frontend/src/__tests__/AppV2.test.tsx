@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mock = vi.hoisted(() => ({
+  health: vi.fn(async () => ({ok:true})),
   listRecentProjects: vi.fn(),
   rememberProject: vi.fn(),
   observeWorkspace: vi.fn(),
