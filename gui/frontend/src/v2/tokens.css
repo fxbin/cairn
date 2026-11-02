@@ -13,10 +13,11 @@
   --v2-success: #53725d;
   --v2-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
   --v2-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", Inter, "Noto Sans CJK SC", sans-serif;
+  --v2-font-size-base: 14px;
 }
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { margin: 0; width: 100%; height: 100%; min-height: 0; }
-body { font: 14px/1.55 var(--v2-font); background: var(--v2-shell); color: var(--v2-ink); -webkit-font-smoothing: antialiased; }
+body { font: var(--v2-font-size-base)/1.55 var(--v2-font); background: var(--v2-shell); color: var(--v2-ink); -webkit-font-smoothing: antialiased; }
 button, input, textarea { font: inherit; }
 button { color: inherit; cursor: pointer; border: 0; background: transparent; }
 button:disabled { opacity: .48; cursor: not-allowed; }
