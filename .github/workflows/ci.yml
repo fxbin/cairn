@@ -38,9 +38,10 @@ concurrency:
 jobs:
   # 基础门禁：格式漂移、静态检查、构建、默认标签全量测试
   gate:
-    # 固定 24.04：ubuntu-latest（26.04）下 bwrap 沙箱内找不到 /bin/sh，
-    # 异步委派用例的父等待轮次与子完成存在调度竞态；待适配后再升级。
-    runs-on: ubuntu-24.04
+    # 26.04 已适配（Issue #37）：沙箱根是空 tmpfs，必须同时挂载 /lib 与根级
+    # 加载器别名 /lib64，否则动态链接的 /bin/sh 找不到 PT_INTERP，execvp 报
+    # ENOENT；挂载参数见 internal/tools/ossandbox_linux.go。
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -68,77 +69,6 @@ jobs:
         run: docker pull alpine:latest
       - name: 默认标签全量测试
         run: go test ./cmd/... ./internal/... ./test/...
-
-  # 【临时诊断，Issue #37 根因确认后删除】在 ubuntu-26.04 上采集 /bin 形态与
-  # bwrap 的实际行为，用事实区分「基础镜像布局」与「托管 runner 宿主差异」，
-  # 禁止在没有证据前改沙箱挂载参数。
-  probe-2604:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-      - name: 环境与布局
-        run: |
-          set -x
-          uname -a
-          cat /etc/os-release
-          cat /etc/debian_version || true
-          command -v bwrap || true
-          bwrap --version || true
-          dpkg -l bubblewrap 2>/dev/null | tail -2 || true
-          ls -ld / /bin /usr/bin /sbin /lib /lib64 /usr/lib64 /usr/bin/true /bin/sh || true
-          readlink /bin || true
-          readlink -f /bin || true
-          readlink -f /bin/sh || true
-          ls -l /usr/bin/sh || true
-          file /bin/sh || true
-      - name: 复现现有参数
-        run: |
-          mkdir -p "$RUNNER_TEMP/ws"
-          set +e
-          bwrap --unshare-all --die-with-parent \
-            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin \
-            --ro-bind /lib /lib --ro-bind /etc /etc \
-            --proc /proc --dev /dev --tmpfs /tmp \
-            --bind "$RUNNER_TEMP/ws" /workspace --chdir /workspace \
-            -- /bin/sh -c 'echo FULL_ARGS_OK'
-          echo "full-args-exit=$?"
-          bwrap --unshare-all --die-with-parent \
-            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin \
-            --ro-bind /lib /lib --ro-bind /etc /etc \
-            --proc /proc --dev /dev --tmpfs /tmp \
-            --bind "$RUNNER_TEMP/ws" /workspace --chdir /workspace \
-            -- /bin/sh -c 'ls -la /bin | head -30; echo ---; ls -l /bin/sh; echo ---; ls -l /usr/bin/true'
-          echo "inspect-exit=$?"
-      - name: 单变量挂载对照
-        run: |
-          set +e
-          echo "=== interpreter of /usr/bin/dash"
-          readelf -l /usr/bin/dash 2>/dev/null | grep -i interpreter || true
-          echo "=== host /lib64 /usr/lib64"
-          ls -ld /lib64 /usr/lib64 2>&1
-          ls -l /lib64 2>&1 | head -10
-          ls -l /usr/lib64 2>&1 | head -10
-          echo "=== host /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
-          ls -l /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>&1
-          run_case() {
-            name="$1"; shift
-            out=$("$@" 2>&1)
-            code=$?
-            printf '=== %s exit=%s\n%s\n' "$name" "$code" "$out"
-          }
-          base_common=(--unshare-all --die-with-parent --proc /proc --dev /dev --tmpfs /tmp)
-          u=(--ro-bind /usr /usr --ro-bind /bin /bin)
-          run_case usr-bin            bwrap "${base_common[@]}" "${u[@]}" -- /bin/sh -c 'echo OK'
-          run_case usr-bin-lib        bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib -- /bin/sh -c 'echo OK'
-          run_case usr-bin-lib64      bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
-          run_case usr-bin-usrlib64   bwrap "${base_common[@]}" "${u[@]}" --ro-bind /usr/lib64 /usr/lib64 -- /bin/sh -c 'echo OK'
-          run_case usr-bin-lib-lib64  bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
-          run_case usr-bin-lib-usrlib64 bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --ro-bind /usr/lib64 /usr/lib64 -- /bin/sh -c 'echo OK'
-          run_case usr-bin-lib-symlink-lib64 bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --symlink usr/lib64 /lib64 -- /bin/sh -c 'echo OK'
-          run_case full-minus-lib64   bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc -- /bin/sh -c 'echo OK'
-          run_case full-current       bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
-          run_case sandbox-view       bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc --ro-bind /lib64 /lib64 -- /bin/sh -c 'ls -l /lib64; ls -l /usr/lib64; ls -l /usr/bin/true; echo VIEW_OK'
 
   # 前端门禁：gui/frontend 的类型检查、单测与生产构建。
   # 独立 job，不设 needs：与 Go gate 并行执行，任一失败只标记对应 job。
