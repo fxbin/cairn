@@ -113,6 +113,14 @@ jobs:
       - name: 单变量挂载对照
         run: |
           set +e
+          echo "=== interpreter of /usr/bin/dash"
+          readelf -l /usr/bin/dash 2>/dev/null | grep -i interpreter || true
+          echo "=== host /lib64 /usr/lib64"
+          ls -ld /lib64 /usr/lib64 2>&1
+          ls -l /lib64 2>&1 | head -10
+          ls -l /usr/lib64 2>&1 | head -10
+          echo "=== host /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+          ls -l /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>&1
           run_case() {
             name="$1"; shift
             out=$("$@" 2>&1)
@@ -120,14 +128,17 @@ jobs:
             printf '=== %s exit=%s\n%s\n' "$name" "$code" "$out"
           }
           base_common=(--unshare-all --die-with-parent --proc /proc --dev /dev --tmpfs /tmp)
-          run_case only-usr bwrap "${base_common[@]}" --ro-bind /usr /usr -- /bin/sh -c 'echo OK'
-          run_case only-bin bwrap "${base_common[@]}" --ro-bind /bin /bin -- /bin/sh -c 'echo OK'
-          run_case usr-bin bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin -- /bin/sh -c 'echo OK'
-          extra=(--ro-bind /lib /lib)
-          if [ -e /lib64 ]; then extra+=(--ro-bind /lib64 /lib64); fi
-          if [ -e /usr/lib64 ]; then extra+=(--ro-bind /usr/lib64 /usr/lib64); fi
-          run_case usr-bin-lib bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin "${extra[@]}" -- /bin/sh -c 'echo OK'
-          run_case etc bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /etc /etc -- /bin/sh -c 'echo OK'
+          u=(--ro-bind /usr /usr --ro-bind /bin /bin)
+          run_case usr-bin            bwrap "${base_common[@]}" "${u[@]}" -- /bin/sh -c 'echo OK'
+          run_case usr-bin-lib        bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib -- /bin/sh -c 'echo OK'
+          run_case usr-bin-lib64      bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
+          run_case usr-bin-usrlib64   bwrap "${base_common[@]}" "${u[@]}" --ro-bind /usr/lib64 /usr/lib64 -- /bin/sh -c 'echo OK'
+          run_case usr-bin-lib-lib64  bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
+          run_case usr-bin-lib-usrlib64 bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --ro-bind /usr/lib64 /usr/lib64 -- /bin/sh -c 'echo OK'
+          run_case usr-bin-lib-symlink-lib64 bwrap "${base_common[@]}" "${u[@]}" --ro-bind /lib /lib --symlink usr/lib64 /lib64 -- /bin/sh -c 'echo OK'
+          run_case full-minus-lib64   bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc -- /bin/sh -c 'echo OK'
+          run_case full-current       bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc --ro-bind /lib64 /lib64 -- /bin/sh -c 'echo OK'
+          run_case sandbox-view       bwrap "${base_common[@]}" "${u[@]}" --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /etc /etc --ro-bind /lib64 /lib64 -- /bin/sh -c 'ls -l /lib64; ls -l /usr/lib64; ls -l /usr/bin/true; echo VIEW_OK'
 
   # 前端门禁：gui/frontend 的类型检查、单测与生产构建。
   # 独立 job，不设 needs：与 Go gate 并行执行，任一失败只标记对应 job。
