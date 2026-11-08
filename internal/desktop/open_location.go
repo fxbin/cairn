@@ -33,7 +33,7 @@ func listOpenLocationTargets() []OpenLocationTarget {
 	targets := []OpenLocationTarget{
 		{ID: "finder", Label: "Finder", Available: runtime.GOOS == "darwin"},
 		{ID: "terminal", Label: "Terminal", Available: true},
-		{ID: "vscode", Label: "VS Code", Available: commandExists("code") || runtime.GOOS == "darwin"},
+		{ID: "vscode", Label: "VS Code", Available: commandExists("code") || (runtime.GOOS == "darwin" && macAppExists("Visual Studio Code.app"))},
 		{ID: "cursor", Label: "Cursor", Available: commandExists("cursor")},
 		{ID: "idea", Label: "IntelliJ IDEA", Available: commandExists("idea") || macAppExists("IntelliJ IDEA.app")},
 		{ID: "ghostty", Label: "Ghostty", Available: macAppExists("Ghostty.app") || commandExists("ghostty")},
@@ -66,7 +66,13 @@ func OpenInLocation(workspace, relative, target string) error {
 	case "terminal":
 		return openInTerminal(path)
 	case "vscode":
-		return openWithEditorCLI("code", path)
+		if commandExists("code") {
+			return openWithEditorCLI("code", path)
+		}
+		if runtime.GOOS == "darwin" && macAppExists("Visual Studio Code.app") {
+			return exec.Command("open", "-a", "Visual Studio Code", path).Start()
+		}
+		return errors.New("VS Code is not installed")
 	case "cursor":
 		return openWithEditorCLI("cursor", path)
 	case "idea":
