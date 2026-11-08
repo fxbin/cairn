@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mock = vi.hoisted(() => ({
@@ -317,5 +317,50 @@ describe("V2 narrow window accessibility",()=>{
    } finally {
      Object.defineProperty(window,"innerWidth",{configurable:true,value:previous,writable:true});
    }
+ });
+});
+
+describe("V2 live refresh after same-project reselection (R1 regression)",()=>{
+ const liveRow=(state:string,waitingApproval:boolean)=>({...sampleRun(state),run_id:"r-live",session_id:"session-live",task:"创建 result.txt",title:"创建 result.txt",waiting_approval:waitingApproval});
+ const liveEvent=(seq:number,type:string,payload:Record<string,unknown>={})=>({schema_version:1,event_id:`live-e${seq}`,run_id:"r-live",workspace_hash:"w",seq,type,occurred_at:`2026-11-03T00:00:${String(seq).padStart(2,"0")}Z`,payload,prev_hash:"",event_hash:""});
+ const approvalEvents=[
+   liveEvent(1,"run_created",{task:"创建 result.txt"}),
+   liveEvent(2,"run_started"),
+   liveEvent(3,"tool_call_proposed",{tool:"write_file",path:"result.txt",summary:"create result.txt"}),
+   liveEvent(4,"approval_requested",{fingerprint:"sha256:r1regression",summary:"create result.txt"}),
+ ];
+ const grantedEvents=[...approvalEvents,liveEvent(5,"approval_granted"),liveEvent(6,"run_resumed"),liveEvent(7,"operation_succeeded"),liveEvent(8,"run_completed",{final_response:"done"})];
+ beforeEach(()=>{vi.clearAllMocks();setup();vi.useFakeTimers();});
+ // 先在假定时器下卸载组件清理轮询，再恢复真实时钟，避免定时器 ID 跨时钟域误清。
+ afterEach(()=>{cleanup();vi.useRealTimers();});
+ it("keeps polling alive after reselecting the current project: approval card appears after submit and timeline updates after decision",async()=>{
+   mock.startRun.mockResolvedValue({run_id:"r-live",state:"starting"});
+   mock.resumeRun.mockResolvedValue({run_id:"r-live",state:"resuming"});
+   render(<AppV2/>);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
+   // 自动恢复已选中当前项目；再次点击同一项目只递增世代而不改变路径（R1 触发条件）。
+   fireEvent.click(document.querySelector(".v2-project-list button") as HTMLElement);
+   await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
+   mock.listRuns.mockResolvedValue([liveRow("active",false)]);
+   fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"创建 result.txt"}});
+   await act(async()=>{fireEvent.click(screen.getByRole("button",{name:"提交任务"}));await vi.advanceTimersByTimeAsync(50);});
+   expect(mock.startRun).toHaveBeenCalledWith(expect.objectContaining({task:"创建 result.txt"}));
+   // 轮询必须把含审批请求的 Journal 投影渲染为授权卡，而不是冻结在提交前快照。
+   mock.listRuns.mockResolvedValue([liveRow("waiting_approval",true)]);
+   mock.inspectRun.mockResolvedValue({run_id:"r-live",state:"waiting_approval",summary:{},events:approvalEvents});
+   await act(async()=>{await vi.advanceTimersByTimeAsync(2500);});
+   expect(screen.getByText("等待你的授权")).toBeInTheDocument();
+   expect(screen.getByText("sha256:r1regression")).toBeInTheDocument();
+   fireEvent.click(screen.getByRole("button",{name:"允许并继续"}));
+   await act(async()=>{await vi.advanceTimersByTimeAsync(50);});
+   expect(mock.resumeRun).toHaveBeenCalledWith(expect.objectContaining({run_id:"r-live",fingerprint:"sha256:r1regression",approve:true}));
+   // 决议落库后，轮询必须继续更新时间线：卡片转已授权并出现批准与完成状态。
+   mock.listRuns.mockResolvedValue([liveRow("completed",false)]);
+   mock.inspectRun.mockResolvedValue({run_id:"r-live",state:"completed",summary:{},events:grantedEvents});
+   await act(async()=>{await vi.advanceTimersByTimeAsync(2500);});
+   expect(screen.getByText("已授权")).toBeInTheDocument();
+   expect(screen.getByText(/已批准操作/)).toBeInTheDocument();
+   expect(screen.getByText(/任务完成/)).toBeInTheDocument();
+   expect(screen.queryByRole("button",{name:"允许并继续"})).not.toBeInTheDocument();
  });
 });

@@ -109,6 +109,8 @@ export default function AppV2() {
   const [parentRun, setParentRun] = useState<string | null>(null);
   const [sessionTree, setSessionTree] = useState<import("../desktop/types").SessionTreeView | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 760);
+  // 世代以状态镜像：重选同一工作区时路径不变，轮询与流订阅仍须随世代重建，否则旧闭包守卫会永久丢弃新投影。
+  const [epoch, setEpoch] = useState(0);
   const projectRef = useRef("");
   const generationRef = useRef(0);
   const runRef = useRef<string | null>(null);
@@ -132,6 +134,7 @@ export default function AppV2() {
   const switchProject = useCallback(async (path: string) => {
     if (!path) return;
     const generation = ++generationRef.current;
+    setEpoch(generation);
     projectRef.current = path;
     runRef.current = null;
     setWorkspace(path);
@@ -216,7 +219,7 @@ export default function AppV2() {
     void poll();
     const timer = window.setInterval(() => { void poll(); }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [workspace, refreshRuns]);
+  }, [workspace, epoch, refreshRuns]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -234,7 +237,7 @@ export default function AppV2() {
       if (evt.kind === "run.event" || evt.kind === "run.status") void refreshRuns(workspace, generation);
     });
     return unbind;
-  }, [workspace, refreshRuns]);
+  }, [workspace, epoch, refreshRuns]);
 
   const selected = runs.find((run) => run.run_id === runId);
   const running = selected ? !finished.has(selected.state) && !selected.waiting_approval && !selected.waiting_reconcile : (sending || Boolean(runId));
