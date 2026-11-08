@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -90,10 +91,11 @@ func TestExecCommandRejectsWriteToWorkspaceParent(t *testing.T) {
 		t.Fatalf("失败语义不稳定: code=%s preview=%s", result.Code, result.Preview)
 	}
 	output := execCommandOutputOf(t, result)
-	if output.ExitCode != execBoundaryDeniedExitCode {
+	if output.ExitCode != execBoundaryDeniedExitCode() {
 		t.Fatalf("退出码不稳定: exit=%d stderr=%s", output.ExitCode, output.Stderr)
 	}
-	if !strings.Contains(strings.ToLower(output.Stderr), "not permitted") && !strings.Contains(strings.ToLower(output.Stderr), "no such file") {
+	stderr := strings.ToLower(output.Stderr)
+	if !strings.Contains(stderr, "not permitted") && !strings.Contains(stderr, "no such file") && !strings.Contains(stderr, "read-only file system") {
 		t.Fatalf("失败没有给出拒绝证据: stderr=%s", output.Stderr)
 	}
 	if _, err := os.Stat(escaped); !errors.Is(err, os.ErrNotExist) {
@@ -149,6 +151,12 @@ func TestExecCommandAllowsReadOutsideWorkspace(t *testing.T) {
 	}
 }
 
-// execBoundaryDeniedExitCode 是重定向失败时 POSIX shell 的稳定退出码：沙箱
-// 拒绝写入时，shell 以 1 退出并报告 "Operation not permitted"。
-const execBoundaryDeniedExitCode = 1
+// execBoundaryDeniedExitCode 是重定向失败时 POSIX shell 的稳定退出码：seatbelt
+// 以 EPERM 拒绝时 shell 退 1；Linux bwrap 的只读根返回 EROFS，dash 对重定向
+// 错误退 2。两个后端都要求显式非零失败，不能靠"文件没出现"推断被拒绝。
+func execBoundaryDeniedExitCode() int {
+	if runtime.GOOS == "linux" {
+		return 2
+	}
+	return 1
+}

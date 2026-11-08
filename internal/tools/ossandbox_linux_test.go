@@ -1,22 +1,23 @@
 //go:build linux
 
-// ossandbox_linux_test.go 锁定 bwrap 挂载参数合同：基础目录固定挂载，根级
-// 加载器别名目录按宿主存在性补齐。该参数曾导致 ubuntu-26.04 runner 上
-// execvp /bin/sh 返回 ENOENT（沙箱根缺少 /lib64，动态链接的 dash 找不到
-// PT_INTERP），因此用参数层测试固化「/lib 与 /lib64 必须同时出现」。
+// ossandbox_linux_test.go 锁定 bwrap 挂载参数合同：宿主根条目逐一只读映射、
+// 临时目录根可写、工作区挂载后整体重挂只读。该参数曾导致 ubuntu-26.04
+// runner 上 execvp /bin/sh 返回 ENOENT（沙箱根缺少 /lib64，动态链接的 dash
+// 找不到 PT_INTERP），因此用参数层测试固化「根级条目必须完整映射」。
 // Author: fxbin
 package tools
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
-// mountPairs 把扁平参数还原为 (源, 目标) 对，非挂载参数忽略。
+// mountPairs 把扁平参数还原为 (源, 目标) 对，非绑定参数忽略。
 func mountPairs(args []string) [][2]string {
 	pairs := make([][2]string, 0, len(args)/3)
 	for index := 0; index+2 < len(args); index++ {
-		if args[index] != "--ro-bind" {
+		if args[index] != "--ro-bind" && args[index] != "--bind" {
 			continue
 		}
 		pairs = append(pairs, [2]string{args[index+1], args[index+2]})
@@ -24,7 +25,7 @@ func mountPairs(args []string) [][2]string {
 	return pairs
 }
 
-// hasMount 报告参数中是否含指定源到同路径目标的只读挂载。
+// hasMount 报告参数中是否含指定源到同路径目标的绑定。
 func hasMount(args []string, path string) bool {
 	for _, pair := range mountPairs(args) {
 		if pair[0] == path && pair[1] == path {
@@ -34,70 +35,118 @@ func hasMount(args []string, path string) bool {
 	return false
 }
 
-// TestSandboxMountArgsKeepsBaseDirectories 锁定基础目录固定挂载，不会因为
-// 加载器别名是否存在于宿主而改变。
-func TestSandboxMountArgsKeepsBaseDirectories(t *testing.T) {
-	args := sandboxMountArgs(func(string) bool { return false })
-	for _, path := range []string{"/usr", "/bin", "/sbin", "/lib", "/etc"} {
-		if !hasMount(args, path) {
-			t.Fatalf("base mount %s missing from %v", path, args)
+// fakeDirEntry 是 sandboxRootEntries 测试用的最小目录项。
+type fakeDirEntry string
+
+// Name 返回目录项名称。
+func (entry fakeDirEntry) Name() string { return string(entry) }
+
+// IsDir 报告该目录项是否为目录；测试不区分类型。
+func (entry fakeDirEntry) IsDir() bool { return false }
+
+// Type 返回目录项类型位；测试不区分类型。
+func (entry fakeDirEntry) Type() os.FileMode { return 0 }
+
+// Info 返回目录项元数据；测试不需要。
+func (entry fakeDirEntry) Info() (os.FileInfo, error) { return nil, nil }
+
+// TestSandboxRootEntriesSkipsSpecialEntries 锁定特殊条目由专用挂载或写规则
+// 处理，普通条目按序全部进入只读映射。
+func TestSandboxRootEntriesSkipsSpecialEntries(t *testing.T) {
+	entries := []os.DirEntry{fakeDirEntry("bin"), fakeDirEntry("dev"), fakeDirEntry("lib64"), fakeDirEntry("proc"), fakeDirEntry("tmp"), fakeDirEntry("usr")}
+	names, err := sandboxRootEntries(func(string) ([]os.DirEntry, error) { return entries, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "bin,lib64,usr" {
+		t.Fatalf("unexpected root entries: %v", names)
+	}
+}
+
+// TestSandboxRootEntriesFailsClosed 锁定枚举失败必须失败关闭，不退化成可写
+// 或空映射的沙箱。
+func TestSandboxRootEntriesFailsClosed(t *testing.T) {
+	if _, err := sandboxRootEntries(func(string) ([]os.DirEntry, error) {
+		return nil, os.ErrPermission
+	}); err == nil {
+		t.Fatal("root enumeration failure must fail closed")
+	}
+}
+
+// TestSandboxMountArgsBindsEveryRootEntryReadOnly 锁定根级条目完整只读映射：
+// 缺少 /lib64 这类根级条目会让动态链接的解释器在执行期 ENOENT。
+func TestSandboxMountArgsBindsEveryRootEntryReadOnly(t *testing.T) {
+	entries := []string{"bin", "lib", "lib64", "sbin", "usr"}
+	args := sandboxMountArgs(entries, func(string) bool { return false })
+	for _, name := range entries {
+		if !hasMount(args, "/"+name) {
+			t.Fatalf("root entry %s missing from %v", name, args)
 		}
 	}
-	if len(mountPairs(args)) != 5 {
-		t.Fatalf("unexpected extra mounts: %v", args)
+	if strings.Join(args[:3], " ") != "--ro-bind /bin /bin" {
+		t.Fatalf("root entries must be read-only binds: %v", args[:3])
 	}
 }
 
-// TestSandboxMountArgsAddsLoaderAliasWhenPresent 锁定宿主存在 /lib64 时必须
-// 补齐该根级别名：dash 的 PT_INTERP 是 /lib64/ld-linux-x86-64.so.2，沙箱根是
-// 空 tmpfs，缺少该挂载会让 execvp 返回 ENOENT。
-func TestSandboxMountArgsAddsLoaderAliasWhenPresent(t *testing.T) {
-	args := sandboxMountArgs(func(path string) bool { return path == "/lib64" })
-	if !hasMount(args, "/lib64") {
-		t.Fatalf("loader alias mount missing: %v", args)
-	}
-	if !hasMount(args, "/lib") {
-		t.Fatalf("loader alias requires /lib mount to resolve its relative symlink: %v", args)
-	}
-}
-
-// TestSandboxMountArgsSkipsMissingLoaderAlias 锁定别名缺失时跳过：精简镜像
-// 没有 /lib64，无条件挂载会让 bwrap 因绑定源不存在而启动失败。
-func TestSandboxMountArgsSkipsMissingLoaderAlias(t *testing.T) {
-	args := sandboxMountArgs(func(string) bool { return false })
-	for _, path := range sandboxLoaderAliasPaths {
-		if hasMount(args, path) {
-			t.Fatalf("missing loader alias %s must not be mounted: %v", path, args)
+// TestSandboxMountArgsBindsExistingTempRootsWritable 锁定临时目录根按存在性
+// 改为可写绑定；缺失时跳过，避免 bwrap 因绑定源不存在而启动失败。
+func TestSandboxMountArgsBindsExistingTempRootsWritable(t *testing.T) {
+	args := sandboxMountArgs(nil, func(path string) bool { return path == "/tmp" })
+	index := -1
+	for offset := 0; offset+2 < len(args); offset++ {
+		if args[offset] == "--bind" && args[offset+1] == "/tmp" {
+			index = offset
 		}
 	}
+	if index < 0 {
+		t.Fatalf("existing temp root must be writable: %v", args)
+	}
+	if hasMount(args, "/var/tmp") {
+		t.Fatalf("missing temp root must be skipped: %v", args)
+	}
 }
 
-// TestConfineArgvIncludesLoaderAliasMounts 锁定 ConfineArgv 与参数构造一致：
-// 挂载段出现在 --proc 之前，工作区仍是唯一可写绑定。
-func TestConfineArgvIncludesLoaderAliasMounts(t *testing.T) {
-	argv, cleanup, err := ConfineArgv(SeatbeltOptions{WorkspaceRoot: t.TempDir()}, []string{"/bin/sh", "-c", "true"})
+// TestConfineArgvRemountsRootReadOnly 锁定沙箱根在建立工作区挂载点后整体重挂
+// 只读，且不再用 tmpfs 覆盖 /tmp：越界写得到 EROFS，工作区外只读引用仍可见。
+func TestConfineArgvRemountsRootReadOnly(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	argv, cleanup, err := ConfineArgv(SeatbeltOptions{WorkspaceRoot: workspaceRoot, WriteMode: SeatbeltWriteWorkspace}, []string{"/bin/sh", "-c", "true"})
 	if cleanup != nil {
 		defer func() { _ = cleanup() }()
 	}
 	if err != nil {
-		if !strings.Contains(err.Error(), "bwrap") {
+		if !strings.Contains(err.Error(), "bubblewrap") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		t.Skip("bubblewrap unavailable on this host")
 	}
 	joined := strings.Join(argv, " ")
-	procIndex := strings.Index(joined, "--proc /proc")
-	usrIndex := strings.Index(joined, "--ro-bind /usr /usr")
-	if usrIndex < 0 || procIndex < 0 || usrIndex > procIndex {
-		t.Fatalf("mount arguments must precede --proc: %v", argv)
+	workspaceIndex := strings.Index(joined, "--bind "+workspaceRoot+" /workspace")
+	rootRemountIndex := strings.Index(joined, "--remount-ro / ")
+	if rootRemountIndex < 0 {
+		t.Fatalf("sandbox root must be remounted read-only: %v", argv)
+	}
+	if workspaceIndex < 0 || workspaceIndex > rootRemountIndex {
+		t.Fatalf("root remount must follow workspace mount: %v", argv)
+	}
+	for _, forbidden := range []string{"--tmpfs", "--ro-bind / ", "--bind / /"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("unexpected mount form %q: %v", forbidden, argv)
+		}
 	}
 	writable := 0
-	for index := 0; index+2 < len(argv); index++ {
-		if argv[index] == "--bind" {
+	for offset := 0; offset+2 < len(argv); offset++ {
+		if argv[offset] == "--bind" {
 			writable++
 		}
 	}
-	if writable != 1 {
-		t.Fatalf("workspace must stay the only writable bind: %v", argv)
+	tempRoots := 0
+	for _, root := range sandboxWritableTempRoots {
+		if strings.Contains(joined, "--bind "+root+" "+root) {
+			tempRoots++
+		}
+	}
+	if writable != tempRoots+1 {
+		t.Fatalf("writable binds must be temp roots plus workspace: %v", argv)
 	}
 }
