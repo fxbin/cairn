@@ -69,6 +69,66 @@ jobs:
       - name: 默认标签全量测试
         run: go test ./cmd/... ./internal/... ./test/...
 
+  # 【临时诊断，Issue #37 根因确认后删除】在 ubuntu-26.04 上采集 /bin 形态与
+  # bwrap 的实际行为，用事实区分「基础镜像布局」与「托管 runner 宿主差异」，
+  # 禁止在没有证据前改沙箱挂载参数。
+  probe-2604:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: 环境与布局
+        run: |
+          set -x
+          uname -a
+          cat /etc/os-release
+          cat /etc/debian_version || true
+          command -v bwrap || true
+          bwrap --version || true
+          dpkg -l bubblewrap 2>/dev/null | tail -2 || true
+          ls -ld / /bin /usr/bin /sbin /lib /lib64 /usr/lib64 /usr/bin/true /bin/sh || true
+          readlink /bin || true
+          readlink -f /bin || true
+          readlink -f /bin/sh || true
+          ls -l /usr/bin/sh || true
+          file /bin/sh || true
+      - name: 复现现有参数
+        run: |
+          mkdir -p "$RUNNER_TEMP/ws"
+          set +e
+          bwrap --unshare-all --die-with-parent \
+            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin \
+            --ro-bind /lib /lib --ro-bind /etc /etc \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --bind "$RUNNER_TEMP/ws" /workspace --chdir /workspace \
+            -- /bin/sh -c 'echo FULL_ARGS_OK'
+          echo "full-args-exit=$?"
+          bwrap --unshare-all --die-with-parent \
+            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin \
+            --ro-bind /lib /lib --ro-bind /etc /etc \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --bind "$RUNNER_TEMP/ws" /workspace --chdir /workspace \
+            -- /bin/sh -c 'ls -la /bin | head -30; echo ---; ls -l /bin/sh; echo ---; ls -l /usr/bin/true'
+          echo "inspect-exit=$?"
+      - name: 单变量挂载对照
+        run: |
+          set +e
+          run_case() {
+            name="$1"; shift
+            out=$("$@" 2>&1)
+            code=$?
+            printf '=== %s exit=%s\n%s\n' "$name" "$code" "$out"
+          }
+          base_common=(--unshare-all --die-with-parent --proc /proc --dev /dev --tmpfs /tmp)
+          run_case only-usr bwrap "${base_common[@]}" --ro-bind /usr /usr -- /bin/sh -c 'echo OK'
+          run_case only-bin bwrap "${base_common[@]}" --ro-bind /bin /bin -- /bin/sh -c 'echo OK'
+          run_case usr-bin bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin -- /bin/sh -c 'echo OK'
+          extra=(--ro-bind /lib /lib)
+          if [ -e /lib64 ]; then extra+=(--ro-bind /lib64 /lib64); fi
+          if [ -e /usr/lib64 ]; then extra+=(--ro-bind /usr/lib64 /usr/lib64); fi
+          run_case usr-bin-lib bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin "${extra[@]}" -- /bin/sh -c 'echo OK'
+          run_case etc bwrap "${base_common[@]}" --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /etc /etc -- /bin/sh -c 'echo OK'
+
   # 前端门禁：gui/frontend 的类型检查、单测与生产构建。
   # 独立 job，不设 needs：与 Go gate 并行执行，任一失败只标记对应 job。
   # 前端依赖与产物都不进入 Go 门禁的覆盖范围：
