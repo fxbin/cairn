@@ -38,7 +38,9 @@ concurrency:
 jobs:
   # 基础门禁：格式漂移、静态检查、构建、默认标签全量测试
   gate:
-    runs-on: ubuntu-latest
+    # 固定 24.04：ubuntu-latest（26.04）下 bwrap 沙箱内找不到 /bin/sh，
+    # 异步委派用例的父等待轮次与子完成存在调度竞态；待适配后再升级。
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
