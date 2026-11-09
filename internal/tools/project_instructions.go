@@ -18,7 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // 项目指令在新运行中完整冻结；容量不足时拒绝启动，禁止截断规范正文。
@@ -116,7 +116,7 @@ func LoadProjectInstructionsWithUser(workspace Workspace, userDirectory string) 
 			if child.Name() == projectInstructionsFilename {
 				document, readBytes, loadErr := readProjectInstruction(root, workspace, candidate, ProjectInstructionsMaxBytes-sourceBytes)
 				if loadErr != nil {
-					return fmt.Errorf("load project instructions %q: %w", string(artifact.Redact([]byte(candidate))), loadErr)
+					return fmt.Errorf("load project instructions %q: %w", string(contract.Redact([]byte(candidate))), loadErr)
 				}
 				sourceBytes += readBytes
 				if document.Content == "" {
@@ -245,7 +245,7 @@ func readProjectInstruction(root *os.Root, workspace Workspace, relative string,
 	if strings.TrimSpace(string(raw)) == "" {
 		return document, len(raw), nil
 	}
-	content := string(artifact.Redact(raw))
+	content := string(contract.Redact(raw))
 	return ProjectInstruction{Path: relative, Scope: path.Dir(relative), SHA256: projectInstructionDigest([]byte(content)), SourceSHA256: projectInstructionDigest(raw), Content: content}, len(raw), nil
 }
 
@@ -265,7 +265,7 @@ func (snapshot ProjectInstructions) Validate() error {
 		if index > 0 && !projectInstructionDocumentLess(snapshot.Documents[index-1], document) {
 			return errors.New("project instructions snapshot sources are duplicated or out of order")
 		}
-		if !validProjectInstructionText(document.Content) || strings.TrimSpace(document.Content) == "" || !bytes.Equal(artifact.Redact([]byte(document.Content)), []byte(document.Content)) {
+		if !validProjectInstructionText(document.Content) || strings.TrimSpace(document.Content) == "" || !bytes.Equal(contract.Redact([]byte(document.Content)), []byte(document.Content)) {
 			return errors.New("invalid or unredacted project instructions snapshot content")
 		}
 		if document.SHA256 != projectInstructionDigest([]byte(document.Content)) || !validProjectInstructionDigest(document.SourceSHA256) {
@@ -287,9 +287,15 @@ func projectInstructionDocumentLess(left, right ProjectInstruction) bool {
 	return projectInstructionLess(left.Path, right.Path)
 }
 
+// artifactReader 是读取项目指令快照所需的窄制品能力；由具体内容寻址存储实现，
+// 避免 tools 绑定制品包的完整存储类型。
+type artifactReader interface {
+	OpenBounded(ref contract.Ref, maximumBytes int64) ([]byte, error)
+}
+
 // ReadProjectInstructions 只接受 Journal 中完整的内容寻址引用；缺失、损坏或未知结构均失败关闭。
-func ReadProjectInstructions(store *artifact.Store, rawReference json.RawMessage) (ProjectInstructions, error) {
-	var reference artifact.Ref
+func ReadProjectInstructions(store artifactReader, rawReference json.RawMessage) (ProjectInstructions, error) {
+	var reference contract.Ref
 	if json.Unmarshal(rawReference, &reference) != nil || !validProjectInstructionDigest(reference.SHA256) || reference.Bytes < 1 || reference.Bytes > ProjectInstructionsMaxSnapshotBytes || reference.MediaType != "application/json" || store == nil {
 		return ProjectInstructions{}, errors.New("invalid project instructions artifact reference")
 	}
@@ -317,7 +323,7 @@ func ReadProjectInstructions(store *artifact.Store, rawReference json.RawMessage
 
 // validProjectInstructionPath 保持跨平台的工作区相对来源，拒绝可泄露凭据或伪造提示边界的路径文本。
 func validProjectInstructionPath(relative string) bool {
-	return relative != "" && utf8.ValidString(relative) && validProjectInstructionText(relative) && !strings.ContainsAny(relative, "\\\r\n\t") && !path.IsAbs(relative) && path.Clean(relative) == relative && relative != ".." && !strings.HasPrefix(relative, "../") && path.Base(relative) == projectInstructionsFilename && bytes.Equal(artifact.Redact([]byte(relative)), []byte(relative))
+	return relative != "" && utf8.ValidString(relative) && validProjectInstructionText(relative) && !strings.ContainsAny(relative, "\\\r\n\t") && !path.IsAbs(relative) && path.Clean(relative) == relative && relative != ".." && !strings.HasPrefix(relative, "../") && path.Base(relative) == projectInstructionsFilename && bytes.Equal(contract.Redact([]byte(relative)), []byte(relative))
 }
 
 // validProjectInstructionText 允许 Markdown 常用换行与缩进，拒绝二进制内容和终端控制字符。

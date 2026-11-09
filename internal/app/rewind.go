@@ -16,6 +16,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -44,7 +45,7 @@ type rewindPatch struct {
 	Mode       string
 	BeforeHash string
 	AfterHash  string
-	BeforeRef  *artifact.Ref
+	BeforeRef  *contract.Ref
 }
 
 // RewindOptions 描述一次工作区回退的输入：Runs 是要反放的链上运行（链序）；
@@ -121,16 +122,16 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store frozen run config: %w", err)
 	}
-	planRef, err := boot.Artifacts.Put(artifact.MustEncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: options.Runs}), "application/json")
+	planRef, err := boot.Artifacts.Put(contract.MustEncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: options.Runs}), "application/json")
 	if err != nil {
 		return RunResult{}, fmt.Errorf("store rewind plan artifact: %w", err)
 	}
 	task := fmt.Sprintf("工作区回退：反放 %d 个已生效补丁", len(calls))
 	runID := domain.NewRunID()
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
-		ConfigRef artifact.Ref `json:"config_ref"`
-		TaskRef   artifact.Ref `json:"task_ref"`
+		ConfigRef contract.Ref `json:"config_ref"`
+		TaskRef   contract.Ref `json:"task_ref"`
 	}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build}, ConfigRef: configRef, TaskRef: planRef})})
 	if err != nil {
 		return RunResult{}, err
@@ -138,7 +139,7 @@ func (service Service) Rewind(ctx context.Context, options RewindOptions) (outco
 	if options.OnEvent != nil {
 		options.OnEvent(first)
 	}
-	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.MustEncodeRedactedJSON(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: contract.MustEncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {
@@ -222,7 +223,7 @@ func collectRewindPatches(ctx context.Context, journal *sqlite.Journal, runs []d
 					PlannedPath      string        `json:"planned_path"`
 					PlannedBefore    string        `json:"planned_before"`
 					PlannedAfter     string        `json:"planned_after"`
-					PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+					PlannedBeforeRef *contract.Ref `json:"planned_before_ref"`
 				}
 				if err := json.Unmarshal(event.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("run %s event %d: decode operation_started: %w", runID, event.Seq, err)
@@ -415,7 +416,7 @@ func rewindPlanOfRun(ctx context.Context, journal *sqlite.Journal, artifacts *ar
 		return rewindPlanArtifact{}, false, fmt.Errorf("run %s is missing run_created event", runID)
 	}
 	var payload struct {
-		TaskRef *artifact.Ref `json:"task_ref"`
+		TaskRef *contract.Ref `json:"task_ref"`
 	}
 	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
 		return rewindPlanArtifact{}, false, err

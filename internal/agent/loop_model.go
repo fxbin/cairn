@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -20,7 +20,7 @@ type modelResponsePayload struct {
 	Usage             *ports.Usage     `json:"usage,omitempty"`
 	UsageEstimated    bool             `json:"usage_estimated,omitempty"`
 	StopReason        string           `json:"stop_reason,omitempty"`
-	ProtocolBlocksRef *artifact.Ref    `json:"protocol_blocks_ref,omitempty"`
+	ProtocolBlocksRef *contract.Ref    `json:"protocol_blocks_ref,omitempty"`
 }
 
 // modelRequestPayload 是写入模型请求事件的可审计提供方信息。

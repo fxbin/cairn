@@ -54,11 +54,11 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 	root := manifestArtifactRoot(stateDir, workspaceHash)
 	for _, event := range events {
 		var payload struct {
-			ResultRef              *artifact.Ref   `json:"result_ref"`
-			PlanRef                *artifact.Ref   `json:"plan_ref"`
-			ConfigRef              *artifact.Ref   `json:"config_ref"`
-			EvidenceRef            *artifact.Ref   `json:"evidence_ref"`
-			PlannedBeforeRef       *artifact.Ref   `json:"planned_before_ref"`
+			ResultRef              *contract.Ref   `json:"result_ref"`
+			PlanRef                *contract.Ref   `json:"plan_ref"`
+			ConfigRef              *contract.Ref   `json:"config_ref"`
+			EvidenceRef            *contract.Ref   `json:"evidence_ref"`
+			PlannedBeforeRef       *contract.Ref   `json:"planned_before_ref"`
 			PriorContextRef        json.RawMessage `json:"prior_context_ref"`
 			ProjectInstructionsRef json.RawMessage `json:"project_instructions_ref"`
 			ContentRef             json.RawMessage `json:"content_ref"`
@@ -80,7 +80,7 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 			if len(raw) == 0 {
 				continue
 			}
-			var reference artifact.Ref
+			var reference contract.Ref
 			if string(raw) == "null" || json.Unmarshal(raw, &reference) != nil {
 				return fmt.Errorf("run %s event %d: invalid %s", event.RunID, event.Seq, name)
 			}
@@ -91,7 +91,7 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 		// 验证计划与冻结配置是审批绑定的信任根，与结果制品同等纳入
 		// 存在性与摘要校验，防止被删除或篡改后静默通过诊断；before 快照
 		// 是工作区回退的恢复源，同样必须完整在档。
-		for _, reference := range []*artifact.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef, payload.PlannedBeforeRef} {
+		for _, reference := range []*contract.Ref{payload.ResultRef, payload.PlanRef, payload.ConfigRef, payload.EvidenceRef, payload.PlannedBeforeRef} {
 			if reference == nil {
 				continue
 			}
@@ -123,14 +123,14 @@ func manifestArtifactRoot(stateDir, workspaceHash string) string {
 }
 
 // checkArtifactReference 验证单个制品引用的格式、存在性和内容摘要。
-func checkArtifactReference(root string, reference artifact.Ref) error {
+func checkArtifactReference(root string, reference contract.Ref) error {
 	_, err := readArtifactContent(root, reference)
 	return err
 }
 
 // readArtifactContent 读取并校验制品内容：摘要格式合法、文件在档且内容哈
 // 希与引用一致；失败关闭，供诊断校验与展示层只读解引用共用。
-func readArtifactContent(root string, reference artifact.Ref) ([]byte, error) {
+func readArtifactContent(root string, reference contract.Ref) ([]byte, error) {
 	digest := strings.TrimPrefix(reference.SHA256, "sha256:")
 	if len(digest) != sha256.Size*2 {
 		return nil, fmt.Errorf("invalid artifact digest %q", reference.SHA256)

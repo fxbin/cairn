@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -82,7 +82,7 @@ func EncodeDelegated(options DelegateOptions) (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode subagent_delegated: %w", err)
 	}
-	raw, err := artifact.EncodeRedactedJSON(json.RawMessage(payload))
+	raw, err := contract.EncodeRedactedJSON(json.RawMessage(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func EncodeCompleted(childRunID domain.RunID, outcome string, usage json.RawMess
 	if err != nil {
 		return nil, fmt.Errorf("encode subagent_completed: %w", err)
 	}
-	raw, err := artifact.EncodeRedactedJSON(json.RawMessage(payload))
+	raw, err := contract.EncodeRedactedJSON(json.RawMessage(payload))
 	if err != nil {
 		return nil, err
 	}

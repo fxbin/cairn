@@ -19,12 +19,12 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 
 	"fmt"
 	"github.com/fxbin/cairn/internal/artifact"
-	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -40,7 +40,7 @@ func encode(value any) json.RawMessage {
 }
 
 // putTestFrozenRunConfig 写入符合当前冻结合同的配置制品，供手工事件夹具引用。
-func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) artifact.Ref {
+func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) contract.Ref {
 	t.Helper()
 	fingerprint := configuration.Fingerprint()
 	commands := make([]agent.VerificationCommand, 0, len(configuration.Verification.Commands))
@@ -260,7 +260,7 @@ func TestFixtureReconcileDanglingPatchWithoutRetryingIt(t *testing.T) {
 	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: encode(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigRef         contract.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
 	}{Task: "recover", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted})

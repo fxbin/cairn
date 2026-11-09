@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -150,7 +150,7 @@ func runTestsCommand(ctx context.Context, dir string, timeout time.Duration, arg
 			return combined.String(), 1, err
 		}
 	}
-	return string(artifact.Redact([]byte(combined.String()))), exitCode, nil
+	return string(contract.Redact([]byte(combined.String()))), exitCode, nil
 }
 
 // tailText 返回去掉首尾空白后的末尾片段，空输入为空串。

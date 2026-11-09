@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -209,7 +209,7 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 // readFilePreview 在完整脱敏后截取 UTF-8 预览，避免重复传输正文或先截断
 // 凭据后留下无法匹配的秘密片段；预览截断不改变 data 的范围或完整性标记。
 func readFilePreview(content []byte) string {
-	preview := strings.ToValidUTF8(string(artifact.Redact(content)), "\uFFFD")
+	preview := strings.ToValidUTF8(string(contract.Redact(content)), "\uFFFD")
 	if len(preview) <= maximumReadPreviewBytes {
 		return preview
 	}

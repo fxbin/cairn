@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -262,7 +262,7 @@ func (session *wireSession) call(ctx context.Context, name string, arguments jso
 	if err != nil {
 		return tools.Result{}, err
 	}
-	encoded = artifact.RedactJSON(session.secrets.json(encoded))
+	encoded = contract.RedactJSON(session.secrets.json(encoded))
 	if len(encoded) > session.maxResponseBytes {
 		return tools.Result{}, errors.New("MCP result exceeds its byte limit")
 	}

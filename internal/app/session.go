@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -147,7 +148,7 @@ func stateText(state string) string {
 // 运行且没有显式前情时，从其事件投影前情卡并持久化。跨会话分支根给出
 // fork_source 时，生成新会话标识并从来源终态 run 投影前情卡。调用方必须
 // 先完成前置运行或来源的制品引用与 v2 冻结合同校验。
-func (service Service) resolveSessionContext(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, options RunOptions) (string, string, *artifact.Ref, error) {
+func (service Service) resolveSessionContext(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, options RunOptions) (string, string, *contract.Ref, error) {
 	sessionID := options.SessionID
 	priorContext := options.PriorContext
 	priorContextRef := options.PriorContextRef

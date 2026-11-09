@@ -14,6 +14,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -510,7 +511,7 @@ func TestLoopKeepsReplayableJournalWhenResultArtifactStorageFails(t *testing.T) 
 			continue
 		}
 		var payload struct {
-			ResultRef          *artifact.Ref `json:"result_ref"`
+			ResultRef          *contract.Ref `json:"result_ref"`
 			ResultStorageError string        `json:"result_storage_error"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -2564,7 +2565,7 @@ func TestMessagesFromEventsRejectsInvalidPriorContextRefs(t *testing.T) {
 			PriorContextRef json.RawMessage `json:"prior_context_ref"`
 		}{Task: "t", PriorContextRef: json.RawMessage("null")})},
 		{name: "invalid", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: json.RawMessage(`{"sha256":"bad"}`)})},
-		{name: "missing", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: mustJSON(artifact.Ref{SHA256: "sha256:" + strings.Repeat("0", 64)})})},
+		{name: "missing", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: mustJSON(contract.Ref{SHA256: "sha256:" + strings.Repeat("0", 64)})})},
 		{name: "hash_mismatch", raw: mustJSON(domain.RunCreatedPayload{Task: "t", PriorContextRef: mustJSON(valid)})},
 	}
 	for _, test := range cases {

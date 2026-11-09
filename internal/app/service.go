@@ -10,7 +10,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -55,7 +54,7 @@ type RunOptions struct {
 	SessionID       string
 	PrevRunID       domain.RunID
 	PriorContext    string
-	PriorContextRef *artifact.Ref
+	PriorContextRef *contract.Ref
 	// ForkSource 指定从历史终态 run 创建新会话分支；与 PrevRunID 互斥。
 	// 设置时生成（或沿用未占用的）新 SessionID，根运行写入独立来源锚点。
 	ForkSource *domain.SessionForkSource
@@ -343,11 +342,11 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
-		ConfigRef              artifact.Ref  `json:"config_ref"`
-		PriorContextRef        *artifact.Ref `json:"prior_context_ref,omitempty"`
-		ProjectInstructionsRef *artifact.Ref `json:"project_instructions_ref,omitempty"`
+		ConfigRef              contract.Ref  `json:"config_ref"`
+		PriorContextRef        *contract.Ref `json:"prior_context_ref,omitempty"`
+		ProjectInstructionsRef *contract.Ref `json:"project_instructions_ref,omitempty"`
 	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
 	if err != nil {
 		return RunResult{}, err
@@ -365,7 +364,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 			return RunResult{}, delegatedErr
 		}
 	}
-	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: artifact.MustEncodeRedactedJSON(struct {
+	second, err := boot.Journal.Append(ctx, 1, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted, Payload: contract.MustEncodeRedactedJSON(struct {
 		Invocation string `json:"invocation"`
 	}{Invocation: domain.NewID("invoke")})})
 	if err != nil {

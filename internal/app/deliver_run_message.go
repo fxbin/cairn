@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -25,7 +26,7 @@ func deliverRunMessage(ctx context.Context, journal ports.Journal, artifacts *ar
 		return fmt.Errorf("load target run: %w", err)
 	}
 	seq := uint64(len(events))
-	var contentRef *artifact.Ref
+	var contentRef *contract.Ref
 	if artifacts != nil {
 		ref, err := artifacts.Put([]byte(content), "text/plain")
 		if err != nil {
@@ -44,7 +45,7 @@ func deliverRunMessage(ctx context.Context, journal ports.Journal, artifacts *ar
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	raw := artifact.MustEncodeRedactedJSON(payload)
+	raw := contract.MustEncodeRedactedJSON(payload)
 	_, err = journal.Append(ctx, seq, domain.EventDraft{
 		RunID:         toRunID,
 		WorkspaceHash: workspaceHash,

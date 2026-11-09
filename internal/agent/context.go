@@ -8,7 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/ports"
@@ -286,7 +286,7 @@ func summarizeMessagesWithInventoryBudgetFrom(messages []ports.Message, maximumB
 	if feedback == "" && facts == "" && inventory == "" {
 		return clipText("无可保留的历史事实；请以原始任务和当前工作区为准。", maximumBytes)
 	}
-	return string(artifact.Redact([]byte(feedback + inventory + facts)))
+	return string(contract.Redact([]byte(feedback + inventory + facts)))
 }
 
 // summarizeRecentFactsFrom 从指定历史起点反向保留近期事实。
@@ -362,7 +362,7 @@ func summarizeMessage(message ports.Message, toolNames map[string]string) string
 		if text := strings.TrimSpace(message.Content); text != "" {
 			// 模型说明是压缩后最有价值的综合推理（早于任何工具结果的合成结论），
 			// 保留额度高于普通事实条目，防止探索-综合链在检查点处断裂。
-			parts = append(parts, "模型说明："+clipText(string(artifact.Redact([]byte(text))), 960))
+			parts = append(parts, "模型说明："+clipText(string(contract.Redact([]byte(text))), 960))
 		}
 		for _, call := range message.ToolCalls {
 			parts = append(parts, fmt.Sprintf("请求工具 %s（调用 %s）", call.Name, call.ID))
@@ -373,7 +373,7 @@ func summarizeMessage(message ports.Message, toolNames map[string]string) string
 		if text == "" {
 			return ""
 		}
-		return "用户或验证反馈：" + clipText(string(artifact.Redact([]byte(text))), 480)
+		return "用户或验证反馈：" + clipText(string(contract.Redact([]byte(text))), 480)
 	default:
 		return ""
 	}
@@ -391,8 +391,8 @@ func summarizeToolResult(name, content string) string {
 		SHA256    string          `json:"sha256"`
 		Data      json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(artifact.RedactJSON([]byte(content)), &result); err != nil {
-		return "返回了无法解析的结构化结果：" + clipText(string(artifact.Redact([]byte(content))), 320)
+	if err := json.Unmarshal(contract.RedactJSON([]byte(content)), &result); err != nil {
+		return "返回了无法解析的结构化结果：" + clipText(string(contract.Redact([]byte(content))), 320)
 	}
 	parts := []string{fmt.Sprintf("ok=%t", result.OK), "code=" + result.Code}
 	if result.OK {

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/buildinfo"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -85,7 +84,7 @@ func withTestProvider(configuration config.Config) config.Config {
 }
 
 // putTestFrozenRunConfig 写入符合当前 v2 合同的冻结配置，供手工事件夹具引用。
-func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) artifact.Ref {
+func putTestFrozenRunConfig(t *testing.T, stateDir, workspaceHash string, configuration config.Config) contract.Ref {
 	t.Helper()
 	frozen, err := marshalFrozenRunConfig(configuration, configuration.Fingerprint())
 	if err != nil {
@@ -272,7 +271,7 @@ func TestServiceRunThenInspect(t *testing.T) {
 		t.Fatalf("inspect = %#v, %v", inspected, err)
 	}
 	var payload struct {
-		ConfigRef         *artifact.Ref         `json:"config_ref"`
+		ConfigRef         *contract.Ref         `json:"config_ref"`
 		ConfigFingerprint string                `json:"config_fingerprint"`
 		Build             *domain.BuildIdentity `json:"build"`
 	}
@@ -368,13 +367,13 @@ func TestServiceRequiresSuccessfulVerificationAfterPatch(t *testing.T) {
 	if err != nil || inspected.Projection.State != "completed" || !inspected.Projection.VerificationSucceeded || inspected.Projection.LastVerificationSeq <= inspected.Projection.LastMutationSeq {
 		t.Fatalf("inspect = %#v, %v", inspected, err)
 	}
-	var reference *artifact.Ref
+	var reference *contract.Ref
 	for _, event := range inspected.Events {
 		if event.Type != domain.EventOperationSucceeded {
 			continue
 		}
 		var payload struct {
-			ResultRef *artifact.Ref `json:"result_ref"`
+			ResultRef *contract.Ref `json:"result_ref"`
 		}
 		if json.Unmarshal(event.Payload, &payload) == nil && payload.ResultRef != nil {
 			reference = payload.ResultRef
@@ -553,11 +552,11 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 		t.Fatalf("inspect trust differs from result evidence: %#v", inspected.Summary)
 	}
 	proposed, started := 0, 0
-	var startedPlan, proposedPlan *artifact.Ref
+	var startedPlan, proposedPlan *contract.Ref
 	for _, event := range inspected.Events {
 		if event.Type == domain.EventVerificationStarted {
 			var payload struct {
-				PlanRef *artifact.Ref `json:"plan_ref"`
+				PlanRef *contract.Ref `json:"plan_ref"`
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil {
 				startedPlan = payload.PlanRef
@@ -566,7 +565,7 @@ func TestServiceResumeContinuesTheSameVerificationCommandAfterApproval(t *testin
 		if event.Type == domain.EventVerificationCommandProposed {
 			proposed++
 			var payload struct {
-				PlanRef *artifact.Ref `json:"plan_ref"`
+				PlanRef *contract.Ref `json:"plan_ref"`
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil {
 				proposedPlan = payload.PlanRef
@@ -605,10 +604,10 @@ func TestServiceReconcilesDanglingWorkspaceOperationWithoutRetry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigRef         contract.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
 	}{Task: "recover", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted})
@@ -744,10 +743,10 @@ func TestDoctorRejectsMissingArtifactReferencedByAnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reference *artifact.Ref
+	var reference *contract.Ref
 	for _, event := range inspected.Events {
 		var payload struct {
-			ResultRef *artifact.Ref `json:"result_ref"`
+			ResultRef *contract.Ref `json:"result_ref"`
 		}
 		if event.Type == domain.EventOperationSucceeded && json.Unmarshal(event.Payload, &payload) == nil && payload.ResultRef != nil {
 			reference = payload.ResultRef
@@ -804,13 +803,13 @@ func TestEvidenceRejectsMissingOrTamperedFrozenConfigArtifact(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var reference *artifact.Ref
+			var reference *contract.Ref
 			for _, event := range inspected.Events {
 				if event.Type != domain.EventRunCreated {
 					continue
 				}
 				var payload struct {
-					ConfigRef *artifact.Ref `json:"config_ref"`
+					ConfigRef *contract.Ref `json:"config_ref"`
 				}
 				if err := json.Unmarshal(event.Payload, &payload); err == nil {
 					reference = payload.ConfigRef
@@ -847,10 +846,10 @@ func TestProcessReconciliationRequiresAuditableEvidence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	appendEvent(0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigRef         contract.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
 	}{Task: "recover command", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})})
 	appendEvent(1, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunStarted})
@@ -921,10 +920,10 @@ func TestServiceAbortReleasesCreatedRun(t *testing.T) {
 	}
 	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigRef         contract.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
 	}{Task: "interrupted", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
 		t.Fatal(err)
@@ -976,7 +975,7 @@ func TestServiceAbortCompletesCancellingRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Append(context.Background(), events[len(events)-1].Seq, domain.EventDraft{RunID: initial.ID, WorkspaceHash: hash, Type: domain.EventRunCancelRequested, Payload: artifact.MustEncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), events[len(events)-1].Seq, domain.EventDraft{RunID: initial.ID, WorkspaceHash: hash, Type: domain.EventRunCancelRequested, Payload: contract.MustEncodeRedactedJSON(struct {
 		Cause string `json:"cause"`
 	}{Cause: "user_interrupt"})}); err != nil {
 		t.Fatal(err)
@@ -1031,7 +1030,7 @@ func TestInspectDetectsMissingVerificationPlanArtifact(t *testing.T) {
 	var planPath string
 	for _, event := range inspected.Events {
 		var payload struct {
-			PlanRef *artifact.Ref `json:"plan_ref"`
+			PlanRef *contract.Ref `json:"plan_ref"`
 		}
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.PlanRef == nil {
 			continue
@@ -1065,7 +1064,7 @@ func TestLegacyFingerprintRunsInspectButRefuseResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		Task              string `json:"task"`
 		Workspace         string `json:"workspace"`
 		ConfigFingerprint string `json:"config_fingerprint"`
@@ -1115,15 +1114,15 @@ func TestLegacyProviderCapabilityRunRefusesRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configRef, err := artifacts.Put(artifact.RedactJSON(frozen), "application/json")
+	configRef, err := artifacts.Put(contract.RedactJSON(frozen), "application/json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	runID := domain.NewRunID()
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		Task              string       `json:"task"`
 		Workspace         string       `json:"workspace"`
-		ConfigRef         artifact.Ref `json:"config_ref"`
+		ConfigRef         contract.Ref `json:"config_ref"`
 		ConfigFingerprint string       `json:"config_fingerprint"`
 	}{Task: "legacy capability", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})}); err != nil {
 		t.Fatal(err)
@@ -1231,10 +1230,10 @@ func TestServiceResumeEnforcesRequiredAdmission(t *testing.T) {
 	runID := domain.NewRunID()
 	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
 		RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(struct {
+		Payload: contract.MustEncodeRedactedJSON(struct {
 			Task              string       `json:"task"`
 			Workspace         string       `json:"workspace"`
-			ConfigRef         artifact.Ref `json:"config_ref"`
+			ConfigRef         contract.Ref `json:"config_ref"`
 			ConfigFingerprint string       `json:"config_fingerprint"`
 		}{Task: "resume requires admission", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()}),
 	}); err != nil {
@@ -1286,10 +1285,10 @@ func TestServiceReconcileEnforcesRequiredAdmission(t *testing.T) {
 	configRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
 	runID, turnID, operationID := domain.NewRunID(), domain.NewTurnID(), domain.NewOperationID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 			Task              string       `json:"task"`
 			Workspace         string       `json:"workspace"`
-			ConfigRef         artifact.Ref `json:"config_ref"`
+			ConfigRef         contract.Ref `json:"config_ref"`
 			ConfigFingerprint string       `json:"config_fingerprint"`
 		}{Task: "reconcile requires admission", Workspace: workspace, ConfigRef: configRef, ConfigFingerprint: configuration.Fingerprint()})},
 		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
@@ -1432,7 +1431,7 @@ func TestServiceListRunsProjectsSessionsAndSortsCurrentWorkspace(t *testing.T) {
 			WorkspaceHash: workspaceHash,
 			OccurredAt:    occurredAt,
 			Type:          domain.EventRunCreated,
-			Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{
+			Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{
 				Task:      task,
 				Workspace: workspace,
 				SessionID: sessionID,
@@ -1462,7 +1461,7 @@ func TestServiceListRunsProjectsSessionsAndSortsCurrentWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := otherJournal.Append(context.Background(), 0, domain.EventDraft{RunID: domain.RunID("run-other"), WorkspaceHash: otherHash, OccurredAt: newerTime.Add(time.Hour), Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "other", Workspace: otherWorkspace})}); err != nil {
+	if _, err := otherJournal.Append(context.Background(), 0, domain.EventDraft{RunID: domain.RunID("run-other"), WorkspaceHash: otherHash, OccurredAt: newerTime.Add(time.Hour), Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "other", Workspace: otherWorkspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := otherJournal.Close(); err != nil {
@@ -1505,7 +1504,7 @@ func TestServiceListRunsFailsClosedForForeignWorkspaceEvent(t *testing.T) {
 		RunID:         domain.RunID("run-foreign"),
 		WorkspaceHash: "sha256:foreign",
 		Type:          domain.EventRunCreated,
-		Payload:       artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "foreign", Workspace: workspace}),
+		Payload:       contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "foreign", Workspace: workspace}),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1539,10 +1538,10 @@ func TestServiceListRunsFailsClosedForInvalidTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-transition")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCompleted, Payload: artifact.MustEncodeRedactedJSON(domain.RunCompletedPayload{FinalResponse: "impossible"})}); err != nil {
+	if _, err := journal.Append(context.Background(), 1, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCompleted, Payload: contract.MustEncodeRedactedJSON(domain.RunCompletedPayload{FinalResponse: "impossible"})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1565,7 +1564,7 @@ func TestServiceListRunsClassifiesInvalidPersistedEventAsCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-time")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid time", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid time", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1600,7 +1599,7 @@ func TestServiceListRunsClassifiesInvalidPersistedEventTypeAsCorrupt(t *testing.
 		t.Fatal(err)
 	}
 	runID := domain.RunID("run-invalid-sequence")
-	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid sequence", Workspace: workspace})}); err != nil {
+	if _, err := journal.Append(context.Background(), 0, domain.EventDraft{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{Task: "invalid sequence", Workspace: workspace})}); err != nil {
 		t.Fatal(err)
 	}
 	if err := journal.Close(); err != nil {
@@ -1659,7 +1658,7 @@ func TestRunRejectsPriorRunWithoutFrozenConfig(t *testing.T) {
 	drafts := []domain.EventDraft{
 		{
 			RunID: priorRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-			Payload: artifact.MustEncodeRedactedJSON(domain.RunCreatedPayload{
+			Payload: contract.MustEncodeRedactedJSON(domain.RunCreatedPayload{
 				Task: "legacy prior", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), SessionID: "session-v2",
 			}),
 		},
@@ -1716,21 +1715,21 @@ func TestSessionContinuationRejectsLegacyAncestorConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyRef, err := artifacts.Put(artifact.RedactJSON(legacyFrozen), "application/json")
+	legacyRef, err := artifacts.Put(contract.RedactJSON(legacyFrozen), "application/json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	currentRef := putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
 	rootRunID, tailRunID := domain.NewRunID(), domain.NewRunID()
 	sessionID := "session-with-legacy-root"
-	appendTerminalRun := func(runID domain.RunID, previous domain.RunID, configRef artifact.Ref) {
+	appendTerminalRun := func(runID domain.RunID, previous domain.RunID, configRef contract.Ref) {
 		t.Helper()
 		drafts := []domain.EventDraft{
 			{
 				RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-				Payload: artifact.MustEncodeRedactedJSON(struct {
+				Payload: contract.MustEncodeRedactedJSON(struct {
 					domain.RunCreatedPayload
-					ConfigRef artifact.Ref `json:"config_ref"`
+					ConfigRef contract.Ref `json:"config_ref"`
 				}{
 					RunCreatedPayload: domain.RunCreatedPayload{
 						Task: "session member", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(),
@@ -1795,7 +1794,7 @@ func TestResumeAndDoctorRejectMissingPriorContextArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload struct {
-		PriorContextRef *artifact.Ref `json:"prior_context_ref"`
+		PriorContextRef *contract.Ref `json:"prior_context_ref"`
 	}
 	if err := json.Unmarshal(inspected.Events[0].Payload, &payload); err != nil || payload.PriorContextRef == nil {
 		t.Fatalf("run_created 缺少前情引用: payload=%s err=%v", inspected.Events[0].Payload, err)

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -102,7 +102,7 @@ func TestProjectInstructionsCorruptionStopsRecoveryBeforeEvents(t *testing.T) {
 				t.Fatal(err)
 			}
 			var created struct {
-				ProjectInstructionsRef artifact.Ref `json:"project_instructions_ref"`
+				ProjectInstructionsRef contract.Ref `json:"project_instructions_ref"`
 			}
 			if err := json.Unmarshal(before.Events[0].Payload, &created); err != nil || created.ProjectInstructionsRef.SHA256 == "" {
 				t.Fatal("missing project snapshot reference")

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 func TestStoreRedactsBeforePersistingAndUsesStrictPermissions(t *testing.T) {
@@ -66,7 +68,7 @@ func TestStoreRejectsArtifactsAboveConfiguredLimit(t *testing.T) {
 }
 
 func TestRedactJSONReplacesCredentialValuesWithoutBreakingJSON(t *testing.T) {
-	redacted := RedactJSON([]byte(`{"token":"very-secret","nested":{"api_key":"also-secret"},"message":"Bearer abcdefghijklmnop"}`))
+	redacted := contract.RedactJSON([]byte(`{"token":"very-secret","nested":{"api_key":"also-secret"},"message":"Bearer abcdefghijklmnop"}`))
 	if strings.Contains(string(redacted), "secret") || !strings.Contains(string(redacted), "[REDACTED]") {
 		t.Fatalf("redaction failed: %s", redacted)
 	}
@@ -79,18 +81,18 @@ func TestRedactJSONReplacesCredentialValuesWithoutBreakingJSON(t *testing.T) {
 func TestRedactJSONCoversExpandedCredentialVocabulary(t *testing.T) {
 	const sentinel = "credential-sentinel-value"
 	input := []byte(`{"AWS_ACCESS_KEY_ID":"` + sentinel + `","DEPLOY_PRIVATE_KEY":"` + sentinel + `","DB_PASSWD":"` + sentinel + `","GITHUB_PAT":"` + sentinel + `"}`)
-	redacted := RedactJSON(input)
+	redacted := contract.RedactJSON(input)
 	if strings.Contains(string(redacted), sentinel) {
 		t.Fatalf("expanded credential key leaked: %s", redacted)
 	}
-	text := Redact([]byte("GITHUB_PAT=" + sentinel))
+	text := contract.Redact([]byte("GITHUB_PAT=" + sentinel))
 	if strings.Contains(string(text), sentinel) {
 		t.Fatalf("credential assignment leaked: %s", text)
 	}
 }
 
 func TestRedactJSONPreservesTokenUsageAndBudgetCounters(t *testing.T) {
-	redacted := RedactJSON([]byte(`{"token":"very-secret","session_token":"also-secret","usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168},"budget":{"max_input_tokens":250000,"max_output_tokens":50000}}`))
+	redacted := contract.RedactJSON([]byte(`{"token":"very-secret","session_token":"also-secret","usage":{"prompt_tokens":123,"completion_tokens":45,"total_tokens":168},"budget":{"max_input_tokens":250000,"max_output_tokens":50000}}`))
 	if strings.Contains(string(redacted), "very-secret") || strings.Contains(string(redacted), "also-secret") {
 		t.Fatalf("redaction leaked credential: %s", redacted)
 	}
@@ -115,7 +117,7 @@ func TestRedactJSONPreservesTokenUsageAndBudgetCounters(t *testing.T) {
 
 func TestRedactJSONKeepsSourceLiteralWithCredentialLikeTextValid(t *testing.T) {
 	input := []byte(`{"data":{"content":"API_KEY = \\\"sk-abcdefghijklmnop\\\"\\n"}}`)
-	redacted := RedactJSON(input)
+	redacted := contract.RedactJSON(input)
 	if strings.Contains(string(redacted), "sk-abcdefghijklmnop") || !strings.Contains(string(redacted), "[REDACTED]") {
 		t.Fatalf("redaction leaked credential-like source literal: %s", redacted)
 	}
@@ -142,7 +144,7 @@ func TestRedactDoesNotFlagTypeAnnotations(t *testing.T) {
 		`access_token: str = field(default="")`,
 	}
 	for _, in := range cases {
-		got := string(Redact([]byte(in)))
+		got := string(contract.Redact([]byte(in)))
 		if strings.Contains(got, "[REDACTED]") {
 			t.Fatalf("type annotation / short assignment wrongly redacted: %q -> %q", in, got)
 		}
@@ -162,7 +164,7 @@ func TestRedactStillFlagsQuotedAndLongCredentials(t *testing.T) {
 		`SECRET = aGlnaGVudHJvcHkxMjM0NTY3OA`,
 	}
 	for _, in := range cases {
-		got := string(Redact([]byte(in)))
+		got := string(contract.Redact([]byte(in)))
 		if !strings.Contains(got, "[REDACTED]") {
 			t.Fatalf("real credential was not redacted: %q -> %q", in, got)
 		}
@@ -173,12 +175,12 @@ func TestRedactStillFlagsQuotedAndLongCredentials(t *testing.T) {
 // 键与冒号隔着引号时值仍被脱敏，短值与类型注解不受误伤。
 func TestRedactCatchesQuotedJSONKeyForms(t *testing.T) {
 	secret := []byte(`{"api_key":"AKIA1234567890ABCD","password":"hunter2secret"}`)
-	redacted := string(Redact(secret))
+	redacted := string(contract.Redact(secret))
 	if strings.Contains(redacted, "AKIA1234567890ABCD") || strings.Contains(redacted, "hunter2secret") {
 		t.Fatalf("quoted JSON credentials survived: %s", redacted)
 	}
 	benign := []byte(`def hash_token(token: str) -> str: return token`)
-	if got := string(Redact(benign)); got != string(benign) {
+	if got := string(contract.Redact(benign)); got != string(benign) {
 		t.Fatalf("benign annotation was redacted: %s", got)
 	}
 }
@@ -226,12 +228,12 @@ func TestOpenVerifiesContentHash(t *testing.T) {
 	if err != nil || string(content) != "prior-context-card" {
 		t.Fatalf("应读回制品内容: %q err=%v", content, err)
 	}
-	tampered := Ref{SHA256: ref.SHA256, Bytes: ref.Bytes, MediaType: ref.MediaType}
+	tampered := contract.Ref{SHA256: ref.SHA256, Bytes: ref.Bytes, MediaType: ref.MediaType}
 	tampered.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 	if _, err := store.Open(tampered); err == nil {
 		t.Fatal("摘要不符的引用应失败关闭")
 	}
-	missing := Ref{SHA256: "abcdef0000000000000000000000000000000000000000000000000000000000"}
+	missing := contract.Ref{SHA256: "abcdef0000000000000000000000000000000000000000000000000000000000"}
 	if _, err := store.Open(missing); err == nil {
 		t.Fatal("缺失制品应返回错误")
 	}
@@ -239,7 +241,7 @@ func TestOpenVerifiesContentHash(t *testing.T) {
 
 func TestRedactJSONPreservesExactNumbers(t *testing.T) {
 	input := []byte(`{"byte_offset":9007199254740993,"total_bytes":9223372036854775807,"ratio":0.1234567890123456789,"exponent":1e400,"api_key":"private-value"}`)
-	redacted := RedactJSON(input)
+	redacted := contract.RedactJSON(input)
 	var value struct {
 		Offset   json.Number `json:"byte_offset"`
 		Total    json.Number `json:"total_bytes"`
@@ -253,7 +255,7 @@ func TestRedactJSONPreservesExactNumbers(t *testing.T) {
 	if value.Offset.String() != "9007199254740993" || value.Total.String() != "9223372036854775807" || value.Ratio.String() != "0.1234567890123456789" || value.Exponent.String() != "1e400" || value.Key != "[REDACTED]" {
 		t.Fatalf("numbers or redaction changed: %s", redacted)
 	}
-	if trailing := RedactJSON([]byte(`{"number":1} trailing`)); !strings.Contains(string(trailing), "trailing") {
+	if trailing := contract.RedactJSON([]byte(`{"number":1} trailing`)); !strings.Contains(string(trailing), "trailing") {
 		t.Fatalf("accepted trailing content: %s", trailing)
 	}
 }
@@ -302,7 +304,7 @@ func TestPublishArtifactPreservesTargetOnTemporaryFailure(t *testing.T) {
 				if !errors.Is(err, wanted) {
 					t.Errorf("发布未返回预期故障: got=%v want=%v", err, wanted)
 				}
-				stored, readErr := store.Open(Ref{SHA256: "sha256:" + hexDigest})
+				stored, readErr := store.Open(contract.Ref{SHA256: "sha256:" + hexDigest})
 				if exists {
 					if readErr != nil || string(stored) != string(content) {
 						t.Errorf("已有制品内容或摘要损坏: content=%q err=%v", stored, readErr)

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -248,9 +248,9 @@ func TestSessionForkRejectsInvalidSources(t *testing.T) {
 		runningID := domain.NewRunID()
 		if _, err := journal.Append(context.Background(), 0, domain.EventDraft{
 			RunID: runningID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-			Payload: artifact.MustEncodeRedactedJSON(struct {
+			Payload: contract.MustEncodeRedactedJSON(struct {
 				domain.RunCreatedPayload
-				ConfigRef artifact.Ref `json:"config_ref"`
+				ConfigRef contract.Ref `json:"config_ref"`
 			}{RunCreatedPayload: domain.RunCreatedPayload{Task: "running", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), SessionID: "session-live"}, ConfigRef: configRef}),
 		}); err != nil {
 			t.Fatal(err)
@@ -328,10 +328,10 @@ func TestSessionForkRejectsCorruptSourceArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var configRef *artifact.Ref
+	var configRef *contract.Ref
 	for _, event := range inspected.Events {
 		var payload struct {
-			ConfigRef *artifact.Ref `json:"config_ref"`
+			ConfigRef *contract.Ref `json:"config_ref"`
 		}
 		if event.Type == domain.EventRunCreated && json.Unmarshal(event.Payload, &payload) == nil {
 			configRef = payload.ConfigRef
@@ -376,9 +376,9 @@ func TestSessionForkRejectsCyclicAncestry(t *testing.T) {
 		drafts := []domain.EventDraft{
 			{
 				RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-				Payload: artifact.MustEncodeRedactedJSON(struct {
+				Payload: contract.MustEncodeRedactedJSON(struct {
 					domain.RunCreatedPayload
-					ConfigRef artifact.Ref `json:"config_ref"`
+					ConfigRef contract.Ref `json:"config_ref"`
 				}{RunCreatedPayload: domain.RunCreatedPayload{
 					Task: "cycle", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(),
 					SessionID: "session-cycle", PrevRunID: previous,

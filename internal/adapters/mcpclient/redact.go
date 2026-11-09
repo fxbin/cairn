@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
 )
 
@@ -50,7 +50,7 @@ func (filter *secretFilter) text(value string) string {
 		}
 		filter.mu.RUnlock()
 	}
-	return string(artifact.Redact([]byte(value)))
+	return string(contract.Redact([]byte(value)))
 }
 
 // json 逐个解码字符串 token 后脱敏并重新转义，保留 JSON 数字和对象结构。

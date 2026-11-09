@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -80,7 +81,7 @@ func checkProjectInstructionsColdResume(t *testing.T, changeSource bool) {
 	for index, draft := range []domain.EventDraft{
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunCreated, Payload: mustJSON(struct {
 			domain.RunCreatedPayload
-			ProjectInstructionsRef artifact.Ref `json:"project_instructions_ref"`
+			ProjectInstructionsRef contract.Ref `json:"project_instructions_ref"`
 		}{RunCreatedPayload: domain.RunCreatedPayload{Task: task, Workspace: root}, ProjectInstructionsRef: reference})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventRunStarted},
 	} {

@@ -1,8 +1,8 @@
-// 本文件锁定凭据词表归位合同层后的行为等价：词干判定与文本脱敏输出
-// 必须与迁移前逐字节一致，兼容入口不得与合同层判定漂移。
+// redact_equivalence_test.go 锁定脱敏合同迁移后的行为等价：词干判定、
+// 兼容入口与文本脱敏输出必须与迁移前逐字节一致。
 //
 // Author: fxbin
-package artifact
+package contract_test
 
 import (
 	"testing"
@@ -46,7 +46,7 @@ func TestCredentialKeyDelegatesToContract(t *testing.T) {
 	}
 }
 
-// TestRedactOutputByteEquivalent 锁定文本脱敏在词表迁移后的逐字节输出，
+// TestRedactOutputByteEquivalent 锁定文本脱敏在合同迁移后的逐字节输出，
 // 同时覆盖键名敏感、非敏感字段放行与固定格式替换三条路径。
 func TestRedactOutputByteEquivalent(t *testing.T) {
 	cases := []struct {
@@ -63,7 +63,7 @@ func TestRedactOutputByteEquivalent(t *testing.T) {
 		{"sk-abcdefghijklmnop", "[REDACTED]"},
 	}
 	for _, test := range cases {
-		if got := string(Redact([]byte(test.input))); got != test.want {
+		if got := string(contract.Redact([]byte(test.input))); got != test.want {
 			t.Errorf("Redact(%q) = %q, want %q", test.input, got, test.want)
 		}
 	}

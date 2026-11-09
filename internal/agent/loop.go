@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/fxbin/cairn/internal/hooks"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/hooks"
+
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -56,9 +57,10 @@ type Loop struct {
 	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
 	// 不能掩盖 verifier 产生的副作用。
 	VerificationWorkspace tools.Workspace
-	Artifacts             *artifact.Store
-	OnEvent               EventSink
-	SystemPrompt          string
+	// Artifacts 是消费方最小制品能力端口；nil 时相关留证与回放降级为跳过。
+	Artifacts    ArtifactStore
+	OnEvent      EventSink
+	SystemPrompt string
 	// Hooks 是可选工作区钩子；pre_tool 由 Policy 收紧，post_tool 记录动作。
 	Hooks []hooks.Rule
 	// OnHookActions 接收生命周期钩子动作（不含 pre_tool 效果）；宿主负责
@@ -80,7 +82,7 @@ type Loop struct {
 	// 会话前情（ADR-0018）：调用方显式携带时注入消息首位；前情卡制品引用
 	// 同时进入创建事件以支持 resume 回放。
 	PriorContext    string
-	PriorContextRef *artifact.Ref
+	PriorContextRef *contract.Ref
 	// startedOperations 与 startedOperationsKnown 增量维护已启动操作计数，
 	// 供工具调用预算检查复用，避免每次工具调用都全量重载事件日志。
 	startedOperations      int
@@ -105,7 +107,7 @@ type RunInput struct {
 	SessionID       string
 	PrevRunID       domain.RunID
 	PriorContext    string
-	PriorContextRef *artifact.Ref
+	PriorContextRef *contract.Ref
 }
 
 // Result 返回 Loop 完成或暂停后的运行标识与最终回复。
@@ -119,7 +121,7 @@ type Result struct {
 type SteeringRequest struct {
 	InputID    string
 	Content    string
-	ContentRef *artifact.Ref
+	ContentRef *contract.Ref
 }
 
 // SubmitSteering 向运行中的 Loop 投递补充当前任务请求；非阻塞，重复 InputID
@@ -410,7 +412,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			response.Usage.TotalTokens = response.Usage.PromptTokens + response.Usage.CompletionTokens
 		}
 		// 连续性块（thinking 签名等）写入受保护制品，事件只带引用；正文不进普通事件。
-		var protocolBlocksRef *artifact.Ref
+		var protocolBlocksRef *contract.Ref
 		if len(response.ProtocolBlocks) > 0 && loop.Artifacts != nil {
 			encoded, err := json.Marshal(response.ProtocolBlocks)
 			if err != nil {
@@ -642,7 +644,7 @@ func (loop *Loop) consumeSteeringAtSafetyPoint(ctx context.Context, projection *
 // steeringInputPayload 是 steering_input_submitted 的业务字段。
 type steeringInputPayload struct {
 	InputID    string        `json:"input_id"`
-	ContentRef *artifact.Ref `json:"content_ref,omitempty"`
+	ContentRef *contract.Ref `json:"content_ref,omitempty"`
 	Kind       string        `json:"kind"`
 }
 
@@ -651,7 +653,7 @@ type steeringInputPayload struct {
 // 视为 steer。
 type steeringConsumedPayload struct {
 	InputID    string        `json:"input_id"`
-	ContentRef *artifact.Ref `json:"content_ref,omitempty"`
+	ContentRef *contract.Ref `json:"content_ref,omitempty"`
 	Outcome    string        `json:"outcome"`
 	Kind       string        `json:"kind,omitempty"`
 }
@@ -709,7 +711,7 @@ func (loop *Loop) requeueUnconsumedSteering(events []domain.Event) {
 		}
 		content := ""
 		if len(payload.ContentRef) > 0 && loop.Artifacts != nil {
-			var ref artifact.Ref
+			var ref contract.Ref
 			if json.Unmarshal(payload.ContentRef, &ref) == nil {
 				if restored, err := loop.Artifacts.Open(ref); err == nil {
 					content = string(restored)

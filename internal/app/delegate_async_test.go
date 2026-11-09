@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -599,16 +599,16 @@ func seedParentWithChild(t *testing.T, stateDir, workspaceHash string, configura
 	parentRunID, childRunID := domain.NewRunID(), domain.NewRunID()
 	created := domain.EventDraft{
 		RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(struct {
+		Payload: contract.MustEncodeRedactedJSON(struct {
 			domain.RunCreatedPayload
-			ConfigRef artifact.Ref `json:"config_ref"`
+			ConfigRef contract.Ref `json:"config_ref"`
 		}{RunCreatedPayload: domain.RunCreatedPayload{Task: "parent task", Workspace: "/seeded", ConfigFingerprint: configuration.Fingerprint()}, ConfigRef: configRef}),
 	}
 	started := domain.EventDraft{RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted}
-	delegated := domain.EventDraft{RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventSubagentDelegated, Payload: artifact.MustEncodeRedactedJSON(DelegatedPayload{ChildRunID: string(childRunID), TaskDigest: TaskDigest("child work"), Budget: SubagentBudget{MaxTurns: 5}})}
+	delegated := domain.EventDraft{RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventSubagentDelegated, Payload: contract.MustEncodeRedactedJSON(DelegatedPayload{ChildRunID: string(childRunID), TaskDigest: TaskDigest("child work"), Budget: SubagentBudget{MaxTurns: 5}})}
 	seed := []domain.EventDraft{created, started, delegated}
 	if childCompleted {
-		seed = append(seed, domain.EventDraft{RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventSubagentCompleted, Payload: artifact.MustEncodeRedactedJSON(CompletedPayload{ChildRunID: string(childRunID), Outcome: "ok"})})
+		seed = append(seed, domain.EventDraft{RunID: parentRunID, WorkspaceHash: workspaceHash, Type: domain.EventSubagentCompleted, Payload: contract.MustEncodeRedactedJSON(CompletedPayload{ChildRunID: string(childRunID), Outcome: "ok"})})
 	}
 	for index, draft := range seed {
 		if _, err := journal.Append(context.Background(), uint64(index), draft); err != nil {

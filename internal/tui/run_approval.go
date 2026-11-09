@@ -8,7 +8,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -190,7 +190,7 @@ func (console RunConsole) beforeSnapshotFor(proposal domain.Event) ([]byte, bool
 			continue
 		}
 		var payload struct {
-			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+			PlannedBeforeRef *contract.Ref `json:"planned_before_ref"`
 		}
 		if json.Unmarshal(event.Payload, &payload) != nil || payload.PlannedBeforeRef == nil {
 			return nil, false

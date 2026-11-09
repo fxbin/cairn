@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -199,12 +199,12 @@ func runDiagnosticsCommand(ctx context.Context, dir string, timeout time.Duratio
 	command.Stderr = &combined
 	err := command.Run()
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return string(artifact.Redact([]byte(combined.String()))), fmt.Errorf("diagnostics timed out after %s", timeout)
+		return string(contract.Redact([]byte(combined.String()))), fmt.Errorf("diagnostics timed out after %s", timeout)
 	}
 	if err != nil {
-		return string(artifact.Redact([]byte(combined.String()))), err
+		return string(contract.Redact([]byte(combined.String()))), err
 	}
-	return string(artifact.Redact([]byte(combined.String()))), nil
+	return string(contract.Redact([]byte(combined.String()))), nil
 }
 
 // parseDiagnostics 按引擎解析诊断行。

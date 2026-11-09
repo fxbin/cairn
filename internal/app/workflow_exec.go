@@ -23,6 +23,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/workflow"
@@ -185,7 +186,7 @@ func (service Service) WorkflowRun(ctx context.Context, options WorkflowRunOptio
 		WorkflowID:    id,
 		WorkspaceHash: hash,
 		Type:          workflow.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps:               steps,
 			PlanSHA256:          workflowPlanDigest(steps, taskRef.SHA256, options.Config.Fingerprint()),
 			ConfigFingerprint:   options.Config.Fingerprint(),
@@ -661,7 +662,7 @@ func (service Service) startWorkflowVerifyRun(ctx context.Context, execution wor
 	if err != nil {
 		return RunResult{ID: runID}, err
 	}
-	planRef, err := boot.Artifacts.Put(artifact.MustEncodeRedactedJSON(workflowVerifyPlanArtifact{
+	planRef, err := boot.Artifacts.Put(contract.MustEncodeRedactedJSON(workflowVerifyPlanArtifact{
 		Version: workflowVerifyPlanVersion, Kind: workflowVerifyPlanKind, WorkflowID: string(id), StepID: stepID,
 	}), "application/json")
 	if err != nil {
@@ -670,20 +671,20 @@ func (service Service) startWorkflowVerifyRun(ctx context.Context, execution wor
 	task := fmt.Sprintf("工作流验证门：%s 步骤 %s", id, stepID)
 	createdPayload := struct {
 		domain.RunCreatedPayload
-		ConfigRef artifact.Ref `json:"config_ref"`
-		TaskRef   artifact.Ref `json:"task_ref"`
+		ConfigRef contract.Ref `json:"config_ref"`
+		TaskRef   contract.Ref `json:"task_ref"`
 	}{RunCreatedPayload: domain.RunCreatedPayload{
 		Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: execution.configuration.Fingerprint(), Build: build,
 	}, ConfigRef: configRef, TaskRef: planRef}
 	if _, err := boot.Journal.Append(ctx, 0, domain.EventDraft{
 		RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(createdPayload),
+		Payload: contract.MustEncodeRedactedJSON(createdPayload),
 	}); err != nil {
 		return RunResult{ID: runID}, err
 	}
 	if _, err := boot.Journal.Append(ctx, 1, domain.EventDraft{
 		RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted,
-		Payload: artifact.MustEncodeRedactedJSON(struct {
+		Payload: contract.MustEncodeRedactedJSON(struct {
 			Invocation string `json:"invocation"`
 		}{Invocation: domain.NewID("invoke")}),
 	}); err != nil {
@@ -785,7 +786,7 @@ func (execution workflowExecution) appendDraft(ctx context.Context, id workflow.
 		WorkflowID:    id,
 		WorkspaceHash: execution.workspaceHash,
 		Type:          eventType,
-		Payload:       artifact.MustEncodeRedactedJSON(payload),
+		Payload:       contract.MustEncodeRedactedJSON(payload),
 		OccurredAt:    time.Now().UTC(),
 	}
 	return execution.store.Append(ctx, events[len(events)-1].Seq, draft)
@@ -825,7 +826,7 @@ func readWorkflowTask(artifacts *artifact.Store, binding workflow.StepIO) (strin
 	if binding.Ref == "" {
 		return "", errors.New("workflow created event has no task artifact binding; chains created before the execution slice cannot be resumed")
 	}
-	content, err := artifacts.Open(artifact.Ref{SHA256: binding.Ref})
+	content, err := artifacts.Open(contract.Ref{SHA256: binding.Ref})
 	if err != nil {
 		return "", fmt.Errorf("open workflow task artifact: %w", err)
 	}
@@ -848,7 +849,7 @@ func workflowVerifyRunOfRun(ctx context.Context, journal *sqlite.Journal, artifa
 		return false, fmt.Errorf("run %s is missing run_created event", runID)
 	}
 	var payload struct {
-		TaskRef *artifact.Ref `json:"task_ref"`
+		TaskRef *contract.Ref `json:"task_ref"`
 	}
 	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
 		return false, err

@@ -17,8 +17,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/canonicaljson"
+	"github.com/fxbin/cairn/internal/contract"
 	"gopkg.in/yaml.v3"
 )
 
@@ -147,7 +147,7 @@ func parseSkill(raw []byte, directoryName string) (skillFrontmatter, string, err
 	if !ValidSkillName(metadata.Name) || metadata.Name != directoryName {
 		return metadata, "", errors.New("skill name must match its directory")
 	}
-	if string(artifact.Redact([]byte(metadata.Name))) != metadata.Name {
+	if string(contract.Redact([]byte(metadata.Name))) != metadata.Name {
 		return metadata, "", errors.New("skill name contains a credential-like value")
 	}
 	if strings.TrimSpace(metadata.Description) == "" || utf8.RuneCountInString(metadata.Description) > SkillMaxDescriptionCharacters {
@@ -219,8 +219,8 @@ func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
 				return nil, errors.New("read skill enabled state failed")
 			}
 			invocable := metadata.UserInvocable == nil || *metadata.UserInvocable
-			metadata.Description = string(artifact.Redact([]byte(metadata.Description)))
-			metadata.Compatibility = string(artifact.Redact([]byte(metadata.Compatibility)))
+			metadata.Description = string(contract.Redact([]byte(metadata.Description)))
+			metadata.Compatibility = string(contract.Redact([]byte(metadata.Compatibility)))
 			catalog.entries = append(catalog.entries, SkillEntry{Name: metadata.Name, Description: metadata.Description, Compatibility: metadata.Compatibility, Scope: root.Scope, Disabled: disabledErr == nil, ManualOnly: metadata.ManualOnly, UserInvocable: invocable, SHA256: skillDigest(raw), SourceDigest: skillDigest([]byte(directory)), directory: directory})
 		}
 	}
@@ -230,7 +230,7 @@ func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
 
 // skillDiagnostic 在格式化诊断之前脱敏外部目录名，避免无效技能把凭据带进错误输出。
 func skillDiagnostic(name, scope, code string) SkillDiagnostic {
-	return SkillDiagnostic{Name: string(artifact.Redact([]byte(name))), Scope: scope, Code: code}
+	return SkillDiagnostic{Name: string(contract.Redact([]byte(name))), Scope: scope, Code: code}
 }
 
 // resolveSkillDirectory 仅对显式授权的用户共享根接纳包级链接，包内读取仍限制在规范根中。

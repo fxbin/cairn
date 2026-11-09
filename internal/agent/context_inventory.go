@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -64,7 +64,7 @@ func explorationInventory(messages []ports.Message, maximumBytes int) string {
 			SHA256 string          `json:"sha256"`
 			Data   json.RawMessage `json:"data"`
 		}
-		if json.Unmarshal(artifact.RedactJSON([]byte(message.Content)), &result) != nil || !result.OK {
+		if json.Unmarshal(contract.RedactJSON([]byte(message.Content)), &result) != nil || !result.OK {
 			continue
 		}
 		target := toolExplorationTarget(call.Name, call.Arguments)
@@ -75,7 +75,7 @@ func explorationInventory(messages []ports.Message, maximumBytes int) string {
 		key := call.Name + "\x00" + target
 		// 展示可以截断查询，但不同原始条件不能因相同短预览而被视为同一次搜索。
 		if call.Name == "search_text" {
-			key = call.Name + "\x00" + string(artifact.RedactJSON(call.Arguments))
+			key = call.Name + "\x00" + string(contract.RedactJSON(call.Arguments))
 		}
 		if call.Name == "read_file" {
 			if read, ok := decodeCheckpointReadEvidence(result.Data); ok {
@@ -197,7 +197,7 @@ func toolExplorationTarget(name string, arguments json.RawMessage) string {
 		Regex bool     `json:"regex"`
 		Argv  []string `json:"argv"`
 	}
-	if len(arguments) == 0 || json.Unmarshal(artifact.RedactJSON(arguments), &fields) != nil {
+	if len(arguments) == 0 || json.Unmarshal(contract.RedactJSON(arguments), &fields) != nil {
 		return ""
 	}
 	if name == "exec_command" {

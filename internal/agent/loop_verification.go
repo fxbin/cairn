@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
@@ -38,7 +37,7 @@ type verificationPlan struct {
 type verificationProposalPayload struct {
 	VerificationID string          `json:"verification_id"`
 	CommandIndex   int             `json:"command_index"`
-	PlanRef        *artifact.Ref   `json:"plan_ref,omitempty"`
+	PlanRef        *contract.Ref   `json:"plan_ref,omitempty"`
 	Arguments      json.RawMessage `json:"arguments"`
 }
 
@@ -96,7 +95,7 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: mustJSON(struct {
 		VerificationID       string        `json:"verification_id"`
 		MutationSeq          uint64        `json:"last_mutation_seq"`
-		PlanRef              *artifact.Ref `json:"plan_ref,omitempty"`
+		PlanRef              *contract.Ref `json:"plan_ref,omitempty"`
 		CommandsFingerprint  string        `json:"commands_fingerprint"`
 		WorkspaceObservation string        `json:"workspace_observation"`
 	}{VerificationID: verificationID, MutationSeq: projection.LastMutationSeq, PlanRef: planRef, CommandsFingerprint: plan.CommandsFingerprint, WorkspaceObservation: observation})}); err != nil {
@@ -122,7 +121,7 @@ func (loop *Loop) finishUnverifiedRun(ctx context.Context, projection *domain.Ru
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationStarted, TurnID: &turnID, Payload: mustJSON(struct {
 		VerificationID       string        `json:"verification_id"`
 		MutationSeq          uint64        `json:"last_mutation_seq"`
-		PlanRef              *artifact.Ref `json:"plan_ref,omitempty"`
+		PlanRef              *contract.Ref `json:"plan_ref,omitempty"`
 		CommandsFingerprint  string        `json:"commands_fingerprint"`
 		WorkspaceObservation string        `json:"workspace_observation"`
 	}{VerificationID: verificationID, MutationSeq: projection.LastMutationSeq, PlanRef: planRef, CommandsFingerprint: plan.CommandsFingerprint, WorkspaceObservation: observation})}); err != nil {
@@ -137,7 +136,7 @@ func (loop *Loop) finishUnverifiedRun(ctx context.Context, projection *domain.Ru
 }
 
 // createVerificationPlan 冻结验证命令及配置指纹，并将计划作为脱敏制品保存。
-func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq uint64) (verificationPlan, *artifact.Ref, error) {
+func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq uint64) (verificationPlan, *contract.Ref, error) {
 	commandsFingerprint, err := fingerprintVerificationCommands(loop.Verification)
 	if err != nil {
 		return verificationPlan{}, nil, err
@@ -165,7 +164,7 @@ func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq 
 }
 
 // runVerificationCommands 从指定索引顺序执行冻结计划中的验证命令。
-func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *artifact.Ref, commandsFingerprint string, startIndex int) error {
+func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *contract.Ref, commandsFingerprint string, startIndex int) error {
 	commands, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
 	if err != nil {
 		return err
@@ -247,7 +246,7 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 
 // verificationCommands 从持久化计划恢复冻结命令；没有制品引用时仅在当前
 // 配置摘要与 started 事件一致时兼容恢复，缺少摘要或发生漂移均失败关闭。
-func (loop *Loop) verificationCommands(verificationID string, planRef *artifact.Ref, commandsFingerprint string) ([]VerificationCommand, error) {
+func (loop *Loop) verificationCommands(verificationID string, planRef *contract.Ref, commandsFingerprint string) ([]VerificationCommand, error) {
 	if planRef == nil {
 		commands := append([]VerificationCommand(nil), loop.Verification...)
 		if err := validateVerificationCommands(commands); err != nil {
@@ -322,7 +321,7 @@ func validateVerificationCommands(commands []VerificationCommand) error {
 }
 
 // verificationCommand 返回冻结计划中的指定命令。
-func (loop *Loop) verificationCommand(verificationID string, planRef *artifact.Ref, commandsFingerprint string, index int) (VerificationCommand, error) {
+func (loop *Loop) verificationCommand(verificationID string, planRef *contract.Ref, commandsFingerprint string, index int) (VerificationCommand, error) {
 	commands, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
 	if err != nil {
 		return VerificationCommand{}, err
@@ -382,7 +381,7 @@ type incompleteVerificationRecord struct {
 	turnID               domain.TurnID
 	startIndex           int
 	verificationID       string
-	planRef              *artifact.Ref
+	planRef              *contract.Ref
 	commandsFingerprint  string
 	lastMutationSeq      uint64
 	workspaceObservation string
@@ -400,7 +399,7 @@ func latestIncompleteVerification(events []domain.Event) (incompleteVerification
 			}
 			var payload struct {
 				VerificationID       string        `json:"verification_id"`
-				PlanRef              *artifact.Ref `json:"plan_ref"`
+				PlanRef              *contract.Ref `json:"plan_ref"`
 				CommandsFingerprint  string        `json:"commands_fingerprint"`
 				LastMutationSeq      uint64        `json:"last_mutation_seq"`
 				WorkspaceObservation string        `json:"workspace_observation"`
@@ -979,7 +978,7 @@ func (loop *Loop) repairMissingVerificationFeedback(ctx context.Context, project
 		}
 		var payload struct {
 			VerificationID      string        `json:"verification_id"`
-			PlanRef             *artifact.Ref `json:"plan_ref"`
+			PlanRef             *contract.Ref `json:"plan_ref"`
 			CommandsFingerprint string        `json:"commands_fingerprint"`
 			LastMutationSeq     uint64        `json:"last_mutation_seq"`
 		}

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -88,7 +88,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 			task = payload.Task
 		}
 		if len(payload.PriorContextRef) > 0 {
-			var ref artifact.Ref
+			var ref contract.Ref
 			if err := json.Unmarshal(payload.PriorContextRef, &ref); err != nil {
 				return nil, fmt.Errorf("decode prior context ref: %w", err)
 			}
@@ -220,7 +220,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 			if len(payload.ContentRef) == 0 {
 				return nil, fmt.Errorf("steering input %s missing content ref", payload.InputID)
 			}
-			var ref artifact.Ref
+			var ref contract.Ref
 			if err := json.Unmarshal(payload.ContentRef, &ref); err != nil {
 				return nil, fmt.Errorf("steering input %s content ref: %w", payload.InputID, err)
 			}
@@ -249,7 +249,7 @@ func sessionContextBlock(prior string) string {
 
 // loadProtocolBlocks 从受保护制品读取连续性块；引用存在即属于可回放合同，
 // 摘要或格式错误必须失败关闭，不得静默丢弃签名。
-func (loop *Loop) loadProtocolBlocks(ref *artifact.Ref) ([]ports.ProtocolBlock, error) {
+func (loop *Loop) loadProtocolBlocks(ref *contract.Ref) ([]ports.ProtocolBlock, error) {
 	if ref == nil {
 		return nil, nil
 	}
@@ -266,7 +266,7 @@ func (loop *Loop) loadProtocolBlocks(ref *artifact.Ref) ([]ports.ProtocolBlock, 
 
 // loadPriorContext 从制品库严格读取并校验前情卡；引用存在即属于可回放合同，
 // 任一格式、存在性或摘要错误都必须由调用方传播。
-func (loop *Loop) loadPriorContext(ref *artifact.Ref) (string, error) {
+func (loop *Loop) loadPriorContext(ref *contract.Ref) (string, error) {
 	if loop.Artifacts == nil || ref == nil {
 		return "", errors.New("artifact store unavailable")
 	}

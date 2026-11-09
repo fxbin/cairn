@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -213,7 +213,7 @@ func (loop *Loop) deliverCompletedAsyncChildren(ctx context.Context, projection 
 
 // storeAsyncChildSummary 把交付摘要脱敏落制品并返回引用；制品库不可用时
 // 失败关闭，不得把摘要内联进事件。
-func (loop *Loop) storeAsyncChildSummary(summary string) (*artifact.Ref, error) {
+func (loop *Loop) storeAsyncChildSummary(summary string) (*contract.Ref, error) {
 	if loop.Artifacts == nil {
 		return nil, errors.New("artifact store is required to deliver async child results")
 	}
