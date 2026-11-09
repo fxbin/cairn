@@ -44,3 +44,7 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 	}
 	return wrapped, func() error { return os.Remove(path) }, nil
 }
+
+// newSandboxTermination 表示 macOS 不需要包装层取消投递：sandbox-exec 以 exec
+// 方式直接运行目标命令，cairn 的直接子进程就是 workload，取消沿用进程组信号。
+func newSandboxTermination() (*sandboxTermination, error) { return nil, nil }

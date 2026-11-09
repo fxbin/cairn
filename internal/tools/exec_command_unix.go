@@ -283,11 +283,13 @@ type execCommandOutput struct {
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
 // runCommand 启动已完成边界装配的进程；包装 runCommandShared。
 func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) Result {
-	return runCommandShared(ctx, arguments, backend, command, cleanup, tool.Grace)
+	return runCommandShared(ctx, arguments, backend, command, cleanup, tool.Grace, nil)
 }
 
 // runCommandShared 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
-func runCommandShared(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration) Result {
+// termination 非空时，优雅取消优先直接作用于 OS 沙箱内部 workload，避免包装
+// 进程遇 SIGTERM 立即退出后由 --die-with-parent 连带杀掉内部进程。
+func runCommandShared(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) Result {
 	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	stdout := &limitedBuffer{limit: arguments.MaxOutputBytes}
@@ -296,7 +298,13 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 	command.Stderr = stderr
 	started := time.Now()
 	if err := command.Start(); err != nil {
+		if termination != nil {
+			termination.close()
+		}
 		return Failure("start", err.Error())
+	}
+	if termination != nil {
+		termination.afterStart()
 	}
 	finished := make(chan error, 1)
 	go func() { finished <- command.Wait() }()
@@ -308,7 +316,10 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 		cancelled = commandContext.Err() != nil
 	case <-commandContext.Done():
 		cancelled = true
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+		gracefulDelivered := termination != nil && termination.graceful()
+		if !gracefulDelivered {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+		}
 		waitGrace := grace
 		if waitGrace <= 0 {
 			waitGrace = 2 * time.Second
