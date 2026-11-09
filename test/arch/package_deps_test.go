@@ -53,7 +53,6 @@ const (
 const (
 	stepArtifactPort = "第 2 步（artifact 端口）"
 	stepHooksPort    = "第 3 步（hooks 数据合同上移）"
-	stepCredential   = "第 4 步（credential 脱敏端口）"
 	stepPolicyPort   = "第 5 步（policy.Gate 授权端口）"
 	stepToolsPort    = "第 7 步（tools 端口拆分）"
 	stepStudio       = "第 8 步（Studio Adapter 收敛）"
@@ -125,16 +124,14 @@ type knownException struct {
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
 var knownExceptions = []knownException{
-	// Core 直接持有 Runtime 具体实现的 6 类引用。
-	{Importer: "internal/agent", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "Loop.Artifacts 直接持有 *artifact.Store"},
+	// Core 直接持有 Runtime 具体实现的 5 类引用。
+	{Importer: "internal/agent", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "Loop.Artifacts 直接持有 *artifact.Store；待 artifact 步骤以 Store 端口与 Ref 归位收口"},
 	{Importer: "internal/agent", Imported: "internal/hooks", Step: stepHooksPort, Reason: "Loop.Hooks 与钩子派发直接使用 hooks 数据合同"},
-	{Importer: "internal/agent", Imported: "internal/credential", Step: stepCredential, Reason: "sensitive.go 内联调用 credential.Key 做敏感性判定"},
 	{Importer: "internal/agent", Imported: "internal/policy", Step: stepPolicyPort, Reason: "Loop.Gate 直接持有 *policy.Gate 并穿透 Patch 规划与工作区观察"},
 	{Importer: "internal/agent", Imported: "internal/tools", Step: stepToolsPort, Reason: "Loop.Tools 直接持有 *tools.Registry，21 个生产文件引用 tools 类型"},
 
-	// 合同账本依赖 Runtime 制品与凭据。
-	{Importer: "internal/decision", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "decision/text.go 引用 artifact 内容摘要"},
-	{Importer: "internal/decision", Imported: "internal/credential", Step: stepCredential, Reason: "decision/text.go 引用 credential 脱敏"},
+	// 合同账本依赖 Runtime 制品；脱敏词表已归位合同层，待 artifact 步骤收口。
+	{Importer: "internal/decision", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "decision/text.go 引用 artifact.Redact；待 artifact 步骤随脱敏合同一并归位"},
 
 	// 端口层依赖无运行时消费方的工作流脚手架。
 	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
