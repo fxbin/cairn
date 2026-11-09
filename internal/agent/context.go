@@ -10,7 +10,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -63,7 +62,7 @@ func (loop *Loop) compactContextIfNeeded(ctx context.Context, projection *domain
 		return messages, nil
 	}
 	// 观察点：即将压缩；仅收集动作，不改变压缩决策。
-	loop.dispatchLifecycleHooks(hooks.EventPreCompact, "")
+	loop.dispatchLifecycleHooks(HookEventPreCompact, "")
 	if projection.CurrentTurn != nil || projection.PendingApproval != nil || projection.PendingOperation != nil {
 		return nil, errors.New("context compaction requires a closed turn without pending work")
 	}
