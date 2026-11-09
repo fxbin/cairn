@@ -6,6 +6,11 @@
 # Author: fxbin
 set -euo pipefail
 
+# 容器内以 root 运行，挂载仓库的 .git 归宿主用户所有，git 会以 dubious
+# ownership 拒绝读取，导致 go build 的 VCS 标记失败并掩盖真实用例结果。
+# 这里禁用 VCS 标记；门禁只关心用例行为，不依赖构建标记。
+export GOFLAGS="${GOFLAGS:+${GOFLAGS} }-buildvcs=false"
+
 sandbox_tests="TestExecCommandRejectsWriteToWorkspaceParent TestExecCommandAllowsWriteInsideWorkspace TestExecCommandAllowsReadOutsideWorkspace"
 signal_test="TestSecondInterruptPreemptsCancellation"
 
