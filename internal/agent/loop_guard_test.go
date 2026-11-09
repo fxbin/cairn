@@ -69,6 +69,22 @@ func TestTurnLoopGuardPreservesProgressInABCycle(t *testing.T) {
 	}
 }
 
+// TestTurnLoopGuardIgnoresParkedContinuation 锁定异步委派停靠轮次不构成无进展
+// 证据：停靠只追加 Outcome=continue 且不带操作签名与进展观察的 TurnClosed，
+// 等待子任务期间本就没有新的工作区或验证观察，不能据此推断原地徘徊；无进展
+// 熔断仍只由带相同指纹的继续轮次触发。
+func TestTurnLoopGuardIgnoresParkedContinuation(t *testing.T) {
+	events := make([]domain.Event, 0, noProgressTurnLimit+2)
+	for index := 0; index < noProgressTurnLimit+2; index++ {
+		events = append(events, domain.Event{Type: domain.EventTurnClosed, Payload: mustJSON(domain.TurnClosedPayload{
+			Outcome: "continue",
+		}), Seq: uint64(index + 1)})
+	}
+	if reason := turnLoopGuard(events); reason != "" {
+		t.Fatalf("parked continuation was stopped: %s", reason)
+	}
+}
+
 func TestTurnLoopGuardDetectsSixRoundsWithoutProgress(t *testing.T) {
 	events := make([]domain.Event, 0, noProgressTurnLimit)
 	for index := 0; index < noProgressTurnLimit; index++ {

@@ -38,9 +38,11 @@ concurrency:
 jobs:
   # 基础门禁：格式漂移、静态检查、构建、默认标签全量测试
   gate:
-    # 固定 24.04：ubuntu-latest（26.04）下 bwrap 沙箱内找不到 /bin/sh，
-    # 异步委派用例的父等待轮次与子完成存在调度竞态；待适配后再升级。
-    runs-on: ubuntu-24.04
+    # 26.04 适配（Issue #37）：26.04 镜像自带 bubblewrap，host 收紧在 CI 上首次
+    # 真正生效。沙箱根不再是只挂少数系统目录的空 tmpfs，而是逐条只读映射宿主
+    # 根条目（含 /lib64 等加载器别名），临时目录根与工作区可写，随后整体重挂
+    # 只读；参数与理由见 internal/tools/ossandbox_linux.go。
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
