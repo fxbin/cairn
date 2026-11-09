@@ -51,7 +51,6 @@ const (
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
 const (
-	stepHooksPort  = "第 3 步（hooks 数据合同上移）"
 	stepPolicyPort = "第 5 步（policy.Gate 授权端口）"
 	stepToolsPort  = "第 7 步（tools 端口拆分）"
 	stepStudio     = "第 8 步（Studio Adapter 收敛）"
@@ -123,8 +122,7 @@ type knownException struct {
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
 var knownExceptions = []knownException{
-	// Core 直接持有 Runtime 具体实现的 3 类引用。
-	{Importer: "internal/agent", Imported: "internal/hooks", Step: stepHooksPort, Reason: "Loop.Hooks 与钩子派发直接使用 hooks 数据合同"},
+	// Core 直接持有 Runtime 具体实现的 2 类引用。
 	{Importer: "internal/agent", Imported: "internal/policy", Step: stepPolicyPort, Reason: "Loop.Gate 直接持有 *policy.Gate 并穿透 Patch 规划与工作区观察"},
 	{Importer: "internal/agent", Imported: "internal/tools", Step: stepToolsPort, Reason: "Loop.Tools 直接持有 *tools.Registry，21 个生产文件引用 tools 类型"},
 

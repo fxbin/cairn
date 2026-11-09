@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/hooks"
-
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -61,11 +59,12 @@ type Loop struct {
 	Artifacts    ArtifactStore
 	OnEvent      EventSink
 	SystemPrompt string
-	// Hooks 是可选工作区钩子；pre_tool 由 Policy 收紧，post_tool 记录动作。
-	Hooks []hooks.Rule
+	// Hooks 是可选工作区钩子规则的最小视图；pre_tool 效果由 Policy 收紧，
+	// post_tool 动作随操作终态记录。
+	Hooks []HookRule
 	// OnHookActions 接收生命周期钩子动作（不含 pre_tool 效果）；宿主负责
 	// 按 queue_followup 合同入队。nil 时动作仅丢弃，不产生副作用。
-	OnHookActions func(event hooks.Event, actions []hooks.Action)
+	OnHookActions func(event HookEvent, actions []HookAction)
 	// Delegator 执行 delegate_task 委派：以父运行身份受控启动子 run 并同步
 	// 等待终态或审批暂停。nil 表示当前运行不接受委派（子运行不嵌套），调用
 	// 失败关闭；回调期间应用层会向本 run Journal 追加 delegated/completed
@@ -267,7 +266,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		loop.MaxTurns = fallbackMaxTurns
 	}
 	// 观察点：用户任务进入运行；仅收集动作。
-	loop.dispatchLifecycleHooks(hooks.EventUserPromptSubmit, "")
+	loop.dispatchLifecycleHooks(HookEventUserPromptSubmit, "")
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 	if err != nil {
 		return Result{}, err
@@ -337,7 +336,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		}{Turn: turn + 1})}); err != nil {
 			return Result{}, err
 		}
-		loop.dispatchLifecycleHooks(hooks.EventTurnStart, "")
+		loop.dispatchLifecycleHooks(HookEventTurnStart, "")
 		if ctx.Err() != nil {
 			return loop.persistCancellation(ctx, &projection, input, &turnID)
 		}

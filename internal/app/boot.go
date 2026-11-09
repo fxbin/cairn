@@ -339,6 +339,31 @@ func buildCapabilityManifest(configuration config.Config, tools []ToolCapability
 	}
 }
 
+// agentHookRules 把已校验的运行时钩子规则投影为 Loop 的最小数据合同；
+// 只保留事件、工具匹配、动作与启用位，顺序与来源规则一致。
+func agentHookRules(rules []hooks.Rule) []agent.HookRule {
+	if len(rules) == 0 {
+		return nil
+	}
+	converted := make([]agent.HookRule, 0, len(rules))
+	for _, rule := range rules {
+		item := agent.HookRule{
+			Event:     agent.HookEvent(rule.Event),
+			ToolMatch: rule.ToolMatch,
+			Enabled:   rule.Enabled,
+		}
+		for _, action := range rule.Actions {
+			item.Actions = append(item.Actions, agent.HookAction{
+				Kind:    agent.HookActionKind(action.Kind),
+				Content: action.Content,
+				Reason:  action.Reason,
+			})
+		}
+		converted = append(converted, item)
+	}
+	return converted
+}
+
 // hooksFromConfig 将 YAML 钩子配置转换为运行时规则；非法规则跳过（失败关闭装配）。
 func hooksFromConfig(configured []config.HookConfig) []hooks.Rule {
 	if len(configured) == 0 {

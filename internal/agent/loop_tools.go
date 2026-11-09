@@ -9,7 +9,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -24,17 +23,17 @@ type toolCallPayload struct {
 
 // operationPayload 是工具操作开始或终态事件的可回放证据字段。
 type operationPayload struct {
-	ToolName           string         `json:"tool_name"`
-	SideEffectClass    string         `json:"side_effect_class,omitempty"`
-	MutationBarrier    bool           `json:"mutation_barrier,omitempty"`
-	PlannedPath        string         `json:"planned_path,omitempty"`
-	PlannedBefore      string         `json:"planned_before,omitempty"`
-	PlannedBeforeRef   *contract.Ref  `json:"planned_before_ref,omitempty"`
-	PlannedAfter       string         `json:"planned_after,omitempty"`
-	Result             any            `json:"result,omitempty"`
-	ResultRef          *contract.Ref  `json:"result_ref,omitempty"`
-	ResultStorageError string         `json:"result_storage_error,omitempty"`
-	HookActions        []hooks.Action `json:"hook_actions,omitempty"`
+	ToolName           string        `json:"tool_name"`
+	SideEffectClass    string        `json:"side_effect_class,omitempty"`
+	MutationBarrier    bool          `json:"mutation_barrier,omitempty"`
+	PlannedPath        string        `json:"planned_path,omitempty"`
+	PlannedBefore      string        `json:"planned_before,omitempty"`
+	PlannedBeforeRef   *contract.Ref `json:"planned_before_ref,omitempty"`
+	PlannedAfter       string        `json:"planned_after,omitempty"`
+	Result             any           `json:"result,omitempty"`
+	ResultRef          *contract.Ref `json:"result_ref,omitempty"`
+	ResultStorageError string        `json:"result_storage_error,omitempty"`
+	HookActions        []HookAction  `json:"hook_actions,omitempty"`
 }
 
 // policyDecisionPayload 保存可回放的策略结论及拒绝时的结构化失败信息。
@@ -169,7 +168,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}{Fingerprint: decision.Fingerprint, Summary: decision.Summary, Rule: decision.RuleID})}); err != nil {
 			return tools.Result{}, err
 		}
-		loop.dispatchLifecycleHooks(hooks.EventNotification, call.Name)
+		loop.dispatchLifecycleHooks(HookEventNotification, call.Name)
 		return tools.Result{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == policy.Deny {
@@ -371,20 +370,20 @@ func redactToolResult(result tools.Result) tools.Result {
 
 // dispatchPostToolHooks 收集 post_tool 钩子动作并写入操作载荷；不在此处执行副作用，
 // 执行仍由宿主（如 desktop queue）按 action 合同处理。
-func (loop *Loop) dispatchPostToolHooks(toolName string, result tools.Result) []hooks.Action {
+func (loop *Loop) dispatchPostToolHooks(toolName string, result tools.Result) []HookAction {
 	if len(loop.Hooks) == 0 {
 		return nil
 	}
-	return hooks.ActionsFor(loop.Hooks, hooks.EventPostTool, toolName)
+	return hookActionsFor(loop.Hooks, HookEventPostTool, toolName)
 }
 
 // dispatchLifecycleHooks 收集非工具生命周期钩子动作；不授予、不执行副作用，
 // 仅返回动作供宿主入队。toolName 对非工具事件传空。
-func (loop *Loop) dispatchLifecycleHooks(event hooks.Event, toolName string) []hooks.Action {
+func (loop *Loop) dispatchLifecycleHooks(event HookEvent, toolName string) []HookAction {
 	if len(loop.Hooks) == 0 {
 		return nil
 	}
-	actions := hooks.ActionsFor(loop.Hooks, event, toolName)
+	actions := hookActionsFor(loop.Hooks, event, toolName)
 	if len(actions) > 0 && loop.OnHookActions != nil {
 		loop.OnHookActions(event, actions)
 	}
