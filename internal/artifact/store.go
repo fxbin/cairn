@@ -15,7 +15,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // Ref 是可持久化的制品引用及供用户查看的截断预览。
@@ -111,7 +111,7 @@ var secretPatterns = []*regexp.Regexp{
 
 // credentialAssignmentPattern 捕获带引号或足够长裸值的候选赋值；闭合引号值
 // 保留既有长度阈值，未闭合到 EOF 的非空片段也脱敏，防止输出截断后漏值。
-// 键名敏感性统一交给 credential.Key，避免文本、JSON、配置和工具各自维护词干。
+// 键名敏感性统一交给 contract.SensitiveKey，避免文本、JSON、配置和工具各自维护词干。
 var credentialAssignmentPattern = regexp.MustCompile(`(?i)\b[A-Za-z_][A-Za-z0-9_-]*["']?\s*[:=]\s*(?:"[^"]{4,}"|'[^']{4,}'|"[^"]+$|'[^']+$|[A-Za-z0-9+/=_-]{16,})`)
 
 // credentialEnvAssignmentPattern 只捕获行首的“环境变量=值”赋值（.env 与 shell
@@ -157,14 +157,14 @@ func Redact(content []byte) []byte {
 			return match
 		}
 		key := strings.Trim(strings.TrimSpace(match[:index]), "\"'")
-		if !credential.Key(key) {
+		if !contract.SensitiveKey(key) {
 			return match
 		}
 		return match[:index+1] + "[REDACTED]"
 	})
 	clean = credentialEnvAssignmentPattern.ReplaceAllStringFunc(clean, func(match string) string {
 		index := strings.Index(match, "=")
-		if index < 0 || !credential.Key(match[:index]) {
+		if index < 0 || !contract.SensitiveKey(match[:index]) {
 			return match
 		}
 		return match[:index+1] + "[REDACTED]"
@@ -242,7 +242,7 @@ func scrubJSON(value *any, key string) {
 // 虽然包含 tokens 字样，但属于审计与预算事实，必须保留。
 func sensitiveKey(key string) bool {
 	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-	return !strings.HasSuffix(key, "tokens") && credential.Key(key)
+	return !strings.HasSuffix(key, "tokens") && contract.SensitiveKey(key)
 }
 
 // Put 脱敏后按内容哈希原子写入制品，并返回稳定引用；JSON 制品优先走保留

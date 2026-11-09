@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // credentialFlagRule 描述已知程序的口令短标志；subcommand 非空时只在
@@ -128,14 +128,14 @@ func sensitiveCredentialShortFlag(credentialFlags map[string]bool, argv []string
 }
 
 // sensitiveCredentialLongFlag 判定 --key=value / --key value 形式的长标志；
-// 键名敏感性统一交给 credential.Key，豁免清单排除从不内联口令的形式。
+// 键名敏感性统一交给 contract.SensitiveKey，豁免清单排除从不内联口令的形式。
 func sensitiveCredentialLongFlag(argv []string, index int, argument string) bool {
 	if !strings.HasPrefix(argument, "-") {
 		return false
 	}
 	option := strings.TrimLeft(argument, "-")
 	key, value, assigned := strings.Cut(option, "=")
-	if option == argument || (!assigned && execFlagCredentialExemptions[strings.ReplaceAll(key, "-", "_")]) || !credential.Key(key) {
+	if option == argument || (!assigned && execFlagCredentialExemptions[strings.ReplaceAll(key, "-", "_")]) || !contract.SensitiveKey(key) {
 		return false
 	}
 	if assigned {
@@ -193,7 +193,7 @@ func sensitiveBareEnvAssignment(argument string) bool {
 		return false
 	}
 	match := bareEnvAssignmentPattern.FindStringSubmatch(argument)
-	return match != nil && credential.Key(match[1])
+	return match != nil && contract.SensitiveKey(match[1])
 }
 
 // sensitiveToolIdentity 判定模型给出的工具名或调用 ID 是否本身携带凭据式

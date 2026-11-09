@@ -10,7 +10,7 @@ import (
 	"unicode"
 
 	"github.com/fxbin/cairn/internal/artifact"
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // 凭据形态模式：常见服务提供商的固定前缀与固定长度格式。这些形态不依赖
@@ -51,7 +51,7 @@ func containsCredentialMaterial(value string) bool {
 }
 
 // containsCredentialWordValue 判断文本是否出现凭据词干后紧跟的裸值。词干
-// 判定复用 internal/credential 的既有规则，避免账本另立一套凭据名称清单；
+// 判定复用合同层的既有词表，避免账本另立一套凭据名称清单；
 // 值必须具备凭据形态（纯 ASCII、够长且同时含数字与字母，或足够长的字母
 // 串），以免把“token 过期后不再冒充现行事实”这类正常表述误判为泄露。
 func containsCredentialWordValue(value string) bool {
@@ -60,7 +60,7 @@ func containsCredentialWordValue(value string) bool {
 		word := strings.ToLower(tokens[index])
 		// 以 tokens 结尾的字段多是计量口径，不是凭据名称，与制品存储的
 		// 敏感键判定保持同一取舍。
-		if strings.HasSuffix(word, "tokens") || !credential.Key(word) {
+		if strings.HasSuffix(word, "tokens") || !contract.SensitiveKey(word) {
 			continue
 		}
 		if isSecretLikeValue(tokens[index+1]) {
