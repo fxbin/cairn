@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -219,7 +219,7 @@ func runGitRead(ctx context.Context, dir string, limit int, args ...string) (git
 		text = text[:limit] + "\n...[preview-truncated]"
 		out.truncated = true
 	}
-	out.text = string(artifact.Redact([]byte(text)))
+	out.text = string(contract.Redact([]byte(text)))
 	return out, nil
 }
 

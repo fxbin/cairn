@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -158,7 +159,7 @@ func TestResolveSessionContextPersistsExplicitTextAndRestoresReference(t *testin
 	}
 	service := Service{}
 	secret := "API_KEY=abcdefghijklmnop"
-	_, text, ref, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContext: secret, PriorContextRef: &artifact.Ref{SHA256: "sha256:stale"}})
+	_, text, ref, err := service.resolveSessionContext(context.Background(), nil, store, RunOptions{PriorContext: secret, PriorContextRef: &contract.Ref{SHA256: "sha256:stale"}})
 	if err != nil {
 		t.Fatal(err)
 	}

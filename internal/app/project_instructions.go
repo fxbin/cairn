@@ -8,12 +8,13 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 	"github.com/fxbin/cairn/internal/userdir"
 )
 
 // freezeProjectInstructions 保存已脱敏的完整项目规约；没有有效文档时不生成引用，不改变旧运行合同。
-func freezeProjectInstructions(workspace tools.Workspace, store *artifact.Store, disableUser bool) (*artifact.Ref, error) {
+func freezeProjectInstructions(workspace tools.Workspace, store *artifact.Store, disableUser bool) (*contract.Ref, error) {
 	userDirectory := ""
 	if !disableUser {
 		if directory, err := userdir.Root(); err == nil {

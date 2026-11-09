@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // TestRedactRemovesShortCredentialEnvAssignments 锁定行锚定裸赋值脱敏：短的
 // 环境式凭据（DB_PASSWORD=hunter2）不限长度必须清除，非凭据键不受影响。
 func TestRedactRemovesShortCredentialEnvAssignments(t *testing.T) {
 	input := "DB_PASSWORD=hunter2\nSESSION_KEY=abc\nPORT=8080\n"
-	output := string(Redact([]byte(input)))
+	output := string(contract.Redact([]byte(input)))
 	for _, required := range []string{"DB_PASSWORD=[REDACTED]", "SESSION_KEY=[REDACTED]", "PORT=8080"} {
 		if !strings.Contains(output, required) {
 			t.Fatalf("output %q missing %q", output, required)
@@ -25,7 +27,7 @@ func TestRedactRemovesShortCredentialEnvAssignments(t *testing.T) {
 // 非行首的标志式参数不是环境式裸赋值，不得被行锚定规则改动。
 func TestRedactKeepsNonCredentialCodeSyntax(t *testing.T) {
 	input := "if password == \"\" {\n\ttoken := os.Getenv(\"TOKEN\")\n}\n--password=short\npassword = spaced\n"
-	if output := string(Redact([]byte(input))); output != input {
+	if output := string(contract.Redact([]byte(input))); output != input {
 		t.Fatalf("non-env syntax must stay untouched:\ninput : %q\noutput: %q", input, output)
 	}
 }
@@ -38,7 +40,7 @@ func TestRedactJSONScrubsBareCredentialAssignmentInStringLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	redacted := string(RedactJSON(payload))
+	redacted := string(contract.RedactJSON(payload))
 	if strings.Contains(redacted, "hunter2") || !strings.Contains(redacted, "DB_PASSWORD=[REDACTED]") {
 		t.Fatalf("string leaf not scrubbed: %s", redacted)
 	}
@@ -68,7 +70,7 @@ func TestRedactQuotedCredentialAtEOF(t *testing.T) {
 		{name: "public single EOF", input: `PORT='8080`, want: `PORT='8080`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := string(Redact([]byte(test.input))); got != test.want {
+			if got := string(contract.Redact([]byte(test.input))); got != test.want {
 				t.Error("文本 EOF 脱敏不符合正负控")
 			}
 			payload, err := json.Marshal(struct {
@@ -80,7 +82,7 @@ func TestRedactQuotedCredentialAtEOF(t *testing.T) {
 			var result struct {
 				Stdout string `json:"stdout"`
 			}
-			if err := json.Unmarshal(RedactJSON(payload), &result); err != nil {
+			if err := json.Unmarshal(contract.RedactJSON(payload), &result); err != nil {
 				t.Fatal(err)
 			}
 			if result.Stdout != test.want {

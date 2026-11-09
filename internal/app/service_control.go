@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -199,7 +199,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, err
 	}
 	appendEvent := func(eventType domain.EventType, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: artifact.MustEncodeRedactedJSON(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: &operationID, Payload: contract.MustEncodeRedactedJSON(payload)}
 		// 写入前先在克隆投影上模拟迁移，避免把不可回放的事件永久写入日志。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)
@@ -247,7 +247,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
-	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunResumed, Payload: artifact.MustEncodeRedactedJSON(struct {
+	resumedDraft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunResumed, Payload: contract.MustEncodeRedactedJSON(struct {
 		Invocation           string `json:"invocation"`
 		FromSeq              uint64 `json:"from_seq"`
 		WorkspaceObservation string `json:"workspace_observation"`
@@ -364,7 +364,7 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		terminal = abortTerminalFromCancellation(request)
 	}
 	appendEvent := func(eventType domain.EventType, turnID *domain.TurnID, operationID *domain.OperationID, payload any) error {
-		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: artifact.MustEncodeRedactedJSON(payload)}
+		draft := domain.EventDraft{RunID: options.RunID, WorkspaceHash: boot.WorkspaceHash, Type: eventType, TurnID: turnID, OperationID: operationID, Payload: contract.MustEncodeRedactedJSON(payload)}
 		// 与 Reconcile 相同：先在克隆投影上模拟迁移再写入，防止不可回放事件落盘。
 		if err := projection.ValidateDraft(draft); err != nil {
 			return fmt.Errorf("validate %s after sequence %d: %w", eventType, projection.LastSeq, err)

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -79,9 +79,9 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 			fmt.Fprintln(command.Stderr, "skills show failed:", err)
 			return ExitFailed
 		}
-		content.Instructions = string(artifact.Redact([]byte(content.Instructions)))
+		content.Instructions = string(contract.Redact([]byte(content.Instructions)))
 		for index := range content.Resources {
-			content.Resources[index].Path = string(artifact.Redact([]byte(content.Resources[index].Path)))
+			content.Resources[index].Path = string(contract.Redact([]byte(content.Resources[index].Path)))
 		}
 		if *jsonOutput {
 			if writeJSONChecked(command.Stdout, content) != nil {
@@ -124,7 +124,7 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 		Name    string `json:"name"`
 		Scope   string `json:"scope"`
 		Success bool   `json:"success"`
-	}{Action: action, Name: string(artifact.Redact([]byte(name))), Scope: *scope, Success: true}
+	}{Action: action, Name: string(contract.Redact([]byte(name))), Scope: *scope, Success: true}
 	if *jsonOutput {
 		if writeJSONChecked(command.Stdout, report) != nil {
 			return ExitFailed

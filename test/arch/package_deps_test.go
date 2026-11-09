@@ -51,12 +51,11 @@ const (
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
 const (
-	stepArtifactPort = "第 2 步（artifact 端口）"
-	stepHooksPort    = "第 3 步（hooks 数据合同上移）"
-	stepPolicyPort   = "第 5 步（policy.Gate 授权端口）"
-	stepToolsPort    = "第 7 步（tools 端口拆分）"
-	stepStudio       = "第 8 步（Studio Adapter 收敛）"
-	stepMigration    = "第 9 步（目录迁移与合同归位）"
+	stepHooksPort  = "第 3 步（hooks 数据合同上移）"
+	stepPolicyPort = "第 5 步（policy.Gate 授权端口）"
+	stepToolsPort  = "第 7 步（tools 端口拆分）"
+	stepStudio     = "第 8 步（Studio Adapter 收敛）"
+	stepMigration  = "第 9 步（目录迁移与合同归位）"
 )
 
 // packageLayers 登记 internal 一级包与入口的目标分层。
@@ -124,14 +123,10 @@ type knownException struct {
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
 var knownExceptions = []knownException{
-	// Core 直接持有 Runtime 具体实现的 5 类引用。
-	{Importer: "internal/agent", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "Loop.Artifacts 直接持有 *artifact.Store；待 artifact 步骤以 Store 端口与 Ref 归位收口"},
+	// Core 直接持有 Runtime 具体实现的 3 类引用。
 	{Importer: "internal/agent", Imported: "internal/hooks", Step: stepHooksPort, Reason: "Loop.Hooks 与钩子派发直接使用 hooks 数据合同"},
 	{Importer: "internal/agent", Imported: "internal/policy", Step: stepPolicyPort, Reason: "Loop.Gate 直接持有 *policy.Gate 并穿透 Patch 规划与工作区观察"},
 	{Importer: "internal/agent", Imported: "internal/tools", Step: stepToolsPort, Reason: "Loop.Tools 直接持有 *tools.Registry，21 个生产文件引用 tools 类型"},
-
-	// 合同账本依赖 Runtime 制品；脱敏词表已归位合同层，待 artifact 步骤收口。
-	{Importer: "internal/decision", Imported: "internal/artifact", Step: stepArtifactPort, Reason: "decision/text.go 引用 artifact.Redact；待 artifact 步骤随脱敏合同一并归位"},
 
 	// 端口层依赖无运行时消费方的工作流脚手架。
 	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
@@ -144,11 +139,9 @@ var knownExceptions = []knownException{
 	{Importer: "internal/desktop", Imported: "internal/tools", Step: stepStudio, Reason: "files.go 直接构造 tools.NewWorkspace 与工具常量"},
 	{Importer: "internal/desktop", Imported: "internal/userdir", Step: stepStudio, Reason: "桌面端直接解析用户配置根"},
 	{Importer: "internal/tui", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接引用 Core 类型"},
-	{Importer: "internal/tui", Imported: "internal/artifact", Step: stepStudio, Reason: "终端界面直接读取制品"},
 	{Importer: "internal/tui", Imported: "internal/credential", Step: stepStudio, Reason: "终端界面直接装载凭据状态"},
 	{Importer: "internal/tui", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "终端界面直接读取模型目录建议"},
 	{Importer: "internal/tui", Imported: "internal/tools", Step: stepStudio, Reason: "补丁预览、引用展开直接使用 tools 内部类型"},
-	{Importer: "internal/cli", Imported: "internal/artifact", Step: stepStudio, Reason: "CLI 直接读取制品"},
 	{Importer: "internal/cli", Imported: "internal/memory", Step: stepStudio, Reason: "CLI 直接访问记忆合同与存储"},
 	{Importer: "internal/cli", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "CLI 直接读取模型目录建议"},
 	{Importer: "internal/cli", Imported: "internal/provider", Step: stepStudio, Reason: "CLI 直接装配 Provider 身份与准入"},

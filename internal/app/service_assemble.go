@@ -18,6 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/lock"
 	"github.com/fxbin/cairn/internal/policy"
@@ -100,7 +101,7 @@ func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfi
 }
 
 // 引用一致，供展示层（如补丁差异视图）消费已持久化证据而不触碰任何状态。
-func (service Service) ReadRunArtifact(workspacePath, stateDir string, configuration config.Config, reference artifact.Ref) ([]byte, error) {
+func (service Service) ReadRunArtifact(workspacePath, stateDir string, configuration config.Config, reference contract.Ref) ([]byte, error) {
 	_, hash, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
 		return nil, err
@@ -194,7 +195,12 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 }
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
+// artifacts 为具体存储；nil 时不注入端口，保持 Loop 侧的降级语义。
 func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink) agent.Loop {
+	var artifactPort agent.ArtifactStore
+	if artifacts != nil {
+		artifactPort = artifacts
+	}
 	loop := agent.Loop{
 		Journal: journal, Provider: provider, Tools: registry, Gate: gate,
 		Model: configuration.Provider.Model, ConfigFingerprint: configuration.Fingerprint(),
@@ -209,7 +215,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		ContextThresholdReservePercent: configuration.Context.ThresholdReservePercent,
 		VerificationAutoAfterPatch:     configuration.Verification.AutoAfterPatch,
 		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
-		Artifacts: artifacts, OnEvent: agent.EventSink(onEvent),
+		Artifacts: artifactPort, OnEvent: agent.EventSink(onEvent),
 		SystemPrompt: configuration.Prompt.Resolved,
 		Hooks:        hooksFromConfig(configuration.Hooks),
 		// 异步委派语义由配置显式开启；停靠与交付所需的子完成信号登记表由

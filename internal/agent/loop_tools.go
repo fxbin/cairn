@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/policy"
@@ -29,10 +29,10 @@ type operationPayload struct {
 	MutationBarrier    bool           `json:"mutation_barrier,omitempty"`
 	PlannedPath        string         `json:"planned_path,omitempty"`
 	PlannedBefore      string         `json:"planned_before,omitempty"`
-	PlannedBeforeRef   *artifact.Ref  `json:"planned_before_ref,omitempty"`
+	PlannedBeforeRef   *contract.Ref  `json:"planned_before_ref,omitempty"`
 	PlannedAfter       string         `json:"planned_after,omitempty"`
 	Result             any            `json:"result,omitempty"`
-	ResultRef          *artifact.Ref  `json:"result_ref,omitempty"`
+	ResultRef          *contract.Ref  `json:"result_ref,omitempty"`
 	ResultStorageError string         `json:"result_storage_error,omitempty"`
 	HookActions        []hooks.Action `json:"hook_actions,omitempty"`
 }
@@ -270,13 +270,13 @@ func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunPr
 // mustJSON 将事件载荷序列化并脱敏；仅编程错误会触发 panic。
 // payloadJSON 编码事件载荷；失败返回错误，由调用方失败关闭。
 func payloadJSON(value any) (json.RawMessage, error) {
-	return artifact.EncodeRedactedJSON(value)
+	return contract.EncodeRedactedJSON(value)
 }
 
 // mustJSON 编码事件载荷。载荷为纯数据结构，正常情况下可编码；万一失败，
 // 返回非法载荷并由 payloadSchemas / ValidateDraft 失败关闭，绝不 panic。
 func mustJSON(value any) json.RawMessage {
-	raw, err := artifact.EncodeRedactedJSON(value)
+	raw, err := contract.EncodeRedactedJSON(value)
 	if err != nil {
 		return json.RawMessage(`{"__encode_error":true}`)
 	}
@@ -293,7 +293,7 @@ func containsSecretJSON(raw json.RawMessage) bool {
 	if err != nil {
 		return false
 	}
-	return !bytes.Equal(canonical, artifact.RedactJSON(canonical))
+	return !bytes.Equal(canonical, contract.RedactJSON(canonical))
 }
 
 // freshApprovalDecision 为曾被不确定副作用对账过的同一动作强制重新人工审批。
@@ -328,7 +328,7 @@ func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload
 // 快照。制品库会先脱敏再存储：只有写入后的内容哈希仍等于原文件摘要（无损）
 // 才返回引用；脱敏改写了内容或制品库不可用时返回 nil，该次改写将如实不可
 // 回退，绝不以被改写的副本冒充快照。create 无旧内容，恒返回 nil。
-func (loop *Loop) snapshotPatchBefore(plan tools.PatchPlan) *artifact.Ref {
+func (loop *Loop) snapshotPatchBefore(plan tools.PatchPlan) *contract.Ref {
 	if (plan.Mode != "update" && plan.Mode != "delete") || !plan.Exists || loop.Artifacts == nil {
 		return nil
 	}
@@ -362,9 +362,9 @@ func (loop *Loop) resultPayload(toolName string, result tools.Result) operationP
 
 // redactToolResult 清除工具结果预览和 JSON 数据中可能泄露的凭据。
 func redactToolResult(result tools.Result) tools.Result {
-	result.Preview = string(artifact.Redact([]byte(result.Preview)))
+	result.Preview = string(contract.Redact([]byte(result.Preview)))
 	if len(result.Data) != 0 {
-		result.Data = append(json.RawMessage(nil), artifact.RedactJSON(result.Data)...)
+		result.Data = append(json.RawMessage(nil), contract.RedactJSON(result.Data)...)
 	}
 	return result
 }

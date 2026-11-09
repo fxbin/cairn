@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -370,8 +370,8 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 // execFailurePreview 先完整脱敏捕获文本，再把两路诊断尾部置于预览前部；
 // 尾部预算使退出事实和输出截断标记也能保留在上下文摘要的短预览中。
 func execFailurePreview(data execCommandOutput) string {
-	stderr, stderrClipped := execDiagnosticTail(string(artifact.Redact([]byte(data.Stderr))))
-	stdout, stdoutClipped := execDiagnosticTail(string(artifact.Redact([]byte(data.Stdout))))
+	stderr, stderrClipped := execDiagnosticTail(string(contract.Redact([]byte(data.Stderr))))
+	stdout, stdoutClipped := execDiagnosticTail(string(contract.Redact([]byte(data.Stdout))))
 	return stringResult(struct {
 		StderrTail    string `json:"stderr_tail,omitempty"`
 		StdoutTail    string `json:"stdout_tail,omitempty"`

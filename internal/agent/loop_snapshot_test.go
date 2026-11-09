@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -49,7 +50,7 @@ func snapshotFixture(t *testing.T, initial map[string]string, writeMode string) 
 }
 
 // startedBeforeRef 从事件流提取 apply_patch operation_started 的 before 快照引用。
-func startedBeforeRef(t *testing.T, journal *memory.Journal, runID domain.RunID) *artifact.Ref {
+func startedBeforeRef(t *testing.T, journal *memory.Journal, runID domain.RunID) *contract.Ref {
 	t.Helper()
 	events, err := journal.Load(context.Background(), runID)
 	if err != nil {
@@ -61,7 +62,7 @@ func startedBeforeRef(t *testing.T, journal *memory.Journal, runID domain.RunID)
 		}
 		var payload struct {
 			ToolName         string        `json:"tool_name"`
-			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+			PlannedBeforeRef *contract.Ref `json:"planned_before_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatal(err)

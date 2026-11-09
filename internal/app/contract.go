@@ -7,7 +7,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -83,7 +82,7 @@ func readFrozenRunConfig(events []domain.Event, stateDir, workspaceHash string) 
 		return nil, nil
 	}
 	var payload struct {
-		ConfigRef *artifact.Ref `json:"config_ref"`
+		ConfigRef *contract.Ref `json:"config_ref"`
 	}
 	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
 		return nil, fmt.Errorf("decode run_created config reference: %w", err)
@@ -144,7 +143,7 @@ func readLatestVerificationPlan(events []domain.Event, finishedSeq uint64, state
 		}
 		var payload struct {
 			VerificationID string        `json:"verification_id"`
-			PlanRef        *artifact.Ref `json:"plan_ref"`
+			PlanRef        *contract.Ref `json:"plan_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			return nil, fmt.Errorf("decode verification start: %w", err)

@@ -79,7 +79,7 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	// benchmark 视角：同一事件流 + 运行实际写入的 v2 冻结配置，仅任务身份
 	// 换成 TaskPack 投影。
 	var created struct {
-		ConfigRef artifact.Ref `json:"config_ref"`
+		ConfigRef contract.Ref `json:"config_ref"`
 	}
 	if err := json.Unmarshal(inspected.Events[0].Payload, &created); err != nil {
 		t.Fatal(err)
@@ -95,13 +95,13 @@ func TestNormalRunAndBenchmarkShareOneManifestConstructor(t *testing.T) {
 	benchmarkTask := contract.BenchmarkTaskSpec("unified contract probe", contract.BenchmarkTaskRef{
 		TaskID: "CONTRACT-001", SuiteID: "suite-x", TaskPackFingerprint: "sha256:pack", VerifierFingerprint: "sha256:verifier",
 	})
-	var planRef artifact.Ref
+	var planRef contract.Ref
 	for _, event := range inspected.Events {
 		if event.Type != domain.EventVerificationStarted {
 			continue
 		}
 		var payload struct {
-			PlanRef artifact.Ref `json:"plan_ref"`
+			PlanRef contract.Ref `json:"plan_ref"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatal(err)

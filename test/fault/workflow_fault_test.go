@@ -19,6 +19,7 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -98,7 +99,7 @@ func seedWorkflowChainBoundToRun(t *testing.T, stateDir, hash string, configurat
 	}
 	created, err := store.Append(context.Background(), 0, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps:               steps,
 			PlanSHA256:          "sha256:fault-plan",
 			ConfigFingerprint:   configuration.Fingerprint(),
@@ -110,7 +111,7 @@ func seedWorkflowChainBoundToRun(t *testing.T, stateDir, hash string, configurat
 	}
 	if _, err := store.Append(context.Background(), created.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepStarted,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: "execute", RunID: string(runID)})}); err != nil {
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: "execute", RunID: string(runID)})}); err != nil {
 		t.Fatalf("append step started: %v", err)
 	}
 	return id

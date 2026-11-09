@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/workflow"
@@ -86,7 +86,7 @@ func seedWorkflowVerifyRun(t *testing.T, workspace, stateDir string, configurati
 		t.Fatalf("open artifact store: %v", err)
 	}
 	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
-	planRef, err := artifacts.Put(artifact.MustEncodeRedactedJSON(workflowVerifyPlanArtifact{
+	planRef, err := artifacts.Put(contract.MustEncodeRedactedJSON(workflowVerifyPlanArtifact{
 		Version: workflowVerifyPlanVersion, Kind: workflowVerifyPlanKind, WorkflowID: string(workflowID), StepID: stepID,
 	}), "application/json")
 	if err != nil {
@@ -103,10 +103,10 @@ func seedWorkflowVerifyRun(t *testing.T, workspace, stateDir string, configurati
 	defer journal.Close()
 	runID := domain.NewRunID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 			domain.RunCreatedPayload
-			ConfigRef artifact.Ref `json:"config_ref"`
-			TaskRef   artifact.Ref `json:"task_ref"`
+			ConfigRef contract.Ref `json:"config_ref"`
+			TaskRef   contract.Ref `json:"task_ref"`
 		}{RunCreatedPayload: domain.RunCreatedPayload{
 			Task: "workflow verify", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint(), Build: build,
 		}, ConfigRef: configRef, TaskRef: planRef})},
@@ -145,7 +145,7 @@ func seedWorkflowChainWithBoundVerifyStep(t *testing.T, workspace, stateDir stri
 	steps := workflowFixedPlanSteps()
 	created, err := store.Append(context.Background(), 0, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps:               steps,
 			PlanSHA256:          workflowPlanDigest(steps, taskRef.SHA256, configuration.Fingerprint()),
 			ConfigFingerprint:   configuration.Fingerprint(),
@@ -157,13 +157,13 @@ func seedWorkflowChainWithBoundVerifyStep(t *testing.T, workspace, stateDir stri
 	}
 	started, err := store.Append(context.Background(), created.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepStarted,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: workflowStepExecuteID})})
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: workflowStepExecuteID})})
 	if err != nil {
 		t.Fatalf("append execute started: %v", err)
 	}
 	finished, err := store.Append(context.Background(), started.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepFinished,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepFinishedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepFinishedPayload{
 			StepID: workflowStepExecuteID, State: workflow.StepSucceeded, Output: workflow.StepIO{Summary: "executed"},
 		})})
 	if err != nil {
@@ -171,7 +171,7 @@ func seedWorkflowChainWithBoundVerifyStep(t *testing.T, workspace, stateDir stri
 	}
 	if _, err := store.Append(context.Background(), finished.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepStarted,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepStartedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepStartedPayload{
 			StepID: workflowStepVerifyID, RunID: string(runID),
 		})}); err != nil {
 		t.Fatalf("append verify started: %v", err)
@@ -196,7 +196,7 @@ func seedWorkflowChainWithoutTaskBinding(t *testing.T, workspace, stateDir strin
 	steps := workflowFixedPlanSteps()
 	created, err := store.Append(context.Background(), 0, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps:               steps,
 			PlanSHA256:          workflowPlanDigest(steps, "sha256:legacy", configuration.Fingerprint()),
 			ConfigFingerprint:   configuration.Fingerprint(),
@@ -207,7 +207,7 @@ func seedWorkflowChainWithoutTaskBinding(t *testing.T, workspace, stateDir strin
 	}
 	if _, err := store.Append(context.Background(), created.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepStarted,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: workflowStepExecuteID})}); err != nil {
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepStartedPayload{StepID: workflowStepExecuteID})}); err != nil {
 		t.Fatalf("append started: %v", err)
 	}
 	return id
@@ -238,7 +238,7 @@ func seedWorkflowChainWithRunningStep(t *testing.T, workspace, stateDir string, 
 	steps := workflowFixedPlanSteps()
 	created, err := store.Append(context.Background(), 0, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventRunCreated,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps:               steps,
 			PlanSHA256:          workflowPlanDigest(steps, taskRef.SHA256, configuration.Fingerprint()),
 			ConfigFingerprint:   configuration.Fingerprint(),
@@ -250,7 +250,7 @@ func seedWorkflowChainWithRunningStep(t *testing.T, workspace, stateDir string, 
 	}
 	if _, err := store.Append(context.Background(), created.Seq, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventStepStarted,
-		Payload: artifact.MustEncodeRedactedJSON(workflow.StepStartedPayload{
+		Payload: contract.MustEncodeRedactedJSON(workflow.StepStartedPayload{
 			StepID: workflowStepExecuteID, RunID: runID,
 		})}); err != nil {
 		t.Fatalf("append step started: %v", err)
@@ -494,9 +494,9 @@ func seedCancelledRun(t *testing.T, stateDir, hash string, configuration config.
 	configRef := putTestFrozenRunConfig(t, stateDir, hash, configuration)
 	runID := domain.NewRunID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: hash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 			domain.RunCreatedPayload
-			ConfigRef artifact.Ref `json:"config_ref"`
+			ConfigRef contract.Ref `json:"config_ref"`
 		}{RunCreatedPayload: domain.RunCreatedPayload{
 			Task: "cancelled run", Workspace: "/workspace", ConfigFingerprint: configuration.Fingerprint(),
 		}, ConfigRef: configRef})},

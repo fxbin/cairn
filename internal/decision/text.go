@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 )
 
@@ -39,7 +38,7 @@ var credentialFormatPatterns = []*regexp.Regexp{
 // 常见服务提供商的固定格式，裸写也命中；三是凭据词干后紧跟的裸值，
 // 例如 password hunter2。
 func containsCredentialMaterial(value string) bool {
-	if string(artifact.Redact([]byte(value))) != value {
+	if string(contract.Redact([]byte(value))) != value {
 		return true
 	}
 	for _, pattern := range credentialFormatPatterns {

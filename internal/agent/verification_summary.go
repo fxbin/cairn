@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -61,15 +61,15 @@ func verificationFailureFeedback(commandID string, result tools.Result) string {
 	b.WriteString(").")
 	if facts.StderrTail != "" {
 		b.WriteString("\nstderr_tail: ")
-		b.WriteString(string(artifact.Redact([]byte(facts.StderrTail))))
+		b.WriteString(string(contract.Redact([]byte(facts.StderrTail))))
 	}
 	if facts.StdoutTail != "" {
 		b.WriteString("\nstdout_tail: ")
-		b.WriteString(string(artifact.Redact([]byte(facts.StdoutTail))))
+		b.WriteString(string(contract.Redact([]byte(facts.StdoutTail))))
 	}
 	if facts.Preview != "" {
 		b.WriteString("\npreview: ")
-		b.WriteString(string(artifact.Redact([]byte(facts.Preview))))
+		b.WriteString(string(contract.Redact([]byte(facts.Preview))))
 	}
 	b.WriteString("\nnext: Inspect the persisted result, repair the workspace, and run the configured verification again.")
 	return b.String()

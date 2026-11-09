@@ -14,7 +14,6 @@ import (
 	"time"
 
 	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
@@ -408,19 +407,19 @@ func memoryEvidenceFromEvents(events []domain.Event, stateDir, workspaceHash str
 
 // eventArtifactRefs 从已受领域 schema 约束的 payload 提取已知 artifact.Ref 字段。
 // 返回值仅在调用边界短暂保留 Ref；Memory Store 永远只收到它的 SHA-256。
-func eventArtifactRefs(event domain.Event) ([]artifact.Ref, error) {
+func eventArtifactRefs(event domain.Event) ([]contract.Ref, error) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return nil, fmt.Errorf("decode event artifact fields: %w", err)
 	}
 	keys := []string{"task_ref", "config_ref", "final_response_ref", "reason_ref", "request_ref", "response_ref", "arguments_ref", "plan_ref", "evidence_ref", "result_ref", "model_response_ref", "message_ref"}
-	var references []artifact.Ref
+	var references []contract.Ref
 	for _, key := range keys {
 		raw, exists := payload[key]
 		if !exists || string(raw) == "null" {
 			continue
 		}
-		var reference artifact.Ref
+		var reference contract.Ref
 		if err := json.Unmarshal(raw, &reference); err != nil {
 			return nil, fmt.Errorf("decode %s: %w", key, err)
 		}

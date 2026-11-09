@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
@@ -193,7 +193,7 @@ func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var configRef artifact.Ref
+	var configRef contract.Ref
 	if len(frozen) == 0 {
 		configRef = putTestFrozenRunConfig(t, stateDir, workspaceHash, configuration)
 	} else {
@@ -202,7 +202,7 @@ func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration 
 			t.Fatal(err)
 		}
 	}
-	planRef, err := artifacts.Put(artifact.MustEncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: runs}), "application/json")
+	planRef, err := artifacts.Put(contract.MustEncodeRedactedJSON(rewindPlanArtifact{Version: rewindPlanVersion, Kind: rewindPlanKind, Runs: runs}), "application/json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,10 +213,10 @@ func putActiveRewindRun(t *testing.T, workspace, stateDir string, configuration 
 	defer journal.Close()
 	runID := domain.NewRunID()
 	drafts := []domain.EventDraft{
-		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: artifact.MustEncodeRedactedJSON(struct {
+		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 			domain.RunCreatedPayload
-			ConfigRef artifact.Ref `json:"config_ref"`
-			TaskRef   artifact.Ref `json:"task_ref"`
+			ConfigRef contract.Ref `json:"config_ref"`
+			TaskRef   contract.Ref `json:"task_ref"`
 		}{RunCreatedPayload: domain.RunCreatedPayload{Task: "active rewind", Workspace: workspace, ConfigFingerprint: configuration.Fingerprint()}, ConfigRef: configRef, TaskRef: planRef})},
 		{RunID: runID, WorkspaceHash: workspaceHash, Type: domain.EventRunStarted},
 	}
@@ -680,13 +680,13 @@ func TestReadRunArtifactVerifiesContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reference *artifact.Ref
+	var reference *contract.Ref
 	for _, event := range events {
 		if event.Type != domain.EventOperationStarted {
 			continue
 		}
 		var payload struct {
-			PlannedBeforeRef *artifact.Ref `json:"planned_before_ref"`
+			PlannedBeforeRef *contract.Ref `json:"planned_before_ref"`
 		}
 		if json.Unmarshal(event.Payload, &payload) == nil && payload.PlannedBeforeRef != nil {
 			reference = payload.PlannedBeforeRef
