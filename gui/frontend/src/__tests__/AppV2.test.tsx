@@ -20,6 +20,8 @@ const mock = vi.hoisted(() => ({
   confirmQueue: vi.fn(),
   cancelQueue: vi.fn(),
   submitSteering: vi.fn(),
+  renameSession: vi.fn(async () => ({ ok: true })),
+  setSessionFlags: vi.fn(async (_sessionId: string, _pinned: boolean, _archived: boolean) => ({ ok: true })),
   listChanges: vi.fn(),
   diffFile: vi.fn(),
   evidence: vi.fn(),
@@ -69,7 +71,7 @@ describe("Cairn Desktop 2.0 — real bridge contracts", () => {
   it("displays composer-first home with real workspace and no fake runs", async () => {
     render(<AppV2 />);
     expect(screen.getByTestId("cairn-v2-shell")).toBeInTheDocument();
-    await waitFor(() => expect(mock.listRuns).toHaveBeenCalledWith({ workspace: "/tmp/cairn-a" }));
+    await waitFor(() => expect(mock.listRuns).toHaveBeenCalledWith({ workspace: "/tmp/cairn-a", include_archived: true }));
     expect(screen.getByRole("heading", { name: "今天想让 Cairn 做什么？" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "描述任务" })).toBeInTheDocument();
   });
@@ -269,7 +271,7 @@ describe("V2 Journal and workspace isolation",()=>{
   let handler:((evt:unknown)=>void)|null=null;
   mock.onStream.mockImplementation((cb?: (evt:unknown)=>void)=>{handler=cb || null;return ()=>{};});
   render(<AppV2/>);
-  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith({workspace:a}));
+  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith({workspace:a, include_archived: true}));
   fireEvent.click(screen.getByRole("button",{name:/cairn-b/}));
   await screen.findByRole("button",{name:/打开会话 CURRENT_B/});
   if(handler)await act(async()=>{handler!({kind:"run.event",workspace:a,run_id:"foreign",event:{run_id:"foreign",seq:1,event_id:"for",type:"assistant_message_appended",payload:{text:"FOREIGN_BODY"}}});});
@@ -362,5 +364,52 @@ describe("V2 live refresh after same-project reselection (R1 regression)",()=>{
    expect(screen.getByText(/已批准操作/)).toBeInTheDocument();
    expect(screen.getByText(/任务完成/)).toBeInTheDocument();
    expect(screen.queryByRole("button",{name:"允许并继续"})).not.toBeInTheDocument();
+ });
+});
+
+describe("V2 workspace-switch submit state (issue #33 A)",()=>{
+ beforeEach(()=>{vi.useRealTimers();vi.clearAllMocks();setup();});
+ it("resets sending when switching workspace mid-submit so the new workspace can submit",async()=>{
+  const a="/tmp/cairn-a",b="/tmp/cairn-b";
+  mock.listRecentProjects.mockResolvedValue([
+   {path:a,name:"cairn-a",pinned:false,archived:false,last_used:""},
+   {path:b,name:"cairn-b",pinned:false,archived:false,last_used:""}
+  ]);
+  let resolveStart!:(value:{run_id:string;state:string})=>void;
+  mock.startRun.mockReturnValue(new Promise(resolve=>{resolveStart=resolve;}));
+  render(<AppV2/>);
+  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"A 的任务"}});
+  fireEvent.click(screen.getByRole("button",{name:"提交任务"}));
+  await waitFor(()=>expect(mock.startRun).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button",{name:/cairn-b/}));
+  await waitFor(()=>expect(mock.observeWorkspace).toHaveBeenCalledWith(b));
+  await act(async()=>{resolveStart({run_id:"rA",state:"starting"});});
+  fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"B 的任务"}});
+  expect(screen.getByRole("button",{name:"提交任务"})).not.toBeDisabled();
+  expect(screen.queryByRole("button",{name:"停止"})).not.toBeInTheDocument();
+ });
+});
+
+describe("V2 archived selected run state (issue #33 B)",()=>{
+ beforeEach(()=>{vi.useRealTimers();vi.clearAllMocks();setup();});
+ it("keeps an archived selected run idle via Journal state and lists it in the archive view",async()=>{
+  let runs=[{...sampleRun("completed"),run_id:"r1",session_id:"session1",archived:false}];
+  mock.listRuns.mockImplementation((req:{workspace:string;include_archived?:boolean})=>
+   Promise.resolve((req.include_archived?runs:runs.filter(r=>!r.archived)).map(r=>({...r}))));
+  mock.setSessionFlags.mockImplementation(async(sid:string,_pinned:boolean,archived:boolean)=>{
+   runs=runs.map(r=>r.session_id===sid?{...r,archived}:r);return{ok:true};
+  });
+  render(<AppV2/>);
+  fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
+  await waitFor(()=>expect(mock.inspectRun).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button",{name:/管理会话 r1/}));
+  fireEvent.click(screen.getByRole("button",{name:"归档会话"}));
+  await waitFor(()=>expect(mock.setSessionFlags).toHaveBeenCalledWith("session1",false,true));
+  await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith(expect.objectContaining({include_archived:true})));
+  await waitFor(()=>expect(screen.queryByRole("button",{name:"停止"})).not.toBeInTheDocument());
+  expect(screen.getByRole("button",{name:"提交任务"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button",{name:"切换已归档会话"}));
+  expect(await screen.findByRole("button",{name:/打开会话 修复登陆/})).toBeInTheDocument();
  });
 });
