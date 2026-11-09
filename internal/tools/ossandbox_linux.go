@@ -7,9 +7,16 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // OSSandboxExecutable 是 Linux bubblewrap 入口。
@@ -108,6 +115,9 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 		"--unshare-all",
 		"--die-with-parent",
 	}
+	if options.ChildPIDFd > 0 {
+		args = append(args, "--info-fd", strconv.Itoa(options.ChildPIDFd))
+	}
 	args = append(args, sandboxMountArgs(entries, hostPathExists)...)
 	if options.AllowNetwork {
 		args = append(args, "--share-net")
@@ -119,4 +129,115 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 	args = append(args, "--remount-ro", "/", "--chdir", "/workspace", "--")
 	wrapped = append([]string{binary}, args...)
 	return append(wrapped, argv...), nil, nil
+}
+
+// sandboxChildPIDFd 是 --info-fd 上报使用的子进程描述符编号：exec.Cmd 的
+// ExtraFiles[0] 在子进程中固定映射为 fd 3。
+const sandboxChildPIDFd = 3
+
+// sandboxChildPIDReportBytes 是 --info-fd 报告的读取上限；协议只需数百字节，
+// 上限防止异常输出占满内存。
+const sandboxChildPIDReportBytes = 4096
+
+// sandboxChildPIDWait 是取消时等待 --info-fd 报告的上限。正常启动后报告在
+// 内部进程真正执行前就已写入；该上限只覆盖包装层在报告前失败的路径，超时即
+// 回退进程组信号，不阻塞取消。
+const sandboxChildPIDWait = 100 * time.Millisecond
+
+// bwrapInfo 是 bubblewrap --info-fd 报告的最小字段集；child-pid 是内部
+// workload 在调用方（宿主）PID namespace 中的 PID。
+type bwrapInfo struct {
+	ChildPID int `json:"child-pid"`
+}
+
+// newSandboxTermination 为 bwrap 包装命令准备子进程 PID 上报通道，并返回直接
+// 作用于内部 workload 的优雅终止方案。bwrap 不转发信号且遇 SIGTERM 立即退出，
+// 若按进程组投递会由 --die-with-parent 立即 SIGKILL 内部进程；因此 SIGTERM
+// 必须绕过包装进程，bwrap 继续存活并承接 TerminateGrace。宽限期结束后的
+// 进程组 SIGKILL 兜底不变。
+func newSandboxTermination() (*sandboxTermination, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("bubblewrap child pid channel: %w", err)
+	}
+	reported := make(chan int, 1)
+	termination := &sandboxTermination{
+		childPIDFd: sandboxChildPIDFd,
+		extraFiles: []*os.File{writer},
+	}
+	termination.afterStart = func() {
+		_ = writer.Close()
+		go func() {
+			defer reader.Close()
+			var report bwrapInfo
+			if decodeErr := json.NewDecoder(io.LimitReader(reader, sandboxChildPIDReportBytes)).Decode(&report); decodeErr == nil && report.ChildPID > 0 {
+				reported <- report.ChildPID
+			}
+		}()
+	}
+	termination.graceful = func() bool {
+		select {
+		case pid := <-reported:
+			return terminateSandboxWorkload(pid)
+		case <-time.After(sandboxChildPIDWait):
+			return false
+		}
+	}
+	termination.close = func() {
+		_ = writer.Close()
+		_ = reader.Close()
+	}
+	return termination, nil
+}
+
+// terminateSandboxWorkload 向 bwrap 沙箱内部的实际 workload 投递 SIGTERM。
+//
+// --unshare-all 创建 PID namespace 后，bwrap 会在 namespace 内安装 PID 1
+// reaper（负责回收僵尸进程），--info-fd 报告的 child-pid 正是该 reaper；
+// 真正执行 argv 的 workload 是它的直接子进程。取消只作用于 workload，外层
+// bwrap 与 PID 1 reaper 继续存活，因此 TerminateGrace 有真实等待对象；若此刻
+// 还没有直接子进程（workload 尚未 fork 或已退出），返回 false，由调用方回退
+// 到原有的进程组信号。
+func terminateSandboxWorkload(initPID int) bool {
+	children, err := sandboxChildren(initPID)
+	if err != nil || len(children) == 0 {
+		return false
+	}
+	delivered := false
+	for _, child := range children {
+		if terminateSandboxProcess(child) {
+			delivered = true
+		}
+	}
+	return delivered
+}
+
+// sandboxChildren 读取指定进程的直接子进程列表。
+// /proc/<pid>/task/<pid>/children 是内核维护的即时快照，避免扫描整个 /proc。
+func sandboxChildren(pid int) ([]int, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Fields(string(data))
+	children := make([]int, 0, len(fields))
+	for _, field := range fields {
+		child, convErr := strconv.Atoi(field)
+		if convErr != nil {
+			continue
+		}
+		children = append(children, child)
+	}
+	return children, nil
+}
+
+// terminateSandboxProcess 通过 pidfd 向单个沙箱内部进程投递 SIGTERM。pidfd
+// 绑定进程身份，避免读取 PID 后进程退出、PID 被复用时误伤无关进程。
+func terminateSandboxProcess(pid int) bool {
+	pidfd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(pidfd)
+	return unix.PidfdSendSignal(pidfd, unix.SIGTERM, nil, 0) == nil
 }

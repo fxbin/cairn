@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -23,6 +24,26 @@ type ExecRunRequest struct {
 	HostWrite bool
 	// Grace 是取消后的终止宽限。
 	Grace time.Duration
+}
+
+// sandboxTermination 描述 OS 沙箱包装层的取消投递方案。
+//
+// Linux bubblewrap 不转发信号，自身收到 SIGTERM 会立即退出，并由
+// --die-with-parent 的 PR_SET_PDEATHSIG 连带 SIGKILL 内部 workload；若取消仍
+// 按进程组投递，TerminateGrace 将没有可等待对象。支持子进程 PID 上报的包装
+// 层因此把优雅取消直接作用于内部 workload，包装进程保持存活，直到内部进程
+// 退出或宽限期结束后的进程组 SIGKILL 兜底。零值表示该平台沿用进程组语义。
+type sandboxTermination struct {
+	// childPIDFd 是包装层上报内部 workload PID 的描述符编号。
+	childPIDFd int
+	// extraFiles 是启动命令时要继承的上报描述符（ExtraFiles 从 fd 3 开始）。
+	extraFiles []*os.File
+	// afterStart 在进程启动后关闭父进程副本并异步解析上报的 PID。
+	afterStart func()
+	// graceful 向内部 workload 投递 SIGTERM；返回是否已成功投递。
+	graceful func() bool
+	// close 释放父进程持有的描述符，用于启动或包装失败路径。
+	close func()
 }
 
 // ExecRunner 是执行边界策略：准备命令、返回 Result、可选清理。
@@ -45,7 +66,7 @@ func (HostRunner) Run(ctx context.Context, request ExecRunRequest) Result {
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return runProcess(ctx, request.Arguments, ExecBackendHost, command, nil, request.Grace)
+	return runProcess(ctx, request.Arguments, ExecBackendHost, command, nil, request.Grace, nil)
 }
 
 // SeatbeltRunner 在宿主机执行并套 OS 约束（macOS Seatbelt / Linux bubblewrap）。
@@ -60,19 +81,33 @@ func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) Result {
 	if !request.HostWrite {
 		writeMode = SeatbeltWriteNone
 	}
-	wrapped, cleanup, err := ConfineArgv(SeatbeltOptions{
+	termination, terminationErr := newSandboxTermination()
+	if terminationErr != nil {
+		return Failure("sandbox_unavailable", terminationErr.Error())
+	}
+	options := SeatbeltOptions{
 		WorkspaceRoot: request.Workspace.Root,
 		WriteMode:     writeMode,
 		AllowNetwork:  false,
-	}, request.Arguments.Argv)
+	}
+	if termination != nil {
+		options.ChildPIDFd = termination.childPIDFd
+	}
+	wrapped, cleanup, err := ConfineArgv(options, request.Arguments.Argv)
 	if err != nil {
+		if termination != nil {
+			termination.close()
+		}
 		return Failure("sandbox_unavailable", err.Error())
 	}
 	command := exec.Command(wrapped[0], wrapped[1:]...)
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	return runProcess(ctx, request.Arguments, ExecBackendSeatbeltHost, command, cleanup, request.Grace)
+	if termination != nil {
+		command.ExtraFiles = termination.extraFiles
+	}
+	return runProcess(ctx, request.Arguments, ExecBackendSeatbeltHost, command, cleanup, request.Grace, termination)
 }
 
 // DockerRunner 在显式镜像容器内执行（无网络、只读根）。
@@ -105,7 +140,7 @@ func (runner DockerRunner) Run(ctx context.Context, request ExecRunRequest) Resu
 	command := dockerRunCommand(dockerBinary, runner.Workspace, runner.Image, runner.MaxPIDs, request.Arguments, request.RelativeCWD, name)
 	return runProcess(ctx, request.Arguments, ExecBackendDocker, command, func() error {
 		return removeDockerContainerByID(dockerBinary, name)
-	}, request.Grace)
+	}, request.Grace, nil)
 }
 
 // runnerFor 按后端与是否收紧 host 选择策略；未知后端失败关闭。
@@ -131,6 +166,6 @@ func runnerFor(backend ExecBackend, workspace Workspace, hostConfined, hostWrite
 }
 
 // runProcess 是 Runner 共享的进程生命周期实现（超时、进程组、清理）。
-func runProcess(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration) Result {
-	return runCommandShared(ctx, arguments, backend, command, cleanup, grace)
+func runProcess(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) Result {
+	return runCommandShared(ctx, arguments, backend, command, cleanup, grace, termination)
 }

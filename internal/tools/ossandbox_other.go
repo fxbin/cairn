@@ -14,3 +14,6 @@ func HostConfinementName() string { return "host-unconfined" }
 func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, cleanup func() error, err error) {
 	return nil, nil, errOSSandboxUnavailable
 }
+
+// newSandboxTermination 表示非桌面 Unix 目标没有包装层取消投递。
+func newSandboxTermination() (*sandboxTermination, error) { return nil, nil }
