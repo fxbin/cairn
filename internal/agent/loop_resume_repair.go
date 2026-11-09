@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -61,7 +60,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 			case "allow":
 				record.authorized = true
 			case "deny":
-				result := policyFailureResult(policy.Decision{
+				result := policyFailureResult(AuthorizationDecision{
 					Summary:     payload.Summary,
 					FailureCode: payload.FailureCode,
 					FailureData: payload.FailureData,

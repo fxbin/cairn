@@ -8,7 +8,6 @@ import (
 	"errors"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -42,7 +41,7 @@ func (loop *Loop) quiesceMCP(ctx context.Context, projection *domain.RunProjecti
 	if err != nil {
 		return err
 	}
-	if decision.Effect != policy.Allow {
+	if decision.Effect != AuthorizationAllow {
 		return errors.New("MCP lifecycle cleanup must only release owned resources")
 	}
 	if err := loop.append(commitContext, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {

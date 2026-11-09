@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -125,10 +124,10 @@ func openTurnFailureEvidence(events []domain.Event, turnID domain.TurnID) (openT
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return openTurnFailureRecord{}, false, fmt.Errorf("decode verification policy decision: %w", err)
 			}
-			if payload.Effect != string(policy.Deny) {
+			if payload.Effect != string(AuthorizationDeny) {
 				continue
 			}
-			result := policyFailureResult(policy.Decision{
+			result := policyFailureResult(AuthorizationDecision{
 				Summary:     payload.Summary,
 				FailureCode: payload.FailureCode,
 				FailureData: payload.FailureData,

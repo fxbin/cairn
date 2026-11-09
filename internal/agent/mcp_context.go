@@ -9,7 +9,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -89,7 +88,7 @@ func (loop *Loop) captureMCPDeclarations(specs []ports.ToolSpec) {
 
 // bindMCPDeclaration 阻止模型在同一响应内使用新加载或已漂移的工具 schema。
 // 无模型请求的显式脚本计划仍使用自身授权合同。
-func (loop *Loop) bindMCPDeclaration(name string, decision policy.Decision) policy.Decision {
+func (loop *Loop) bindMCPDeclaration(name string, decision AuthorizationDecision) AuthorizationDecision {
 	if !strings.HasPrefix(name, "mcp__") || loop.mcpModelDeclarations == nil {
 		return decision
 	}
@@ -100,7 +99,7 @@ func (loop *Loop) bindMCPDeclaration(name string, decision policy.Decision) poli
 		matched = found && digest == expected
 	}
 	if !matched {
-		decision.Effect = policy.Deny
+		decision.Effect = AuthorizationDeny
 		decision.RuleID = "mcp_declaration_changed"
 		decision.FailureCode = "mcp_not_declared"
 		decision.Summary = "MCP tool was not declared with this schema in the model request; discover or search it, then call it in a subsequent request"

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -219,7 +218,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err != nil {
 		return Result{}, err
 	}
-	if decision.Effect != policy.Ask || decision.Fingerprint != pending.Fingerprint {
+	if decision.Effect != AuthorizationAsk || decision.Fingerprint != pending.Fingerprint {
 		return loop.expireApproval(ctx, &projection, input, turnID, pending, call, verification, verificationProposal, decision)
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
@@ -578,7 +577,7 @@ func (loop *Loop) resumeToolResponse(ctx context.Context, projection *domain.Run
 // current workspace, then lets the model make a new decision from durable
 // tool/verification feedback. The old command is never started.
 // expireApproval 将过期或不匹配的审批转换为可审计拒绝，而不执行关联操作。
-func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, _ policy.Decision) (Result, error) {
+func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, _ AuthorizationDecision) (Result, error) {
 	reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`

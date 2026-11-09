@@ -10,7 +10,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -22,8 +21,9 @@ type Loop struct {
 	Journal              ports.Journal
 	Provider             ports.Provider
 	Tools                *tools.Registry
-	Gate                 *policy.Gate
-	Model                string
+	// Gate 是宿主注入的授权端口；Core 不持有 Policy 的具体类型与内部结构。
+	Gate  Authorizer
+	Model string
 	// ProviderKind 是历史 ProviderKind 词表值，写入 model_request_started；
 	// 由配置 effective protocol 经闭合映射派生，不再硬编码。
 	ProviderKind      string

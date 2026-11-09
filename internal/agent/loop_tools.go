@@ -9,7 +9,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -71,7 +70,7 @@ func (err *toolResultPersistenceError) Is(target error) bool {
 // resumeDecision 为已提议操作重建策略判定，并保留验证计划的独立审批边界。
 // verificationObservation 是调用方刚计算的 verifier 视图观察值（仅验证提议使用），
 // 复用它避免同一无变更窗口内的重复全树扫描。
-func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, verificationObservation string) (policy.Decision, error) {
+func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, verificationObservation string) (AuthorizationDecision, error) {
 	if verificationProposal {
 		planSHA := ""
 		if verification.PlanRef != nil {
@@ -79,13 +78,13 @@ func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.Too
 		}
 		decision, err := loop.Gate.DecideVerificationWithObservation(verification.Arguments, planSHA, verification.CommandIndex, loop.ConfigFingerprint, verificationObservation)
 		if err != nil {
-			return policy.Decision{}, err
+			return AuthorizationDecision{}, err
 		}
 		return freshApprovalDecision(projection, decision), nil
 	}
 	decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 	if err != nil {
-		return policy.Decision{}, err
+		return AuthorizationDecision{}, err
 	}
 	decision = loop.bindMCPDeclaration(call.Name, decision)
 	return freshApprovalDecision(projection, decision), nil
@@ -124,7 +123,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		}
 		decision = loop.bindMCPDeclaration(call.Name, decision)
 		decision = freshApprovalDecision(*projection, decision)
-		if decision.Effect == policy.Ask {
+		if decision.Effect == AuthorizationAsk {
 			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
 				return tools.Result{}, err
 			}
@@ -160,7 +159,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 			return loop.refuseParentSideEffectWhileChildActive(ctx, projection, input, turnID, operationID, call)
 		}
 	}
-	if decision.Effect == policy.Ask {
+	if decision.Effect == AuthorizationAsk {
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 			Fingerprint string `json:"fingerprint"`
 			Summary     string `json:"summary"`
@@ -171,7 +170,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		loop.dispatchLifecycleHooks(HookEventNotification, call.Name)
 		return tools.Result{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
-	if decision.Effect == policy.Deny {
+	if decision.Effect == AuthorizationDeny {
 		result := policyFailureResult(decision)
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 			return tools.Result{}, err
@@ -235,8 +234,8 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	return result, nil
 }
 
-// policyFailureResult 将 Policy 拒绝转换为工具与验证流程共用的结构化失败结果。
-func policyFailureResult(decision policy.Decision) tools.Result {
+// policyFailureResult 将授权拒绝转换为工具与验证流程共用的结构化失败结果。
+func policyFailureResult(decision AuthorizationDecision) tools.Result {
 	failureCode := decision.FailureCode
 	if failureCode == "" {
 		failureCode = "policy_denied"
@@ -296,9 +295,9 @@ func containsSecretJSON(raw json.RawMessage) bool {
 }
 
 // freshApprovalDecision 为曾被不确定副作用对账过的同一动作强制重新人工审批。
-func freshApprovalDecision(projection domain.RunProjection, decision policy.Decision) policy.Decision {
-	if decision.Effect == policy.Allow && projection.RequiresFreshApproval(decision.Fingerprint) {
-		decision.Effect = policy.Ask
+func freshApprovalDecision(projection domain.RunProjection, decision AuthorizationDecision) AuthorizationDecision {
+	if decision.Effect == AuthorizationAllow && projection.RequiresFreshApproval(decision.Fingerprint) {
+		decision.Effect = AuthorizationAsk
 		decision.RuleID = "reconciled_action_requires_approval"
 		decision.Summary = "the same action was previously reconciled after an uncertain side effect; explicit approval is required"
 	}
@@ -314,7 +313,7 @@ func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload
 	if call.Name != "apply_patch" {
 		return payload, nil
 	}
-	plan, err := loop.Gate.Patch.Plan(call.Arguments)
+	plan, err := loop.Gate.PlanPatch(call.Arguments)
 	if err != nil {
 		return operationPayload{}, err
 	}
@@ -327,7 +326,7 @@ func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload
 // 快照。制品库会先脱敏再存储：只有写入后的内容哈希仍等于原文件摘要（无损）
 // 才返回引用；脱敏改写了内容或制品库不可用时返回 nil，该次改写将如实不可
 // 回退，绝不以被改写的副本冒充快照。create 无旧内容，恒返回 nil。
-func (loop *Loop) snapshotPatchBefore(plan tools.PatchPlan) *contract.Ref {
+func (loop *Loop) snapshotPatchBefore(plan PatchPlan) *contract.Ref {
 	if (plan.Mode != "update" && plan.Mode != "delete") || !plan.Exists || loop.Artifacts == nil {
 		return nil
 	}

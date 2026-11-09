@@ -11,17 +11,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/hooks"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Effect 是策略判定的三种可能结果。
-type Effect string
+type Effect = contract.AuthorizationEffect
 
 const (
-	Allow Effect = "allow"
-	Deny  Effect = "deny"
-	Ask   Effect = "ask"
+	Allow Effect = contract.AuthorizationAllow
+	Deny  Effect = contract.AuthorizationDeny
+	Ask   Effect = contract.AuthorizationAsk
 )
 
 // Gate 保存副作用策略、受保护路径和 patch 规划器。
@@ -41,16 +42,7 @@ func (gate *Gate) SetHooks(rules []hooks.Rule) {
 }
 
 // Decision 是可持久化的策略结论及其审批绑定信息。
-type Decision struct {
-	MCPIdentity          string
-	Effect               Effect
-	RuleID               string
-	Fingerprint          string
-	Summary              string
-	WorkspaceObservation string
-	FailureCode          string
-	FailureData          json.RawMessage
-}
+type Decision = contract.AuthorizationDecision
 
 // New 解析策略模式并复制受保护路径，构造副作用决策门。
 func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch) (*Gate, error) {

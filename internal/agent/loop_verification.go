@@ -10,7 +10,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -197,13 +196,13 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 		if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 			return err
 		}
-		if decision.Effect == policy.Ask {
+		if decision.Effect == AuthorizationAsk {
 			if err := loop.append(ctx, projection, approvalRequestedDraft(input, turnID, operationID, decision)); err != nil {
 				return err
 			}
 			return &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 		}
-		if decision.Effect == policy.Deny {
+		if decision.Effect == AuthorizationDeny {
 			result := policyFailureResult(decision)
 			commitContext, cancel := loop.commitContext(ctx)
 			defer cancel()
@@ -491,12 +490,12 @@ func verificationOperations(events []domain.Event, verification incompleteVerifi
 			record.policyFingerprint = payload.Fingerprint
 			record.policySummary = payload.Summary
 			switch payload.Effect {
-			case string(policy.Allow):
+			case string(AuthorizationAllow):
 				record.authorized = true
 				record.policyAuthorized = true
-			case string(policy.Ask):
+			case string(AuthorizationAsk):
 				record.policyAsked = true
-			case string(policy.Deny):
+			case string(AuthorizationDeny):
 				record.policyDenied = true
 			}
 		case domain.EventApprovalRequested:
@@ -627,7 +626,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			if latest.approvalRequested {
 				return false, nil
 			}
-			decision := policy.Decision{Effect: policy.Ask, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
+			decision := AuthorizationDecision{Effect: AuthorizationAsk, Fingerprint: latest.policyFingerprint, Summary: latest.policySummary}
 			if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
 				return false, err
 			}
@@ -651,12 +650,12 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 				return false, err
 			}
 			switch decision.Effect {
-			case policy.Ask:
+			case AuthorizationAsk:
 				if err := loop.append(ctx, projection, approvalRequestedDraft(input, verification.turnID, latest.operationID, decision)); err != nil {
 					return false, err
 				}
 				return true, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: latest.operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
-			case policy.Deny:
+			case AuthorizationDeny:
 				result := policyFailureResult(decision)
 				feedback := "Verification command was denied by policy. Inspect the frozen command and policy before retrying."
 				if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
@@ -678,7 +677,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 				if latest.approvalFingerprint == "" {
 					return false, errors.New("approved verification command has no persisted approval fingerprint")
 				}
-				approved := policy.Decision{Effect: policy.Allow, RuleID: "approved_once", Fingerprint: latest.approvalFingerprint}
+				approved := AuthorizationDecision{Effect: AuthorizationAllow, RuleID: "approved_once", Fingerprint: latest.approvalFingerprint}
 				if err := loop.append(ctx, projection, policyDecisionDraft(input, verification.turnID, latest.operationID, approved)); err != nil {
 					return false, err
 				}
@@ -779,13 +778,13 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 
 // verificationAuthorizationMatches 判断恢复时重算的策略结论是否仍与持久化授权
 // 完全一致；人工审批必须仍是同一 ask 指纹，直接授权必须仍是同一 allow 指纹。
-func verificationAuthorizationMatches(record verificationOperationRecord, decision policy.Decision) bool {
+func verificationAuthorizationMatches(record verificationOperationRecord, decision AuthorizationDecision) bool {
 	if record.approvalFingerprint != "" {
-		return decision.Effect == policy.Ask && decision.Fingerprint == record.approvalFingerprint
+		return decision.Effect == AuthorizationAsk && decision.Fingerprint == record.approvalFingerprint
 	}
 	return record.policyAuthorized &&
 		record.policyFingerprint != "" &&
-		decision.Effect == policy.Allow &&
+		decision.Effect == AuthorizationAllow &&
 		decision.Fingerprint == record.policyFingerprint
 }
 
@@ -1214,7 +1213,7 @@ func equalVerificationArguments(proposed json.RawMessage, command json.RawMessag
 }
 
 // policyDecisionDraft 将策略决定编码为可追加的领域事件草稿。
-func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision policy.Decision) domain.EventDraft {
+func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision AuthorizationDecision) domain.EventDraft {
 	return domain.EventDraft{
 		RunID:         input.RunID,
 		WorkspaceHash: input.WorkspaceHash,
@@ -1233,7 +1232,7 @@ func policyDecisionDraft(input RunInput, turnID domain.TurnID, operationID domai
 }
 
 // approvalRequestedDraft 将待审批操作编码为可追加的领域事件草稿。
-func approvalRequestedDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision policy.Decision) domain.EventDraft {
+func approvalRequestedDraft(input RunInput, turnID domain.TurnID, operationID domain.OperationID, decision AuthorizationDecision) domain.EventDraft {
 	return domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalRequested, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
 		Summary     string `json:"summary"`
@@ -1324,7 +1323,7 @@ func (loop *Loop) verificationObservation() (string, error) {
 	if loop.Gate == nil {
 		return "", errors.New("policy gate is required for workspace observation")
 	}
-	return loop.Gate.Patch.Workspace.Observation()
+	return loop.Gate.WorkspaceObservation()
 }
 
 // finishAutomaticVerification 在同一模型响应的所有工具调用成功结束且有补丁写入后，

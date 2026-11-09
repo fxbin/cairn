@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -27,7 +26,7 @@ type preparedReadonlyCall struct {
 	index       int
 	call        ports.ToolCall
 	operationID domain.OperationID
-	decision    policy.Decision
+	decision    AuthorizationDecision
 }
 
 // executeToolCalls 按批次计划执行工具调用并返回与入参等长的结果切片。
@@ -88,7 +87,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 		}
 		decision = freshApprovalDecision(*projection, decision)
 		decision = loop.bindMCPDeclaration(call.Name, decision)
-		if decision.Effect != policy.Allow {
+		if decision.Effect != AuthorizationAllow {
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}
 			if err != nil {

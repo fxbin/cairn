@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -264,7 +263,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 		if err != nil {
 			return Result{}, err
 		}
-		if decision.Effect != policy.Ask || decision.Fingerprint != pending.Fingerprint {
+		if decision.Effect != AuthorizationAsk || decision.Fingerprint != pending.Fingerprint {
 			return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, verification, true)
 		}
 		return loop.grantScriptedVerification(ctx, projection, input, turnID, pending, verification, observation)
@@ -273,7 +272,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err != nil {
 		return Result{}, err
 	}
-	if decision.Effect != policy.Ask || decision.Fingerprint != pending.Fingerprint {
+	if decision.Effect != AuthorizationAsk || decision.Fingerprint != pending.Fingerprint {
 		return loop.expireScriptedApproval(ctx, projection, input, turnID, pending, call, verification, false)
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
