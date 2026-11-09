@@ -178,3 +178,25 @@ jobs:
         run: go test ./test/fault -tags=faultinject -count=1
       - name: 端到端（脚本化 Provider）
         run: go test ./test/e2e -tags=e2e -count=1
+
+  # bwrap 边界门禁：extended 跑在 ubuntu-latest，该镜像没有 bubblewrap，
+  # internal/tools 的沙箱边界用例与 e2e 信号用例会静默 skip，导致"绿"不代表
+  # bwrap 路径被验证（与 24.04 假绿同源）。本 job 用 .github/docker 下显式
+  # 安装 bubblewrap 的镜像，在 privileged 容器中实跑这两组用例；脚本同时做
+  # 防空转断言：bwrap 缺失、出现 --- SKIP、目标用例缺少 --- PASS 都直接失败。
+  bwrap-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: 构建带 bubblewrap 的运行镜像
+        run: docker build -f .github/docker/bwrap-e2e.Dockerfile -t cairn-bwrap-e2e:ci .
+      # privileged 只用于在容器内建立 bwrap 命名空间与挂载；仓库目录以工作区
+      # 挂载供测试创建夹具，容器退出即丢弃，不影响宿主其他路径。
+      - name: 沙箱路径防空转门禁
+        run: |
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            -w /workspace \
+            cairn-bwrap-e2e:ci \
+            bash .github/scripts/assert-bwrap-e2e.sh
