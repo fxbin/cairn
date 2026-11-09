@@ -52,9 +52,10 @@ type Loop struct {
 	DecisionCheckpointMinTurns int
 	VerificationAutoAfterPatch bool
 	Verification               []VerificationCommand
-	// VerificationWorkspace 与工具工作区刻意不同：普通 workspace.ignore
-	// 不能掩盖 verifier 产生的副作用。
-	VerificationWorkspace tools.Workspace
+	// VerificationWorkspace 是宿主注入的 verifier 观察端口，与工具工作区刻意
+	// 不同：普通 workspace.ignore 不能掩盖 verifier 产生的副作用。nil 时回退
+	// 授权端口的工具视图观察。
+	VerificationWorkspace ports.WorkspaceObserver
 	// Artifacts 是消费方最小制品能力端口；nil 时相关留证与回放降级为跳过。
 	Artifacts    ArtifactStore
 	OnEvent      EventSink

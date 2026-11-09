@@ -1317,7 +1317,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 
 // verificationObservation 返回 verifier 视图的稳定摘要，用于绑定命令审批。
 func (loop *Loop) verificationObservation() (string, error) {
-	if loop.VerificationWorkspace.Root != "" {
+	if loop.VerificationWorkspace != nil {
 		return loop.VerificationWorkspace.Observation()
 	}
 	if loop.Gate == nil {
