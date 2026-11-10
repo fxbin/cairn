@@ -41,13 +41,13 @@ type ReadFile struct{ Workspace Workspace }
 type SearchText struct{ Workspace Workspace }
 
 // SideEffect 声明 ListFiles 不产生副作用。
-func (ListFiles) SideEffect() SideEffectClass { return SideEffectNone }
+func (ListFiles) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // SideEffect 声明 ReadFile 不产生副作用。
-func (ReadFile) SideEffect() SideEffectClass { return SideEffectNone }
+func (ReadFile) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // SideEffect 声明 SearchText 不产生副作用。
-func (SearchText) SideEffect() SideEffectClass { return SideEffectNone }
+func (SearchText) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Spec 返回 list_files 的受限 JSON 参数定义。
 func (tool ListFiles) Spec() ports.ToolSpec {
@@ -90,19 +90,19 @@ type searchTextArguments struct {
 }
 
 // Execute 枚举受工作区边界、glob 和结果上限约束的文件路径。
-func (tool ListFiles) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool ListFiles) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	arguments := listFilesArguments{Path: ".", MaxResults: defaultListResults}
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	if arguments.MaxResults == 0 {
 		arguments.MaxResults = defaultListResults
 	}
 	if arguments.MaxResults < 1 || arguments.MaxResults > maximumListResults {
-		return Failure("invalid", "max_results must be between 1 and 2000")
+		return contract.ToolFailure("invalid", "max_results must be between 1 and 2000")
 	}
 	if err := validateGlob(arguments.Glob); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	files := make([]string, 0, arguments.MaxResults)
 	truncated := false
@@ -121,22 +121,22 @@ func (tool ListFiles) Execute(ctx context.Context, raw json.RawMessage) Result {
 		return nil
 	})
 	if err != nil && err != io.EOF {
-		return Failure("io", err.Error())
+		return contract.ToolFailure("io", err.Error())
 	}
-	return Success(struct {
+	return contract.ToolSuccess(struct {
 		Files []string `json:"files"`
 	}{Files: files}, fmt.Sprintf("%d file(s)", len(files)), int64(len(files)), "", truncated)
 }
 
 // Execute 在读取大小和 UTF-8 限制内返回文件片段及其完整内容摘要。
-func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	defaultLimit := int64(defaultReadLimit)
 	if tool.Workspace.MaxReadBytes < defaultLimit {
 		defaultLimit = tool.Workspace.MaxReadBytes
 	}
 	arguments := readFileArguments{}
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	offset, limit := int64(0), defaultLimit
 	if arguments.Offset != nil {
@@ -146,41 +146,41 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 		limit = *arguments.Limit
 	}
 	if arguments.Path == "" || offset < 0 {
-		return Failure("invalid", "path is required and offset cannot be negative")
+		return contract.ToolFailure("invalid", "path is required and offset cannot be negative")
 	}
 	lineMode := arguments.StartLine != nil || arguments.LineCount != nil
 	if lineMode {
 		if arguments.StartLine == nil || arguments.LineCount == nil || arguments.Offset != nil || arguments.Limit != nil {
-			return Failure("invalid", "start_line and line_count must be paired and cannot be mixed with offset or limit; "+readFileModeAdvice)
+			return contract.ToolFailure("invalid", "start_line and line_count must be paired and cannot be mixed with offset or limit; "+readFileModeAdvice)
 		}
 		if *arguments.StartLine < 1 || *arguments.LineCount < 1 || *arguments.LineCount > maximumReadLines {
-			return Failure("invalid", fmt.Sprintf("start_line must be positive and line_count must be between 1 and %d", maximumReadLines))
+			return contract.ToolFailure("invalid", fmt.Sprintf("start_line must be positive and line_count must be between 1 and %d", maximumReadLines))
 		}
 		limit = tool.Workspace.MaxReadBytes
 	}
 	if limit < 1 || limit > tool.Workspace.MaxReadBytes {
-		return Failure("invalid", fmt.Sprintf("limit must be between 1 and %d", tool.Workspace.MaxReadBytes))
+		return contract.ToolFailure("invalid", fmt.Sprintf("limit must be between 1 and %d", tool.Workspace.MaxReadBytes))
 	}
 	filePath, relative, err := tool.Workspace.Resolve(arguments.Path)
 	if err != nil {
-		return Failure("invalid_path", err.Error())
+		return contract.ToolFailure("invalid_path", err.Error())
 	}
 	if tool.Workspace.Ignore(relative) {
-		return Failure("ignored_path", "path is ignored")
+		return contract.ToolFailure("ignored_path", "path is ignored")
 	}
 	if err := ctx.Err(); err != nil {
-		return Failure("cancelled", err.Error())
+		return contract.ToolFailure("cancelled", err.Error())
 	}
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return Failure("io", err.Error())
+		return contract.ToolFailure("io", err.Error())
 	}
 	if !utf8.Valid(content) || strings.IndexByte(string(content), 0) >= 0 {
-		return Failure("unsupported_binary", "read_file only supports UTF-8 text")
+		return contract.ToolFailure("unsupported_binary", "read_file only supports UTF-8 text")
 	}
 	digest := sha256.Sum256(content)
 	if offset > int64(len(content)) {
-		return Failure("invalid", "offset exceeds file length")
+		return contract.ToolFailure("invalid", "offset exceeds file length")
 	}
 	end := offset + min(limit, int64(len(content))-offset)
 	if lineMode {
@@ -191,13 +191,13 @@ func (tool ReadFile) Execute(ctx context.Context, raw json.RawMessage) Result {
 				end--
 			}
 			if end == offset {
-				return Failure("invalid", "workspace read limit cannot fit the first UTF-8 character")
+				return contract.ToolFailure("invalid", "workspace read limit cannot fit the first UTF-8 character")
 			}
 		}
 		limit = end - offset
 	}
 	selected := content[offset:end]
-	return Success(struct {
+	return contract.ToolSuccess(struct {
 		Path       string `json:"path"`
 		Content    string `json:"content"`
 		TotalBytes int64  `json:"total_bytes"`
@@ -245,28 +245,28 @@ func readLineRange(content []byte, startLine, lineCount int64) (int64, int64) {
 }
 
 // Execute 在扫描文件数、扫描字节数和匹配数上限内搜索文本或正则表达式。
-func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	arguments := searchTextArguments{Path: ".", MaxResults: 100}
 	if err := decodeArguments(raw, &arguments); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	if arguments.Query == "" {
-		return Failure("invalid", "query is required")
+		return contract.ToolFailure("invalid", "query is required")
 	}
 	if arguments.MaxResults == 0 {
 		arguments.MaxResults = 100
 	}
 	if arguments.MaxResults < 1 || arguments.MaxResults > maximumListResults {
-		return Failure("invalid", "max_results must be between 1 and 2000")
+		return contract.ToolFailure("invalid", "max_results must be between 1 and 2000")
 	}
 	if err := validateGlob(arguments.Glob); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	var expression *regexp.Regexp
 	if arguments.Regex {
 		compiled, err := regexp.Compile(arguments.Query)
 		if err != nil {
-			return Failure("invalid", "invalid regex: "+err.Error())
+			return contract.ToolFailure("invalid", "invalid regex: "+err.Error())
 		}
 		expression = compiled
 	}
@@ -325,9 +325,9 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) Result 
 		return nil
 	})
 	if err != nil && err != io.EOF {
-		return Failure("io", err.Error())
+		return contract.ToolFailure("io", err.Error())
 	}
-	return Success(struct {
+	return contract.ToolSuccess(struct {
 		Matches      []match `json:"matches"`
 		ScannedFiles int     `json:"scanned_files"`
 		ScannedBytes int64   `json:"scanned_bytes"`

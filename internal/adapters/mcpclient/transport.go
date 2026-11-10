@@ -167,14 +167,14 @@ func (session *wireSession) operationBudget(ctx context.Context) func() {
 }
 
 // connectionFailure 把认证、启动和回收失败转换为不含原始服务端内容的分类。
-func connectionFailure(err error) tools.Result {
+func connectionFailure(err error) contract.ToolResult {
 	if errors.Is(err, errTerminationUnconfirmed) {
-		return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP process termination could not be confirmed")
+		return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP process termination could not be confirmed")
 	}
 	if errors.Is(err, ErrAuthRequired) {
-		return tools.Failure("mcp_auth_required", ErrAuthRequired.Error())
+		return contract.ToolFailure("mcp_auth_required", ErrAuthRequired.Error())
 	}
-	return tools.Failure("mcp_connection_failed", "MCP connection or protocol negotiation failed")
+	return contract.ToolFailure("mcp_connection_failed", "MCP connection or protocol negotiation failed")
 }
 
 // readCatalog 有界遍历工具页，将 SDK schema 序列化为不透明文档并生成冻结摘要。
@@ -250,21 +250,21 @@ func (manager *Manager) readCatalog(ctx context.Context, server config.MCPServer
 }
 
 // call 只发出一次业务请求，保留协议结构和明确 isError；中途输入请求不自动重发。
-func (session *wireSession) call(ctx context.Context, name string, arguments json.RawMessage) (tools.Result, error) {
+func (session *wireSession) call(ctx context.Context, name string, arguments json.RawMessage) (contract.ToolResult, error) {
 	result, err := session.sdk.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
 	if err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if result == nil || len(result.InputRequests) != 0 || result.RequestState != "" {
-		return tools.Result{}, errors.New("MCP tool has no complete response")
+		return contract.ToolResult{}, errors.New("MCP tool has no complete response")
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	encoded = contract.RedactJSON(session.secrets.json(encoded))
 	if len(encoded) > session.maxResponseBytes {
-		return tools.Result{}, errors.New("MCP result exceeds its byte limit")
+		return contract.ToolResult{}, errors.New("MCP result exceeds its byte limit")
 	}
 	preview := mcpPreview(result, session.secrets)
 	digest := sha256.Sum256(encoded)
@@ -272,7 +272,7 @@ func (session *wireSession) call(ctx context.Context, name string, arguments jso
 	if result.IsError {
 		code = "mcp_tool_error"
 	}
-	return tools.Result{OK: !result.IsError, Code: code, Data: encoded, Preview: preview, Bytes: int64(len(encoded)), SHA256: "sha256:" + hex.EncodeToString(digest[:])}, nil
+	return contract.ToolResult{OK: !result.IsError, Code: code, Data: encoded, Preview: preview, Bytes: int64(len(encoded)), SHA256: "sha256:" + hex.EncodeToString(digest[:])}, nil
 }
 
 // mcpPreview 仅取有界的已脱敏文本摘要，二进制内容保留在结果制品中。

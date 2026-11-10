@@ -8,13 +8,15 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
+	"path/filepath"
 )
 
 // execBoundaryFixture 是一次写边界实验的目录布局：工作区位于 root 之下。
@@ -64,7 +66,7 @@ func newNonTempBoundaryFixture(t *testing.T) execBoundaryFixture {
 
 // execCommandOutputOf 从失败结果里取出结构化输出，断言失败语义而非只断言
 // "文件没出现"。
-func execCommandOutputOf(t *testing.T, result Result) execCommandOutput {
+func execCommandOutputOf(t *testing.T, result contract.ToolResult) execCommandOutput {
 	t.Helper()
 	var output execCommandOutput
 	if err := json.Unmarshal(result.Data, &output); err != nil {

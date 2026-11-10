@@ -6,18 +6,18 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // toolCallOutcome 是单个工具调用的执行结果或错误。
 type toolCallOutcome struct {
-	result tools.Result
+	result contract.ToolResult
 	err    error
 }
 
@@ -40,7 +40,7 @@ func (loop *Loop) executeToolCalls(ctx context.Context, projection *domain.RunPr
 		return nil, errors.New("tool registry is required")
 	}
 	isReadonly := ReadonlyFromRegistry(loop.Tools)
-	groups := tools.PlanParallelGroups(toolNamesOf(calls), isReadonly)
+	groups := contract.PlanParallelGroups(toolNamesOf(calls), isReadonly)
 	for _, group := range groups {
 		if !group.Parallel || len(group.Indexes) < 2 {
 			for _, index := range group.Indexes {
@@ -120,11 +120,11 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 		return nil
 	}
 	type execOutcome struct {
-		result tools.Result
+		result contract.ToolResult
 	}
 	execResults := make([]execOutcome, len(prepared))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, tools.DefaultMaxWorkers)
+	sem := make(chan struct{}, contract.DefaultMaxWorkers)
 	for i := range prepared {
 		wg.Add(1)
 		go func(slot int) {
@@ -133,7 +133,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				execResults[slot] = execOutcome{result: tools.Failure("cancelled", "context cancelled before execution")}
+				execResults[slot] = execOutcome{result: contract.ToolFailure("cancelled", "context cancelled before execution")}
 				return
 			}
 			item := prepared[slot]
@@ -147,7 +147,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 	cancelledSeen := false
 	for i, item := range prepared {
 		result := execResults[i].result
-		if result.Code == tools.CodeTerminationUnconfirmed {
+		if result.Code == contract.CodeTerminationUnconfirmed {
 			outcomes[item.index] = toolCallOutcome{result: result, err: &ports.WaitingReconcileError{RunID: input.RunID, OperationID: item.operationID, Reason: result.Preview}}
 			return outcomes[item.index].err
 		}

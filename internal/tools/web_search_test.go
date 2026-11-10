@@ -5,11 +5,13 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
+	"net/http"
+	"net/http/httptest"
 )
 
 // TestWebSearchRejectsInvalid 锁定空查询与未配置端点失败关闭。
@@ -49,7 +51,7 @@ func TestWebSearchQueriesEndpoint(t *testing.T) {
 
 // TestWebSearchSideEffectProcess 锁定副作用分类。
 func TestWebSearchSideEffectProcess(t *testing.T) {
-	if got := (WebSearch{}).SideEffect(); got != SideEffectProcess {
+	if got := (WebSearch{}).SideEffect(); got != contract.SideEffectProcess {
 		t.Fatalf("副作用应为 process，得到 %q", got)
 	}
 }

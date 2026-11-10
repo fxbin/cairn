@@ -4,13 +4,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 func (loop *Loop) repairMissingCancellationTerminal(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event) (Result, bool, error) {
@@ -180,7 +180,7 @@ type UnstartedOperationRepair struct {
 	OperationID domain.OperationID
 	TurnID      domain.TurnID
 	ToolName    string
-	Result      tools.Result
+	Result      contract.ToolResult
 }
 
 // PendingUnstartedOperationRepairs 从事件流重建操作生命周期，找出审批或策略

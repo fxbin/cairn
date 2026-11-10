@@ -5,11 +5,12 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -47,7 +48,7 @@ type Todo struct {
 }
 
 // SideEffect 声明 todo 无副作用。
-func (Todo) SideEffect() SideEffectClass { return SideEffectNone }
+func (Todo) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Spec 返回 todo 工具定义。
 func (tool Todo) Spec() ports.ToolSpec {
@@ -59,9 +60,9 @@ func (tool Todo) Spec() ports.ToolSpec {
 }
 
 // Execute 处理 todo 动作；每次结果携带完整清单，Journal 可回放进度。
-func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	if tool.Board == nil {
-		return Failure("not_configured", "todo board is not configured")
+		return contract.ToolFailure("not_configured", "todo board is not configured")
 	}
 	var args struct {
 		Action string `json:"action"`
@@ -70,7 +71,7 @@ func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) Result {
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
-		return Failure("invalid_arguments", "todo arguments invalid")
+		return contract.ToolFailure("invalid_arguments", "todo arguments invalid")
 	}
 	board := tool.Board
 	board.mu.Lock()
@@ -80,7 +81,7 @@ func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) Result {
 	case "add":
 		text := strings.TrimSpace(args.Text)
 		if text == "" {
-			return Failure("invalid_arguments", "text is required for add")
+			return contract.ToolFailure("invalid_arguments", "text is required for add")
 		}
 		id := strings.TrimSpace(args.ID)
 		if id == "" {
@@ -88,14 +89,14 @@ func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) Result {
 		}
 		for _, item := range board.items {
 			if item.ID == id {
-				return Failure("invalid_arguments", "todo id already exists")
+				return contract.ToolFailure("invalid_arguments", "todo id already exists")
 			}
 		}
 		board.items = append(board.items, TodoItem{ID: id, Text: text, Status: "pending"})
 	case "update", "complete":
 		id := strings.TrimSpace(args.ID)
 		if id == "" {
-			return Failure("invalid_arguments", "id is required")
+			return contract.ToolFailure("invalid_arguments", "id is required")
 		}
 		status := args.Status
 		if args.Action == "complete" {
@@ -116,15 +117,15 @@ func (tool Todo) Execute(ctx context.Context, raw json.RawMessage) Result {
 			found = true
 		}
 		if !found {
-			return Failure("invalid_arguments", "todo id not found")
+			return contract.ToolFailure("invalid_arguments", "todo id not found")
 		}
 	case "clear":
 		board.items = nil
 	default:
-		return Failure("invalid_arguments", "unknown todo action")
+		return contract.ToolFailure("invalid_arguments", "unknown todo action")
 	}
 	snapshot := make([]TodoItem, len(board.items))
 	copy(snapshot, board.items)
 	data := map[string]any{"items": snapshot}
-	return Success(data, fmt.Sprintf("%d item(s)", len(snapshot)), 0, "", false)
+	return contract.ToolSuccess(data, fmt.Sprintf("%d item(s)", len(snapshot)), 0, "", false)
 }

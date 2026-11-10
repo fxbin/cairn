@@ -2,15 +2,15 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // systemCancellationFallbackCode 是缺少明确 stop_cause 时使用的系统停止失败码。
@@ -109,7 +109,7 @@ type PendingApprovalCancellation struct {
 	Fingerprint          string
 	ToolName             string
 	VerificationID       string
-	Result               tools.Result
+	Result               contract.ToolResult
 	ApprovalDenied       bool
 	OperationTerminal    bool
 	VerificationFinished bool
@@ -271,33 +271,33 @@ func systemApprovalDenial(raw json.RawMessage) (systemApprovalDenialPayload, err
 
 // pendingApprovalDenial 判断既有拒绝是否可由当前停止路径继续闭合，并保留人工
 // 拒绝的失败语义；旧系统拒绝缺少 stop_cause 时由当前持久化停止决定接管。
-func pendingApprovalDenial(raw json.RawMessage, cause string) (systemApprovalDenialPayload, tools.Result, bool, error) {
+func pendingApprovalDenial(raw json.RawMessage, cause string) (systemApprovalDenialPayload, contract.ToolResult, bool, error) {
 	payload, err := systemApprovalDenial(raw)
 	if err != nil {
-		return systemApprovalDenialPayload{}, tools.Result{}, false, err
+		return systemApprovalDenialPayload{}, contract.ToolResult{}, false, err
 	}
 	human, reason, err := humanApprovalDenial(raw)
 	if err != nil {
-		return systemApprovalDenialPayload{}, tools.Result{}, false, err
+		return systemApprovalDenialPayload{}, contract.ToolResult{}, false, err
 	}
 	if human {
-		return payload, tools.Failure("approval_denied", reason), true, nil
+		return payload, contract.ToolFailure("approval_denied", reason), true, nil
 	}
 	matchesCause := payload.Actor == "system" && payload.StopCause == strings.TrimSpace(cause)
 	legacySystemCancellation := payload.Actor == "system" && payload.StopCause == ""
 	if !matchesCause && !legacySystemCancellation {
-		return payload, tools.Result{}, false, nil
+		return payload, contract.ToolResult{}, false, nil
 	}
 	return payload, systemCancellationResult(cause), true, nil
 }
 
 // systemCancellationResult 构造未启动操作因运行停止而失败的结构化结果。
-func systemCancellationResult(cause string) tools.Result {
+func systemCancellationResult(cause string) contract.ToolResult {
 	code := strings.TrimSpace(cause)
 	if code == "" {
 		code = systemCancellationFallbackCode
 	}
-	result := tools.Failure(code, "operation was cancelled before approval because the run was stopping")
+	result := contract.ToolFailure(code, "operation was cancelled before approval because the run was stopping")
 	result.Data = mustJSON(struct {
 		StopCause string `json:"stop_cause"`
 	}{StopCause: cause})

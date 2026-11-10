@@ -3,13 +3,17 @@
 // Author: fxbin
 package tools
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/fxbin/cairn/internal/contract"
+)
 
 // TestPlanParallelGroups 锁定只读聚合与副作用隔离。
 func TestPlanParallelGroups(t *testing.T) {
 	names := []string{"read_file", "search_text", "exec_command", "read_file", "apply_patch"}
 	readonly := func(name string) bool { return name == "read_file" || name == "search_text" }
-	groups := PlanParallelGroups(names, readonly)
+	groups := contract.PlanParallelGroups(names, readonly)
 	if len(groups) != 4 {
 		t.Fatalf("应分为 4 组，得到 %+v", groups)
 	}
@@ -29,7 +33,7 @@ func TestPlanParallelGroups(t *testing.T) {
 
 // TestPlanParallelGroupsFailClosed 锁定无判定函数时全串行。
 func TestPlanParallelGroupsFailClosed(t *testing.T) {
-	groups := PlanParallelGroups([]string{"read_file", "read_file"}, nil)
+	groups := contract.PlanParallelGroups([]string{"read_file", "read_file"}, nil)
 	if len(groups) != 2 {
 		t.Fatalf("应全部串行: %+v", groups)
 	}

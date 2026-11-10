@@ -5,14 +5,15 @@ package tools
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"unicode/utf8"
 )
 
 // 技能结果码供调用方区分可用性、加载前置条件和内容漂移，不携带外部原文。
@@ -28,7 +29,7 @@ const (
 type Skill struct {
 	Catalog  *SkillCatalog
 	explicit map[string]bool
-	active   map[string]SkillContent
+	active   map[string]contract.SkillContent
 }
 
 // SkillArguments 只允许按名称加载正文或读取已激活技能的相对资源。
@@ -89,56 +90,56 @@ func (skill *Skill) Spec() ports.ToolSpec {
 }
 
 // Execute 产生候选内容回执，不提前修改激活状态；状态仅由成功 Journal 回执接纳。
-func (skill *Skill) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (skill *Skill) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	if ctx.Err() != nil {
-		return Failure("cancelled", "skill read cancelled")
+		return contract.ToolFailure("cancelled", "skill read cancelled")
 	}
 	var arguments SkillArguments
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&arguments) != nil || !ValidSkillName(arguments.Name) {
-		return Failure("invalid_arguments", "invalid skill arguments")
+		return contract.ToolFailure("invalid_arguments", "invalid skill arguments")
 	}
 	var trailing json.RawMessage
 	if decoder.Decode(&trailing) != io.EOF {
-		return Failure("invalid_arguments", "invalid skill arguments")
+		return contract.ToolFailure("invalid_arguments", "invalid skill arguments")
 	}
 	if skill.Catalog == nil {
-		return Failure(CodeSkillUnavailable, "skills are not configured")
+		return contract.ToolFailure(CodeSkillUnavailable, "skills are not configured")
 	}
 	entry, found := skill.Catalog.find(arguments.Name)
 	if !found || !skill.available(entry) {
-		return Failure(CodeSkillUnavailable, "skill is unavailable for this task")
+		return contract.ToolFailure(CodeSkillUnavailable, "skill is unavailable for this task")
 	}
 	if arguments.File != "" {
 		content, loaded := skill.active[arguments.Name]
 		if !loaded {
-			return Failure(CodeSkillNotLoaded, "load the skill before reading its resources")
+			return contract.ToolFailure(CodeSkillNotLoaded, "load the skill before reading its resources")
 		}
 		raw, err := skill.Catalog.ReadResource(content, arguments.File)
 		if err != nil {
-			return Failure(CodeSkillResourceUnavailable, err.Error())
+			return contract.ToolFailure(CodeSkillResourceUnavailable, err.Error())
 		}
 		if !utf8.Valid(raw) || bytes.IndexByte(raw, 0) >= 0 {
-			return Failure(CodeSkillBinaryResource, "resource is binary; only text resources can be read")
+			return contract.ToolFailure(CodeSkillBinaryResource, "resource is binary; only text resources can be read")
 		}
-		return Success(SkillResourceContent{Name: arguments.Name, File: arguments.File, Content: string(raw), SHA256: skillDigest(raw)}, "skill resource loaded", int64(len(raw)), skillDigest(raw), false)
+		return contract.ToolSuccess(SkillResourceContent{Name: arguments.Name, File: arguments.File, Content: string(raw), SHA256: skillDigest(raw)}, "skill resource loaded", int64(len(raw)), skillDigest(raw), false)
 	}
 	if content, loaded := skill.active[arguments.Name]; loaded {
-		return Success(content, "previously loaded skill snapshot", int64(len(content.Instructions)), content.SHA256, false)
+		return contract.ToolSuccess(content, "previously loaded skill snapshot", int64(len(content.Instructions)), content.SHA256, false)
 	}
 	content, err := skill.Catalog.Load(arguments.Name)
 	if err != nil {
-		return Failure(CodeSkillLoadFailed, err.Error())
+		return contract.ToolFailure(CodeSkillLoadFailed, err.Error())
 	}
 	if ctx.Err() != nil {
-		return Failure("cancelled", "skill read cancelled")
+		return contract.ToolFailure("cancelled", "skill read cancelled")
 	}
-	return Success(content, "skill instructions loaded", int64(len(content.Instructions)), content.SHA256, false)
+	return contract.ToolSuccess(content, "skill instructions loaded", int64(len(content.Instructions)), content.SHA256, false)
 }
 
 // accept 验证成功加载回执并接纳历史正文；重复回执不能悄悄覆盖已激活版本。
-func (skill *Skill) accept(result Result) error {
+func (skill *Skill) accept(result contract.ToolResult) error {
 	if !result.OK || result.Code != "ok" {
 		return nil
 	}
@@ -149,12 +150,12 @@ func (skill *Skill) accept(result Result) error {
 	if resource.File != "" {
 		return nil
 	}
-	var content SkillContent
-	if json.Unmarshal(result.Data, &content) != nil || content.Version != SkillContentVersion || !ValidSkillName(content.Name) || content.Instructions == "" || len(content.Instructions) > SkillMaxInstructionsBytes || content.SourceDigest == "" || content.SHA256 == "" || len(content.Resources) > SkillMaxFiles {
+	var content contract.SkillContent
+	if json.Unmarshal(result.Data, &content) != nil || content.Version != contract.SkillContentVersion || !ValidSkillName(content.Name) || content.Instructions == "" || len(content.Instructions) > SkillMaxInstructionsBytes || content.SourceDigest == "" || content.SHA256 == "" || len(content.Resources) > SkillMaxFiles {
 		return errors.New("invalid persisted skill content")
 	}
 	if skill.active == nil {
-		skill.active = make(map[string]SkillContent)
+		skill.active = make(map[string]contract.SkillContent)
 	}
 	if prior, exists := skill.active[content.Name]; exists {
 		before, err := skillContentIdentity(prior)
@@ -186,7 +187,7 @@ func (registry *Registry) PrepareSkills(task string) {
 }
 
 // AcceptSkillResult 只在调用方已成功落盘操作与工具回执后更新技能投影。
-func (registry *Registry) AcceptSkillResult(name string, result Result) error {
+func (registry *Registry) AcceptSkillResult(name string, result contract.ToolResult) error {
 	if name != "skill" {
 		return nil
 	}
@@ -198,14 +199,14 @@ func (registry *Registry) AcceptSkillResult(name string, result Result) error {
 }
 
 // ActiveSkills 按名称返回来自成功回执的完整说明，供压缩后保留和预算计算。
-func (registry *Registry) ActiveSkills() []SkillContent {
+func (registry *Registry) ActiveSkills() []contract.SkillContent {
 	skill := registry.skillTool()
 	if skill == nil {
 		return nil
 	}
-	contents := make([]SkillContent, 0, len(skill.active))
+	contents := make([]contract.SkillContent, 0, len(skill.active))
 	for _, content := range skill.active {
-		content.Resources = append([]SkillResource(nil), content.Resources...)
+		content.Resources = append([]contract.SkillResource(nil), content.Resources...)
 		contents = append(contents, content)
 	}
 	sort.Slice(contents, func(i, j int) bool { return contents[i].Name < contents[j].Name })
@@ -213,20 +214,20 @@ func (registry *Registry) ActiveSkills() []SkillContent {
 }
 
 // skillModelResult 避免与持久技能上下文重复复制正文，Journal 始终保留完整加载回执。
-func skillModelResult(result Result) Result {
+func skillModelResult(result contract.ToolResult) contract.ToolResult {
 	if !result.OK {
 		return result
 	}
-	var content SkillContent
+	var content contract.SkillContent
 	if json.Unmarshal(result.Data, &content) != nil || content.Instructions == "" {
 		return result
 	}
 	encoded, err := json.Marshal(struct {
-		Name      string          `json:"name"`
-		Scope     string          `json:"scope"`
-		SHA256    string          `json:"sha256"`
-		Resources []SkillResource `json:"resources"`
-		Note      string          `json:"note"`
+		Name      string                   `json:"name"`
+		Scope     string                   `json:"scope"`
+		SHA256    string                   `json:"sha256"`
+		Resources []contract.SkillResource `json:"resources"`
+		Note      string                   `json:"note"`
 	}{Name: content.Name, Scope: content.Scope, SHA256: content.SHA256, Resources: content.Resources, Note: "Full instructions are preserved in the persistent skill context; resources are read on demand with skill(name,file)."})
 	if err == nil {
 		result.Data = encoded

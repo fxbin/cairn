@@ -3,19 +3,19 @@
 package agent
 
 import (
-	"encoding/json"
 	"errors"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/canonicaljson"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // skillSuccessReceipt 只读取具名操作的成功工具载荷，失败结果不能激活技能。
 type skillSuccessReceipt struct {
-	ToolName string       `json:"tool_name"`
-	Result   tools.Result `json:"result"`
+	ToolName string              `json:"tool_name"`
+	Result   contract.ToolResult `json:"result"`
 }
 
 // restoreSkillResults 只接纳操作终态和工具结果逐位一致的成功加载，不重读或执行原技能。
@@ -53,7 +53,7 @@ func (loop *Loop) restoreSkillResults(events []domain.Event) error {
 			if proposals[*event.OperationID] != "skill" {
 				continue
 			}
-			var result tools.Result
+			var result contract.ToolResult
 			if json.Unmarshal(event.Payload, &result) != nil {
 				return errors.New("decode persisted skill result failed")
 			}

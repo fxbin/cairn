@@ -5,14 +5,15 @@ package tools
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"encoding/base64"
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/browser"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -36,7 +37,7 @@ type Browser struct {
 }
 
 // SideEffect 声明浏览器导航与求值为进程级副作用（外部页面可产生请求）。
-func (Browser) SideEffect() SideEffectClass { return SideEffectProcess }
+func (Browser) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // Spec 返回 browser 工具的统一入口（action 分发）。
 func (tool Browser) Spec() ports.ToolSpec {
@@ -64,52 +65,52 @@ type browserResult struct {
 }
 
 // Execute 分发浏览器动作。
-func (tool Browser) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool Browser) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var args browserArguments
 	if err := json.Unmarshal(raw, &args); err != nil {
-		return Failure("invalid_arguments", "browser arguments must include action")
+		return contract.ToolFailure("invalid_arguments", "browser arguments must include action")
 	}
 	if tool.Driver == nil {
-		return Failure("not_configured", "browser driver is not configured")
+		return contract.ToolFailure("not_configured", "browser driver is not configured")
 	}
 	switch args.Action {
 	case "open":
 		if strings.TrimSpace(args.URL) == "" {
-			return Failure("invalid_arguments", "url is required for open")
+			return contract.ToolFailure("invalid_arguments", "url is required for open")
 		}
 		if err := tool.Driver.Navigate(ctx, args.URL); err != nil {
-			return Failure("browser_navigate_failed", err.Error())
+			return contract.ToolFailure("browser_navigate_failed", err.Error())
 		}
-		return Success(browserResult{Action: "open", URL: args.URL}, "opened "+args.URL, 0, "", false)
+		return contract.ToolSuccess(browserResult{Action: "open", URL: args.URL}, "opened "+args.URL, 0, "", false)
 	case "eval":
 		if strings.TrimSpace(args.Expression) == "" {
-			return Failure("invalid_arguments", "expression is required for eval")
+			return contract.ToolFailure("invalid_arguments", "expression is required for eval")
 		}
 		if len(args.Expression) > BrowserMaxExpressionBytes {
-			return Failure("invalid_arguments", "expression exceeds limit")
+			return contract.ToolFailure("invalid_arguments", "expression exceeds limit")
 		}
 		value, err := tool.Driver.Evaluate(ctx, args.Expression)
 		if err != nil {
-			return Failure("browser_eval_failed", err.Error())
+			return contract.ToolFailure("browser_eval_failed", err.Error())
 		}
-		return Success(browserResult{Action: "eval", Value: value}, "evaluated", int64(len(value)), "", false)
+		return contract.ToolSuccess(browserResult{Action: "eval", Value: value}, "evaluated", int64(len(value)), "", false)
 	case "screenshot":
 		png, err := tool.Driver.Screenshot(ctx)
 		if err != nil {
-			return Failure("browser_screenshot_failed", err.Error())
+			return contract.ToolFailure("browser_screenshot_failed", err.Error())
 		}
 		encoded := base64.StdEncoding.EncodeToString(png)
 		if len(encoded) > BrowserScreenshotMaxBytes {
-			return Failure("screenshot_too_large", fmt.Sprintf("screenshot base64 is %d bytes", len(encoded)))
+			return contract.ToolFailure("screenshot_too_large", fmt.Sprintf("screenshot base64 is %d bytes", len(encoded)))
 		}
-		return Success(browserResult{Action: "screenshot", Screenshot: encoded, Bytes: len(png)}, "screenshot captured", int64(len(png)), "", false)
+		return contract.ToolSuccess(browserResult{Action: "screenshot", Screenshot: encoded, Bytes: len(png)}, "screenshot captured", int64(len(png)), "", false)
 	case "close":
 		if err := tool.Driver.Close(); err != nil {
-			return Failure("browser_close_failed", err.Error())
+			return contract.ToolFailure("browser_close_failed", err.Error())
 		}
-		return Success(browserResult{Action: "close"}, "closed", 0, "", false)
+		return contract.ToolSuccess(browserResult{Action: "close"}, "closed", 0, "", false)
 	default:
-		return Failure("invalid_arguments", "unknown browser action")
+		return contract.ToolFailure("invalid_arguments", "unknown browser action")
 	}
 }
 

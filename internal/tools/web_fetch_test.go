@@ -5,12 +5,14 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
+	"net/http"
+	"net/http/httptest"
 )
 
 // TestWebFetchRejectsNonHTTP 锁定非 http/https 拒绝。
@@ -44,7 +46,7 @@ func TestWebFetchTruncatesLargeBody(t *testing.T) {
 
 // TestWebFetchSideEffectProcess 锁定副作用分类为 Process。
 func TestWebFetchSideEffectProcess(t *testing.T) {
-	if got := (WebFetch{}).SideEffect(); got != SideEffectProcess {
+	if got := (WebFetch{}).SideEffect(); got != contract.SideEffectProcess {
 		t.Fatalf("副作用应为 process，得到 %q", got)
 	}
 }

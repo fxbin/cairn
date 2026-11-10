@@ -4,11 +4,11 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // checkpointReadEvidence 是成功读取回执中的历史字节定位，不从正文长度推断范围。
@@ -75,7 +75,7 @@ func decodeCheckpointReadEvidence(raw json.RawMessage) (checkpointReadEvidence, 
 // checkpointPatchRecovery 保留已知补丁错误的有限恢复字段；未知字段、原文与候选代码不进入摘要。
 // data 必须先完整脱敏，next_action 仅作为历史工具反馈保留，不获得任务或权限优先级。
 func checkpointPatchRecovery(code string, raw json.RawMessage) string {
-	if code != tools.CodeInvalidPatchArguments && code != tools.CodePatchTextMismatch {
+	if code != contract.CodeInvalidPatchArguments && code != contract.CodePatchTextMismatch {
 		return ""
 	}
 	var data struct {
@@ -90,7 +90,7 @@ func checkpointPatchRecovery(code string, raw json.RawMessage) string {
 		return ""
 	}
 	parts := []string{}
-	if code == tools.CodeInvalidPatchArguments {
+	if code == contract.CodeInvalidPatchArguments {
 		if data.Mode == "create" || data.Mode == "update" || data.Mode == "delete" {
 			parts = append(parts, "mode="+data.Mode)
 		}

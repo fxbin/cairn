@@ -1,5 +1,5 @@
 // worker_pool.go 实现有界并行 worker 池：只读工具组并行执行，超出上限排队
-// 而非失败；与 PlanParallelGroups 配合使用。
+// 而非失败；与合同层的并行规划配合使用。
 // Author: fxbin
 package tools
 
@@ -7,10 +7,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
-)
 
-// DefaultMaxWorkers 是并行 worker 默认上限。
-const DefaultMaxWorkers = 4
+	"github.com/fxbin/cairn/internal/contract"
+)
 
 // TaskResult 是单个任务的执行结果。
 type TaskResult struct {
@@ -27,7 +26,7 @@ type WorkerPool struct {
 // NewWorkerPool 创建池；maxWorkers <=0 时使用默认上限。
 func NewWorkerPool(maxWorkers int) *WorkerPool {
 	if maxWorkers <= 0 {
-		maxWorkers = DefaultMaxWorkers
+		maxWorkers = contract.DefaultMaxWorkers
 	}
 	return &WorkerPool{maxWorkers: maxWorkers}
 }

@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/fxbin/cairn/internal/contract"
+	"os/exec"
 )
 
 // ExecRunRequest 是 Runner 的统一执行输入。
@@ -51,7 +53,7 @@ type ExecRunner interface {
 	// ID 返回写入 Journal 的后端标识。
 	ID() ExecBackend
 	// Run 在已解析工作目录内执行；失败关闭，不跨后端降级。
-	Run(ctx context.Context, request ExecRunRequest) Result
+	Run(ctx context.Context, request ExecRunRequest) contract.ToolResult
 }
 
 // HostRunner 直接在宿主机工作区启动 argv（无 OS 沙箱）。
@@ -61,7 +63,7 @@ type HostRunner struct{}
 func (HostRunner) ID() ExecBackend { return ExecBackendHost }
 
 // Run 启动宿主机进程。
-func (HostRunner) Run(ctx context.Context, request ExecRunRequest) Result {
+func (HostRunner) Run(ctx context.Context, request ExecRunRequest) contract.ToolResult {
 	command := exec.Command(request.Arguments.Argv[0], request.Arguments.Argv[1:]...)
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
@@ -76,14 +78,14 @@ type SeatbeltRunner struct{}
 func (SeatbeltRunner) ID() ExecBackend { return ExecBackendSeatbeltHost }
 
 // Run 包装 argv 后执行；缺少 OS 沙箱时失败关闭。
-func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) Result {
+func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) contract.ToolResult {
 	writeMode := SeatbeltWriteWorkspace
 	if !request.HostWrite {
 		writeMode = SeatbeltWriteNone
 	}
 	termination, terminationErr := newSandboxTermination()
 	if terminationErr != nil {
-		return Failure("sandbox_unavailable", terminationErr.Error())
+		return contract.ToolFailure("sandbox_unavailable", terminationErr.Error())
 	}
 	options := SeatbeltOptions{
 		WorkspaceRoot: request.Workspace.Root,
@@ -98,7 +100,7 @@ func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) Result {
 		if termination != nil {
 			termination.close()
 		}
-		return Failure("sandbox_unavailable", err.Error())
+		return contract.ToolFailure("sandbox_unavailable", err.Error())
 	}
 	command := exec.Command(wrapped[0], wrapped[1:]...)
 	command.Dir = request.WorkingDirectory
@@ -122,16 +124,16 @@ type DockerRunner struct {
 func (DockerRunner) ID() ExecBackend { return ExecBackendDocker }
 
 // Run 构造并启动 docker run；不可用时失败关闭。
-func (runner DockerRunner) Run(ctx context.Context, request ExecRunRequest) Result {
+func (runner DockerRunner) Run(ctx context.Context, request ExecRunRequest) contract.ToolResult {
 	if err := validateDockerImageAndPIDs(runner.Image, runner.MaxPIDs); err != nil {
-		return Failure("invalid_backend", err.Error())
+		return contract.ToolFailure("invalid_backend", err.Error())
 	}
 	if strings.Contains(runner.Workspace.Root, ",") {
-		return Failure("invalid_path", "docker sandbox does not support a workspace path containing a comma")
+		return contract.ToolFailure("invalid_path", "docker sandbox does not support a workspace path containing a comma")
 	}
 	dockerBinary, err := exec.LookPath("docker")
 	if err != nil {
-		return Failure("sandbox_unavailable", fmt.Sprintf("docker sandbox is unavailable: %v", err))
+		return contract.ToolFailure("sandbox_unavailable", fmt.Sprintf("docker sandbox is unavailable: %v", err))
 	}
 	name := dockerContainerName()
 	if runner.ContainerID != nil {
@@ -166,6 +168,6 @@ func runnerFor(backend ExecBackend, workspace Workspace, hostConfined, hostWrite
 }
 
 // runProcess 是 Runner 共享的进程生命周期实现（超时、进程组、清理）。
-func runProcess(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) Result {
+func runProcess(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) contract.ToolResult {
 	return runCommandShared(ctx, arguments, backend, command, cleanup, grace, termination)
 }

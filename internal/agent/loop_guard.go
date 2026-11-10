@@ -2,16 +2,16 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 const (
@@ -171,7 +171,7 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 			continue
 		}
 		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.ToolName == tools.MCPQuiesceTool {
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.ToolName == contract.MCPQuiesceTool {
 			continue
 		}
 		candidate := payload.ToolName + "\x00" + string(payload.Arguments)
@@ -267,7 +267,7 @@ func (loop *Loop) currentOperationFailureGuard(ctx context.Context, runID domain
 }
 
 // stableToolResultFingerprint 摘要工具结果中的稳定字段，并剔除命令耗时等非语义噪声。
-func stableToolResultFingerprint(result tools.Result) string {
+func stableToolResultFingerprint(result contract.ToolResult) string {
 	previewText := stripDurationField(result.Preview)
 	preview := any(previewText)
 	if result.Preview != "" {

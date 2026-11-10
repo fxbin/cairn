@@ -121,9 +121,6 @@ type knownException struct {
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
 var knownExceptions = []knownException{
-	// Core 直接持有 Runtime 工具实现的剩余引用。
-	{Importer: "internal/agent", Imported: "internal/tools", Step: stepToolsPort, Reason: "Loop.Tools 直接持有 *tools.Registry，21 个生产文件引用 tools 类型"},
-
 	// 端口层依赖无运行时消费方的工作流脚手架。
 	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
 

@@ -2,13 +2,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // RunScriptedToolPlan 在不调用模型的前提下，按固定顺序执行一组由调用方确定
@@ -306,7 +306,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	}
 	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
-	if result.Code == tools.CodeTerminationUnconfirmed {
+	if result.Code == contract.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
@@ -423,7 +423,7 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 // 态化运行；拒绝意味着回退中止，工作区停在拒绝点。
 func (loop *Loop) denyScriptedApproval(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, pending *domain.PendingApproval, call ports.ToolCall, verification verificationProposalPayload, verificationProposal bool, reason string) (Result, error) {
 	denied := &ports.PolicyDeniedError{Summary: reason}
-	result := tools.Failure("approval_denied", reason)
+	result := contract.ToolFailure("approval_denied", reason)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 		Fingerprint string `json:"fingerprint"`
 		Actor       string `json:"actor"`
@@ -456,7 +456,7 @@ func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain
 	}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: reason, StopCause: "approval_stale"})}); err != nil {
 		return Result{}, err
 	}
-	result := tools.Failure("approval_stale", reason)
+	result := contract.ToolFailure("approval_stale", reason)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 		return Result{}, err
 	}

@@ -2,19 +2,20 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
+	"path/filepath"
 )
 
 // TestLoopPatchRecoveryFeedbackPrecedesAnyWrite 通过真实工具与 Journal 验证三类拒绝反馈和精确重提的唯一写入。
@@ -83,7 +84,7 @@ func TestLoopPatchRecoveryFeedbackPrecedesAnyWrite(t *testing.T) {
 				continue
 			}
 			found = true
-			var result tools.Result
+			var result contract.ToolResult
 			if err := json.Unmarshal([]byte(message.Content), &result); err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +131,7 @@ func TestLoopPatchRecoveryFeedbackPrecedesAnyWrite(t *testing.T) {
 		if event.Type == domain.EventOperationFailed {
 			failures++
 			var payload struct {
-				Result tools.Result `json:"result"`
+				Result contract.ToolResult `json:"result"`
 			}
 			if err := json.Unmarshal(event.Payload, &payload); err != nil || !json.Valid(payload.Result.Data) {
 				t.Fatalf("失败 Journal 丢失结构化恢复反馈: %v", err)

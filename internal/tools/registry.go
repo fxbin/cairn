@@ -7,42 +7,19 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
-
-// Result 是工具调用返回给 Agent 并可写入事件日志的标准结果。
-type Result struct {
-	OK        bool            `json:"ok"`
-	Code      string          `json:"code"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	Preview   string          `json:"preview,omitempty"`
-	Truncated bool            `json:"truncated"`
-	Bytes     int64           `json:"bytes"`
-	SHA256    string          `json:"sha256,omitempty"`
-}
-
-// CodeTerminationUnconfirmed 表示取消信号已发出，但进程退出与资源回收仍未得到确认；
-// 调用方必须保留副作用操作的非终态并进入人工对账。
-const CodeTerminationUnconfirmed = "termination_unconfirmed"
 
 // Tool 定义固定工具的模型声明和同步执行契约。
 type Tool interface {
 	Spec() ports.ToolSpec
-	Execute(ctx context.Context, raw json.RawMessage) Result
+	Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult
 }
-
-// SideEffectClass 对工具可能造成的副作用进行保守分类。
-type SideEffectClass string
-
-const (
-	SideEffectNone      SideEffectClass = "none"
-	SideEffectWorkspace SideEffectClass = "workspace"
-	SideEffectProcess   SideEffectClass = "process"
-)
 
 // SideEffectTool 由具有副作用分类的工具实现。
 type SideEffectTool interface {
-	SideEffect() SideEffectClass
+	SideEffect() contract.SideEffectClass
 }
 
 // Registry 按注册顺序保存名称唯一的固定工具。
@@ -109,40 +86,33 @@ func (registry *Registry) Names() []string {
 }
 
 // Execute 查找具名工具并执行；未知工具会返回结构化失败结果。
-func (registry *Registry) Execute(ctx context.Context, name string, arguments json.RawMessage) Result {
+func (registry *Registry) Execute(ctx context.Context, name string, arguments json.RawMessage) contract.ToolResult {
 	tool, exists := registry.tools[name]
 	if !exists {
 		if registry.mcp != nil {
 			return registry.mcp.Execute(ctx, name, arguments)
 		}
-		return Failure("unknown_tool", "unknown tool: "+name)
+		return contract.ToolFailure("unknown_tool", "unknown tool: "+name)
 	}
 	return tool.Execute(ctx, arguments)
 }
 
 // SideEffect 返回具名工具的副作用分类，未知或未分类工具保守视为无副作用。
-func (registry *Registry) SideEffect(name string) SideEffectClass {
+func (registry *Registry) SideEffect(name string) contract.SideEffectClass {
 	tool, exists := registry.tools[name]
 	if !exists {
 		if registry.mcp != nil {
 			return registry.mcp.SideEffect(name)
 		}
-		return SideEffectNone
+		return contract.SideEffectNone
 	}
 	if classified, ok := tool.(SideEffectTool); ok {
 		return classified.SideEffect()
 	}
-	return SideEffectNone
+	return contract.SideEffectNone
 }
 
-// Failure 创建不含原始数据的结构化工具失败结果。
-func Failure(code, preview string) Result { return Result{Code: code, Preview: preview} }
-
-// Success 将结果数据序列化为 JSON 并创建结构化成功结果。
-func Success(data any, preview string, bytes int64, digest string, truncated bool) Result {
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return Failure("internal", err.Error())
-	}
-	return Result{OK: true, Code: "ok", Data: encoded, Preview: preview, Bytes: bytes, SHA256: digest, Truncated: truncated}
+// ReadonlyToolNames 返回固定工具中副作用为 none 的只读工具名集合。
+func (registry *Registry) ReadonlyToolNames() map[string]bool {
+	return ReadonlyToolNames(registry)
 }

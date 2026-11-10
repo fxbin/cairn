@@ -10,7 +10,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 const malformedToolArgumentsErrorClass = "malformed_tool_arguments"
@@ -114,7 +113,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != tools.MCPQuiesceTool {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != contract.MCPQuiesceTool {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:
@@ -181,7 +180,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != tools.MCPQuiesceTool {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != contract.MCPQuiesceTool {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:

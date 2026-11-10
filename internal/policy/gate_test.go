@@ -1,15 +1,16 @@
 package policy
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
+	"path/filepath"
 )
 
 func TestGateUsesHashBoundPatchFingerprintAndProtectsPaths(t *testing.T) {
@@ -74,7 +75,7 @@ func TestGateExposesStalePatchAsRecoverablePrecondition(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err := gate.Decide("apply_patch", json.RawMessage(`{"path":"file.txt","mode":"update","expected_sha256":"`+patchHash([]byte("stale"))+`","replacements":[{"old":"current","new":"next"}]}`))
-	if err != nil || decision.Effect != Deny || decision.RuleID != "stale_patch_precondition" || decision.FailureCode != tools.CodeStalePrecondition {
+	if err != nil || decision.Effect != Deny || decision.RuleID != "stale_patch_precondition" || decision.FailureCode != contract.CodeStalePrecondition {
 		t.Fatalf("decision=%#v err=%v", decision, err)
 	}
 	var details struct {

@@ -5,13 +5,14 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"unicode/utf8"
 )
 
 // ExecSession 限制约束会话输入输出与生命周期。
@@ -129,23 +130,23 @@ func (ExecSession) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明会话属于进程级副作用。
-func (ExecSession) SideEffect() SideEffectClass { return SideEffectProcess }
+func (ExecSession) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // Execute 校验请求后调用后端；后端缺失失败关闭。
-func (tool ExecSession) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool ExecSession) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var request SessionRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return Failure("invalid_arguments", "exec_session 参数解析失败")
+		return contract.ToolFailure("invalid_arguments", "exec_session 参数解析失败")
 	}
 	if err := ValidateSessionRequest(request); err != nil {
-		return Failure("invalid_arguments", err.Error())
+		return contract.ToolFailure("invalid_arguments", err.Error())
 	}
 	if tool.Backend == nil {
-		return Failure("not_configured", "session backend is not configured")
+		return contract.ToolFailure("not_configured", "session backend is not configured")
 	}
 	if request.Action == SessionOpen {
 		if _, _, err := tool.Workspace.Resolve(request.CWD); err != nil {
-			return Failure("invalid_cwd", "cwd 越出工作区边界")
+			return contract.ToolFailure("invalid_cwd", "cwd 越出工作区边界")
 		}
 	}
 	switch request.Action {
@@ -155,30 +156,30 @@ func (tool ExecSession) Execute(ctx context.Context, raw json.RawMessage) Result
 			sessionID = "sess-" + fmt.Sprint(time.Now().UTC().UnixNano())
 		}
 		if err := tool.Backend.Open(sessionID, request.CWD, nil); err != nil {
-			return Failure("session_open_failed", err.Error())
+			return contract.ToolFailure("session_open_failed", err.Error())
 		}
 		payload, _ := json.Marshal(SessionResult{Action: SessionOpen, SessionID: sessionID})
-		return Result{OK: true, Code: "ok", Data: payload, Preview: "会话已开启 " + sessionID}
+		return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: "会话已开启 " + sessionID}
 	case SessionWrite:
 		digest, err := tool.Backend.Write(request.SessionID, request.Content)
 		if err != nil {
-			return Failure("session_write_failed", err.Error())
+			return contract.ToolFailure("session_write_failed", err.Error())
 		}
 		payload, _ := json.Marshal(SessionResult{Action: SessionWrite, SessionID: request.SessionID, InputDigest: digest})
-		return Result{OK: true, Code: "ok", Data: payload, Preview: "输入摘要 " + digest}
+		return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: "输入摘要 " + digest}
 	case SessionRead:
 		output, truncated, err := tool.Backend.Read(request.SessionID, ExecSessionMaxReadBytes)
 		if err != nil {
-			return Failure("session_read_failed", err.Error())
+			return contract.ToolFailure("session_read_failed", err.Error())
 		}
 		payload, _ := json.Marshal(SessionResult{Action: SessionRead, SessionID: request.SessionID, Output: output, Truncated: truncated})
-		return Result{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("读取 %d bytes", len(output)), Truncated: truncated}
+		return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("读取 %d bytes", len(output)), Truncated: truncated}
 	case SessionClose:
 		if err := tool.Backend.Close(request.SessionID); err != nil {
-			return Failure("session_close_failed", err.Error())
+			return contract.ToolFailure("session_close_failed", err.Error())
 		}
 		payload, _ := json.Marshal(SessionResult{Action: SessionClose, SessionID: request.SessionID})
-		return Result{OK: true, Code: "ok", Data: payload, Preview: "会话已关闭"}
+		return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: "会话已关闭"}
 	}
-	return Failure("internal", "unreachable")
+	return contract.ToolFailure("internal", "unreachable")
 }

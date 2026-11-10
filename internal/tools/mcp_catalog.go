@@ -4,10 +4,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -30,14 +31,14 @@ type MCPProposal struct {
 type MCPCatalog interface {
 	Specs() []ports.ToolSpec
 	DeclarationFingerprint(string) (string, bool)
-	Execute(context.Context, string, json.RawMessage) Result
-	ExecuteWithIdentity(context.Context, string, json.RawMessage, string) Result
+	Execute(context.Context, string, json.RawMessage) contract.ToolResult
+	ExecuteWithIdentity(context.Context, string, json.RawMessage, string) contract.ToolResult
 	Proposal(string, json.RawMessage) (MCPProposal, bool, error)
-	SideEffect(string) SideEffectClass
-	AcceptResult(string, Result) error
+	SideEffect(string) contract.SideEffectClass
+	AcceptResult(string, contract.ToolResult) error
 	ResetProjection()
 	NeedsQuiescence() bool
-	ModelResult(string, Result) Result
+	ModelResult(string, contract.ToolResult) contract.ToolResult
 	Close() error
 }
 
@@ -58,7 +59,7 @@ func NewRegistryWithMCP(catalog MCPCatalog, available ...Tool) (*Registry, error
 	registry.mcp = catalog
 	if catalog != nil {
 		for name := range registry.tools {
-			if strings.HasPrefix(name, "mcp__") || name == MCPQuiesceTool {
+			if strings.HasPrefix(name, "mcp__") || name == contract.MCPQuiesceTool {
 				return nil, errors.New("native tool name collides with MCP namespace")
 			}
 		}
@@ -80,7 +81,7 @@ func (registry *Registry) MCPProposal(name string, arguments json.RawMessage) (M
 }
 
 // AcceptMCPResult 仅在相应工具结果已落盘后激活目录或模型可见工具。
-func (registry *Registry) AcceptMCPResult(name string, result Result) error {
+func (registry *Registry) AcceptMCPResult(name string, result contract.ToolResult) error {
 	if registry.mcp == nil {
 		return nil
 	}
@@ -88,7 +89,7 @@ func (registry *Registry) AcceptMCPResult(name string, result Result) error {
 }
 
 // ModelResult 从目录证据生成精简的模型视图，Journal 仍保留完整发现快照。
-func (registry *Registry) ModelResult(name string, result Result) Result {
+func (registry *Registry) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
 	if name == "skill" {
 		return skillModelResult(result)
 	}
@@ -105,16 +106,13 @@ func (registry *Registry) ResetMCPProjection() {
 	}
 }
 
-// MCPQuiesceTool 是运行期资源回收入口，不作为模型工具声明或通用命令暴露。
-const MCPQuiesceTool = "mcp_close"
-
 // MCPNeedsQuiescence 只查询本次 Boot 是否仍持有外部会话，不产生副作用。
 func (registry *Registry) MCPNeedsQuiescence() bool {
 	return registry.mcp != nil && registry.mcp.NeedsQuiescence()
 }
 
 // ExecuteWithMCPIdentity 将策略已授权的认证摘要传到传输，普通内置工具保持原有执行入口。
-func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name string, raw json.RawMessage, identity string) Result {
+func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name string, raw json.RawMessage, identity string) contract.ToolResult {
 	if identity != "" && registry.mcp != nil {
 		return registry.mcp.ExecuteWithIdentity(ctx, name, raw, identity)
 	}

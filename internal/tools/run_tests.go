@@ -30,7 +30,7 @@ const runTestsMaxFailures = 50
 type RunTests struct{ Workspace Workspace }
 
 // SideEffect 声明 run_tests 启动子进程但不改工作区源文件；按 process 分类以便审批。
-func (RunTests) SideEffect() SideEffectClass { return SideEffectProcess }
+func (RunTests) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // Spec 返回 run_tests 的受限 JSON 参数定义。
 func (tool RunTests) Spec() ports.ToolSpec {
@@ -79,17 +79,17 @@ var (
 )
 
 // Execute 运行测试命令并解析结构化结果。
-func (tool RunTests) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool RunTests) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var args runTestsArguments
 	if err := json.Unmarshal(raw, &args); err != nil {
-		return Failure("invalid_arguments", "run_tests arguments must include argv")
+		return contract.ToolFailure("invalid_arguments", "run_tests arguments must include argv")
 	}
 	if len(args.Argv) == 0 {
-		return Failure("invalid_arguments", "argv is required")
+		return contract.ToolFailure("invalid_arguments", "argv is required")
 	}
 	for _, part := range args.Argv {
 		if part == "" || strings.ContainsRune(part, 0) {
-			return Failure("invalid_arguments", "argv entries must be non-empty and free of NUL")
+			return contract.ToolFailure("invalid_arguments", "argv entries must be non-empty and free of NUL")
 		}
 	}
 	timeout := runTestsTimeout
@@ -100,7 +100,7 @@ func (tool RunTests) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if strings.TrimSpace(args.CWD) != "" {
 		resolved, _, err := tool.Workspace.Resolve(args.CWD)
 		if err != nil {
-			return Failure("invalid_path", "cwd must be a workspace directory")
+			return contract.ToolFailure("invalid_path", "cwd must be a workspace directory")
 		}
 		cwd = resolved
 	}
@@ -108,7 +108,7 @@ func (tool RunTests) Execute(ctx context.Context, raw json.RawMessage) Result {
 	output, exitCode, err := runTestsCommand(ctx, cwd, timeout, args.Argv)
 	duration := time.Since(started).Milliseconds()
 	if err != nil && output == "" {
-		return Failure("test_run_failed", err.Error())
+		return contract.ToolFailure("test_run_failed", err.Error())
 	}
 	parsed := parseTestOutput(output)
 	parsed.Argv = args.Argv
@@ -125,7 +125,7 @@ func (tool RunTests) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if parsed.Failed > 0 {
 		preview += " · " + parsed.Failures[0].Name
 	}
-	return Success(parsed, preview, int64(len(output)), "", parsed.Truncated)
+	return contract.ToolSuccess(parsed, preview, int64(len(output)), "", parsed.Truncated)
 }
 
 // runTestsCommand 以 argv 执行测试并收集合并输出。

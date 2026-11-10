@@ -29,10 +29,10 @@ type GitStatus struct{ Workspace Workspace }
 type GitDiff struct{ Workspace Workspace }
 
 // SideEffect 声明 GitStatus 无副作用。
-func (GitStatus) SideEffect() SideEffectClass { return SideEffectNone }
+func (GitStatus) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // SideEffect 声明 GitDiff 无副作用。
-func (GitDiff) SideEffect() SideEffectClass { return SideEffectNone }
+func (GitDiff) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Spec 返回 git_status 的受限 JSON 参数定义。
 func (tool GitStatus) Spec() ports.ToolSpec {
@@ -74,20 +74,20 @@ type gitDiffResult struct {
 }
 
 // Execute 运行只读 git status 并返回结构化结果。
-func (tool GitStatus) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool GitStatus) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	if len(raw) > 0 && string(raw) != "null" {
 		var args struct{}
 		if err := json.Unmarshal(raw, &args); err != nil {
-			return Failure("invalid_arguments", "git_status does not accept arguments")
+			return contract.ToolFailure("invalid_arguments", "git_status does not accept arguments")
 		}
 	}
 	version, err := gitVersion(ctx, tool.Workspace.Root)
 	if err != nil {
-		return Failure("git_unavailable", err.Error())
+		return contract.ToolFailure("git_unavailable", err.Error())
 	}
 	output, err := runGitRead(ctx, tool.Workspace.Root, gitReadMaxOutput, "status", "--porcelain=v1", "--branch", "--untracked-files=normal")
 	if err != nil {
-		return Failure("git_status_failed", err.Error())
+		return contract.ToolFailure("git_status_failed", err.Error())
 	}
 	result := gitStatusResult{Entries: []string{}, GitVersion: version, Truncated: output.truncated}
 	for _, line := range strings.Split(output.text, "\n") {
@@ -110,7 +110,7 @@ func (tool GitStatus) Execute(ctx context.Context, raw json.RawMessage) Result {
 	if !result.Clean {
 		preview = fmt.Sprintf("%d change entr%s", len(result.Entries), pluralY(len(result.Entries)))
 	}
-	return Success(result, preview, int64(output.bytes), "", output.truncated)
+	return contract.ToolSuccess(result, preview, int64(output.bytes), "", output.truncated)
 }
 
 // gitDiffArguments 是 git_diff 的内部解码参数。
@@ -120,15 +120,15 @@ type gitDiffArguments struct {
 }
 
 // Execute 运行只读 git diff 并返回截断后的统一差异文本。
-func (tool GitDiff) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool GitDiff) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var args gitDiffArguments
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &args); err != nil {
-			return Failure("invalid_arguments", "git_diff arguments must be an object with optional staged and paths")
+			return contract.ToolFailure("invalid_arguments", "git_diff arguments must be an object with optional staged and paths")
 		}
 	}
 	if len(args.Paths) > 32 {
-		return Failure("invalid_arguments", "git_diff paths accepts at most 32 entries")
+		return contract.ToolFailure("invalid_arguments", "git_diff paths accepts at most 32 entries")
 	}
 	argv := []string{"diff", "--no-color", "--no-ext-diff"}
 	if args.Staged {
@@ -138,14 +138,14 @@ func (tool GitDiff) Execute(ctx context.Context, raw json.RawMessage) Result {
 		argv = append(argv, "--")
 		for _, path := range args.Paths {
 			if strings.TrimSpace(path) == "" || strings.Contains(path, "..") {
-				return Failure("invalid_arguments", "git_diff paths must be workspace-relative without ..")
+				return contract.ToolFailure("invalid_arguments", "git_diff paths must be workspace-relative without ..")
 			}
 			argv = append(argv, path)
 		}
 	}
 	output, err := runGitRead(ctx, tool.Workspace.Root, gitReadMaxOutput, argv...)
 	if err != nil {
-		return Failure("git_diff_failed", err.Error())
+		return contract.ToolFailure("git_diff_failed", err.Error())
 	}
 	data := gitDiffResult{Staged: args.Staged, Paths: args.Paths, Diff: output.text, Truncated: output.truncated, Bytes: output.bytes}
 	preview := "no diff"
@@ -155,7 +155,7 @@ func (tool GitDiff) Execute(ctx context.Context, raw json.RawMessage) Result {
 			preview += " (truncated)"
 		}
 	}
-	return Success(data, preview, int64(output.bytes), "", output.truncated)
+	return contract.ToolSuccess(data, preview, int64(output.bytes), "", output.truncated)
 }
 
 // gitCommandOutput 保存一次只读 git 命令的文本输出与截断标记。

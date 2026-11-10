@@ -5,15 +5,16 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"net/http"
+	"net/url"
 )
 
 // WebSearch 限制约束单次搜索的结果数、响应字节与超时。
@@ -40,7 +41,7 @@ func (WebSearch) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明网络访问属于进程级副作用。
-func (WebSearch) SideEffect() SideEffectClass { return SideEffectProcess }
+func (WebSearch) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // WebSearchResult 是搜索结果载荷。
 type WebSearchResult struct {
@@ -52,17 +53,17 @@ type WebSearchResult struct {
 }
 
 // Execute 校验查询与端点后发起 GET；失败关闭。
-func (tool WebSearch) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool WebSearch) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var request struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return Failure("invalid_arguments", "web_search 参数解析失败")
+		return contract.ToolFailure("invalid_arguments", "web_search 参数解析失败")
 	}
 	query := strings.TrimSpace(request.Query)
 	if query == "" {
-		return Failure("invalid_arguments", "query 不能为空")
+		return contract.ToolFailure("invalid_arguments", "query 不能为空")
 	}
 	limit := request.Limit
 	if limit <= 0 || limit > WebSearchMaxResults {
@@ -70,11 +71,11 @@ func (tool WebSearch) Execute(ctx context.Context, raw json.RawMessage) Result {
 	}
 	endpoint := strings.TrimSpace(tool.Endpoint)
 	if endpoint == "" {
-		return Failure("not_configured", "未配置搜索端点")
+		return contract.ToolFailure("not_configured", "未配置搜索端点")
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
-		return Failure("invalid_url", "搜索端点必须是 http/https URL")
+		return contract.ToolFailure("invalid_url", "搜索端点必须是 http/https URL")
 	}
 	client := tool.Client
 	if client == nil {
@@ -94,16 +95,16 @@ func (tool WebSearch) Execute(ctx context.Context, raw json.RawMessage) Result {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return Failure("internal", err.Error())
+		return contract.ToolFailure("internal", err.Error())
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Failure("search_failed", err.Error())
+		return contract.ToolFailure("search_failed", err.Error())
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, WebSearchMaxBytes+1))
 	if err != nil {
-		return Failure("search_failed", err.Error())
+		return contract.ToolFailure("search_failed", err.Error())
 	}
 	truncated := len(body) > WebSearchMaxBytes
 	if truncated {
@@ -121,7 +122,7 @@ func (tool WebSearch) Execute(ctx context.Context, raw json.RawMessage) Result {
 		Preview:   preview,
 	})
 	if err != nil {
-		return Failure("internal", err.Error())
+		return contract.ToolFailure("internal", err.Error())
 	}
-	return Result{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("HTTP %d · %d bytes", resp.StatusCode, len(body)), Bytes: int64(len(body)), Truncated: truncated}
+	return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("HTTP %d · %d bytes", resp.StatusCode, len(body)), Bytes: int64(len(body)), Truncated: truncated}
 }

@@ -6,10 +6,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -47,26 +48,26 @@ func (MemoryRecall) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明为无副作用，可进只读并行组。
-func (MemoryRecall) SideEffect() SideEffectClass { return SideEffectNone }
+func (MemoryRecall) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Execute 执行只读召回；未装配回调时失败关闭。
-func (MemoryRecall) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (MemoryRecall) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	explain := defaultMemoryExplain()
 	if explain == nil {
-		return Failure("memory_recall_unavailable", "memory recall is not configured for this runtime")
+		return contract.ToolFailure("memory_recall_unavailable", "memory recall is not configured for this runtime")
 	}
 	var request MemoryRecallRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return Failure("invalid_arguments", "memory_recall arguments are not valid JSON")
+		return contract.ToolFailure("invalid_arguments", "memory_recall arguments are not valid JSON")
 	}
 	if err := validateMemoryRecallRequest(request); err != nil {
-		return Failure("invalid_arguments", err.Error())
+		return contract.ToolFailure("invalid_arguments", err.Error())
 	}
 	data, err := explain(ctx, request)
 	if err != nil {
-		return Failure("memory_recall_failed", err.Error())
+		return contract.ToolFailure("memory_recall_failed", err.Error())
 	}
-	return Success(data, "memory evidence ledger", int64(len(data)), "", false)
+	return contract.ToolSuccess(data, "memory evidence ledger", int64(len(data)), "", false)
 }
 
 // validateMemoryRecallRequest 校验封闭字段取值；未知或越界失败关闭。

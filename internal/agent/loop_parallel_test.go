@@ -2,13 +2,14 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -29,18 +30,18 @@ func (probe *rendezvousProbe) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明为无副作用，可进只读并行组。
-func (probe *rendezvousProbe) SideEffect() tools.SideEffectClass { return tools.SideEffectNone }
+func (probe *rendezvousProbe) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Execute 宣告到达并等待对端；对端未在时限内到达即判定为串行执行。
-func (probe *rendezvousProbe) Execute(ctx context.Context, raw json.RawMessage) tools.Result {
+func (probe *rendezvousProbe) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	probe.arrived.Do(func() { close(probe.signal) })
 	select {
 	case <-probe.peer:
-		return tools.Success(json.RawMessage(`{}`), "peer rendezvous", 0, "", false)
+		return contract.ToolSuccess(json.RawMessage(`{}`), "peer rendezvous", 0, "", false)
 	case <-time.After(5 * time.Second):
-		return tools.Failure("serial_execution_detected", "peer probe did not arrive; readonly calls were executed serially")
+		return contract.ToolFailure("serial_execution_detected", "peer probe did not arrive; readonly calls were executed serially")
 	case <-ctx.Done():
-		return tools.Failure("cancelled", "context cancelled before rendezvous")
+		return contract.ToolFailure("cancelled", "context cancelled before rendezvous")
 	}
 }
 
@@ -99,12 +100,12 @@ func (probe *cancellingProbe) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明为无副作用，可进只读并行组。
-func (probe *cancellingProbe) SideEffect() tools.SideEffectClass { return tools.SideEffectNone }
+func (probe *cancellingProbe) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Execute 取消运行上下文并返回取消结果。
-func (probe *cancellingProbe) Execute(ctx context.Context, raw json.RawMessage) tools.Result {
+func (probe *cancellingProbe) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	probe.cancel()
-	return tools.Failure("cancelled", "context cancelled by probe")
+	return contract.ToolFailure("cancelled", "context cancelled by probe")
 }
 
 // waitForCancelProbe 等待取消发生后返回成功结果，用于保证批次末位调用
@@ -116,15 +117,17 @@ func (probe *waitForCancelProbe) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明为无副作用，可进只读并行组。
-func (probe *waitForCancelProbe) SideEffect() tools.SideEffectClass { return tools.SideEffectNone }
+func (probe *waitForCancelProbe) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectNone
+}
 
 // Execute 等待上下文取消后立即成功，模拟一个无视取消的快速只读工具。
-func (probe *waitForCancelProbe) Execute(ctx context.Context, raw json.RawMessage) tools.Result {
+func (probe *waitForCancelProbe) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	select {
 	case <-ctx.Done():
-		return tools.Success(json.RawMessage(`{}`), "done", 0, "", false)
+		return contract.ToolSuccess(json.RawMessage(`{}`), "done", 0, "", false)
 	case <-time.After(5 * time.Second):
-		return tools.Failure("timeout", "context was not cancelled")
+		return contract.ToolFailure("timeout", "context was not cancelled")
 	}
 }
 
@@ -195,19 +198,21 @@ func (probe *externalAppendProbe) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明为无副作用，可进只读并行组。
-func (probe *externalAppendProbe) SideEffect() tools.SideEffectClass { return tools.SideEffectNone }
+func (probe *externalAppendProbe) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectNone
+}
 
 // Execute 以当前末序号 CAS 追加一条外部 steering 事实后成功返回。
-func (probe *externalAppendProbe) Execute(ctx context.Context, raw json.RawMessage) tools.Result {
+func (probe *externalAppendProbe) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	events, err := probe.journal.Load(ctx, probe.runID)
 	if err != nil {
-		return tools.Failure("probe_failed", err.Error())
+		return contract.ToolFailure("probe_failed", err.Error())
 	}
 	draft := domain.EventDraft{RunID: probe.runID, WorkspaceHash: "workspace", Type: domain.EventSteeringInputSubmitted, Payload: json.RawMessage(`{"payload_version":1,"input_id":"ext-1","kind":"steer"}`)}
 	if _, err := probe.journal.Append(ctx, uint64(len(events)), draft); err != nil {
-		return tools.Failure("probe_failed", err.Error())
+		return contract.ToolFailure("probe_failed", err.Error())
 	}
-	return tools.Success(json.RawMessage(`{}`), "external event appended", 0, "", false)
+	return contract.ToolSuccess(json.RawMessage(`{}`), "external event appended", 0, "", false)
 }
 
 // TestLoopAppendResyncsAfterExternalFamilyAppend 锁定 Loop 追加韧性：外部

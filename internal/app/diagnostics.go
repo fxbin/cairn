@@ -197,10 +197,10 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	}
 	capabilities := toolCapabilities(workspace, configuration.Preset, configuration.Tools)
 	if configuration.Skills != nil && configuration.Skills.Enabled {
-		capabilities = append(capabilities, ToolCapability{Name: "skill", SideEffect: string(tools.SideEffectNone)})
+		capabilities = append(capabilities, ToolCapability{Name: "skill", SideEffect: string(contract.SideEffectNone)})
 	}
 	if hasEnabledMCP(configuration.MCP) {
-		capabilities = append(capabilities, ToolCapability{Name: "mcp_discover", SideEffect: string(tools.SideEffectProcess)}, ToolCapability{Name: "tool_search", SideEffect: string(tools.SideEffectNone)})
+		capabilities = append(capabilities, ToolCapability{Name: "mcp_discover", SideEffect: string(contract.SideEffectProcess)}, ToolCapability{Name: "tool_search", SideEffect: string(contract.SideEffectNone)})
 	}
 	report.Tools = make([]string, 0, len(capabilities))
 	for _, tool := range capabilities {

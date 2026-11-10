@@ -4,14 +4,16 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
+	"path/filepath"
 	"unicode/utf8"
 )
 
@@ -170,11 +172,11 @@ func TestExecCommandDockerCancellationRequiresContainerTerminationConfirmation(t
 		wantCode    string
 		wantQuery   bool
 	}{
-		{name: "remove fails and container remains", removeCode: 1, queryOutput: "container-id\n", wantCode: CodeTerminationUnconfirmed, wantQuery: true},
-		{name: "daemon cannot be queried", removeCode: 1, queryCode: 1, wantCode: CodeTerminationUnconfirmed, wantQuery: true},
+		{name: "remove fails and container remains", removeCode: 1, queryOutput: "container-id\n", wantCode: contract.CodeTerminationUnconfirmed, wantQuery: true},
+		{name: "daemon cannot be queried", removeCode: 1, queryCode: 1, wantCode: contract.CodeTerminationUnconfirmed, wantQuery: true},
 		{name: "successful query confirms absence", removeCode: 1, wantCode: "cancelled", wantQuery: true},
 		{name: "successful remove confirms termination", wantCode: "cancelled"},
-		{name: "truncated empty looking query cannot confirm absence", removeCode: 1, queryOutput: strings.Repeat(" ", dockerCleanupQueryBytes+1), wantCode: CodeTerminationUnconfirmed, wantQuery: true},
+		{name: "truncated empty looking query cannot confirm absence", removeCode: 1, queryOutput: strings.Repeat(" ", dockerCleanupQueryBytes+1), wantCode: contract.CodeTerminationUnconfirmed, wantQuery: true},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -214,7 +216,7 @@ func TestExecCommandDockerCancellationRequiresContainerTerminationConfirmation(t
 			if result.OK || result.Code != test.wantCode {
 				t.Fatalf("result = %#v, want %s", result, test.wantCode)
 			}
-			if result.Code == CodeTerminationUnconfirmed && (len(result.Data) != 0 || result.Bytes != 0) {
+			if result.Code == contract.CodeTerminationUnconfirmed && (len(result.Data) != 0 || result.Bytes != 0) {
 				t.Error("终止未确认时不得发布缓冲区内容")
 			}
 			calls, err := os.ReadFile(callsPath)
@@ -435,7 +437,7 @@ func TestExecCommandFailurePreviewRedactsBeforeTailClipping(t *testing.T) {
 }
 
 // runExecFeedbackHelper 以真实 argv 启动本测试进程的输出 fixture，无 shell 或全局测试钩子。
-func runExecFeedbackHelper(t *testing.T, mode string, maximum, timeout int) Result {
+func runExecFeedbackHelper(t *testing.T, mode string, maximum, timeout int) contract.ToolResult {
 	t.Helper()
 	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {

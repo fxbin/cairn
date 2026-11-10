@@ -2,27 +2,28 @@ package mcpclient
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"encoding/base64"
+	"encoding/json"
 	journalmemory "github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 )
 
 // rpcFixture 在真实 loopback HTTP 上提供可变目录与可观察的单次请求合同。
@@ -170,7 +171,7 @@ func contractHTTPServer(fixture *rpcFixture) config.MCPServerConfig {
 	return config.MCPServerConfig{Name: "offline", Transport: config.MCPTransportHTTP, URL: fixture.server.URL, StartupTimeout: "2s", ToolTimeout: "2s"}
 }
 
-func discoverContract(t *testing.T, manager *Manager) (tools.Result, Snapshot) {
+func discoverContract(t *testing.T, manager *Manager) (contract.ToolResult, Snapshot) {
 	t.Helper()
 	result := manager.Execute(t.Context(), DiscoverTool, json.RawMessage(`{"server":"offline"}`))
 	if !result.OK || result.Code != "ok" {
@@ -330,7 +331,7 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 		t.Fatalf("完整 Journal 无法回放收束：state=%s err=%v", projection.State, err)
 	}
 	names := make(map[domain.OperationID]string)
-	var persisted tools.Result
+	var persisted contract.ToolResult
 	businessSucceeded := false
 	for _, event := range events {
 		if event.OperationID == nil {
@@ -354,7 +355,7 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 		case domain.EventOperationSucceeded:
 			if names[*event.OperationID] == provider.alias {
 				var payload struct {
-					Result tools.Result `json:"result"`
+					Result contract.ToolResult `json:"result"`
 				}
 				if err := json.Unmarshal(event.Payload, &payload); err != nil {
 					t.Fatal(err)
@@ -484,7 +485,7 @@ func TestHTTPDeleteUnsupportedReportsLocalClosureAndUnsupportedRemoteRelease(t *
 	fixture.deleteStatus = http.StatusMethodNotAllowed
 	manager := contractManager(t, contractHTTPServer(fixture), 0)
 	discoverContract(t, manager)
-	result := manager.Execute(t.Context(), tools.MCPQuiesceTool, json.RawMessage(`{}`))
+	result := manager.Execute(t.Context(), contract.MCPQuiesceTool, json.RawMessage(`{}`))
 	if !result.OK || result.Code != "ok" || fixture.count("http/DELETE") != 1 || manager.NeedsQuiescence() {
 		t.Fatalf("拒绝 DELETE 后未完成本地清理：result=%#v delete=%d", result, fixture.count("http/DELETE"))
 	}
@@ -497,7 +498,7 @@ func TestHTTPDeleteUnsupportedReportsLocalClosureAndUnsupportedRemoteRelease(t *
 	}
 }
 
-func assertResultJournalContract(t *testing.T, result tools.Result) {
+func assertResultJournalContract(t *testing.T, result contract.ToolResult) {
 	t.Helper()
 	turn, operation := domain.TurnID("turn_mcp_contract"), domain.OperationID("op_mcp_contract")
 	projection := domain.RunProjection{ID: "run_mcp_contract", State: domain.RunRunning, CurrentTurn: &turn}
@@ -506,8 +507,8 @@ func assertResultJournalContract(t *testing.T, result tools.Result) {
 		terminal = domain.EventOperationFailed
 	}
 	terminalPayload, err := json.Marshal(struct {
-		ToolName string       `json:"tool_name"`
-		Result   tools.Result `json:"result"`
+		ToolName string              `json:"tool_name"`
+		Result   contract.ToolResult `json:"result"`
 	}{"mcp_contract", result})
 	if err != nil {
 		t.Fatal(err)
@@ -809,7 +810,7 @@ func TestHTTPCallPreservesStructuredErrorAndNeverRetriesUncertainOutcome(t *test
 				}
 				assertResultJournalContract(t, result)
 			default:
-				if result.OK || result.Code != tools.CodeTerminationUnconfirmed {
+				if result.OK || result.Code != contract.CodeTerminationUnconfirmed {
 					t.Fatalf("未知业务结果必须保留对账边界：%#v", result)
 				}
 			}
@@ -865,12 +866,12 @@ func TestAcceptedEvidenceRejectsTamperingAndHiddenExposureAtomically(t *testing.
 	corrupted := snapshot
 	corrupted.Identity = strings.Repeat("0", 64)
 	encoded, _ := json.Marshal(corrupted)
-	if err := manager.AcceptResult(DiscoverTool, tools.Success(corrupted, "", 0, "", false)); err == nil || len(manager.Specs()) != 2 {
+	if err := manager.AcceptResult(DiscoverTool, contract.ToolSuccess(corrupted, "", 0, "", false)); err == nil || len(manager.Specs()) != 2 {
 		t.Fatalf("不匹配身份的目录被接受：%s", encoded)
 	}
 	corrupted = snapshot
 	corrupted.Digest = strings.Repeat("0", 64)
-	if err := manager.AcceptResult(DiscoverTool, tools.Success(corrupted, "", 0, "", false)); err == nil {
+	if err := manager.AcceptResult(DiscoverTool, contract.ToolSuccess(corrupted, "", 0, "", false)); err == nil {
 		t.Fatal("篡改目录摘要被接受")
 	}
 	if err := manager.AcceptResult(DiscoverTool, discovery); err != nil {
@@ -881,7 +882,7 @@ func TestAcceptedEvidenceRejectsTamperingAndHiddenExposureAtomically(t *testing.
 		{Server: snapshot.Server, CatalogDigest: snapshot.Digest, Tool: deferred},
 		{Server: snapshot.Server, CatalogDigest: snapshot.Digest, Tool: definitionNamed(t, snapshot, "hidden")},
 	}}
-	if err := manager.AcceptResult(SearchTool, tools.Success(exposure, "", 0, "", false)); err == nil || hasSpec(manager.Specs(), deferred.Name) {
+	if err := manager.AcceptResult(SearchTool, contract.ToolSuccess(exposure, "", 0, "", false)); err == nil || hasSpec(manager.Specs(), deferred.Name) {
 		t.Fatal("非法加载证据导致部分激活")
 	}
 	if result := manager.Execute(context.Background(), "mcp__unknown", json.RawMessage(`{}`)); result.OK || result.Code != "invalid_mcp_call" || fixture.count("tools/call") != 0 {

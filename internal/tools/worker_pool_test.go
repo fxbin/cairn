@@ -6,9 +6,11 @@ package tools
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fxbin/cairn/internal/contract"
+	"sync/atomic"
 )
 
 // TestWorkerPoolRunsAllTasksInOrder 锁定结果顺序与输入一致。
@@ -73,7 +75,7 @@ func TestWorkerPoolCancelled(t *testing.T) {
 
 // TestNewWorkerPoolDefaults 锁定默认上限与 getter。
 func TestNewWorkerPoolDefaults(t *testing.T) {
-	if pool := NewWorkerPool(0); pool.MaxWorkers() != DefaultMaxWorkers {
+	if pool := NewWorkerPool(0); pool.MaxWorkers() != contract.DefaultMaxWorkers {
 		t.Fatalf("默认上限不符: %d", pool.MaxWorkers())
 	}
 	if pool := NewWorkerPool(8); pool.MaxWorkers() != 8 {

@@ -3,12 +3,12 @@
 package agent
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 func completedModelResponseForTurn(events []domain.Event, turnID domain.TurnID) (modelResponsePayload, bool) {
@@ -28,7 +28,7 @@ func completedModelResponseForTurn(events []domain.Event, turnID domain.TurnID) 
 type toolEventIndex struct {
 	callIDs   map[string]bool
 	proposals map[domain.OperationID]toolCallPayload
-	results   map[domain.OperationID]tools.Result
+	results   map[domain.OperationID]contract.ToolResult
 }
 
 // buildToolEventIndex 扫描工具提议与工具结果事件；解析失败的单条载荷跳过，
@@ -37,7 +37,7 @@ func buildToolEventIndex(events []domain.Event) toolEventIndex {
 	index := toolEventIndex{
 		callIDs:   make(map[string]bool),
 		proposals: make(map[domain.OperationID]toolCallPayload),
-		results:   make(map[domain.OperationID]tools.Result),
+		results:   make(map[domain.OperationID]contract.ToolResult),
 	}
 	for _, event := range events {
 		if event.OperationID == nil && event.Type != domain.EventToolCallProposed {
@@ -59,7 +59,7 @@ func buildToolEventIndex(events []domain.Event) toolEventIndex {
 			if event.OperationID == nil {
 				continue
 			}
-			var result tools.Result
+			var result contract.ToolResult
 			if json.Unmarshal(event.Payload, &result) == nil {
 				index.results[*event.OperationID] = result
 			}
@@ -79,7 +79,7 @@ func proposedToolCallIDs(events []domain.Event) map[string]bool {
 // 提前验证或重复执行已有调用。
 func completedResponseToolResults(events []domain.Event, response modelResponsePayload) (complete, successfulPatch, allSucceeded bool) {
 	index := buildToolEventIndex(events)
-	byCallID := make(map[string]tools.Result)
+	byCallID := make(map[string]contract.ToolResult)
 	for operationID, proposal := range index.proposals {
 		if result, found := index.results[operationID]; found {
 			byCallID[proposal.CallID] = result

@@ -5,10 +5,6 @@ package mcpclient
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,8 +17,13 @@ import (
 	"time"
 	"unicode"
 
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
 )
@@ -172,7 +173,7 @@ func (manager *Manager) serverSummary() string {
 func (manager *Manager) Proposal(name string, raw json.RawMessage) (tools.MCPProposal, bool, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	if name == tools.MCPQuiesceTool {
+	if name == contract.MCPQuiesceTool {
 		if string(bytes.TrimSpace(raw)) != "{}" {
 			return tools.MCPProposal{}, true, errors.New("invalid MCP lifecycle arguments")
 		}
@@ -272,42 +273,42 @@ func (manager *Manager) catalogIdentities() []string {
 }
 
 // SideEffect 把连接/外部调用保守归为进程副作用；纯目录搜索不会发出请求。
-func (manager *Manager) SideEffect(name string) tools.SideEffectClass {
-	if name == DiscoverTool || name == tools.MCPQuiesceTool || strings.HasPrefix(name, "mcp__") {
-		return tools.SideEffectProcess
+func (manager *Manager) SideEffect(name string) contract.SideEffectClass {
+	if name == DiscoverTool || name == contract.MCPQuiesceTool || strings.HasPrefix(name, "mcp__") {
+		return contract.SideEffectProcess
 	}
-	return tools.SideEffectNone
+	return contract.SideEffectNone
 }
 
 // Execute 使用已通过 Policy 的调用参数执行一次操作，工具调用不自动重试。
-func (manager *Manager) Execute(ctx context.Context, name string, raw json.RawMessage) tools.Result {
+func (manager *Manager) Execute(ctx context.Context, name string, raw json.RawMessage) contract.ToolResult {
 	return manager.ExecuteWithIdentity(ctx, name, raw, "")
 }
 
 // ExecuteWithIdentity 将授权时的认证摘要冻结到本次执行，发现和业务调用均不能采纳替换身份。
-func (manager *Manager) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, identity string) tools.Result {
+func (manager *Manager) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, identity string) contract.ToolResult {
 	select {
 	case manager.execution <- struct{}{}:
 		defer func() { <-manager.execution }()
 	case <-ctx.Done():
-		return tools.Failure("cancelled", "MCP operation was cancelled before execution")
+		return contract.ToolFailure("cancelled", "MCP operation was cancelled before execution")
 	}
 	proposal, found, err := manager.Proposal(name, raw)
 	if err != nil || !found {
-		return tools.Failure("invalid_mcp_call", "MCP tool is unavailable or its arguments are invalid")
+		return contract.ToolFailure("invalid_mcp_call", "MCP tool is unavailable or its arguments are invalid")
 	}
 	if identity != "" && identity != proposal.EnvironmentDigest {
-		return tools.Failure("mcp_authorization_changed", "MCP credentials changed after policy decision; obtain fresh authorization")
+		return contract.ToolFailure("mcp_authorization_changed", "MCP credentials changed after policy decision; obtain fresh authorization")
 	}
 	if name == SearchTool {
 		return manager.search(raw)
 	}
-	if name == tools.MCPQuiesceTool {
+	if name == contract.MCPQuiesceTool {
 		report, err := manager.closeSessions()
 		if err != nil {
-			return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP session cleanup could not be confirmed; reconcile this operation")
+			return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP session cleanup could not be confirmed; reconcile this operation")
 		}
-		return tools.Success(report, "MCP client sessions closed", 0, "", false)
+		return contract.ToolSuccess(report, "MCP client sessions closed", 0, "", false)
 	}
 	manager.mu.RLock()
 	server := manager.servers[proposal.Server]
@@ -319,7 +320,7 @@ func (manager *Manager) ExecuteWithIdentity(ctx context.Context, name string, ra
 }
 
 // discover 在受审计操作内连接并读取有界目录；会话由 Boot 持有，目录需落盘后激活。
-func (manager *Manager) discover(ctx context.Context, server config.MCPServerConfig, identity string) tools.Result {
+func (manager *Manager) discover(ctx context.Context, server config.MCPServerConfig, identity string) contract.ToolResult {
 	duration, _ := time.ParseDuration(server.ToolTimeout)
 	operationContext, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
@@ -332,21 +333,21 @@ func (manager *Manager) discover(ctx context.Context, server config.MCPServerCon
 	snapshot, err := manager.readCatalog(operationContext, server, session)
 	if err != nil {
 		if manager.dropSession(server.Name, session) != nil {
-			return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
+			return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
 		}
-		return tools.Failure("mcp_discovery_failed", "MCP catalog could not be read within its limits")
+		return contract.ToolFailure("mcp_discovery_failed", "MCP catalog could not be read within its limits")
 	}
-	return tools.Success(snapshot, fmt.Sprintf("discovered %d tools from MCP server %s", len(snapshot.Tools), server.Name), 0, snapshot.Digest, false)
+	return contract.ToolSuccess(snapshot, fmt.Sprintf("discovered %d tools from MCP server %s", len(snapshot.Tools), server.Name), 0, snapshot.Digest, false)
 }
 
 // call 复用当前会话并检查完整目录身份后只发送一次 tools/call；未知结果保留对账边界。
-func (manager *Manager) call(ctx context.Context, server config.MCPServerConfig, name string, raw json.RawMessage, identity string) tools.Result {
+func (manager *Manager) call(ctx context.Context, server config.MCPServerConfig, name string, raw json.RawMessage, identity string) contract.ToolResult {
 	manager.mu.RLock()
 	serverName, expected, found := manager.lookup(name)
 	expectedCatalog := manager.catalogs[serverName].Digest
 	manager.mu.RUnlock()
 	if !found {
-		return tools.Failure("invalid_mcp_call", "MCP tool is not in the audited catalog")
+		return contract.ToolFailure("invalid_mcp_call", "MCP tool is not in the audited catalog")
 	}
 	duration, _ := time.ParseDuration(server.ToolTimeout)
 	operationContext, cancel := context.WithTimeout(ctx, duration)
@@ -361,9 +362,9 @@ func (manager *Manager) call(ctx context.Context, server config.MCPServerConfig,
 	if err != nil {
 		closeErr := manager.dropSession(server.Name, session)
 		if closeErr != nil {
-			return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
+			return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
 		}
-		return tools.Failure("mcp_discovery_failed", "MCP preflight catalog could not be read")
+		return contract.ToolFailure("mcp_discovery_failed", "MCP preflight catalog could not be read")
 	}
 	matched := false
 	for _, definition := range current.Tools {
@@ -375,20 +376,20 @@ func (manager *Manager) call(ctx context.Context, server config.MCPServerConfig,
 	if !matched || current.Digest != expectedCatalog {
 		closeErr := manager.dropSession(server.Name, session)
 		if closeErr != nil {
-			return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
+			return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP connection termination could not be confirmed")
 		}
-		return tools.Failure("mcp_catalog_changed", "MCP tool definition changed; discover the server again before calling it")
+		return contract.ToolFailure("mcp_catalog_changed", "MCP tool definition changed; discover the server again before calling it")
 	}
 	result, err := session.call(operationContext, expected.OriginalName, raw)
 	if err != nil {
 		_ = manager.dropSession(server.Name, session)
-		return tools.Failure(tools.CodeTerminationUnconfirmed, "MCP tool outcome is uncertain; reconcile this operation before continuing")
+		return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "MCP tool outcome is uncertain; reconcile this operation before continuing")
 	}
 	return result
 }
 
 // AcceptResult 验证成功且已落盘的发现/搜索证据，恢复可见性而不重发请求。
-func (manager *Manager) AcceptResult(name string, result tools.Result) error {
+func (manager *Manager) AcceptResult(name string, result contract.ToolResult) error {
 	if !result.OK || result.Code != "ok" || name != DiscoverTool && name != SearchTool {
 		return nil
 	}
@@ -477,7 +478,7 @@ func (manager *Manager) lookup(name string) (string, Definition, bool) {
 }
 
 // ModelResult 使发现目录的完整 schema 保留在日志中，模型只看到摘要与可搜索提示。
-func (manager *Manager) ModelResult(name string, result tools.Result) tools.Result {
+func (manager *Manager) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
 	if name == SearchTool && result.OK && result.Code == "ok" {
 		var exposure Exposure
 		if json.Unmarshal(result.Data, &exposure) != nil {
@@ -534,10 +535,10 @@ type rankedTool struct {
 }
 
 // search 按名称、服务器用途和描述匹配延迟工具，返回待落盘的加载事实。
-func (manager *Manager) search(raw json.RawMessage) tools.Result {
+func (manager *Manager) search(raw json.RawMessage) contract.ToolResult {
 	var arguments searchArguments
 	if decode(raw, &arguments) != nil {
-		return tools.Failure("invalid_mcp_search", "invalid tool search")
+		return contract.ToolFailure("invalid_mcp_search", "invalid tool search")
 	}
 	limit := arguments.Limit
 	if limit == 0 {
@@ -581,7 +582,7 @@ func (manager *Manager) search(raw json.RawMessage) tools.Result {
 	for _, match := range matches[:min(limit, len(matches))] {
 		exposure.Loaded = append(exposure.Loaded, match.LoadedTool)
 	}
-	return tools.Success(exposure, fmt.Sprintf("loaded %d matching MCP tools", len(exposure.Loaded)), 0, "", false)
+	return contract.ToolSuccess(exposure, fmt.Sprintf("loaded %d matching MCP tools", len(exposure.Loaded)), 0, "", false)
 }
 
 // allowedTool 应用显式允许/拒绝列表，拒绝列表优先。

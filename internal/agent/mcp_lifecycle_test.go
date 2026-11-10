@@ -2,12 +2,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
@@ -22,22 +23,22 @@ type lifecycleCatalog struct {
 
 func (catalog *lifecycleCatalog) NeedsQuiescence() bool { return catalog.live }
 func (catalog *lifecycleCatalog) Proposal(name string, raw json.RawMessage) (tools.MCPProposal, bool, error) {
-	if name == tools.MCPQuiesceTool {
+	if name == contract.MCPQuiesceTool {
 		return tools.MCPProposal{ToolName: name, Effect: "allow", Local: true, Summary: "close owned MCP resources", Arguments: raw}, true, nil
 	}
 	return catalog.loopMCPCatalog.Proposal(name, raw)
 }
-func (catalog *lifecycleCatalog) Execute(ctx context.Context, name string, raw json.RawMessage) tools.Result {
-	if name == tools.MCPQuiesceTool {
+func (catalog *lifecycleCatalog) Execute(ctx context.Context, name string, raw json.RawMessage) contract.ToolResult {
+	if name == contract.MCPQuiesceTool {
 		catalog.calls = append(catalog.calls, name)
 		if catalog.cleanupDelay > 0 {
 			time.Sleep(catalog.cleanupDelay)
 		}
 		if catalog.cleanupFails {
-			return tools.Failure(tools.CodeTerminationUnconfirmed, "cleanup unconfirmed")
+			return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "cleanup unconfirmed")
 		}
 		catalog.live = false
-		return tools.Success(struct{}{}, "closed", 0, "", false)
+		return contract.ToolSuccess(struct{}{}, "closed", 0, "", false)
 	}
 	catalog.live = true
 	return catalog.loopMCPCatalog.Execute(ctx, name, raw)
@@ -67,7 +68,7 @@ func TestMCPQuiescesBeforeVerificationAndPreservesReconciliation(t *testing.T) {
 				t.Fatal(err)
 			}
 			if fail {
-				if !errors.Is(runErr, ports.ErrWaitingReconcile) || projection.PendingOperation == nil || projection.PendingOperation.ToolName != tools.MCPQuiesceTool || countEvent(events, domain.EventRunCompleted) != 0 || countEvent(events, domain.EventVerificationStarted) != 0 {
+				if !errors.Is(runErr, ports.ErrWaitingReconcile) || projection.PendingOperation == nil || projection.PendingOperation.ToolName != contract.MCPQuiesceTool || countEvent(events, domain.EventRunCompleted) != 0 || countEvent(events, domain.EventVerificationStarted) != 0 {
 					t.Fatalf("cleanup failure was finalized: %#v %v", projection, runErr)
 				}
 			} else {
@@ -139,7 +140,7 @@ func TestMCPQuiescesBeforeApprovalProposal(t *testing.T) {
 	if !found || call.Name != testMCPName || string(call.Arguments) != `{"id":12}` {
 		t.Fatalf("wrong proposal in approval: %#v", call)
 	}
-	if len(catalog.calls) != 2 || catalog.calls[1] != tools.MCPQuiesceTool {
+	if len(catalog.calls) != 2 || catalog.calls[1] != contract.MCPQuiesceTool {
 		t.Fatalf("unexpected external execution: %v", catalog.calls)
 	}
 }
@@ -150,7 +151,7 @@ func TestMCPRestoreRequiresSuccessfulMatchingReceipt(t *testing.T) {
 		catalog := &loopMCPCatalog{}
 		loop := newMCPLoopTest(t, catalog, &scriptedProvider{}, memory.New())
 		operationID := domain.NewOperationID()
-		receipt := tools.Success(struct {
+		receipt := contract.ToolSuccess(struct {
 			Count int `json:"count"`
 		}{1}, "discovered", 0, "", false)
 		appended := receipt
@@ -176,7 +177,7 @@ func TestMCPLifecycleSuccessCannotResetBusinessFailureGuard(t *testing.T) {
 		events = append(events,
 			domain.Event{Type: domain.EventPolicyDecided, OperationID: &failed, Payload: json.RawMessage(`{"fingerprint":"same"}`)},
 			domain.Event{Type: domain.EventOperationFailed, OperationID: &failed},
-			domain.Event{Type: domain.EventToolCallProposed, OperationID: &cleanup, Payload: mustJSON(toolCallPayload{ToolName: tools.MCPQuiesceTool})},
+			domain.Event{Type: domain.EventToolCallProposed, OperationID: &cleanup, Payload: mustJSON(toolCallPayload{ToolName: contract.MCPQuiesceTool})},
 			domain.Event{Type: domain.EventOperationSucceeded, OperationID: &cleanup},
 		)
 	}
@@ -190,9 +191,9 @@ func TestMCPLifecycleIsInvisibleToModelAndProgress(t *testing.T) {
 	turnID, operationID := domain.NewTurnID(), domain.NewOperationID()
 	events := []domain.Event{
 		{Seq: 1, Type: domain.EventTurnOpened, TurnID: &turnID},
-		{Seq: 2, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: "cairn-mcp-close-test", ToolName: tools.MCPQuiesceTool, Arguments: json.RawMessage(`{}`)})},
+		{Seq: 2, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: "cairn-mcp-close-test", ToolName: contract.MCPQuiesceTool, Arguments: json.RawMessage(`{}`)})},
 		{Seq: 3, Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: json.RawMessage(`{"fingerprint":"cleanup"}`)},
-		{Seq: 4, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(tools.Success(struct{}{}, "closed", 0, "", false))},
+		{Seq: 4, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(contract.ToolSuccess(struct{}{}, "closed", 0, "", false))},
 	}
 	loop := newMCPLoopTest(t, &loopMCPCatalog{}, &scriptedProvider{}, memory.New())
 	messages, err := loop.messagesFromEvents(events, "task")
@@ -209,7 +210,7 @@ func TestMCPLifecycleIsInvisibleToModelAndProgress(t *testing.T) {
 	}
 }
 
-func (catalog *lifecycleCatalog) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, _ string) tools.Result {
+func (catalog *lifecycleCatalog) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, _ string) contract.ToolResult {
 	return catalog.Execute(ctx, name, raw)
 }
 

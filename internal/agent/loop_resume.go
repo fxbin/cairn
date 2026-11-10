@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Resume 恢复等待审批或普通运行；返回错误前与 Run 相同地兜底持久化取消。
@@ -185,7 +185,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	turnID := *projection.CurrentTurn
 	if !approval.Approve {
 		denied := &ports.PolicyDeniedError{Summary: approval.Reason}
-		result := tools.Failure("approval_denied", approval.Reason)
+		result := contract.ToolFailure("approval_denied", approval.Reason)
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventApprovalDenied, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(struct {
 			Fingerprint string `json:"fingerprint"`
 			Actor       string `json:"actor"`
@@ -323,7 +323,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	}
 	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
-	if result.Code == tools.CodeTerminationUnconfirmed {
+	if result.Code == contract.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
@@ -396,7 +396,7 @@ func (loop *Loop) repairInterruptedRead(ctx context.Context, projection *domain.
 		if !found {
 			return errors.New("dangling read operation has no replayable tool proposal")
 		}
-		result := tools.Failure("interrupted_read", "read-only operation was interrupted before its result was persisted")
+		result := contract.ToolFailure("interrupted_read", "read-only operation was interrupted before its result was persisted")
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.ID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 			return err
 		}
@@ -587,7 +587,7 @@ func (loop *Loop) expireApproval(ctx context.Context, projection *domain.RunProj
 	}{Fingerprint: pending.Fingerprint, Actor: "system", Reason: reason, StopCause: "approval_stale"})}); err != nil {
 		return Result{}, err
 	}
-	result := tools.Failure("approval_stale", reason)
+	result := contract.ToolFailure("approval_stale", reason)
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
 		return Result{}, err
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // steeringKindSteer 是用户补充指导的既有 steering 种类。
@@ -161,13 +160,13 @@ func (loop *Loop) asyncChildWriterActive(ctx context.Context, projection *domain
 // refuseParentSideEffectWhileChildActive 在异步子活跃期间拒绝父侧副作用类
 // 工具调用：按策略拒绝路径的审计形状落盘（提议 → 决策 → 操作失败 → 模型
 // 可见结果），操作从未启动，模型可在剩余轮次内改用只读方案或等待子收束。
-func (loop *Loop) refuseParentSideEffectWhileChildActive(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, call ports.ToolCall) (tools.Result, error) {
-	result := tools.Failure(asyncChildWriterBlockedCode, "an async child run is still active; parent side-effect tools stay closed until it settles (read-only tools and steering remain available)")
+func (loop *Loop) refuseParentSideEffectWhileChildActive(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, call ports.ToolCall) (contract.ToolResult, error) {
+	result := contract.ToolFailure(asyncChildWriterBlockedCode, "an async child run is still active; parent side-effect tools stay closed until it settles (read-only tools and steering remain available)")
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 		return result, err

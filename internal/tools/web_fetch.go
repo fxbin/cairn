@@ -5,15 +5,16 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"net/http"
+	"net/url"
 )
 
 // WebFetch 限制约束单次抓取的字节、超时与协议范围。
@@ -38,7 +39,7 @@ func (WebFetch) Spec() ports.ToolSpec {
 }
 
 // SideEffect 声明网络访问属于进程级副作用。
-func (WebFetch) SideEffect() SideEffectClass { return SideEffectProcess }
+func (WebFetch) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // WebFetchResult 是抓取结果载荷。
 type WebFetchResult struct {
@@ -50,23 +51,23 @@ type WebFetchResult struct {
 }
 
 // Execute 校验协议与主机名后抓取页面；失败关闭，不跟随无限重定向。
-func (tool WebFetch) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool WebFetch) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var request struct {
 		URL string `json:"url"`
 	}
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return Failure("invalid_arguments", "web_fetch 参数解析失败")
+		return contract.ToolFailure("invalid_arguments", "web_fetch 参数解析失败")
 	}
 	target := strings.TrimSpace(request.URL)
 	if target == "" {
-		return Failure("invalid_arguments", "url 不能为空")
+		return contract.ToolFailure("invalid_arguments", "url 不能为空")
 	}
 	parsed, err := url.Parse(target)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return Failure("invalid_url", "仅允许 http/https URL")
+		return contract.ToolFailure("invalid_url", "仅允许 http/https URL")
 	}
 	if parsed.Hostname() == "" {
-		return Failure("invalid_url", "URL 缺少主机名")
+		return contract.ToolFailure("invalid_url", "URL 缺少主机名")
 	}
 	client := tool.Client
 	if client == nil {
@@ -76,17 +77,17 @@ func (tool WebFetch) Execute(ctx context.Context, raw json.RawMessage) Result {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return Failure("internal", err.Error())
+		return contract.ToolFailure("internal", err.Error())
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Failure("fetch_failed", err.Error())
+		return contract.ToolFailure("fetch_failed", err.Error())
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, WebFetchMaxBytes+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		return Failure("fetch_failed", err.Error())
+		return contract.ToolFailure("fetch_failed", err.Error())
 	}
 	truncated := len(body) > WebFetchMaxBytes
 	if truncated {
@@ -104,7 +105,7 @@ func (tool WebFetch) Execute(ctx context.Context, raw json.RawMessage) Result {
 		Preview:   preview,
 	})
 	if err != nil {
-		return Failure("internal", err.Error())
+		return contract.ToolFailure("internal", err.Error())
 	}
-	return Result{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("HTTP %d · %d bytes", resp.StatusCode, len(body)), Bytes: int64(len(body)), Truncated: truncated}
+	return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: fmt.Sprintf("HTTP %d · %d bytes", resp.StatusCode, len(body)), Bytes: int64(len(body)), Truncated: truncated}
 }

@@ -4,13 +4,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperationRepair, error) {
@@ -21,7 +21,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 		terminal     bool
 		authorized   bool
 		verification bool
-		failure      *tools.Result
+		failure      *contract.ToolResult
 	}
 	records := make(map[domain.OperationID]*operationRecord)
 	order := make([]domain.OperationID, 0)
@@ -96,7 +96,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 				code = "approval_stale"
 			}
 			if code != "" {
-				result := tools.Failure(code, payload.Reason)
+				result := contract.ToolFailure(code, payload.Reason)
 				record.failure = &result
 			}
 		case domain.EventOperationStarted:
@@ -117,7 +117,7 @@ func PendingUnstartedOperationRepairs(events []domain.Event) ([]UnstartedOperati
 		}
 		result := record.failure
 		if result == nil && record.authorized && !record.verification {
-			failure := tools.Failure("operation_not_started", "operation authorization was persisted, but execution did not start; automatic replay is prohibited")
+			failure := contract.ToolFailure("operation_not_started", "operation authorization was persisted, but execution did not start; automatic replay is prohibited")
 			result = &failure
 		}
 		if result == nil {
@@ -265,21 +265,21 @@ func (loop *Loop) repairRecoverableOperationGaps(ctx context.Context, input RunI
 
 // toolResultFromOperationTerminal 从普通操作终态或人工对账结论严格重建
 // 模型可见结果，不依赖当前工作区，也不再次执行副作用。
-func toolResultFromOperationTerminal(event domain.Event) (tools.Result, error) {
+func toolResultFromOperationTerminal(event domain.Event) (contract.ToolResult, error) {
 	switch event.Type {
 	case domain.EventOperationSucceeded, domain.EventOperationFailed, domain.EventOperationCancelled:
 		var payload struct {
 			Result json.RawMessage `json:"result"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return tools.Result{}, fmt.Errorf("decode %s payload: %w", event.Type, err)
+			return contract.ToolResult{}, fmt.Errorf("decode %s payload: %w", event.Type, err)
 		}
 		if len(payload.Result) == 0 || string(payload.Result) == "null" {
-			return tools.Result{}, fmt.Errorf("%s payload has no inline result", event.Type)
+			return contract.ToolResult{}, fmt.Errorf("%s payload has no inline result", event.Type)
 		}
-		var result tools.Result
+		var result contract.ToolResult
 		if err := json.Unmarshal(payload.Result, &result); err != nil {
-			return tools.Result{}, fmt.Errorf("decode %s result: %w", event.Type, err)
+			return contract.ToolResult{}, fmt.Errorf("decode %s result: %w", event.Type, err)
 		}
 		return result, nil
 	case domain.EventOperationReconciled:
@@ -288,18 +288,18 @@ func toolResultFromOperationTerminal(event domain.Event) (tools.Result, error) {
 			Note    string `json:"note"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return tools.Result{}, fmt.Errorf("decode operation_reconciled payload: %w", err)
+			return contract.ToolResult{}, fmt.Errorf("decode operation_reconciled payload: %w", err)
 		}
 		switch payload.Verdict {
 		case "applied_success", "applied_failure", "not_applied":
 		case "abort_run":
-			return tools.Result{}, errors.New("operation_reconciled abort_run has no model-visible tool result")
+			return contract.ToolResult{}, errors.New("operation_reconciled abort_run has no model-visible tool result")
 		default:
-			return tools.Result{}, fmt.Errorf("operation_reconciled has invalid verdict %q", payload.Verdict)
+			return contract.ToolResult{}, fmt.Errorf("operation_reconciled has invalid verdict %q", payload.Verdict)
 		}
-		return tools.Result{OK: payload.Verdict == "applied_success", Code: "reconciled_" + payload.Verdict, Preview: payload.Note}, nil
+		return contract.ToolResult{OK: payload.Verdict == "applied_success", Code: "reconciled_" + payload.Verdict, Preview: payload.Note}, nil
 	default:
-		return tools.Result{}, fmt.Errorf("event %s is not an operation terminal", event.Type)
+		return contract.ToolResult{}, fmt.Errorf("event %s is not an operation terminal", event.Type)
 	}
 }
 

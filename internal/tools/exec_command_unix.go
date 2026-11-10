@@ -66,7 +66,7 @@ type ExecArguments struct {
 }
 
 // SideEffect 声明 ExecCommand 会产生进程级副作用。
-func (tool ExecCommand) SideEffect() SideEffectClass { return SideEffectProcess }
+func (tool ExecCommand) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
 // Spec 返回 exec_command 的受限 JSON 参数定义。
 func (tool ExecCommand) Spec() ports.ToolSpec {
@@ -76,27 +76,27 @@ func (tool ExecCommand) Spec() ports.ToolSpec {
 // Execute 在受限工作目录、环境、时限和输出上限内启动 argv 命令；Docker 后端
 // 不可用或配置无效时失败关闭，绝不会降级为宿主机执行。
 // 执行边界由 ExecRunner 策略（host / seatbelt / docker）决定。
-func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	arguments, err := ParseExecArguments(raw)
 	if err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	if err := tool.validateEnvironment(arguments.Env); err != nil {
-		return Failure("invalid", err.Error())
+		return contract.ToolFailure("invalid", err.Error())
 	}
 	if len(arguments.EnvRefs) > 0 {
 		if tool.EnvResolver == nil {
-			return Failure("invalid", "env_refs require a configured credential resolver")
+			return contract.ToolFailure("invalid", "env_refs require a configured credential resolver")
 		}
 		for envName, credName := range arguments.EnvRefs {
 			if strings.TrimSpace(envName) == "" || strings.TrimSpace(credName) == "" {
-				return Failure("invalid", "env_refs entries must be non-empty")
+				return contract.ToolFailure("invalid", "env_refs entries must be non-empty")
 			}
 			if !credential.Key(credName) {
-				return Failure("invalid", "env_refs credential name is not allowed")
+				return contract.ToolFailure("invalid", "env_refs credential name is not allowed")
 			}
 			if _, ok := tool.EnvResolver(credName); !ok {
-				return Failure("invalid", "credential not found for env_refs: "+credName)
+				return contract.ToolFailure("invalid", "credential not found for env_refs: "+credName)
 			}
 			arguments.Env[envName] = "" // 占位，真实值在 runner 合成
 		}
@@ -109,15 +109,15 @@ func (tool ExecCommand) Execute(ctx context.Context, raw json.RawMessage) Result
 	}
 	workingDirectory, relativeCWD, err := tool.Workspace.Resolve(arguments.CWD)
 	if err != nil {
-		return Failure("invalid_path", err.Error())
+		return contract.ToolFailure("invalid_path", err.Error())
 	}
 	info, err := os.Stat(workingDirectory)
 	if err != nil || !info.IsDir() {
-		return Failure("invalid_path", "cwd must be a workspace directory")
+		return contract.ToolFailure("invalid_path", "cwd must be a workspace directory")
 	}
 	runner, err := runnerFor(tool.executionBackend(), tool.Workspace, tool.HostConfined, tool.HostWrite, tool.DockerImage, tool.dockerPIDLimit())
 	if err != nil {
-		return Failure("invalid_backend", err.Error())
+		return contract.ToolFailure("invalid_backend", err.Error())
 	}
 	return runner.Run(ctx, ExecRunRequest{
 		Arguments:        arguments,
@@ -282,14 +282,14 @@ type execCommandOutput struct {
 
 // runCommand 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
 // runCommand 启动已完成边界装配的进程；包装 runCommandShared。
-func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) Result {
+func (tool ExecCommand) runCommand(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error) contract.ToolResult {
 	return runCommandShared(ctx, arguments, backend, command, cleanup, tool.Grace, nil)
 }
 
 // runCommandShared 启动已完成边界装配的进程，处理超时、进程组终止、可选外部清理及输出摘要。
 // termination 非空时，优雅取消优先直接作用于 OS 沙箱内部 workload，避免包装
 // 进程遇 SIGTERM 立即退出后由 --die-with-parent 连带杀掉内部进程。
-func runCommandShared(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) Result {
+func runCommandShared(ctx context.Context, arguments ExecArguments, backend ExecBackend, command *exec.Cmd, cleanup func() error, grace time.Duration, termination *sandboxTermination) contract.ToolResult {
 	commandContext, cancel := context.WithTimeout(ctx, time.Duration(arguments.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	stdout := &limitedBuffer{limit: arguments.MaxOutputBytes}
@@ -301,7 +301,7 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 		if termination != nil {
 			termination.close()
 		}
-		return Failure("start", err.Error())
+		return contract.ToolFailure("start", err.Error())
 	}
 	if termination != nil {
 		termination.afterStart()
@@ -347,15 +347,15 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 	if terminationUnconfirmed {
 		// Wait 仍可能持有 stdout/stderr 的异步写入协程；此处分支不得读取缓冲区，
 		// 同时用专用结果码要求 Agent 保留 operation_started 供人工对账。
-		return Failure(CodeTerminationUnconfirmed, "process termination could not be confirmed after SIGKILL")
+		return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "process termination could not be confirmed after SIGKILL")
 	}
 	if cleanupErr != nil {
-		return Failure(CodeTerminationUnconfirmed, "docker container termination could not be confirmed: "+cleanupErr.Error())
+		return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "docker container termination could not be confirmed: "+cleanupErr.Error())
 	}
 	duration := time.Since(started).Milliseconds()
 	exitCode, signal := commandOutcome(waitErr)
 	data := execCommandOutput{Argv: arguments.Argv, Backend: string(backend), CWD: filepath.ToSlash(arguments.CWD), ExitCode: exitCode, Signal: signal, DurationMS: duration, Stdout: stdout.String(), Stderr: stderr.String(), OutputCapped: stdout.truncated || stderr.truncated}
-	result := Success(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
+	result := contract.ToolSuccess(data, stringResult(data), int64(stdout.Len()+stderr.Len()), "", data.OutputCapped)
 	if cancelled || waitErr != nil {
 		result.OK = false
 		result.Code = "nonzero_exit"

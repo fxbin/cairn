@@ -4,13 +4,14 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -26,7 +27,7 @@ func TestLoopExecFailureFeedbackKeepsRedactedDataAndCheckpointTail(t *testing.T)
 		}
 		if event.Type == domain.EventOperationFailed {
 			var payload struct {
-				Result tools.Result `json:"result"`
+				Result contract.ToolResult `json:"result"`
 			}
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatal(err)
@@ -45,7 +46,7 @@ func TestLoopExecFailureFeedbackKeepsRedactedDataAndCheckpointTail(t *testing.T)
 		if strings.Contains(message.Content, "exec-fixture-secret-value") || strings.Contains(message.Content, "journal-fixture-password-value") {
 			t.Error("原始凭据 fixture 泄漏到模型工具消息")
 		}
-		var result tools.Result
+		var result contract.ToolResult
 		if err := json.Unmarshal([]byte(message.Content), &result); err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +94,7 @@ func TestLoopExecFeedbackCapturedQuotedCredential(t *testing.T) {
 			const assignment = "API_KEY=\""
 			fragment := strings.Repeat("Z7X_CAPTURE_VALUE_", 100)[:test.fragments]
 			provider, events := loopExecFeedbackFixture(t, test.mode, len(prefix)+len(assignment)+test.fragments)
-			check := func(source string, result tools.Result) {
+			check := func(source string, result contract.ToolResult) {
 				var data struct {
 					Stdout       string `json:"stdout"`
 					OutputCapped bool   `json:"output_capped"`
@@ -117,11 +118,11 @@ func TestLoopExecFeedbackCapturedQuotedCredential(t *testing.T) {
 			}
 			journalResults := 0
 			for _, event := range events {
-				var result tools.Result
+				var result contract.ToolResult
 				switch event.Type {
 				case domain.EventOperationFailed:
 					var payload struct {
-						Result tools.Result `json:"result"`
+						Result contract.ToolResult `json:"result"`
 					}
 					if err := json.Unmarshal(event.Payload, &payload); err != nil {
 						t.Fatal(err)
@@ -142,7 +143,7 @@ func TestLoopExecFeedbackCapturedQuotedCredential(t *testing.T) {
 				if message.Role != "tool" {
 					continue
 				}
-				var result tools.Result
+				var result contract.ToolResult
 				if err := json.Unmarshal([]byte(message.Content), &result); err != nil {
 					t.Fatal(err)
 				}

@@ -2,12 +2,13 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -100,8 +101,8 @@ func TestTurnLoopGuardDetectsSixRoundsWithoutProgress(t *testing.T) {
 }
 
 func TestStableToolResultFingerprintIgnoresCommandDuration(t *testing.T) {
-	first := tools.Result{Code: "nonzero_exit", Preview: `{"duration_ms":1,"stderr":"failed"}`}
-	second := tools.Result{Code: "nonzero_exit", Preview: `{"duration_ms":999,"stderr":"failed"}`}
+	first := contract.ToolResult{Code: "nonzero_exit", Preview: `{"duration_ms":1,"stderr":"failed"}`}
+	second := contract.ToolResult{Code: "nonzero_exit", Preview: `{"duration_ms":999,"stderr":"failed"}`}
 	if stableToolResultFingerprint(first) != stableToolResultFingerprint(second) {
 		t.Fatal("command duration changed verifier state fingerprint")
 	}

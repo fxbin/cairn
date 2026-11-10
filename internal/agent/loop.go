@@ -11,7 +11,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
@@ -20,7 +19,7 @@ type Loop struct {
 	projectInstructions  contract.ProjectInstructions
 	Journal              ports.Journal
 	Provider             ports.Provider
-	Tools                *tools.Registry
+	Tools                ToolRegistry
 	// Gate 是宿主注入的授权端口；Core 不持有 Policy 的具体类型与内部结构。
 	Gate  Authorizer
 	Model string
@@ -553,7 +552,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 			if ctx.Err() != nil {
 				return loop.persistCancellation(ctx, &projection, input, &turnID)
 			}
-			var toolResult tools.Result
+			var toolResult contract.ToolResult
 			if index < len(outcomes) {
 				toolResult = outcomes[index].result
 			}

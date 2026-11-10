@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // inventoryReadMessages 构造配对回执；覆盖范围只来自回执元数据，正文不参与清单。
@@ -19,7 +19,7 @@ func inventoryReadMessages(t *testing.T, id, path, hash string, offset, limit, t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := tools.Success(struct {
+	result := contract.ToolSuccess(struct {
 		Path       string `json:"path"`
 		Offset     int64  `json:"offset"`
 		Limit      int64  `json:"limit"`

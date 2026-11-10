@@ -2,17 +2,18 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
+	"path/filepath"
 )
 
 // TestResumeZeroMutationVerificationStages 核对零变更验证各持久化中断点：
@@ -103,8 +104,8 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolCallProposed, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(toolCallPayload{CallID: "patch", ToolName: "apply_patch", Arguments: json.RawMessage(`{"path":"initial.txt","mode":"create","content":"initial"}`)})},
 					policyDecisionDraft(RunInput{RunID: runID, WorkspaceHash: "workspace"}, priorTurn, priorOperation, policy.Decision{Effect: policy.Allow, RuleID: "write_allowed", Fingerprint: fingerprint}),
 					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(operationPayload{ToolName: "apply_patch", SideEffectClass: "workspace"})},
-					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(operationPayload{ToolName: "apply_patch", Result: tools.Success(struct{}{}, "patched", 0, "", false)})},
-					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(tools.Success(struct{}{}, "patched", 0, "", false))},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(operationPayload{ToolName: "apply_patch", Result: contract.ToolSuccess(struct{}{}, "patched", 0, "", false)})},
+					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &priorTurn, OperationID: &priorOperation, Payload: mustJSON(contract.ToolSuccess(struct{}{}, "patched", 0, "", false))},
 					{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &priorTurn, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
 				} {
 					appendEvent(draft)
@@ -162,16 +163,16 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 				}
 			}
 			if test.stage >= 3 {
-				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(tools.SideEffectProcess)})})
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(contract.SideEffectProcess)})})
 			}
 			if test.stage == 4 || test.stage >= 6 {
-				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: tools.Success(struct{}{}, "verified", 0, "", false)})})
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: contract.ToolSuccess(struct{}{}, "verified", 0, "", false)})})
 			}
 			if test.stage == 5 {
-				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: tools.Failure("verification_failed", "failed")})})
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", Result: contract.ToolFailure("verification_failed", "failed")})})
 			}
 			if test.stage >= 6 {
-				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(tools.Success(struct{}{}, "verified", 0, "", false))})
+				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(contract.ToolSuccess(struct{}{}, "verified", 0, "", false))})
 				appendEvent(domain.EventDraft{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: "verify-1", OK: true})})
 			}
 			if test.stage == 7 {

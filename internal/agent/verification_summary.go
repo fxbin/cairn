@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // verificationFailureTailBytes 限制反馈中的诊断尾部长度，避免失败日志撑爆上下文。
@@ -24,7 +23,7 @@ type verificationFailureFacts struct {
 }
 
 // parseVerificationFailure 从 Result.Data 或 Preview 提取失败事实，不信任非 JSON 载荷。
-func parseVerificationFailure(result tools.Result) verificationFailureFacts {
+func parseVerificationFailure(result contract.ToolResult) verificationFailureFacts {
 	facts := verificationFailureFacts{Code: result.Code}
 	if len(result.Data) > 0 {
 		var data struct {
@@ -48,7 +47,7 @@ func parseVerificationFailure(result tools.Result) verificationFailureFacts {
 }
 
 // verificationFailureFeedback 组装稳定可读的失败反馈；格式固定，便于 UI 与恢复逻辑引用。
-func verificationFailureFeedback(commandID string, result tools.Result) string {
+func verificationFailureFeedback(commandID string, result contract.ToolResult) string {
 	facts := parseVerificationFailure(result)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Verification command %s failed (code=%s", commandID, facts.Code)

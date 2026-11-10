@@ -5,12 +5,13 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
-	"unicode/utf8"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"unicode/utf8"
 )
 
 // SendMessageMaxBytes 限制单条跟进消息体大小，避免无界写入。
@@ -47,37 +48,37 @@ type SendMessageResult struct {
 var ErrMessageNotWired = errors.New("send_message deliver channel is not wired")
 
 // Execute 校验参数并调用 Deliver；任一步失败即失败关闭。
-func (tool SendMessage) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool SendMessage) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var request SendMessageRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
-		return Failure("invalid_arguments", "send_message 参数解析失败")
+		return contract.ToolFailure("invalid_arguments", "send_message 参数解析失败")
 	}
 	if strings.TrimSpace(request.ToRunID) == "" {
-		return Failure("invalid_arguments", "to_run_id 不能为空")
+		return contract.ToolFailure("invalid_arguments", "to_run_id 不能为空")
 	}
 	content := strings.TrimSpace(request.Content)
 	if content == "" {
-		return Failure("invalid_arguments", "content 不能为空")
+		return contract.ToolFailure("invalid_arguments", "content 不能为空")
 	}
 	if !utf8.ValidString(content) {
-		return Failure("invalid_arguments", "content 必须是合法 UTF-8")
+		return contract.ToolFailure("invalid_arguments", "content 必须是合法 UTF-8")
 	}
 	if len(content) > SendMessageMaxBytes {
-		return Failure("message_too_large", "content 超出上限")
+		return contract.ToolFailure("message_too_large", "content 超出上限")
 	}
 	deliver := tool.Deliver
 	if deliver == nil {
 		deliver = defaultMessageDeliver()
 	}
 	if deliver == nil {
-		return Failure("not_wired", ErrMessageNotWired.Error())
+		return contract.ToolFailure("not_wired", ErrMessageNotWired.Error())
 	}
 	if err := deliver(ctx, request.ToRunID, content, request.Reason); err != nil {
-		return Failure("deliver_failed", err.Error())
+		return contract.ToolFailure("deliver_failed", err.Error())
 	}
 	payload, err := json.Marshal(SendMessageResult{ToRunID: request.ToRunID, Bytes: len(content)})
 	if err != nil {
-		return Failure("internal", err.Error())
+		return contract.ToolFailure("internal", err.Error())
 	}
-	return Result{OK: true, Code: "ok", Data: payload, Preview: "消息已投递给 " + request.ToRunID, Bytes: int64(len(content))}
+	return contract.ToolResult{OK: true, Code: "ok", Data: payload, Preview: "消息已投递给 " + request.ToRunID, Bytes: int64(len(content))}
 }

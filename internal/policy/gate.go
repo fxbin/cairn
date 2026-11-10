@@ -250,7 +250,7 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 			Task     string `json:"task"`
 			MaxTurns int    `json:"max_turns"`
 		}
-		if err := json.Unmarshal(raw, &proposed); err != nil || strings.TrimSpace(proposed.Task) == "" || proposed.MaxTurns < 0 || proposed.MaxTurns > tools.DelegateMaxTurnsLimit {
+		if err := json.Unmarshal(raw, &proposed); err != nil || strings.TrimSpace(proposed.Task) == "" || proposed.MaxTurns < 0 || proposed.MaxTurns > contract.DelegateMaxTurnsLimit {
 			return Decision{Effect: Deny, RuleID: "invalid_delegation", Fingerprint: fingerprint("delegate_task", raw), Summary: "delegate_task requires task and optional max_turns within limit"}, nil
 		}
 		return Decision{
@@ -339,7 +339,7 @@ func (gate *Gate) decideMCP(proposal tools.MCPProposal) (Decision, error) {
 func invalidPatchDecision(raw json.RawMessage, cause error) Decision {
 	decision := Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: cause.Error()}
 	feedback := tools.PatchFailureResult(cause)
-	if feedback.Code == tools.CodeInvalidPatchArguments || feedback.Code == tools.CodePatchTextMismatch {
+	if feedback.Code == contract.CodeInvalidPatchArguments || feedback.Code == contract.CodePatchTextMismatch {
 		decision.FailureCode = feedback.Code
 		decision.FailureData = feedback.Data
 		decision.Summary = feedback.Preview
@@ -362,7 +362,7 @@ func invalidPatchDecision(raw json.RawMessage, cause error) Decision {
 		return decision
 	}
 	decision.RuleID = "stale_patch_precondition"
-	decision.FailureCode = tools.CodeStalePrecondition
+	decision.FailureCode = contract.CodeStalePrecondition
 	decision.FailureData = data
 	decision.Summary = "patch precondition is stale for " + stale.Path + "; call read_file before retrying apply_patch"
 	return decision

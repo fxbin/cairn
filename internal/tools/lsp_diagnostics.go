@@ -30,7 +30,7 @@ const diagnosticsMaxItems = 200
 type LspDiagnostics struct{ Workspace Workspace }
 
 // SideEffect 声明诊断命令无工作区副作用。
-func (LspDiagnostics) SideEffect() SideEffectClass { return SideEffectNone }
+func (LspDiagnostics) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Spec 返回 lsp_diagnostics 的受限 JSON 参数定义。
 func (tool LspDiagnostics) Spec() ports.ToolSpec {
@@ -73,11 +73,11 @@ var (
 )
 
 // Execute 选择引擎并返回结构化诊断。
-func (tool LspDiagnostics) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool LspDiagnostics) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	var args diagnosticsArguments
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &args); err != nil {
-			return Failure("invalid_arguments", "lsp_diagnostics arguments must be an object")
+			return contract.ToolFailure("invalid_arguments", "lsp_diagnostics arguments must be an object")
 		}
 	}
 	root := tool.Workspace.Root
@@ -85,7 +85,7 @@ func (tool LspDiagnostics) Execute(ctx context.Context, raw json.RawMessage) Res
 	if strings.TrimSpace(args.Path) != "" {
 		resolved, relative, err := tool.Workspace.Resolve(args.Path)
 		if err != nil {
-			return Failure("invalid_path", err.Error())
+			return contract.ToolFailure("invalid_path", err.Error())
 		}
 		target = resolved
 		_ = relative
@@ -97,18 +97,18 @@ func (tool LspDiagnostics) Execute(ctx context.Context, raw json.RawMessage) Res
 	switch engine {
 	case "auto", "gopls", "go_vet", "tsc":
 	default:
-		return Failure("invalid_arguments", "engine must be auto|gopls|go_vet|tsc")
+		return contract.ToolFailure("invalid_arguments", "engine must be auto|gopls|go_vet|tsc")
 	}
 
 	picked, binary, argv, err := planDiagnostics(engine, root, target)
 	if err != nil {
-		return Failure("diagnostics_unavailable", err.Error())
+		return contract.ToolFailure("diagnostics_unavailable", err.Error())
 	}
 	output, err := runDiagnosticsCommand(ctx, root, diagnosticsTimeout, argv)
 	if err != nil {
 		// 诊断器自身崩溃与「有诊断」不同：有输出时仍解析，无输出则失败关闭。
 		if strings.TrimSpace(output) == "" {
-			return Failure("diagnostics_failed", err.Error())
+			return contract.ToolFailure("diagnostics_failed", err.Error())
 		}
 	}
 	items := parseDiagnostics(picked, output)
@@ -129,7 +129,7 @@ func (tool LspDiagnostics) Execute(ctx context.Context, raw json.RawMessage) Res
 	if len(items) > 0 {
 		preview += " · " + items[0].File
 	}
-	return Success(data, preview, int64(len(output)), "", false)
+	return contract.ToolSuccess(data, preview, int64(len(output)), "", false)
 }
 
 // planDiagnostics 按引擎偏好解析可执行文件与 argv；找不到时返回可读错误。

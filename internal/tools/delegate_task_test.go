@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // TestDelegateTaskSpecAndFailClosedExecution 锁定委派工具的声明、副作用
@@ -11,10 +13,10 @@ import (
 func TestDelegateTaskSpecAndFailClosedExecution(t *testing.T) {
 	tool := DelegateTask{}
 	spec := tool.Spec()
-	if spec.Name != DelegateTaskName {
+	if spec.Name != contract.DelegateTaskName {
 		t.Fatalf("spec name = %q", spec.Name)
 	}
-	if tool.SideEffect() != SideEffectProcess {
+	if tool.SideEffect() != contract.SideEffectProcess {
 		t.Fatalf("side effect = %q", tool.SideEffect())
 	}
 	result := tool.Execute(context.Background(), json.RawMessage(`{"task":"child work"}`))

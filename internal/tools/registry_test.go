@@ -2,10 +2,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -18,8 +19,8 @@ type staticSpecTool struct {
 func (tool staticSpecTool) Spec() ports.ToolSpec { return tool.spec }
 
 // Execute 返回未使用占位结果。
-func (tool staticSpecTool) Execute(_ context.Context, _ json.RawMessage) Result {
-	return Failure("unused", "")
+func (tool staticSpecTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
+	return contract.ToolFailure("unused", "")
 }
 
 // TestRegistryFingerprintDeterministicAndSensitive 锁定注册表指纹合同：同一

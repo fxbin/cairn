@@ -10,7 +10,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // toolCallPayload 是写入工具提议事件的模型调用事实。
@@ -106,54 +105,54 @@ func proposedToolCall(events []domain.Event, operationID domain.OperationID) (po
 }
 
 // executeTool 在策略、审批和日志授权后执行一次模型提议的固定工具调用。
-func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, call ports.ToolCall) (tools.Result, error) {
-	if call.ID == "" || call.Name == "" || call.Name == tools.MCPQuiesceTool || !json.Valid(call.Arguments) {
-		return tools.Result{}, errors.New("model returned invalid tool call")
+func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, call ports.ToolCall) (contract.ToolResult, error) {
+	if call.ID == "" || call.Name == "" || call.Name == contract.MCPQuiesceTool || !json.Valid(call.Arguments) {
+		return contract.ToolResult{}, errors.New("model returned invalid tool call")
 	}
 	if loop.Gate == nil {
-		return tools.Result{}, errors.New("policy gate is required")
+		return contract.ToolResult{}, errors.New("policy gate is required")
 	}
 	if containsSensitiveToolCall(call) {
-		return tools.Result{}, errors.New("model tool arguments contain a secret-like value")
+		return contract.ToolResult{}, errors.New("model tool arguments contain a secret-like value")
 	}
 	if loop.Tools.MCPNeedsQuiescence() {
 		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 		if err != nil {
-			return tools.Result{}, err
+			return contract.ToolResult{}, err
 		}
 		decision = loop.bindMCPDeclaration(call.Name, decision)
 		decision = freshApprovalDecision(*projection, decision)
 		if decision.Effect == AuthorizationAsk {
 			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
-				return tools.Result{}, err
+				return contract.ToolResult{}, err
 			}
 		}
 	}
 	if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	operationID := domain.NewOperationID()
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})}); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if loop.Gate == nil {
-		return tools.Result{}, errors.New("policy gate is required")
+		return contract.ToolResult{}, errors.New("policy gate is required")
 	}
 	decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 	if err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	decision = freshApprovalDecision(*projection, decision)
 	decision = loop.bindMCPDeclaration(call.Name, decision)
 	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	// 异步子活跃期间拒绝父侧副作用类工具（含再次委派）：同一时刻至多一个
 	// 写入者，只读工具与 steering 不受限；拒绝发生在操作启动之前。
-	if loop.AsyncDelegateEnabled && loop.Tools.SideEffect(call.Name) != tools.SideEffectNone {
+	if loop.AsyncDelegateEnabled && loop.Tools.SideEffect(call.Name) != contract.SideEffectNone {
 		writerActive, gateErr := loop.asyncChildWriterActive(ctx, projection)
 		if gateErr != nil {
-			return tools.Result{}, gateErr
+			return contract.ToolResult{}, gateErr
 		}
 		if writerActive {
 			return loop.refuseParentSideEffectWhileChildActive(ctx, projection, input, turnID, operationID, call)
@@ -165,20 +164,20 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 			Summary     string `json:"summary"`
 			Rule        string `json:"rule"`
 		}{Fingerprint: decision.Fingerprint, Summary: decision.Summary, Rule: decision.RuleID})}); err != nil {
-			return tools.Result{}, err
+			return contract.ToolResult{}, err
 		}
 		loop.dispatchLifecycleHooks(HookEventNotification, call.Name)
-		return tools.Result{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
+		return contract.ToolResult{}, &ports.WaitingApprovalError{RunID: input.RunID, OperationID: operationID, Fingerprint: decision.Fingerprint, Summary: decision.Summary}
 	}
 	if decision.Effect == AuthorizationDeny {
 		result := policyFailureResult(decision)
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationFailed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: result})}); err != nil {
-			return tools.Result{}, err
+			return contract.ToolResult{}, err
 		}
 		// 策略拒绝不会执行副作用，但模型仍应得到可审计的失败结果，以便在剩余轮次中
 		// 修正参数或改用允许的方案；人工审批拒绝与验证计划拒绝仍保持终态语义。
 		if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
-			return tools.Result{}, err
+			return contract.ToolResult{}, err
 		}
 		if err := loop.currentOperationFailureGuard(ctx, input.RunID); err != nil {
 			return result, err
@@ -187,19 +186,19 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	}
 	startedPayload, err := loop.plannedOperationPayload(call)
 	if err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(startedPayload)}); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
-	var result tools.Result
-	if call.Name == tools.DelegateTaskName {
+	var result contract.ToolResult
+	if call.Name == contract.DelegateTaskName {
 		result = loop.executeDelegateTask(ctx, projection, input, call)
 	} else {
 		result = loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 		result = redactToolResult(result)
 	}
-	if result.Code == tools.CodeTerminationUnconfirmed {
+	if result.Code == contract.CodeTerminationUnconfirmed {
 		return result, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
@@ -214,16 +213,16 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	payload := loop.resultPayload(call.Name, result)
 	payload.HookActions = loop.dispatchPostToolHooks(call.Name, result)
 	if err := loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: eventType, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
-		return tools.Result{}, err
+		return contract.ToolResult{}, err
 	}
 	if cancelled {
 		return result, ctx.Err()
@@ -235,12 +234,12 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 }
 
 // policyFailureResult 将授权拒绝转换为工具与验证流程共用的结构化失败结果。
-func policyFailureResult(decision AuthorizationDecision) tools.Result {
+func policyFailureResult(decision AuthorizationDecision) contract.ToolResult {
 	failureCode := decision.FailureCode
 	if failureCode == "" {
 		failureCode = "policy_denied"
 	}
-	result := tools.Failure(failureCode, decision.Summary)
+	result := contract.ToolFailure(failureCode, decision.Summary)
 	if len(decision.FailureData) != 0 {
 		result.Data = append(json.RawMessage(nil), decision.FailureData...)
 	}
@@ -249,7 +248,7 @@ func policyFailureResult(decision AuthorizationDecision) tools.Result {
 
 // appendToolResult 使用不受调用方取消影响的提交上下文写入模型可见结果；若
 // Journal 写入失败，返回专用可恢复错误，禁止上层关闭 Turn 或终态化 Run。
-func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, result tools.Result) error {
+func (loop *Loop) appendToolResult(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, result contract.ToolResult) error {
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{
@@ -309,7 +308,7 @@ func freshApprovalDecision(projection domain.RunProjection, decision Authorizati
 // 并在改写现文件前生成可回退的 before 快照引用。
 func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload, error) {
 	sideEffect := loop.Tools.SideEffect(call.Name)
-	payload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == tools.SideEffectProcess}
+	payload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == contract.SideEffectProcess}
 	if call.Name != "apply_patch" {
 		return payload, nil
 	}
@@ -339,7 +338,7 @@ func (loop *Loop) snapshotPatchBefore(plan PatchPlan) *contract.Ref {
 
 // resultPayload 将工具结果包装为事件载荷，并尽力持久化脱敏制品引用。
 // 即使制品盘暂不可用，结果本身仍会写入事件以关闭已启动的操作，避免产生不可回放日志。
-func (loop *Loop) resultPayload(toolName string, result tools.Result) operationPayload {
+func (loop *Loop) resultPayload(toolName string, result contract.ToolResult) operationPayload {
 	payload := operationPayload{ToolName: toolName, Result: result}
 	if loop.Artifacts == nil {
 		return payload
@@ -359,7 +358,7 @@ func (loop *Loop) resultPayload(toolName string, result tools.Result) operationP
 }
 
 // redactToolResult 清除工具结果预览和 JSON 数据中可能泄露的凭据。
-func redactToolResult(result tools.Result) tools.Result {
+func redactToolResult(result contract.ToolResult) contract.ToolResult {
 	result.Preview = string(contract.Redact([]byte(result.Preview)))
 	if len(result.Data) != 0 {
 		result.Data = append(json.RawMessage(nil), contract.RedactJSON(result.Data)...)
@@ -369,7 +368,7 @@ func redactToolResult(result tools.Result) tools.Result {
 
 // dispatchPostToolHooks 收集 post_tool 钩子动作并写入操作载荷；不在此处执行副作用，
 // 执行仍由宿主（如 desktop queue）按 action 合同处理。
-func (loop *Loop) dispatchPostToolHooks(toolName string, result tools.Result) []HookAction {
+func (loop *Loop) dispatchPostToolHooks(toolName string, result contract.ToolResult) []HookAction {
 	if len(loop.Hooks) == 0 {
 		return nil
 	}

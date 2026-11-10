@@ -4,8 +4,8 @@
 package agent
 
 import (
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // BatchPlanEntry 是批次中单个调用的计划归属。
@@ -31,7 +31,7 @@ func PlanBatch(calls []ports.ToolCall, isReadonly func(name string) bool) BatchP
 	for index, call := range calls {
 		names[index] = call.Name
 	}
-	groups := tools.PlanParallelGroups(names, isReadonly)
+	groups := contract.PlanParallelGroups(names, isReadonly)
 	plan := BatchPlan{Entries: make([]BatchPlanEntry, 0, len(calls)), Groups: len(groups)}
 	for groupIndex, group := range groups {
 		for _, callIndex := range group.Indexes {
@@ -50,10 +50,10 @@ func PlanBatch(calls []ports.ToolCall, isReadonly func(name string) bool) BatchP
 }
 
 // ReadonlyFromRegistry 返回基于注册表副作用判定的只读函数。
-func ReadonlyFromRegistry(registry *tools.Registry) func(name string) bool {
+func ReadonlyFromRegistry(registry ToolRegistry) func(name string) bool {
 	if registry == nil {
 		return nil
 	}
-	readonly := tools.ReadonlyToolNames(registry)
+	readonly := registry.ReadonlyToolNames()
 	return func(name string) bool { return readonly[name] }
 }

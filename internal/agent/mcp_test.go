@@ -2,11 +2,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
@@ -44,25 +45,27 @@ func (catalog *loopMCPCatalog) Proposal(name string, raw json.RawMessage) (tools
 	}
 	return tools.MCPProposal{Server: "docs", Identity: "identity", ToolName: name, Effect: effect, Arguments: raw, Summary: "MCP test operation"}, true, nil
 }
-func (catalog *loopMCPCatalog) Execute(_ context.Context, name string, _ json.RawMessage) tools.Result {
+func (catalog *loopMCPCatalog) Execute(_ context.Context, name string, _ json.RawMessage) contract.ToolResult {
 	catalog.calls = append(catalog.calls, name)
 	if catalog.uncertain && name == testMCPName {
-		return tools.Failure(tools.CodeTerminationUnconfirmed, "uncertain external outcome")
+		return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "uncertain external outcome")
 	}
-	return tools.Success(struct{}{}, "done", 0, "", false)
+	return contract.ToolSuccess(struct{}{}, "done", 0, "", false)
 }
-func (catalog *loopMCPCatalog) SideEffect(string) tools.SideEffectClass {
-	return tools.SideEffectProcess
+func (catalog *loopMCPCatalog) SideEffect(string) contract.SideEffectClass {
+	return contract.SideEffectProcess
 }
-func (catalog *loopMCPCatalog) AcceptResult(name string, result tools.Result) error {
+func (catalog *loopMCPCatalog) AcceptResult(name string, result contract.ToolResult) error {
 	if name == "mcp_discover" && result.OK {
 		catalog.active = true
 		catalog.accepted++
 	}
 	return nil
 }
-func (catalog *loopMCPCatalog) ModelResult(_ string, result tools.Result) tools.Result { return result }
-func (catalog *loopMCPCatalog) Close() error                                           { return nil }
+func (catalog *loopMCPCatalog) ModelResult(_ string, result contract.ToolResult) contract.ToolResult {
+	return result
+}
+func (catalog *loopMCPCatalog) Close() error { return nil }
 
 // newMCPLoopTest 装配真实 Loop、Policy 和 Journal，只有外部传输使用窄端口替身。
 func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provider, journal *memory.Journal) *Loop {
@@ -178,6 +181,6 @@ func (catalog *loopMCPCatalog) ResetProjection() { catalog.active = false }
 
 func (catalog *loopMCPCatalog) NeedsQuiescence() bool { return false }
 
-func (catalog *loopMCPCatalog) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, _ string) tools.Result {
+func (catalog *loopMCPCatalog) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, _ string) contract.ToolResult {
 	return catalog.Execute(ctx, name, raw)
 }

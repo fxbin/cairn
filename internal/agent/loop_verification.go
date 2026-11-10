@@ -11,7 +11,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 const automaticVerificationResponse = "Cairn runtime: frozen verification passed after successful apply_patch."
@@ -666,7 +665,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		} else {
 			if !verificationAuthorizationMatches(latest, decision) {
 				reason := "approval expired because the command, policy, or workspace observation changed; re-decision required"
-				result := tools.Failure("approval_stale", reason)
+				result := contract.ToolFailure("approval_stale", reason)
 				feedback := "Verification approval expired after workspace drift. Re-inspect the workspace and decide whether to repair or rerun verification."
 				if err := loop.finishUnstartedVerification(ctx, projection, input, verification.turnID, latest.operationID, verificationID, result, feedback); err != nil {
 					return false, err
@@ -790,7 +789,7 @@ func verificationAuthorizationMatches(record verificationOperationRecord, decisi
 
 // finishUnstartedVerification 将未进入 operation_started 的验证命令闭合为失败，
 // 并同步关闭验证覆盖层；可选反馈仅用于需要模型重新决策的非取消场景。
-func (loop *Loop) finishUnstartedVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, verificationID string, result tools.Result, feedback string) error {
+func (loop *Loop) finishUnstartedVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, operationID domain.OperationID, verificationID string, result contract.ToolResult, feedback string) error {
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
 	if err := loop.append(commitContext, projection, domain.EventDraft{
@@ -882,7 +881,7 @@ func (loop *Loop) finishVerificationForCancellation(ctx context.Context, project
 	if latest.started || !latest.authorized {
 		return false, nil
 	}
-	result := tools.Failure("user_interrupt", "verification command was cancelled before execution because the run was stopping")
+	result := contract.ToolFailure("user_interrupt", "verification command was cancelled before execution because the run was stopping")
 	result.Data = mustJSON(struct {
 		StopCause string `json:"stop_cause"`
 	}{StopCause: "user_interrupt"})
@@ -1061,29 +1060,29 @@ func (loop *Loop) repairMissingVerificationFeedback(ctx context.Context, project
 }
 
 // verificationTerminalResult 将验证操作终态归一化为结果与成功标志。
-func verificationTerminalResult(event domain.Event) (tools.Result, bool, error) {
+func verificationTerminalResult(event domain.Event) (contract.ToolResult, bool, error) {
 	if event.Type == domain.EventOperationReconciled {
 		var payload struct {
 			Verdict string `json:"verdict"`
 			Note    string `json:"note"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return tools.Result{}, false, fmt.Errorf("decode operation_reconciled payload: %w", err)
+			return contract.ToolResult{}, false, fmt.Errorf("decode operation_reconciled payload: %w", err)
 		}
 		switch payload.Verdict {
 		case "applied_success":
-			result := tools.Result{OK: true, Code: "reconciled_applied_success", Preview: payload.Note}
+			result := contract.ToolResult{OK: true, Code: "reconciled_applied_success", Preview: payload.Note}
 			return result, true, nil
 		case "applied_failure", "not_applied", "abort_run":
-			result := tools.Result{OK: false, Code: "reconciled_" + payload.Verdict, Preview: payload.Note}
+			result := contract.ToolResult{OK: false, Code: "reconciled_" + payload.Verdict, Preview: payload.Note}
 			return result, false, nil
 		default:
-			return tools.Result{}, false, fmt.Errorf("operation_reconciled has invalid verdict %q", payload.Verdict)
+			return contract.ToolResult{}, false, fmt.Errorf("operation_reconciled has invalid verdict %q", payload.Verdict)
 		}
 	}
 	result, err := toolResultFromOperationTerminal(event)
 	if err != nil {
-		return tools.Result{}, false, err
+		return contract.ToolResult{}, false, err
 	}
 	return result, event.Type == domain.EventOperationSucceeded && result.OK, nil
 }
@@ -1103,7 +1102,7 @@ func verificationCancellationCause(event domain.Event) (string, bool, error) {
 	if len(payload.Result) == 0 || string(payload.Result) == "null" {
 		return "", false, nil
 	}
-	var result tools.Result
+	var result contract.ToolResult
 	if err := json.Unmarshal(payload.Result, &result); err != nil {
 		return "", false, fmt.Errorf("decode verification cancellation result: %w", err)
 	}
@@ -1262,11 +1261,11 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 	if !equalVerificationArguments(proposal.Arguments, command.Arguments) {
 		return errors.New("verification command arguments do not match the persisted proposal")
 	}
-	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(tools.SideEffectProcess), MutationBarrier: false})}); err != nil {
+	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "exec_command", SideEffectClass: string(contract.SideEffectProcess), MutationBarrier: false})}); err != nil {
 		return err
 	}
 	result := redactToolResult(loop.Tools.Execute(ctx, "exec_command", command.Arguments))
-	if result.Code == tools.CodeTerminationUnconfirmed {
+	if result.Code == contract.CodeTerminationUnconfirmed {
 		return &ports.WaitingReconcileError{RunID: input.RunID, OperationID: operationID, Reason: result.Preview}
 	}
 	eventType := domain.EventOperationSucceeded
@@ -1282,7 +1281,7 @@ func (loop *Loop) executeVerificationCommand(ctx context.Context, projection *do
 			return fmt.Errorf("observe workspace after verification: %w", observationErr)
 		}
 		if afterObservation != beforeObservation {
-			result = tools.Failure("verification_mutated_workspace", "verification command modified the tool-visible workspace; repair or rerun verification before completion")
+			result = contract.ToolFailure("verification_mutated_workspace", "verification command modified the tool-visible workspace; repair or rerun verification before completion")
 			eventType = domain.EventOperationFailed
 		}
 	}

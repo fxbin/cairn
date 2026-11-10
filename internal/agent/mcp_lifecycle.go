@@ -4,12 +4,12 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // quiesceMCP 只关闭已由本次 Boot 持有的资源；失败保持 started，不能先完成或验证运行。
@@ -33,7 +33,7 @@ func (loop *Loop) quiesceMCP(ctx context.Context, projection *domain.RunProjecti
 		turnID = *projection.CurrentTurn
 	}
 	operationID := domain.NewOperationID()
-	call := ports.ToolCall{ID: "cairn-mcp-close-" + string(operationID), Name: tools.MCPQuiesceTool, Arguments: json.RawMessage(`{}`)}
+	call := ports.ToolCall{ID: "cairn-mcp-close-" + string(operationID), Name: contract.MCPQuiesceTool, Arguments: json.RawMessage(`{}`)}
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})}); err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func isMCPLifecyclePayload(raw json.RawMessage) bool {
 	var payload struct {
 		ToolName string `json:"tool_name"`
 	}
-	return json.Unmarshal(raw, &payload) == nil && payload.ToolName == tools.MCPQuiesceTool
+	return json.Unmarshal(raw, &payload) == nil && payload.ToolName == contract.MCPQuiesceTool
 }
 
 // mcpLifecycleOperations 从受审计提议恢复内部资源回收操作集合。

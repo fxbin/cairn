@@ -24,7 +24,6 @@ import (
 
 // 技能限制约束单次读取、目录遍历和启动目录的最大资源消耗。
 const (
-	SkillContentVersion             = 1
 	SkillMaxNameCharacters          = 64
 	SkillMaxDescriptionCharacters   = 1024
 	SkillMaxCompatibilityCharacters = 500
@@ -66,26 +65,6 @@ type SkillDiagnostic struct {
 	Name  string `json:"name"`
 	Scope string `json:"scope"`
 	Code  string `json:"code"`
-}
-
-// SkillResource 绑定一个普通资源文件的相对位置、长度与原始摘要。
-type SkillResource struct {
-	Path   string `json:"path"`
-	Bytes  int64  `json:"bytes"`
-	SHA256 string `json:"sha256"`
-}
-
-// SkillContent 是成功加载后可写入 Journal 的版本化内容，不包含宿主机目录。
-type SkillContent struct {
-	Version       int             `json:"version"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description"`
-	Compatibility string          `json:"compatibility,omitempty"`
-	Scope         string          `json:"scope"`
-	SourceDigest  string          `json:"source_digest"`
-	SHA256        string          `json:"sha256"`
-	Instructions  string          `json:"instructions"`
-	Resources     []SkillResource `json:"resources"`
 }
 
 // SkillCatalog 保存启动时发现的元数据；扫描不执行任何技能代码。
@@ -259,7 +238,7 @@ func (catalog *SkillCatalog) Entries() []SkillEntry {
 }
 
 // Inspect 为用户显式查看已停用的技能，保持目录本身的启停状态不变。
-func (catalog *SkillCatalog) Inspect(name string) (SkillContent, error) {
+func (catalog *SkillCatalog) Inspect(name string) (contract.SkillContent, error) {
 	copy := &SkillCatalog{entries: catalog.Entries()}
 	for index := range copy.entries {
 		if copy.entries[index].Name == name {
@@ -280,37 +259,37 @@ func (catalog *SkillCatalog) find(name string) (SkillEntry, bool) {
 }
 
 // Load 校验发现时的正文摘要并冻结普通文件清单，不隐式加载或运行资源。
-func (catalog *SkillCatalog) Load(name string) (SkillContent, error) {
+func (catalog *SkillCatalog) Load(name string) (contract.SkillContent, error) {
 	entry, found := catalog.find(name)
 	if !found || entry.Disabled {
-		return SkillContent{}, errors.New("skill is unavailable")
+		return contract.SkillContent{}, errors.New("skill is unavailable")
 	}
 	view, err := NewWorkspace(entry.directory, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
 	if err != nil || skillDigest([]byte(view.Root)) != entry.SourceDigest {
-		return SkillContent{}, errors.New("skill source changed")
+		return contract.SkillContent{}, errors.New("skill source changed")
 	}
 	raw, err := skillReadFile(view, "SKILL.md", SkillMaxInstructionsBytes)
 	if err != nil || skillDigest(raw) != entry.SHA256 {
-		return SkillContent{}, errors.New("skill instructions changed; restart with the reviewed version")
+		return contract.SkillContent{}, errors.New("skill instructions changed; restart with the reviewed version")
 	}
 	_, body, err := parseSkill(raw, name)
 	if err != nil {
-		return SkillContent{}, err
+		return contract.SkillContent{}, err
 	}
 	resources, err := skillResources(view)
 	if err != nil {
-		return SkillContent{}, err
+		return contract.SkillContent{}, err
 	}
-	return SkillContent{Version: SkillContentVersion, Name: name, Description: entry.Description, Compatibility: entry.Compatibility, Scope: entry.Scope, SourceDigest: entry.SourceDigest, SHA256: entry.SHA256, Instructions: body, Resources: resources}, nil
+	return contract.SkillContent{Version: contract.SkillContentVersion, Name: name, Description: entry.Description, Compatibility: entry.Compatibility, Scope: entry.Scope, SourceDigest: entry.SourceDigest, SHA256: entry.SHA256, Instructions: body, Resources: resources}, nil
 }
 
 // ReadResource 只读取成功激活快照列出的文件，并验证来源与文件摘要仍匹配。
-func (catalog *SkillCatalog) ReadResource(content SkillContent, relative string) ([]byte, error) {
+func (catalog *SkillCatalog) ReadResource(content contract.SkillContent, relative string) ([]byte, error) {
 	entry, found := catalog.find(content.Name)
 	if !found || entry.Disabled || entry.SourceDigest != content.SourceDigest || entry.SHA256 != content.SHA256 {
 		return nil, errors.New("skill source changed or is unavailable")
 	}
-	var resource *SkillResource
+	var resource *contract.SkillResource
 	for _, candidate := range content.Resources {
 		if candidate.Path == relative {
 			value := candidate
@@ -368,13 +347,13 @@ func skillReadFile(view Workspace, relative string, maximum int64) ([]byte, erro
 }
 
 // skillResources 对包内每个普通文件计算摘要，禁止链接、敏感文件和超限包。
-func skillResources(view Workspace) ([]SkillResource, error) {
+func skillResources(view Workspace) ([]contract.SkillResource, error) {
 	root, err := os.OpenRoot(view.Root)
 	if err != nil {
 		return nil, errors.New("open skill package failed")
 	}
 	defer root.Close()
-	resources := []SkillResource{}
+	resources := []contract.SkillResource{}
 	var total int64
 	err = walkSkillPackage(root.FS(), func(path string, entry fs.DirEntry) error {
 		if path == skillDisabledFile {
@@ -397,7 +376,7 @@ func skillResources(view Workspace) ([]SkillResource, error) {
 		if total > SkillMaxPackageBytes {
 			return errors.New("skill package exceeds size limit")
 		}
-		resources = append(resources, SkillResource{Path: path, Bytes: int64(len(raw)), SHA256: skillDigest(raw)})
+		resources = append(resources, contract.SkillResource{Path: path, Bytes: int64(len(raw)), SHA256: skillDigest(raw)})
 		return nil
 	})
 	return resources, err
@@ -477,7 +456,7 @@ func skillDigest(raw []byte) string {
 }
 
 // skillContentIdentity 计算回执载荷身份，供重复加载和冷恢复验证使用。
-func skillContentIdentity(content SkillContent) (string, error) {
+func skillContentIdentity(content contract.SkillContent) (string, error) {
 	return canonicaljson.Fingerprint("cairn-skill-content-v1", content)
 }
 

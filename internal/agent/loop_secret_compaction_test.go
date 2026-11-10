@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // TestSummarizeMessagesDropsSecretLikeExecArguments 锁定审计 P1
@@ -15,7 +15,7 @@ import (
 // exec_command 只保留 argv 首词，敏感命令行参数不得进入 context_compacted
 // 摘要，也就无法随检查点进入后续 Provider 请求。
 func TestSummarizeMessagesDropsSecretLikeExecArguments(t *testing.T) {
-	encoded, err := json.Marshal(tools.Success(map[string]any{"preview": "command finished"}, "command finished", 16, "", false))
+	encoded, err := json.Marshal(contract.ToolSuccess(map[string]any{"preview": "command finished"}, "command finished", 16, "", false))
 	if err != nil {
 		t.Fatal(err)
 	}

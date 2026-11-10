@@ -7,18 +7,19 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/tools"
+	"path/filepath"
 )
 
 // asyncFixture 组装启用异步委派语义的最小 Loop 事实：已开启的运行、开放轮次
@@ -360,11 +361,13 @@ func (tool *sideEffectStubTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command", Parameters: json.RawMessage(`{"type":"object"}`)}
 }
 
-func (tool *sideEffectStubTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+func (tool *sideEffectStubTool) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectProcess
+}
 
-func (tool *sideEffectStubTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
+func (tool *sideEffectStubTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
 	tool.calls++
-	return tools.Success(struct{}{}, "executed", 0, "", false)
+	return contract.ToolSuccess(struct{}{}, "executed", 0, "", false)
 }
 
 // TestExecuteToolRefusesSideEffectWhileAsyncChildActive 锁定单写入者门禁：

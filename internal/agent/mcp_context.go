@@ -3,20 +3,20 @@
 package agent
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/canonicaljson"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // mcpSuccessReceipt 只读取成功终态中的显式工具结果，不能由失败回执授予目录状态。
 type mcpSuccessReceipt struct {
-	ToolName string       `json:"tool_name"`
-	Result   tools.Result `json:"result"`
+	ToolName string              `json:"tool_name"`
+	Result   contract.ToolResult `json:"result"`
 }
 
 // restoreMCPResults 保留 Journal 的成功回执边界，不连接或重发任何外部调用。
@@ -49,7 +49,7 @@ func (loop *Loop) restoreMCPResults(events []domain.Event) error {
 			if name != "mcp_discover" && name != "tool_search" {
 				continue
 			}
-			var result tools.Result
+			var result contract.ToolResult
 			if json.Unmarshal(event.Payload, &result) != nil {
 				return errors.New("decode persisted MCP result failed")
 			}
@@ -112,7 +112,7 @@ func (loop *Loop) modelToolResultJSON(name string, raw json.RawMessage) (string,
 	if name != "mcp_discover" && name != "tool_search" && name != "skill" {
 		return string(raw), nil
 	}
-	var result tools.Result
+	var result contract.ToolResult
 	if json.Unmarshal(raw, &result) != nil {
 		return "", errors.New("decode persisted MCP result failed")
 	}

@@ -5,10 +5,12 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // fakeSessionBackend 记录调用的测试后端。
@@ -131,7 +133,7 @@ func TestExecSessionLifecycle(t *testing.T) {
 
 // TestExecSessionSideEffectProcess 锁定副作用分类。
 func TestExecSessionSideEffectProcess(t *testing.T) {
-	if got := (ExecSession{}).SideEffect(); got != SideEffectProcess {
+	if got := (ExecSession{}).SideEffect(); got != contract.SideEffectProcess {
 		t.Fatalf("副作用应为 process，得到 %q", got)
 	}
 }

@@ -2,17 +2,18 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"path/filepath"
 )
 
 // ApplyPatch 是经审批后执行确定性单文件改写的副作用工具。
@@ -45,10 +46,6 @@ type PatchPlan struct {
 	Exists     bool
 }
 
-// CodeStalePrecondition 标识 Patch 的已给定摘要已过期；调用方应先重新读取文件，
-// 而不是盲目重试或把该安全前置条件错误误报为策略拒绝。
-const CodeStalePrecondition = "stale_precondition"
-
 // PatchPreconditionError 描述 update 或 delete 的已给定摘要与当前文件不一致；
 // 只携带相对路径和摘要，绝不携带文件内容，供上层生成可重放的恢复反馈。
 type PatchPreconditionError struct {
@@ -61,12 +58,6 @@ type PatchPreconditionError struct {
 func (err *PatchPreconditionError) Error() string {
 	return "expected_sha256 does not match current file; read_file is required before retrying apply_patch"
 }
-
-// 补丁恢复错误码区分调用形状与精确文本失配；它们不授予写入权限。
-const (
-	CodeInvalidPatchArguments = "invalid_patch_arguments"
-	CodePatchTextMismatch     = "patch_text_mismatch"
-)
 
 // PatchArgumentsError 描述可由模型重建调用形状修复的参数错误；Mode 仅用于
 // 选择已知模式的恢复提示，Message 不包含文件正文。
@@ -96,7 +87,7 @@ func (err *PatchTextMatchError) Error() string {
 
 // PatchFailureResult 将非空规划错误转换为无副作用的模型恢复反馈；已知参数与
 // 文本失配只附带固定动作和校验元数据，其余错误保留原 invalid 语义。
-func PatchFailureResult(cause error) Result {
+func PatchFailureResult(cause error) contract.ToolResult {
 	var argumentError *PatchArgumentsError
 	if errors.As(cause, &argumentError) {
 		mode := argumentError.Mode
@@ -125,9 +116,9 @@ func PatchFailureResult(cause error) Result {
 			NextAction     string   `json:"next_action"`
 		}{Mode: mode, RequiredFields: required, OmitFields: omit, NextAction: next})
 		if err != nil {
-			return Failure("invalid", "patch recovery feedback could not be encoded")
+			return contract.ToolFailure("invalid", "patch recovery feedback could not be encoded")
 		}
-		result := Failure(CodeInvalidPatchArguments, cause.Error())
+		result := contract.ToolFailure(contract.CodeInvalidPatchArguments, cause.Error())
 		result.Data = data
 		return result
 	}
@@ -142,17 +133,17 @@ func PatchFailureResult(cause error) Result {
 		}{Path: matchError.Path, ReplacementIndex: matchError.ReplacementIndex, ActualOccurrences: matchError.ActualOccurrences, ExpectedOccurrences: matchError.ExpectedOccurrences,
 			NextAction: "Use the exact original block returned by read_file, preserving whitespace and newlines. If it is no longer available, read only the needed target range. Rebuild a smaller exact replacement with its current sha256; omit content and do not normalize, guess, or repeat the unmatched old text."})
 		if err != nil {
-			return Failure("invalid", "patch recovery feedback could not be encoded")
+			return contract.ToolFailure("invalid", "patch recovery feedback could not be encoded")
 		}
-		result := Failure(CodePatchTextMismatch, cause.Error())
+		result := contract.ToolFailure(contract.CodePatchTextMismatch, cause.Error())
 		result.Data = data
 		return result
 	}
-	return Failure("invalid", cause.Error())
+	return contract.ToolFailure("invalid", cause.Error())
 }
 
 // SideEffect 声明 ApplyPatch 会改变工作区内容。
-func (tool ApplyPatch) SideEffect() SideEffectClass { return SideEffectWorkspace }
+func (tool ApplyPatch) SideEffect() contract.SideEffectClass { return contract.SideEffectWorkspace }
 
 // Spec 返回 apply_patch 的受限 JSON 参数定义。
 func (tool ApplyPatch) Spec() ports.ToolSpec {
@@ -234,9 +225,9 @@ func (tool ApplyPatch) Plan(raw json.RawMessage) (PatchPlan, error) {
 }
 
 // Execute 按计划原子地创建、更新或删除单个文件，并校验写后摘要。
-func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result {
+func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
 	if err := ctx.Err(); err != nil {
-		return Failure("cancelled", err.Error())
+		return contract.ToolFailure("cancelled", err.Error())
 	}
 	plan, err := tool.Plan(raw)
 	if err != nil {
@@ -244,19 +235,19 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 	}
 	filePath, _, err := tool.Workspace.Resolve(plan.Path)
 	if err != nil {
-		return Failure("invalid_path", err.Error())
+		return contract.ToolFailure("invalid_path", err.Error())
 	}
 	if plan.Mode == "delete" {
 		if err := os.Remove(filePath); err != nil {
-			return Failure("io", err.Error())
+			return contract.ToolFailure("io", err.Error())
 		}
 		if err := syncDirectory(filepath.Dir(filePath)); err != nil {
-			return Failure("io", err.Error())
+			return contract.ToolFailure("io", err.Error())
 		}
 		if _, err := os.Stat(filePath); !errors.Is(err, os.ErrNotExist) {
-			return Failure("io", "delete postcondition was not met")
+			return contract.ToolFailure("io", "delete postcondition was not met")
 		}
-		return Success(struct {
+		return contract.ToolSuccess(struct {
 			Path       string `json:"path"`
 			BeforeHash string `json:"before_hash"`
 			AfterHash  string `json:"after_hash"`
@@ -273,16 +264,16 @@ func (tool ApplyPatch) Execute(ctx context.Context, raw json.RawMessage) Result 
 	sweepPatchTemporaries(filepath.Dir(filePath))
 	temporary, err := os.CreateTemp(filepath.Dir(filePath), ".cairn-patch-*")
 	if err != nil {
-		return Failure("io", err.Error())
+		return contract.ToolFailure("io", err.Error())
 	}
 	if err := publishPatch(temporary, filePath, mode, plan.After); err != nil {
-		return Failure("io", err.Error())
+		return contract.ToolFailure("io", err.Error())
 	}
 	actual, err := os.ReadFile(filePath)
 	if err != nil || sha256Reference(actual) != plan.AfterHash {
-		return Failure("io", "patch postcondition hash mismatch")
+		return contract.ToolFailure("io", "patch postcondition hash mismatch")
 	}
-	return Success(struct {
+	return contract.ToolSuccess(struct {
 		Path       string `json:"path"`
 		BeforeHash string `json:"before_hash"`
 		AfterHash  string `json:"after_hash"`

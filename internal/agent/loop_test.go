@@ -43,61 +43,67 @@ func (uncertainExecTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
 }
 
-func (uncertainExecTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+func (uncertainExecTool) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
-func (uncertainExecTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
-	return tools.Failure(tools.CodeTerminationUnconfirmed, "process termination is unconfirmed")
+func (uncertainExecTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
+	return contract.ToolFailure(contract.CodeTerminationUnconfirmed, "process termination is unconfirmed")
 }
 
 func (tool mutatingVerificationTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
 }
 
-func (tool mutatingVerificationTool) SideEffect() tools.SideEffectClass {
-	return tools.SideEffectProcess
+func (tool mutatingVerificationTool) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectProcess
 }
 
-func (tool mutatingVerificationTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
+func (tool mutatingVerificationTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
 	if err := os.WriteFile(tool.path, []byte("mutated by verification"), 0o600); err != nil {
-		return tools.Failure("write_failed", err.Error())
+		return contract.ToolFailure("write_failed", err.Error())
 	}
-	return tools.Success(struct{}{}, "verification passed", 0, "", false)
+	return contract.ToolSuccess(struct{}{}, "verification passed", 0, "", false)
 }
 
 func (tool *countingExecTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
 }
 
-func (tool *countingExecTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+func (tool *countingExecTool) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectProcess
+}
 
-func (tool *countingExecTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
+func (tool *countingExecTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
 	tool.calls++
-	return tools.Success(struct{}{}, "executed", 0, "", false)
+	return contract.ToolSuccess(struct{}{}, "executed", 0, "", false)
 }
 
 func (tool *flakyVerificationTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
 }
 
-func (tool *flakyVerificationTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+func (tool *flakyVerificationTool) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectProcess
+}
 
-func (tool *flakyVerificationTool) Execute(_ context.Context, _ json.RawMessage) tools.Result {
+func (tool *flakyVerificationTool) Execute(_ context.Context, _ json.RawMessage) contract.ToolResult {
 	tool.calls++
 	if tool.calls == 1 {
-		return tools.Failure("nonzero_exit", "test failure")
+		return contract.ToolFailure("nonzero_exit", "test failure")
 	}
-	return tools.Success(struct{}{}, "test passed", 0, "", false)
+	return contract.ToolSuccess(struct{}{}, "test passed", 0, "", false)
 }
 
 func (tool cancellingExecTool) Spec() ports.ToolSpec {
 	return ports.ToolSpec{Name: "exec_command"}
 }
 
-func (tool cancellingExecTool) SideEffect() tools.SideEffectClass { return tools.SideEffectProcess }
+func (tool cancellingExecTool) SideEffect() contract.SideEffectClass {
+	return contract.SideEffectProcess
+}
 
-func (tool cancellingExecTool) Execute(ctx context.Context, _ json.RawMessage) tools.Result {
+func (tool cancellingExecTool) Execute(ctx context.Context, _ json.RawMessage) contract.ToolResult {
 	tool.cancel()
-	return tools.Failure("cancelled", ctx.Err().Error())
+	return contract.ToolFailure("cancelled", ctx.Err().Error())
 }
 
 func (provider cancellingProvider) Stream(ctx context.Context, _ ports.ModelRequest, _ func(ports.ModelEvent) error) error {
@@ -381,8 +387,8 @@ func TestMessagesFromEventsPlacesMalformedToolArgumentsFeedbackInHistoricalOrder
 			Effect string `json:"effect"`
 		}{Effect: "allow"})},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name})},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: tools.Success(map[string]any{}, "listed", 0, "", false)})},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(tools.Success(map[string]any{}, "listed", 0, "", false))},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationSucceeded, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: call.Name, Result: contract.ToolSuccess(map[string]any{}, "listed", 0, "", false)})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventToolResultAppended, TurnID: &secondTurnID, OperationID: &operationID, Payload: mustJSON(contract.ToolSuccess(map[string]any{}, "listed", 0, "", false))},
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventTurnClosed, TurnID: &secondTurnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})},
 	} {
 		if _, err := journal.Append(context.Background(), uint64(offset+2), draft); err != nil {
@@ -536,7 +542,7 @@ func TestLoopRejectsInvalidTurnCloseBeforeJournalWrite(t *testing.T) {
 		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventPolicyDecided, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(struct {
 			Effect string `json:"effect"`
 		}{Effect: "allow"})},
-		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "read_file", SideEffectClass: string(tools.SideEffectNone)})},
+		{RunID: runID, WorkspaceHash: "workspace", Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "read_file", SideEffectClass: string(contract.SideEffectNone)})},
 	}
 	for expected, draft := range drafts {
 		if _, err := journal.Append(context.Background(), uint64(expected), draft); err != nil {
@@ -916,7 +922,7 @@ func TestDefaultPromptExplainsDeterministicPatchBinding(t *testing.T) {
 // （AgentScope 失败 run 实证：v1 检查点丢探索记忆导致 read 爆炸循环）。
 func TestSummarizeMessagesRetainsExplorationInventoryUnderBudgetPressure(t *testing.T) {
 	result := func(body string) string {
-		encoded, err := json.Marshal(tools.Success(map[string]any{"preview": body}, body, int64(len(body)), "", false))
+		encoded, err := json.Marshal(contract.ToolSuccess(map[string]any{"preview": body}, body, int64(len(body)), "", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1005,7 +1011,7 @@ func TestLoopFeedsPolicyDeniedToolCallBackToModelForRepair(t *testing.T) {
 	if err != nil || result.Response != "I will provide the required hash before retrying." {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
-	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "expected_sha256") || strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, tools.CodeStalePrecondition) {
+	if len(provider.requests) != 2 || !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, "expected_sha256") || strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content, contract.CodeStalePrecondition) {
 		t.Fatalf("repair feedback was not sent to model: %#v", provider.requests)
 	}
 	events, err := journal.Load(ctx, runID)
@@ -1070,7 +1076,7 @@ func TestLoopFeedsStalePatchPreconditionBackForRecovery(t *testing.T) {
 		t.Fatalf("requests=%d verification_calls=%d", len(provider.requests), verificationTool.calls)
 	}
 	feedback := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Content
-	if !strings.Contains(feedback, tools.CodeStalePrecondition) || !strings.Contains(feedback, `"path":"answer.txt"`) || !strings.Contains(feedback, `"current_sha256":"`+currentHash+`"`) || !strings.Contains(feedback, "read_file") {
+	if !strings.Contains(feedback, contract.CodeStalePrecondition) || !strings.Contains(feedback, `"path":"answer.txt"`) || !strings.Contains(feedback, `"current_sha256":"`+currentHash+`"`) || !strings.Contains(feedback, "read_file") {
 		t.Fatalf("stale feedback=%s", feedback)
 	}
 	if strings.Contains(feedback, original) || strings.Contains(feedback, root) {
@@ -1105,7 +1111,7 @@ func TestLoopFeedsStalePatchPreconditionBackForRecovery(t *testing.T) {
 	foundReplay := false
 	for _, message := range replayed {
 		if message.Role == "tool" && message.ToolCallID == "stale_patch" {
-			foundReplay = strings.Contains(message.Content, tools.CodeStalePrecondition) && strings.Contains(message.Content, `"current_sha256":"`+currentHash+`"`)
+			foundReplay = strings.Contains(message.Content, contract.CodeStalePrecondition) && strings.Contains(message.Content, `"current_sha256":"`+currentHash+`"`)
 		}
 	}
 	if !foundReplay {

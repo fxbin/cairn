@@ -7,18 +7,18 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"encoding/json"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // DelegatorFunc 以父运行身份执行一次委派；结果按工具结果合同回传，错误
 // 编码进 Result 而不是以 Go error 中断父循环。
-type DelegatorFunc func(ctx context.Context, parentRunID domain.RunID, arguments json.RawMessage) tools.Result
+type DelegatorFunc func(ctx context.Context, parentRunID domain.RunID, arguments json.RawMessage) contract.ToolResult
 
 // classifyBatchSpecialError 识别批次错误中必须原样上抛的特殊分类：工具结果
 // 落盘失败禁止上层关闭 Turn 或终态化 Run，对账暂停必须保持可恢复语义；
@@ -36,13 +36,13 @@ func classifyBatchSpecialError(err error) error {
 
 // executeDelegateTask 经装配的委派回调执行子任务并再同步父投影；未装配
 // 委派回调的运行（含子运行自身）失败关闭，不虚构子代理。
-func (loop *Loop) executeDelegateTask(ctx context.Context, projection *domain.RunProjection, input RunInput, call ports.ToolCall) tools.Result {
+func (loop *Loop) executeDelegateTask(ctx context.Context, projection *domain.RunProjection, input RunInput, call ports.ToolCall) contract.ToolResult {
 	if loop.Delegator == nil {
-		return tools.Failure("not_wired", "delegate_task is not configured for this runtime")
+		return contract.ToolFailure("not_wired", "delegate_task is not configured for this runtime")
 	}
 	result := redactToolResult(loop.Delegator(ctx, input.RunID, call.Arguments))
 	if err := loop.resyncProjection(ctx, projection); err != nil {
-		return tools.Failure("delegate_resync_failed", err.Error())
+		return contract.ToolFailure("delegate_resync_failed", err.Error())
 	}
 	return result
 }
