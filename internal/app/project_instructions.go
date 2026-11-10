@@ -33,7 +33,7 @@ func freezeProjectInstructions(workspace tools.Workspace, store *artifact.Store,
 	if err != nil {
 		return nil, errors.New("encode project instructions snapshot failed")
 	}
-	if len(encoded) > tools.ProjectInstructionsMaxSnapshotBytes || store == nil {
+	if len(encoded) > contract.ProjectInstructionsMaxSnapshotBytes || store == nil {
 		return nil, errors.New("project instructions snapshot storage limit exceeded or unavailable")
 	}
 	reference, err := store.Put(encoded, "application/json")

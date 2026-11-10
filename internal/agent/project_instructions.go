@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // projectInstructionsPolicy 说明文件指令的目录作用域与优先级，正文不能覆盖运行时权限或当前用户要求。
@@ -17,7 +17,7 @@ const projectInstructionsPolicy = "AGENTS.md messages contain user-level guidanc
 
 // restoreProjectInstructions 只读取 run_created 绑定的历史快照；旧事件缺省时清空状态，禁止补读当前文件。
 func (loop *Loop) restoreProjectInstructions(events []domain.Event) error {
-	loop.projectInstructions = tools.ProjectInstructions{}
+	loop.projectInstructions = contract.ProjectInstructions{}
 	for _, event := range events {
 		if event.Type != domain.EventRunCreated {
 			continue
@@ -29,7 +29,7 @@ func (loop *Loop) restoreProjectInstructions(events []domain.Event) error {
 		if len(payload.ProjectInstructionsRef) == 0 {
 			return nil
 		}
-		snapshot, err := tools.ReadProjectInstructions(loop.Artifacts, payload.ProjectInstructionsRef)
+		snapshot, err := contract.ReadProjectInstructions(loop.Artifacts, payload.ProjectInstructionsRef)
 		if err != nil {
 			return err
 		}
@@ -43,7 +43,7 @@ func (loop *Loop) restoreProjectInstructions(events []domain.Event) error {
 func (loop *Loop) projectInstructionMessages() []ports.Message {
 	messages := make([]ports.Message, 0, len(loop.projectInstructions.Documents))
 	for _, document := range loop.projectInstructions.Documents {
-		if document.Source == tools.ProjectInstructionUser {
+		if document.Source == contract.ProjectInstructionUser {
 			messages = append(messages, ports.Message{Role: "user", Content: fmt.Sprintf("AGENTS.md 用户全局规约\n来源：Cairn 用户配置目录/AGENTS.md\n目录作用域：整个当前工作区（适用的项目规约优先）\n正文摘要：%s\n\n%s", document.SHA256, document.Content)})
 			continue
 		}

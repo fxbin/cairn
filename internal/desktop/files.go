@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/tools"
 )
 
@@ -504,7 +505,7 @@ func relOf(root, full string) string {
 
 // WriteProjectInstructions 在工作区内写入 AGENTS.md；路径固定，原子写，不解释正文命令。
 func WriteProjectInstructions(workspace, content string) error {
-	if !utf8.ValidString(content) || len(content) > tools.ProjectInstructionsMaxBytes {
+	if !utf8.ValidString(content) || len(content) > contract.ProjectInstructionsMaxBytes {
 		return errInvalid("project instructions must be bounded UTF-8 text")
 	}
 	root, err := absWorkspace(workspace)

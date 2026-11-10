@@ -17,7 +17,6 @@ import (
 	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // checkArtifactReferences 验证日志 payload 引用的每一个制品文件及其摘要。
@@ -68,7 +67,7 @@ func checkRunArtifactReferences(events []domain.Event, stateDir, workspaceHash s
 			continue
 		}
 		if len(payload.ProjectInstructionsRef) > 0 {
-			if _, err := tools.ReadProjectInstructions(&artifact.Store{Root: root}, payload.ProjectInstructionsRef); err != nil {
+			if _, err := contract.ReadProjectInstructions(&artifact.Store{Root: root}, payload.ProjectInstructionsRef); err != nil {
 				return fmt.Errorf("run %s event %d: %w", event.RunID, event.Seq, err)
 			}
 		}

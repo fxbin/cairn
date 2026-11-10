@@ -17,7 +17,7 @@ import (
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
 	mcpModelDeclarations map[string]string
-	projectInstructions  tools.ProjectInstructions
+	projectInstructions  contract.ProjectInstructions
 	Journal              ports.Journal
 	Provider             ports.Provider
 	Tools                *tools.Registry

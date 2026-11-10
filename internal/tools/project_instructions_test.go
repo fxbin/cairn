@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/artifact"
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // writeProjectInstructionTestFile 在隔离目录写入规约夹具，返回实际文件位置。
@@ -87,8 +88,8 @@ func TestProjectInstructionsRejectInvalidAndOversizedSources(t *testing.T) {
 	}{
 		{"invalid-utf8", map[string]string{"AGENTS.md": string([]byte{0xff})}},
 		{"control-character", map[string]string{"AGENTS.md": "# rule\x1b[31m"}},
-		{"one-file-limit", map[string]string{"AGENTS.md": strings.Repeat("x", ProjectInstructionsMaxBytes+1)}},
-		{"combined-limit", map[string]string{"AGENTS.md": strings.Repeat("r", ProjectInstructionsMaxBytes/2+1), "sub/AGENTS.md": strings.Repeat("s", ProjectInstructionsMaxBytes/2)}},
+		{"one-file-limit", map[string]string{"AGENTS.md": strings.Repeat("x", contract.ProjectInstructionsMaxBytes+1)}},
+		{"combined-limit", map[string]string{"AGENTS.md": strings.Repeat("r", contract.ProjectInstructionsMaxBytes/2+1), "sub/AGENTS.md": strings.Repeat("s", contract.ProjectInstructionsMaxBytes/2)}},
 		{"redacted-root-limit", map[string]string{"AGENTS.md": "API_KEY=" + strings.Repeat("a", 30000), "sub/AGENTS.md": strings.Repeat("b", 3000)}},
 		{"redacted-child-limit", map[string]string{"AGENTS.md": strings.Repeat("b", 3000), "sub/AGENTS.md": "API_KEY=" + strings.Repeat("a", 30000)}},
 	} {
@@ -104,7 +105,7 @@ func TestProjectInstructionsRejectInvalidAndOversizedSources(t *testing.T) {
 	}
 	t.Run("document-limit", func(t *testing.T) {
 		root := t.TempDir()
-		for index := 0; index <= ProjectInstructionsMaxDocuments; index++ {
+		for index := 0; index <= contract.ProjectInstructionsMaxDocuments; index++ {
 			writeProjectInstructionTestFile(t, root, fmt.Sprintf("scope-%03d/AGENTS.md", index), "rule")
 		}
 		if _, err := LoadProjectInstructions(projectInstructionsTestWorkspace(t, root)); err == nil {
@@ -174,7 +175,7 @@ func TestProjectInstructionsSnapshotIntegrity(t *testing.T) {
 	if err := os.Remove(source); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := ReadProjectInstructions(store, rawReference)
+	loaded, err := contract.ReadProjectInstructions(store, rawReference)
 	if err != nil || !reflect.DeepEqual(loaded, snapshot) {
 		t.Fatalf("historical snapshot reread a missing source: %v", err)
 	}
@@ -190,31 +191,31 @@ func TestProjectInstructionsSnapshotIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw, _ := json.Marshal(badRef)
-			if _, err := ReadProjectInstructions(store, raw); err == nil {
+			if _, err := contract.ReadProjectInstructions(store, raw); err == nil {
 				t.Fatal("corrupt snapshot accepted")
 			}
 		})
 	}
 	for _, raw := range []json.RawMessage{json.RawMessage("null"), json.RawMessage(`{"sha256":"bad"}`)} {
-		if _, err := ReadProjectInstructions(store, raw); err == nil {
+		if _, err := contract.ReadProjectInstructions(store, raw); err == nil {
 			t.Fatal("invalid snapshot reference accepted")
 		}
 	}
 	digest := strings.TrimPrefix(reference.SHA256, "sha256:")
 	entity := filepath.Join(store.Root, "sha256", digest[:2], digest)
-	if err := os.WriteFile(entity, []byte(strings.Repeat("x", ProjectInstructionsMaxSnapshotBytes+1)), 0600); err != nil {
+	if err := os.WriteFile(entity, []byte(strings.Repeat("x", contract.ProjectInstructionsMaxSnapshotBytes+1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OpenBounded(reference, ProjectInstructionsMaxSnapshotBytes); err == nil || !strings.Contains(err.Error(), "read limit") {
+	if _, err := store.OpenBounded(reference, contract.ProjectInstructionsMaxSnapshotBytes); err == nil || !strings.Contains(err.Error(), "read limit") {
 		t.Fatalf("oversized cached snapshot reached hash checking before a read bound: %v", err)
 	}
-	if _, err := ReadProjectInstructions(store, rawReference); err == nil {
+	if _, err := contract.ReadProjectInstructions(store, rawReference); err == nil {
 		t.Fatal("oversized snapshot entity accepted despite its small declared size")
 	}
 	if err := os.WriteFile(entity, []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadProjectInstructions(store, rawReference); err == nil {
+	if _, err := contract.ReadProjectInstructions(store, rawReference); err == nil {
 		t.Fatal("artifact content tampering accepted")
 	}
 }
@@ -233,7 +234,7 @@ func TestUserProjectInstructionsSourceAndLegacy(t *testing.T) {
 	writeProjectInstructionTestFile(t, userDirectory, "nested/AGENTS.md", string([]byte{0xff}))
 	workspace := projectInstructionsTestWorkspace(t, root)
 	snapshot, err := LoadProjectInstructionsWithUser(workspace, userDirectory)
-	if err != nil || len(snapshot.Documents) != 3 || snapshot.Documents[0].Source != ProjectInstructionUser || snapshot.Documents[1].Source != "" || snapshot.Documents[1].Path != "AGENTS.md" || snapshot.Documents[2].Scope != "sub" {
+	if err != nil || len(snapshot.Documents) != 3 || snapshot.Documents[0].Source != contract.ProjectInstructionUser || snapshot.Documents[1].Source != "" || snapshot.Documents[1].Path != "AGENTS.md" || snapshot.Documents[2].Scope != "sub" {
 		t.Fatalf("user/project source chain failed: %+v %v", snapshot, err)
 	}
 	encoded, err := json.Marshal(snapshot)
@@ -242,7 +243,7 @@ func TestUserProjectInstructionsSourceAndLegacy(t *testing.T) {
 	}
 	for _, mutation := range []string{"unknown-source", "nested-user", "legacy-user", "duplicate-user", "user-last", "unknown-version"} {
 		t.Run(mutation, func(t *testing.T) {
-			bad := ProjectInstructions{Version: snapshot.Version, Documents: append([]ProjectInstruction(nil), snapshot.Documents...)}
+			bad := contract.ProjectInstructions{Version: snapshot.Version, Documents: append([]contract.ProjectInstruction(nil), snapshot.Documents...)}
 			switch mutation {
 			case "unknown-source":
 				bad.Documents[0].Source = "unknown"
@@ -251,11 +252,11 @@ func TestUserProjectInstructionsSourceAndLegacy(t *testing.T) {
 			case "legacy-user":
 				bad.Version = 1
 			case "duplicate-user":
-				bad.Documents = append([]ProjectInstruction{bad.Documents[0]}, bad.Documents...)
+				bad.Documents = append([]contract.ProjectInstruction{bad.Documents[0]}, bad.Documents...)
 			case "user-last":
 				bad.Documents[0], bad.Documents[1] = bad.Documents[1], bad.Documents[0]
 			case "unknown-version":
-				bad.Version = ProjectInstructionsVersion + 1
+				bad.Version = contract.ProjectInstructionsVersion + 1
 			}
 			if bad.Validate() == nil {
 				t.Fatal("invalid source contract accepted")
@@ -271,14 +272,14 @@ func TestUserProjectInstructionsSourceAndLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, frozen := range []ProjectInstructions{snapshot, legacy} {
+	for _, frozen := range []contract.ProjectInstructions{snapshot, legacy} {
 		raw, _ := json.Marshal(frozen)
 		reference, err := store.Put(raw, "application/json")
 		if err != nil {
 			t.Fatal(err)
 		}
 		rawReference, _ := json.Marshal(reference)
-		loaded, err := ReadProjectInstructions(store, rawReference)
+		loaded, err := contract.ReadProjectInstructions(store, rawReference)
 		if err != nil || !reflect.DeepEqual(loaded, frozen) {
 			t.Fatalf("snapshot did not round trip: %v", err)
 		}
