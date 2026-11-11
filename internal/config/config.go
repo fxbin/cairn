@@ -12,7 +12,7 @@ import (
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
 )
 
 const (

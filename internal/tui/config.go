@@ -22,8 +22,6 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/modelcatalog"
 )
 
 // wizardStep 是配置向导的步骤序数；转换只经 advance 与 retreat，禁止跳步，
@@ -76,7 +74,7 @@ const maxProviderChoices = 10
 // catalogLoadedMsg 承载异步目录装载结果：目录不可用时 err 非空，向导降级为
 // 纯手动输入，不阻塞流程。
 type catalogLoadedMsg struct {
-	catalog *modelcatalog.Catalog
+	catalog *app.ModelCatalog
 	err     error
 }
 
@@ -121,7 +119,7 @@ type ConfigWizard struct {
 	selectedProvider  string
 	suggestionCursor  int
 	suggestionWindow  int
-	suggestions       []modelcatalog.ModelEntry
+	suggestions       []app.ModelEntry
 	baseURLInput      textinput.Model
 	modelInput        textinput.Model
 	apiKeyEnvInput    textinput.Model
@@ -129,7 +127,7 @@ type ConfigWizard struct {
 	catalogSpinner    spinner.Model
 	existingConfigTip string
 
-	catalog        *modelcatalog.Catalog
+	catalog        *app.ModelCatalog
 	catalogErr     error
 	catalogLoading bool
 
@@ -218,14 +216,14 @@ func (wizard ConfigWizard) Init() tea.Cmd {
 // loadCatalogCmd 异步装载模型元数据目录；缺省缓存路径与配置提交路径共用
 // 单一来源，保证 TUI 启动装载同样读写 24 小时磁盘缓存而不是每次走网络。
 func loadCatalogCmd(catalogURL, cacheDir string) tea.Cmd {
-	options := modelcatalog.Options{CatalogURL: catalogURL}
+	options := app.ModelCatalogOptions{CatalogURL: catalogURL}
 	if cacheDir != "" {
 		options.CachePath = cacheDir
-	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
+	} else if cachePath, err := app.ModelCatalogDefaultCachePath(); err == nil {
 		options.CachePath = cachePath
 	}
 	return func() tea.Msg {
-		catalog, err := modelcatalog.Load(options)
+		catalog, err := app.ModelCatalogLoad(options)
 		return catalogLoadedMsg{catalog: catalog, err: err}
 	}
 }
@@ -520,7 +518,7 @@ func (wizard *ConfigWizard) applyProviderChoice() {
 
 // filteredProviders 按搜索词筛选目录 provider 摘要：空搜索词返回精选常用
 // 序，非空搜索词全目录包含匹配；展示截断由滚动窗口负责，过滤层不做丢弃。
-func (wizard ConfigWizard) filteredProviders() []modelcatalog.ProviderInfo {
+func (wizard ConfigWizard) filteredProviders() []app.ProviderInfo {
 	if wizard.catalog == nil {
 		return nil
 	}
@@ -538,12 +536,12 @@ var featuredProviderIDs = []string{
 // filterProviders 是 provider 过滤的纯函数形态：空搜索词返回精选序（目录
 // 未收录的精选成员跳过），非空搜索词对标识与显示名做大小写不敏感的包含
 // 匹配并保持目录排序——同屏展示条数由渲染窗口控制，过滤层不截断。
-func filterProviders(providers []modelcatalog.ProviderInfo, query string) []modelcatalog.ProviderInfo {
+func filterProviders(providers []app.ProviderInfo, query string) []app.ProviderInfo {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" {
 		return featuredProviders(providers)
 	}
-	var matched []modelcatalog.ProviderInfo
+	var matched []app.ProviderInfo
 	for _, provider := range providers {
 		if strings.Contains(strings.ToLower(provider.ID), query) || strings.Contains(strings.ToLower(provider.Name), query) {
 			matched = append(matched, provider)
@@ -554,12 +552,12 @@ func filterProviders(providers []modelcatalog.ProviderInfo, query string) []mode
 
 // featuredProviders 按精选序取目录命中成员；目录缺失的精选成员静默跳过，
 // 不猜测其端点或能力。
-func featuredProviders(providers []modelcatalog.ProviderInfo) []modelcatalog.ProviderInfo {
-	byID := make(map[string]modelcatalog.ProviderInfo, len(providers))
+func featuredProviders(providers []app.ProviderInfo) []app.ProviderInfo {
+	byID := make(map[string]app.ProviderInfo, len(providers))
 	for _, provider := range providers {
 		byID[provider.ID] = provider
 	}
-	var featured []modelcatalog.ProviderInfo
+	var featured []app.ProviderInfo
 	for _, id := range featuredProviderIDs {
 		if provider, ok := byID[id]; ok {
 			featured = append(featured, provider)
@@ -748,7 +746,7 @@ func (wizard ConfigWizard) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return nil, fmt.Errorf("读取提交前凭据状态失败（配置未提交）: %w", err)
 			}
 			rollback := func() error { return restoreCredential(snapshot) }
-			if err := credential.UpsertEnvFile(secretPath, wizard.input.APIKeyEnv, secret); err != nil {
+			if err := app.UpsertSecretEnvFile(secretPath, wizard.input.APIKeyEnv, secret); err != nil {
 				if rollbackErr := rollback(); rollbackErr != nil {
 					err = fmt.Errorf("%w；恢复提交前凭据状态失败: %v", err, rollbackErr)
 				}
@@ -881,7 +879,7 @@ func (wizard *ConfigWizard) refreshSuggestions() {
 // provider 时结果收窄到该家，custom 跨全目录；custom 且查询为空时无默认清
 // 单（目录不承载 custom 端点的模型事实），由用户搜索或手输。过滤层不截
 // 断，同屏条数由渲染窗口控制。
-func filterSuggestions(catalog *modelcatalog.Catalog, selectedProvider, query string) []modelcatalog.ModelEntry {
+func filterSuggestions(catalog *app.ModelCatalog, selectedProvider, query string) []app.ModelEntry {
 	if catalog == nil {
 		return nil
 	}
@@ -891,7 +889,7 @@ func filterSuggestions(catalog *modelcatalog.Catalog, selectedProvider, query st
 		}
 		return catalog.EntriesOf(selectedProvider)
 	}
-	var entries []modelcatalog.ModelEntry
+	var entries []app.ModelEntry
 	if selectedProvider == "" {
 		entries = catalog.Lookup(query)
 	} else {
@@ -1063,9 +1061,9 @@ func (wizard ConfigWizard) viewAPIKeySecret() string {
 // 致。
 func keysPath(input app.SetupInput) (string, error) {
 	if input.ScopeUserConfig {
-		return credential.UserKeysPath()
+		return app.UserKeysEnvPath()
 	}
-	return filepath.Join(input.Workspace, credential.KeysFileName), nil
+	return filepath.Join(input.Workspace, app.KeysFileSegment), nil
 }
 
 // viewConfirm 渲染提交前摘要：三要素、凭据去向、配置版本与付费探测告知。

@@ -16,7 +16,7 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // workflowExecConfig 返回允许写入与执行的应用层测试配置；验证命令为空时

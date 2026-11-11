@@ -2,16 +2,16 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"runtime/debug"
 	"strings"
 	"testing"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"runtime/debug"
 )
 
 // TestDoctorReportRedactsCredentialMaterial 锁定 doctor 输出的脱敏合同：只出现
@@ -88,7 +88,7 @@ func TestManifestRegistersOptInWebAndSessionTools(t *testing.T) {
 			t.Fatalf("opt-in tool %q missing from %v", want, names)
 		}
 	}
-	if side := boot.Registry.SideEffect("exec_session"); side != tools.SideEffectProcess {
+	if side := boot.Registry.SideEffect("exec_session"); side != contract.SideEffectProcess {
 		t.Fatalf("exec_session side effect = %q", side)
 	}
 }

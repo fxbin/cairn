@@ -13,7 +13,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/telemetry"
+	"github.com/fxbin/cairn/internal/runtime/telemetry"
 )
 
 // telemetryTaskMarker 是测试任务的唯一标记；它绝不允许出现在任何导出内容里。

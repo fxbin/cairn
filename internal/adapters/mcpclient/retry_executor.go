@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // RetryExecutor 按策略执行带退避的重试。

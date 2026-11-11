@@ -1,0 +1,139 @@
+package desktop
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/ports"
+)
+
+// 本文件放置桥接层内部辅助：路径解析、配置装载与小型校验，避免把宿主细节
+// 泄漏到 DTO 或前端。
+
+func errInvalid(message string) error {
+	return errors.New(message)
+}
+
+func userConfigRoot() (string, error) {
+	return app.UserConfigRoot()
+}
+
+// resolveStateDir 使用显式状态目录或平台默认值。
+func resolveStateDir(explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	return app.DefaultStateDir()
+}
+
+// loadConfiguration 与 CLI 相同顺序装载工作区配置（默认路径）。
+func loadConfiguration(workspace, stateDir string) (config.Config, error) {
+	_ = stateDir
+	if strings.TrimSpace(workspace) == "" {
+		current, err := os.Getwd()
+		if err != nil {
+			return config.Config{}, err
+		}
+		workspace = current
+	}
+	path := config.ResolveDefaultPath(workspace)
+	return config.Load(path, config.Overrides{})
+}
+
+// portsApproval 将前端审批请求映射为一次性 ports.Approval。
+func portsApproval(request ResumeRequest) ports.Approval {
+	reason := strings.TrimSpace(request.Reason)
+	if reason == "" {
+		if request.Approve {
+			reason = "approved via desktop UI"
+		} else {
+			reason = "denied via desktop UI"
+		}
+	}
+	return ports.Approval{
+		Fingerprint: request.Fingerprint,
+		Approve:     request.Approve,
+		Reason:      reason,
+	}
+}
+
+// domainOperationID 校验并转换操作标识。
+func domainOperationID(raw string) domain.OperationID {
+	return domain.OperationID(strings.TrimSpace(raw))
+}
+
+// previewResponse 截断长回复用于状态预览。
+func previewResponse(response string) string {
+	const max = 240
+	runes := []rune(strings.TrimSpace(response))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	return string(runes[:max]) + "…"
+}
+
+// resultState 从合同结果或错误推断展示状态。
+func resultState(outcome app.RunResult, err error) string {
+	if outcome.Result != nil && outcome.Result.State != "" {
+		return outcome.Result.State
+	}
+	if err != nil {
+		return "failed"
+	}
+	return "completed"
+}
+
+// validateMode 校验 GUI 工作模式字符串；未知值失败关闭。
+func validateMode(mode string) error {
+	switch strings.TrimSpace(mode) {
+	case "", "default", "read-only":
+		return nil
+	default:
+		return errInvalid("unsupported mode: " + mode)
+	}
+}
+
+// applyMode 将已校验的工作模式落到配置。
+// read-only 复用核心 Preset 合同（工具子集、策略、Skills/MCP/验证命令拒绝），
+// 禁止只改 Policy 开关模拟只读。
+func applyMode(configuration *config.Config, mode string) error {
+	if err := validateMode(mode); err != nil {
+		return err
+	}
+	normalized := strings.TrimSpace(mode)
+	if normalized == "" || normalized == "default" {
+		return nil
+	}
+	if normalized == "read-only" {
+		return config.ApplyPreset(configuration, config.PresetReadOnly)
+	}
+	return nil
+}
+
+// applyRuntimeOverrides 将模型/模式覆盖一致地落到配置，供启动与审批恢复共用，
+// 保证冻结指纹可复现且真实漂移仍被拒绝。
+func applyRuntimeOverrides(configuration *config.Config, model, mode string) error {
+	if configuration == nil {
+		return errInvalid("configuration is required")
+	}
+	if strings.TrimSpace(model) != "" {
+		configuration.Provider.Model = strings.TrimSpace(model)
+	}
+	if strings.TrimSpace(mode) != "" {
+		return applyMode(configuration, mode)
+	}
+	return nil
+}
+
+// absWorkspace 保证工作区为绝对路径。
+func absWorkspace(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", errInvalid("workspace is required")
+	}
+	return filepath.Abs(path)
+}

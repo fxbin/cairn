@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // skillsCommand 管理显式本地技能包；安装不执行脚本，也不隐式改写运行配置。
@@ -69,7 +69,7 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 						return ExitFailed
 					}
 				} else {
-					fmt.Fprintln(command.Stdout, tools.SkillSummary(entry))
+					fmt.Fprintln(command.Stdout, app.SkillSummary(entry))
 				}
 			}
 			return ExitOK
@@ -104,7 +104,7 @@ func (command Command) skillsCommand(ctx context.Context, arguments []string) in
 	switch action {
 	case "install":
 		if *audit {
-			if _, auditErr := tools.RunSkillshareAudit(ctx, name); auditErr != nil {
+			if _, auditErr := app.RunSkillshareAudit(ctx, name); auditErr != nil {
 				fmt.Fprintln(command.Stderr, "skillshare audit failed:", auditErr)
 				return ExitFailed
 			}

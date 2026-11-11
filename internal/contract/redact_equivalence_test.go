@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 // TestSensitiveKeyVocabulary 锁定合同层词表的命中与放行边界，覆盖连字符

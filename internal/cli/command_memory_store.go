@@ -11,7 +11,6 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/memory"
 )
 
 func (command Command) memoryConsolidate(ctx context.Context, arguments []string) int {
@@ -138,7 +137,7 @@ func (command Command) memoryExplain(ctx context.Context, arguments []string) in
 		return ExitUsage
 	}
 	ledger, err := command.Service.ExplainMemoryRecall(ctx, app.MemoryExplainOptions{
-		Query: memory.RecallQuery{
+		Query: app.MemoryRecallQuery{
 			TaskPromptDigest:    *taskDigest,
 			Outcomes:            outcomes,
 			FailureClasses:      failureClasses,
@@ -158,8 +157,8 @@ func (command Command) memoryExplain(ctx context.Context, arguments []string) in
 	}
 	if *jsonOutput {
 		if code := command.writeJSONOutput("memory explain", struct {
-			Type   string                `json:"type"`
-			Ledger memory.EvidenceLedger `json:"ledger"`
+			Type   string                   `json:"type"`
+			Ledger app.MemoryEvidenceLedger `json:"ledger"`
 		}{Type: "memory_explain", Ledger: ledger}); code != ExitOK {
 			return code
 		}
@@ -261,7 +260,7 @@ func (command Command) memoryRecall(ctx context.Context, arguments []string) int
 // memoryInspect 只读显示当前工作区一个候选及其无自由文本的审计历史。
 func (command Command) memoryInspectDispatch(ctx context.Context, arguments []string) int {
 	for _, argument := range normalizeMemoryPositionals(arguments) {
-		if memory.IsDerivedID(argument) {
+		if app.MemoryIsDerivedID(argument) {
 			return command.memoryInspectDerived(ctx, arguments)
 		}
 	}

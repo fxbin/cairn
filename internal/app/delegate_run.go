@@ -7,18 +7,19 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/agent"
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"unicode/utf8"
 )
 
 // DelegateResponseMaxBytes 限制回传父上下文的子最终回复长度，防止子回复
@@ -30,20 +31,20 @@ const DelegateResponseMaxBytes = 2048
 // 非 nil 且调用声明 async）在校验、预算钳制与委派事实落盘后以 goroutine 启动
 // 子 Run 并立即返回。两者都保持单写入者合同。
 func (service Service) delegatorFor(boot *Boot, options RunOptions, asyncRuntime *asyncDelegateRuntime) agent.DelegatorFunc {
-	return func(ctx context.Context, parentRunID domain.RunID, arguments json.RawMessage) tools.Result {
+	return func(ctx context.Context, parentRunID domain.RunID, arguments json.RawMessage) contract.ToolResult {
 		var request tools.DelegateRequest
-		if err := json.Unmarshal(arguments, &request); err != nil || strings.TrimSpace(request.Task) == "" || request.MaxTurns < 0 || request.MaxTurns > tools.DelegateMaxTurnsLimit {
-			return tools.Failure("invalid_arguments", "delegate_task requires task and optional max_turns within limit")
+		if err := json.Unmarshal(arguments, &request); err != nil || strings.TrimSpace(request.Task) == "" || request.MaxTurns < 0 || request.MaxTurns > contract.DelegateMaxTurnsLimit {
+			return contract.ToolFailure("invalid_arguments", "delegate_task requires task and optional max_turns within limit")
 		}
 		if request.Async {
 			if asyncRuntime == nil {
-				return tools.Failure("async_delegate_disabled", "delegate_task async requires the tools.delegate_async configuration to be enabled for this run")
+				return contract.ToolFailure("async_delegate_disabled", "delegate_task async requires the tools.delegate_async configuration to be enabled for this run")
 			}
 			// 配置与额度校验先于委派事实落盘：失败关闭时不留下孤儿 delegated
 			// 事实（无子运行的悬空委派会永久占据父投影 Children）。
 			childConfig, err := childDelegationConfig(ctx, boot.Journal, parentRunID, options.Config, request)
 			if err != nil {
-				return tools.Failure("delegate_failed", err.Error())
+				return contract.ToolFailure("delegate_failed", err.Error())
 			}
 			return service.delegateAsyncRun(ctx, boot, options, asyncRuntime, parentRunID, domain.NewRunID(), request, childConfig)
 		}
@@ -52,7 +53,7 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions, asyncRuntime
 		// 事实（无子运行的悬空委派会永久占据父投影 Children）。
 		childConfig, err := childDelegationConfig(ctx, boot.Journal, parentRunID, options.Config, request)
 		if err != nil {
-			return tools.Failure("delegate_failed", err.Error())
+			return contract.ToolFailure("delegate_failed", err.Error())
 		}
 		if _, err := RecordSubagentDelegated(ctx, boot.Journal, parentRunID, boot.WorkspaceHash, DelegateOptions{
 			ParentRunID: parentRunID,
@@ -60,7 +61,7 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions, asyncRuntime
 			Task:        request.Task,
 			Budget:      SubagentBudget{MaxTurns: request.MaxTurns},
 		}, time.Now().UTC()); err != nil {
-			return tools.Failure("delegate_failed", err.Error())
+			return contract.ToolFailure("delegate_failed", err.Error())
 		}
 		result, err := service.Run(ctx, RunOptions{
 			Task:             request.Task,
@@ -81,9 +82,9 @@ func (service Service) delegatorFor(boot *Boot, options RunOptions, asyncRuntime
 // goroutine 内启动子 service.Run 并立即返回运行中状态。子终态经既有
 // NotifySubagentCompleted 回写父 Journal，父 Loop 在安全点吸收交付；子
 // goroutine 生命周期由 asyncRuntime 跟踪，父 Run 返回前统一回收。
-func (service Service) delegateAsyncRun(ctx context.Context, boot *Boot, options RunOptions, asyncRuntime *asyncDelegateRuntime, parentRunID, childRunID domain.RunID, request tools.DelegateRequest, childConfig config.Config) tools.Result {
+func (service Service) delegateAsyncRun(ctx context.Context, boot *Boot, options RunOptions, asyncRuntime *asyncDelegateRuntime, parentRunID, childRunID domain.RunID, request tools.DelegateRequest, childConfig config.Config) contract.ToolResult {
 	if err := rejectAsyncDelegationWithActiveChild(ctx, boot.Journal, parentRunID, boot.WorkspaceHash); err != nil {
-		return tools.Failure("delegate_failed", err.Error())
+		return contract.ToolFailure("delegate_failed", err.Error())
 	}
 	if _, err := RecordSubagentDelegated(ctx, boot.Journal, parentRunID, boot.WorkspaceHash, DelegateOptions{
 		ParentRunID: parentRunID,
@@ -91,7 +92,7 @@ func (service Service) delegateAsyncRun(ctx context.Context, boot *Boot, options
 		Task:        request.Task,
 		Budget:      SubagentBudget{MaxTurns: request.MaxTurns},
 	}, time.Now().UTC()); err != nil {
-		return tools.Failure("delegate_failed", err.Error())
+		return contract.ToolFailure("delegate_failed", err.Error())
 	}
 	asyncRuntime.children.Launch(string(childRunID))
 	asyncRuntime.runners.Add(1)
@@ -111,7 +112,7 @@ func (service Service) delegateAsyncRun(ctx context.Context, boot *Boot, options
 		})
 	}()
 	payload, _ := json.Marshal(delegateTaskPayload{ChildRunID: string(childRunID), Outcome: "running", MaxTurns: request.MaxTurns})
-	return tools.Result{OK: true, Code: "delegated_async", Data: payload, Preview: "子运行 " + string(childRunID) + " 已异步启动"}
+	return contract.ToolResult{OK: true, Code: "delegated_async", Data: payload, Preview: "子运行 " + string(childRunID) + " 已异步启动"}
 }
 
 // rejectAsyncDelegationWithActiveChild 单活跃子门禁：父投影存在非终态
@@ -182,11 +183,11 @@ type delegateTaskPayload struct {
 
 // delegateTaskResult 把子 run 的返回映射为父工具结果；子审批暂停不是父错误，
 // 取消与失败按终态语义回传，供父模型继续决策。
-func delegateTaskResult(childRunID domain.RunID, maxTurns int, result RunResult, err error) tools.Result {
+func delegateTaskResult(childRunID domain.RunID, maxTurns int, result RunResult, err error) contract.ToolResult {
 	var waiting *ports.WaitingApprovalError
 	if errors.As(err, &waiting) {
 		payload, _ := json.Marshal(delegateTaskPayload{ChildRunID: string(childRunID), Outcome: "awaiting_approval", MaxTurns: maxTurns})
-		return tools.Result{OK: true, Code: "awaiting_approval", Data: payload, Preview: "子运行 " + string(childRunID) + " 等待审批"}
+		return contract.ToolResult{OK: true, Code: "awaiting_approval", Data: payload, Preview: "子运行 " + string(childRunID) + " 等待审批"}
 	}
 	// 结果口径以子运行已持久化终态为准（与完成事实回写一致）；投影不可用时
 	// 才回退错误映射，避免预算耗尽等场景在父视图与 Journal 间出现两种口径。
@@ -214,7 +215,7 @@ func delegateTaskResult(childRunID domain.RunID, maxTurns int, result RunResult,
 		response = cut
 	}
 	payload, _ := json.Marshal(delegateTaskPayload{ChildRunID: string(childRunID), Outcome: outcome, MaxTurns: maxTurns, Response: response, Truncated: truncated, Failure: errorText(err)})
-	return tools.Result{OK: err == nil, Code: outcome, Data: payload, Preview: "子运行 " + string(childRunID) + " " + outcome, Truncated: truncated, Bytes: int64(len(response))}
+	return contract.ToolResult{OK: err == nil, Code: outcome, Data: payload, Preview: "子运行 " + string(childRunID) + " " + outcome, Truncated: truncated, Bytes: int64(len(response))}
 }
 
 // errorText 提取错误文本；空错误返回空串。

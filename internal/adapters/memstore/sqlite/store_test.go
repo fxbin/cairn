@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // TestStoreCapturesRecallsSupersedesAndRevokes 锁定 M0/M1 的单事务状态机：

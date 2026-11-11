@@ -17,11 +17,11 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/provider"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/provider"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -133,7 +133,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	configuration.Context.MaxSummaryBytes = 6_789
 	configuration.Context.InventoryBudgetPercent = 35
 	configuration.Context.ThresholdReservePercent = 15
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
 	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 ||
 		loop.ContextInventoryBudgetPercent != 35 || loop.ContextThresholdReservePercent != 15 {
 		t.Fatalf("loop context = %#v", loop)
@@ -143,7 +143,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 func TestConfiguredLoopPassesAutomaticVerificationAfterPatch(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	configuration.Verification.AutoAfterPatch = true
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
 	if !loop.VerificationAutoAfterPatch {
 		t.Fatalf("loop verification configuration = %#v", loop)
 	}

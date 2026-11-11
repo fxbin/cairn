@@ -13,7 +13,7 @@ import (
 
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // ErrWorkflowNotFound 表示目标工作流链在存储中不存在。

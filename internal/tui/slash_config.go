@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // appendConfig 展示当前生效配置摘要。
@@ -61,7 +61,7 @@ var configSettableFields = map[string]bool{
 
 // appendConfigSet 按白名单修改配置字段；不信任工作区拒绝写。
 func (console *RunConsole) appendConfigSet(argument string) {
-	if err := tools.GuardTrustedWrite(console.input.Workspace, "config write"); err != nil {
+	if err := app.GuardTrustedWrite(console.input.Workspace, "config write"); err != nil {
 		console.appendLine(warnStyle.Render(err.Error()))
 		return
 	}

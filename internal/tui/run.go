@@ -15,7 +15,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -196,11 +195,11 @@ type RunConsole struct {
 	diffReturn       consoleMode
 	turn             int
 	// lastBatchPlan 是最近一次模型工具批次的并行诊断投影。
-	lastBatchPlan *agent.BatchPlan
+	lastBatchPlan *app.BatchPlan
 	// subagentViews 是子运行展示投影。
 	subagentViews []SubagentView
 	// phaseTracker 记录活跃/等待用户阶段。
-	phaseTracker *agent.UIPhaseTracker
+	phaseTracker *app.UIPhaseTracker
 	promptTokens int64
 	outputTokens int64
 	toolCalls    int
@@ -225,7 +224,7 @@ type RunConsole struct {
 	// 根运行，与 sessionPrev 互斥。选择本身不创建运行。
 	sessionForkSource *domain.SessionForkSource
 	// steering 是安全点 steering 投递桥；运行期间 /steer 经此投递补充指导。
-	steering *agent.SteeringBridge
+	steering *app.SteeringBridge
 	// steeringStatus 跟踪本进程已投递 steering 的四态回执。
 	steeringStatus   []steeringReceipt
 	forkRequest      uint64
@@ -541,7 +540,7 @@ func (console RunConsole) updateKey(message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			console.beginOperation()
 			console.lastTask = task
 			// 安全点 steering：每次运行独立投递桥，运行结束后可继续观察回执。
-			console.steering = agent.NewSteeringBridge()
+			console.steering = app.NewSteeringBridge()
 			console.steeringStatus = nil
 			carryingPrior := false
 			carryingFork := console.sessionForkSource != nil

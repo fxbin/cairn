@@ -5,22 +5,23 @@ package mcpclient
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"os/signal"
+	"path/filepath"
+	"sync/atomic"
 )
 
 type helperObservation struct {
@@ -226,12 +227,12 @@ func TestStdioBlockedWriteIsCancelledAndProcessIsReaped(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Now()
-	done := make(chan tools.Result, 1)
+	done := make(chan contract.ToolResult, 1)
 	alias := definitionNamed(t, snapshot, "echo").Name
 	go func() { done <- manager.Execute(t.Context(), alias, arguments) }()
 	select {
 	case result := <-done:
-		if result.OK || result.Code != tools.CodeTerminationUnconfirmed || time.Since(started) > 2*time.Second {
+		if result.OK || result.Code != contract.CodeTerminationUnconfirmed || time.Since(started) > 2*time.Second {
 			t.Fatalf("阻塞写入未保留有界对账失败：%#v", result)
 		}
 	case <-time.After(2 * time.Second):
@@ -262,7 +263,7 @@ func TestCachedStdioEnvironmentDriftFailsClosedUntilExplicitRediscovery(t *testi
 	t.Setenv("CAIRN_MCP_TEST_VALUE_SOURCE", "new-mapped-value")
 	for range 2 {
 		result = manager.Execute(t.Context(), alias, json.RawMessage(`{}`))
-		if result.OK || result.Code == tools.CodeTerminationUnconfirmed {
+		if result.OK || result.Code == contract.CodeTerminationUnconfirmed {
 			t.Fatalf("本机环境漂移没有在业务调用前明确失败：%#v", result)
 		}
 		observations := readObservations(t, filename)

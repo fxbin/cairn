@@ -18,18 +18,19 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | --- | --- |
 | `cmd/cairn/main.go`、`internal/cli/` | 信号处理、CLI 分发；裸命令进入交互体验，运行、恢复、诊断、Provider、记忆和评测命令以帮助为准 |
 | `internal/tui/` | 配置向导、任务输入、会话与事件展示、审批及补丁差异查看；业务动作调用应用层 |
+| `studio/` | Wails 桌面端：`main.go` 壳与 `frontend/` 前端；`studio/backend/` 承载桌面桥接 API、事件出口与偏好存储 |
 | `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退 |
-| `internal/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |
+| `internal/core/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |
 | `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果和失败分类的只读合同投影 |
-| `internal/config/`、`internal/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
-| `internal/provider/`、`internal/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
+| `internal/config/`、`internal/runtime/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
+| `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
 | `internal/adapters/` | Journal、Memory 的 SQLite 存储及 OpenAI-compatible 协议适配 |
-| `internal/tools/`、`internal/policy/`、`internal/artifact/`、`internal/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
-| `internal/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
-| `internal/memory/`、`internal/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
-| `internal/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
+| `internal/runtime/tools/`、`internal/runtime/policy/`、`internal/runtime/artifact/`、`internal/runtime/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
+| `internal/runtime/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
+| `internal/runtime/memory/`、`internal/runtime/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
+| `internal/runtime/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
-| `internal/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
+| `internal/runtime/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
 
 ## 不可绕过的边界
 
@@ -50,7 +51,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 
 ## 配置、凭据与合同变更
 
-- 工作区配置为 `.agent/config.yaml`；用户根由 `internal/userdir` 统一解析为 `~/.cairn`；配置、凭据、全局规约、原生 Skills 和 MCP OAuth 都由此派生。用户资源统一从该根读写，不搜索或迁移其他系统配置目录。用户配置路径由 `config.UserConfigPath` 决定。保留安全默认值 → Profile → YAML → 环境 → CLI 的解析顺序；显式配置路径与用户级回退行为以解析器为准。
+- 工作区配置为 `.agent/config.yaml`；用户根由 `internal/runtime/userdir` 统一解析为 `~/.cairn`；配置、凭据、全局规约、原生 Skills 和 MCP OAuth 都由此派生。用户资源统一从该根读写，不搜索或迁移其他系统配置目录。用户配置路径由 `config.UserConfigPath` 决定。保留安全默认值 → Profile → YAML → 环境 → CLI 的解析顺序；显式配置路径与用户级回退行为以解析器为准。
 - 密钥只通过 `provider.api_key_env` 引用环境变量；本机 `keys.env` 使用 0600 权限，装载优先级为显式环境 → 工作区凭据 → 用户凭据。密钥不得进入 YAML、事件、制品、错误或提交。
 - MCP 的环境与 Bearer/客户端密钥只引用环境变量；OAuth 令牌使用用户配置根下的独立私有存储、0600 原子文件和服务器身份绑定。登录由显式命令发起；read-only/benchmark 不启用外部 MCP，`doctor` 和 `mcp list` 不连接服务器。
 - 新配置字段同步处理默认值、严格校验与测试。影响执行、权限、预算的字段加入 `fingerprintView`；展示/运维字段和 `Config.Resolution` 不进入指纹，Resolution 不参与 YAML 解码。

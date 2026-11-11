@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // priorRunEvents 构造一个带写变更与验证的完整前置运行事件序列。

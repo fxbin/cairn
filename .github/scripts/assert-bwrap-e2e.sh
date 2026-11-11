@@ -65,7 +65,7 @@ run_verbose() {
 require_bwrap
 
 required_tests="$sandbox_tests"
-run_verbose "沙箱写边界用例" go test -v ./internal/tools \
+run_verbose "沙箱写边界用例" go test -v ./internal/runtime/tools \
 	-run "^(${sandbox_tests// /|})$" -count=1
 
 required_tests="$signal_test"

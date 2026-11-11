@@ -14,7 +14,7 @@ import (
 
 	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // MemoryConsolidateOptions 描述一次事务化巩固的输入边界：工作区、保留期、

@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // offlineCatalogFlags 返回指向立即拒绝端点的目录旗标，保证向导语义离线
@@ -84,7 +85,7 @@ func TestProviderAdmitStatusClosedLoop(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspaceHash, err := cliWorkspaceHash(workspace, loadConfigOrDie(t, configPath))
+	workspaceHash, err := app.WorkspaceHash(workspace, loadConfigOrDie(t, configPath))
 	if err != nil {
 		t.Fatal(err)
 	}

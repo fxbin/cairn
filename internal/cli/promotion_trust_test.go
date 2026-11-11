@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/benchmark"
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // TestLoadSuiteResultForPromotionRejectsLegacySuccess 锁定摘要正确的旧套件

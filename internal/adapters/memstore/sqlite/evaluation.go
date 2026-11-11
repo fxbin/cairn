@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // StartEvaluation 在单一事务内启动候选评测：候选必须处于 ready 且来源仍为

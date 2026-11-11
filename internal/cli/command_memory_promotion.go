@@ -19,7 +19,6 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
 )
 
 func (command Command) memoryPromotion(ctx context.Context, arguments []string) int {
@@ -42,8 +41,8 @@ func (command Command) memoryPromotion(ctx context.Context, arguments []string) 
 
 // loadSuiteResultForPromotion 定位候选的评测目录、按存储摘要校验套件结果
 // 字节并解码正文；摘要不一致即失败关闭，杜绝在漂移证据上晋升。
-func loadSuiteResultForPromotion(evaluation memory.Evaluation, stateRoot string) (benchmark.SandboxSuiteResult, error) {
-	if evaluation.Status != memory.EvaluationStatusPassed || evaluation.SuiteResultDigest == "" {
+func loadSuiteResultForPromotion(evaluation app.MemoryEvaluation, stateRoot string) (benchmark.SandboxSuiteResult, error) {
+	if evaluation.Status != app.MemoryEvaluationStatusPassed || evaluation.SuiteResultDigest == "" {
 		return benchmark.SandboxSuiteResult{}, errors.New("candidate lacks a concluded passed evaluation digest")
 	}
 	resultPath := filepath.Join(stateRoot, "evaluations", strings.ReplaceAll(evaluation.ID, ":", "_"), "suite-result.json")
@@ -59,7 +58,7 @@ func loadSuiteResultForPromotion(evaluation memory.Evaluation, stateRoot string)
 	if err := json.Unmarshal(content, &result); err != nil {
 		return benchmark.SandboxSuiteResult{}, fmt.Errorf("decode suite result: %w", err)
 	}
-	if result.EvaluationID != evaluation.ID || result.CandidateID != evaluation.CandidateID || result.Status != memory.EvaluationStatusPassed {
+	if result.EvaluationID != evaluation.ID || result.CandidateID != evaluation.CandidateID || result.Status != app.MemoryEvaluationStatusPassed {
 		return benchmark.SandboxSuiteResult{}, errors.New("suite result does not match the passed evaluation identity")
 	}
 	if err := benchmark.RequireTrustedSandboxSuiteVersion(result); err != nil {
@@ -95,14 +94,14 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 		fmt.Fprintln(command.Stderr, "memory candidate promote requires --candidate, --approver, --approval-nonce, --approval-fingerprint, --suite-state-dir and all variant parameters")
 		return ExitUsage
 	}
-	variant := memory.CompactionParamsVariant{
-		SchemaVersion:           memory.EvolutionSchemaVersion,
+	variant := app.MemoryCompactionParamsVariant{
+		SchemaVersion:           app.MemoryEvolutionSchemaVersion,
 		MaxPromptTokens:         *maxPromptTokens,
 		MaxSummaryBytes:         *maxSummaryBytes,
 		InventoryBudgetPercent:  *inventoryPercent,
 		ThresholdReservePercent: *reservePercent,
 	}
-	variantDigest, err := memory.VariantSpecDigest(variant)
+	variantDigest, err := app.MemoryVariantSpecDigest(variant)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "variant parameters rejected:", err)
 		return ExitUsage
@@ -134,33 +133,33 @@ func (command Command) memoryCandidatePromote(ctx context.Context, arguments []s
 
 // preparePromotion 组装晋升行正文：读取候选与评测行、按摘要校验并提取套
 // 件指标、重述变体并与登记规格摘要核对、派生身份与下一版本号。
-func (command Command) preparePromotion(ctx context.Context, candidateID, approver, approvalNonce string, variant memory.CompactionParamsVariant, variantDigest, suiteStateRoot, workspace, stateDir string, configuration config.Config) (memory.Promotion, error) {
+func (command Command) preparePromotion(ctx context.Context, candidateID, approver, approvalNonce string, variant app.MemoryCompactionParamsVariant, variantDigest, suiteStateRoot, workspace, stateDir string, configuration config.Config) (app.MemoryPromotion, error) {
 	inspected, err := command.Service.InspectEvolutionCandidate(ctx, app.MemoryEvolutionInspectOptions{CandidateID: candidateID, Workspace: workspace, StateDir: stateDir, Config: configuration})
 	if err != nil {
-		return memory.Promotion{}, err
+		return app.MemoryPromotion{}, err
 	}
 	candidate := inspected.Candidate
-	if candidate.Status != memory.CandidateStateEvaluatedPassed {
-		return memory.Promotion{}, fmt.Errorf("promotion requires an evaluated_passed candidate, got %s", candidate.Status)
+	if candidate.Status != app.MemoryCandidateStateEvaluatedPassed {
+		return app.MemoryPromotion{}, fmt.Errorf("promotion requires an evaluated_passed candidate, got %s", candidate.Status)
 	}
 	// 变体重述核对：登记行只存规格摘要，晋升正文必须与登记事实逐字一致。
 	if candidate.VariantSpecSHA256 != variantDigest {
-		return memory.Promotion{}, errors.New("restated variant parameters diverge from the registered candidate specification")
+		return app.MemoryPromotion{}, errors.New("restated variant parameters diverge from the registered candidate specification")
 	}
 	if inspected.Evaluation == nil {
-		return memory.Promotion{}, errors.New("promotion requires the concluded evaluation row")
+		return app.MemoryPromotion{}, errors.New("promotion requires the concluded evaluation row")
 	}
 	result, err := loadSuiteResultForPromotion(*inspected.Evaluation, suiteStateRoot)
 	if err != nil {
-		return memory.Promotion{}, err
+		return app.MemoryPromotion{}, err
 	}
 	metrics, err := extractSuiteMetricSummary(result.Records, resultAttemptsHint(result))
 	if err != nil {
-		return memory.Promotion{}, err
+		return app.MemoryPromotion{}, err
 	}
 	promotions, activation, activationFound, err := command.Service.InspectEvolutionPromotions(ctx, candidate.TargetKind, workspace, stateDir, configuration)
-	if err != nil && !errors.Is(err, memory.ErrNotFound) {
-		return memory.Promotion{}, err
+	if err != nil && !errors.Is(err, app.MemoryErrNotFound) {
+		return app.MemoryPromotion{}, err
 	}
 	nextVersion := 1
 	if len(promotions) > 0 {
@@ -172,18 +171,18 @@ func (command Command) preparePromotion(ctx context.Context, candidateID, approv
 	if activationFound {
 		rollbackTarget = activation.PromotionID
 	}
-	promotion := memory.Promotion{
-		SchemaVersion: memory.PromotionSchemaVersion, CandidateID: candidate.ID, EvaluationID: inspected.Evaluation.ID, TargetKind: candidate.TargetKind,
+	promotion := app.MemoryPromotion{
+		SchemaVersion: app.MemoryPromotionSchemaVersion, CandidateID: candidate.ID, EvaluationID: inspected.Evaluation.ID, TargetKind: candidate.TargetKind,
 		Version: nextVersion, Variant: variant, VariantFingerprint: candidate.VariantFingerprint, VariantSpecSHA256: candidate.VariantSpecSHA256,
 		BaselineFingerprint: candidate.BaselineFingerprint, EvalSetFingerprint: inspected.Evaluation.EvalSetFingerprint,
 		SuiteResultDigest: inspected.Evaluation.SuiteResultDigest, ComparatorVersion: inspected.Evaluation.ComparatorVersion,
-		Conclusion: memory.EvaluationStatusPassed, ConclusionTrigger: result.Trigger,
+		Conclusion: app.MemoryEvaluationStatusPassed, ConclusionTrigger: result.Trigger,
 		Metrics: metrics, ApprovalNonce: approvalNonce, Approver: approver, RollbackTargetID: rollbackTarget,
-		Status: memory.PromotionStatusPromotedInactive, CreatedAt: time.Now().UTC(),
+		Status: app.MemoryPromotionStatusPromotedInactive, CreatedAt: time.Now().UTC(),
 	}
-	promotion.ID, err = memory.PromotionID(candidate.TargetKind, promotion.Version)
+	promotion.ID, err = app.MemoryPromotionID(candidate.TargetKind, promotion.Version)
 	if err != nil {
-		return memory.Promotion{}, err
+		return app.MemoryPromotion{}, err
 	}
 	return promotion, nil
 }
@@ -235,15 +234,15 @@ func (command Command) memoryPromotionActivate(ctx context.Context, arguments []
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	promotion, activation, err := command.Service.ActivateEvolutionPromotion(ctx, app.MemoryPromotionActivationOptions{TargetKind: memory.TargetKindContextCompactionParams, PromotionID: *versionID, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
+	promotion, activation, err := command.Service.ActivateEvolutionPromotion(ctx, app.MemoryPromotionActivationOptions{TargetKind: app.MemoryTargetKindContextCompactionParams, PromotionID: *versionID, Workspace: *workspace, StateDir: *stateDir, Config: configuration})
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory promotion activate failed:", err)
 		return exitFor(err)
 	}
 	if *jsonOutput {
 		return command.writeJSONOutput("memory promotion activate", struct {
-			Promotion  memory.Promotion  `json:"promotion"`
-			Activation memory.Activation `json:"activation"`
+			Promotion  app.MemoryPromotion  `json:"promotion"`
+			Activation app.MemoryActivation `json:"activation"`
 		}{Promotion: promotion, Activation: activation})
 	}
 	fmt.Fprintf(command.Stdout, "sandbox activated: %s version=%d previous=%s\n", promotion.ID, promotion.Version, activation.PreviousPromotionID)
@@ -273,7 +272,7 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 		return ExitUsage
 	}
 	promotion, activation, err := command.Service.RollbackEvolutionPromotion(ctx, app.MemoryPromotionRollbackOptions{
-		TargetKind: memory.TargetKindContextCompactionParams, Reason: *reason,
+		TargetKind: app.MemoryTargetKindContextCompactionParams, Reason: *reason,
 		Workspace: *workspace, StateDir: *stateDir, Config: configuration,
 	})
 	if err != nil {
@@ -282,8 +281,8 @@ func (command Command) memoryPromotionRollback(ctx context.Context, arguments []
 	}
 	if *jsonOutput {
 		return command.writeJSONOutput("memory promotion rollback", struct {
-			Promotion  memory.Promotion  `json:"promotion"`
-			Activation memory.Activation `json:"activation"`
+			Promotion  app.MemoryPromotion  `json:"promotion"`
+			Activation app.MemoryActivation `json:"activation"`
 		}{Promotion: promotion, Activation: activation})
 	}
 	target := "baseline"
@@ -314,15 +313,15 @@ func (command Command) memoryPromotionList(ctx context.Context, arguments []stri
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	promotions, activation, found, err := command.Service.InspectEvolutionPromotions(ctx, memory.TargetKindContextCompactionParams, *workspace, *stateDir, configuration)
+	promotions, activation, found, err := command.Service.InspectEvolutionPromotions(ctx, app.MemoryTargetKindContextCompactionParams, *workspace, *stateDir, configuration)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "memory promotion list failed:", err)
 		return exitFor(err)
 	}
 	if *jsonOutput {
 		return command.writeJSONOutput("memory promotion list", struct {
-			Promotions []memory.Promotion `json:"promotions"`
-			Activation *memory.Activation `json:"activation,omitempty"`
+			Promotions []app.MemoryPromotion `json:"promotions"`
+			Activation *app.MemoryActivation `json:"activation,omitempty"`
 		}{Promotions: promotions, Activation: activationPointer(activation, found)})
 	}
 	for _, promotion := range promotions {
@@ -337,7 +336,7 @@ func (command Command) memoryPromotionList(ctx context.Context, arguments []stri
 }
 
 // activationPointer 把查询出的激活指针折叠为可空投影；行缺失表示基线。
-func activationPointer(activation memory.Activation, found bool) *memory.Activation {
+func activationPointer(activation app.MemoryActivation, found bool) *app.MemoryActivation {
 	if !found {
 		return nil
 	}

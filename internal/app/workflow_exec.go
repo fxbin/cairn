@@ -20,13 +20,13 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
-	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // 工作流固定计划的步骤标识：执行、冻结验证与人工审批门。

@@ -10,11 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
@@ -236,7 +235,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		}
 		return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, options.RunID, "", nil)
 	}
-	if err := appendEvent(domain.EventToolResultAppended, tools.Result{OK: options.Verdict == "applied_success", Code: "reconciled_" + options.Verdict, Preview: options.Note}); err != nil {
+	if err := appendEvent(domain.EventToolResultAppended, contract.ToolResult{OK: options.Verdict == "applied_success", Code: "reconciled_" + options.Verdict, Preview: options.Note}); err != nil {
 		return RunResult{}, err
 	}
 	if err := appendEvent(domain.EventTurnClosed, domain.TurnClosedPayload{Outcome: "continue"}); err != nil {
@@ -392,8 +391,8 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		}
 		turnID, operationID := repair.TurnID, repair.OperationID
 		if err := appendEvent(domain.EventOperationFailed, &turnID, &operationID, struct {
-			ToolName string       `json:"tool_name"`
-			Result   tools.Result `json:"result"`
+			ToolName string              `json:"tool_name"`
+			Result   contract.ToolResult `json:"result"`
 		}{ToolName: repair.ToolName, Result: repair.Result}); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
@@ -421,8 +420,8 @@ func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome
 		}
 		if !cancellation.OperationTerminal {
 			if err := appendEvent(domain.EventOperationFailed, &turnID, &operationID, struct {
-				ToolName string       `json:"tool_name"`
-				Result   tools.Result `json:"result"`
+				ToolName string              `json:"tool_name"`
+				Result   contract.ToolResult `json:"result"`
 			}{ToolName: cancellation.ToolName, Result: cancellation.Result}); err != nil {
 				return RunResult{ID: options.RunID}, err
 			}

@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // 不拦截，也验证现有 admitted 决定及其证据，供 Run 与 Doctor 共享同一事实。

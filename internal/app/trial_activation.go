@@ -13,7 +13,7 @@ import (
 	"io/fs"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // ApplyCompactionVariant 把压缩参数变体的四项可生效值应用到基线配置副本

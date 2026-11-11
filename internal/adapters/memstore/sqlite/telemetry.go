@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // RecallTelemetryRecord 是一次召回调用的聚合事实；调用方只提供计数与策

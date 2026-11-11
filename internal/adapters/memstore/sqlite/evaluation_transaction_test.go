@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // readyCandidateDigest 系列是评测事务测试共用的形态合法摘要。

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 func applyPrivateVerifier(ctx context.Context, workspace, privateRoot, taskID string) (string, error) {

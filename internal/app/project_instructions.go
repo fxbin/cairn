@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
 )
 
 // freezeProjectInstructions 保存已脱敏的完整项目规约；没有有效文档时不生成引用，不改变旧运行合同。
@@ -33,7 +33,7 @@ func freezeProjectInstructions(workspace tools.Workspace, store *artifact.Store,
 	if err != nil {
 		return nil, errors.New("encode project instructions snapshot failed")
 	}
-	if len(encoded) > tools.ProjectInstructionsMaxSnapshotBytes || store == nil {
+	if len(encoded) > contract.ProjectInstructionsMaxSnapshotBytes || store == nil {
 		return nil, errors.New("project instructions snapshot storage limit exceeded or unavailable")
 	}
 	reference, err := store.Put(encoded, "application/json")

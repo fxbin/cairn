@@ -14,8 +14,8 @@ import (
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // workspaceHashForCLI 以与应用层一致的方式计算工作区状态哈希。

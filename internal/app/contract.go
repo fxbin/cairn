@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 )
 

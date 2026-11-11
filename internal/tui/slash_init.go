@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // initAGENTSDefault 是 /init 生成的最小项目规约骨架，不含密钥或路径。
@@ -44,7 +44,7 @@ func runInitCommand(workspace string) (initResult, error) {
 		}
 		root = current
 	}
-	ws, err := tools.NewWorkspace(root, nil, 0, 0, 0)
+	ws, err := app.NewStudioWorkspace(root, nil, 0, 0, 0)
 	if err != nil {
 		return initResult{}, fmt.Errorf("workspace: %w", err)
 	}

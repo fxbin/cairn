@@ -10,7 +10,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // v5LegacyFixtureDDL 是最小化还原的 v5 形态 Memory 库结构：只包含与本迁移

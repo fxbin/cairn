@@ -16,16 +16,16 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 
 	"fmt"
-	"github.com/fxbin/cairn/internal/artifact"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // withTestProvider 为测试配置补齐能力卡所需的模型与显式声明。

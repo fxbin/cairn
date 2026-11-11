@@ -15,8 +15,8 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/provider"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/provider"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // sseFrame 输出一个带内容增量、可选 finish_reason 与 usage 的完整 SSE 帧。

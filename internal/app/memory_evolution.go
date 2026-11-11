@@ -19,8 +19,8 @@ import (
 
 	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // MemoryEvolutionCreateOptions 描述创建演化候选的输入边界：闭合变体参数、

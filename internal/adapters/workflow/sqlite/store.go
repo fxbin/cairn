@@ -16,7 +16,7 @@ import (
 	modernsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // ErrPersistedContent 表示行可读取，但持久化的事件字段无法解码。

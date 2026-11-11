@@ -12,7 +12,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // appendContextBudget 投影上下文预算与压缩策略（只读配置，不触发压缩）。
@@ -96,9 +95,9 @@ func (console *RunConsole) appendSecurityPolicy() {
 		console.appendLine(dimStyle.Render("  工作区信任: 未知（未绑定工作区）"))
 		return
 	}
-	if tools.IsExplicitlyUntrusted(root) {
+	if app.IsWorkspaceExplicitlyUntrusted(root) {
 		console.appendLine(warnStyle.Render("  工作区信任: 显式拒绝（.cairn-untrusted 存在）"))
-	} else if tools.IsTrusted(root) {
+	} else if app.IsWorkspaceTrusted(root) {
 		console.appendLine(dimStyle.Render("  工作区信任: 显式信任（.cairn-trusted）"))
 	} else {
 		console.appendLine(dimStyle.Render("  工作区信任: 默认信任（无显式标记）"))

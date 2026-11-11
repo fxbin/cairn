@@ -3,11 +3,11 @@
 //
 // 守卫规则（Issue #40 P0）：
 //  1. 合同层（domain/canonicaljson/buildinfo/contract/ports/decision）只能依赖合同层。
-//  2. Core（internal/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
+//  2. Core（internal/core/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
 //  3. Runtime 不得依赖 Core、Application、Studio 与带外工具链；Runtime 内部除
-//     adapters 外不得直接 import internal/tools（授权门禁依赖工具注册表属于反转）。
+//     adapters 外不得直接 import internal/runtime/tools（授权门禁依赖工具注册表属于反转）。
 //  4. 配置层（internal/config）不得依赖 Core、Application、Studio 与带外工具链。
-//  5. Studio（desktop/tui/cli/cmd/gui）不得直接依赖 Core 与 Runtime，只能经
+//  5. Studio（studio/tui/cli/cmd）不得直接依赖 Core 与 Runtime，只能经
 //     Application、合同层与配置层交互。
 //  6. Application 是组合根、benchmark 是带外工具链，可依赖任意内部包。
 //
@@ -50,13 +50,6 @@ const (
 )
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
-const (
-	stepPolicyPort = "第 5 步（policy.Gate 授权端口）"
-	stepToolsPort  = "第 7 步（tools 端口拆分）"
-	stepStudio     = "第 8 步（Studio Adapter 收敛）"
-	stepMigration  = "第 9 步（目录迁移与合同归位）"
-)
-
 // packageLayers 登记 internal 一级包与入口的目标分层。
 // 新增 internal 包必须在此登记，否则守卫会把它视为未分类包并失败。
 var packageLayers = map[string]packageLayer{
@@ -67,32 +60,31 @@ var packageLayers = map[string]packageLayer{
 	"internal/contract":      layerContract,
 	"internal/ports":         layerContract,
 	"internal/decision":      layerContract,
-	// Runtime 基础能力与适配器。
-	"internal/userdir":      layerRuntime,
-	"internal/lock":         layerRuntime,
-	"internal/credential":   layerRuntime,
-	"internal/hooks":        layerRuntime,
-	"internal/workflow":     layerRuntime,
-	"internal/artifact":     layerRuntime,
-	"internal/memory":       layerRuntime,
-	"internal/provider":     layerRuntime,
-	"internal/modelcatalog": layerRuntime,
-	"internal/telemetry":    layerRuntime,
-	"internal/browser":      layerRuntime,
-	"internal/sandboxeval":  layerRuntime,
-	"internal/policy":       layerRuntime,
-	"internal/tools":        layerRuntime,
+	// Runtime 基础能力与适配器（已归位 internal/runtime）。
+	"internal/runtime/userdir":      layerRuntime,
+	"internal/runtime/lock":         layerRuntime,
+	"internal/runtime/credential":   layerRuntime,
+	"internal/runtime/hooks":        layerRuntime,
+	"internal/runtime/workflow":     layerRuntime,
+	"internal/runtime/artifact":     layerRuntime,
+	"internal/runtime/memory":       layerRuntime,
+	"internal/runtime/provider":     layerRuntime,
+	"internal/runtime/modelcatalog": layerRuntime,
+	"internal/runtime/telemetry":    layerRuntime,
+	"internal/runtime/browser":      layerRuntime,
+	"internal/runtime/sandboxeval":  layerRuntime,
+	"internal/runtime/policy":       layerRuntime,
+	"internal/runtime/tools":        layerRuntime,
 	// 配置层。
 	"internal/config": layerConfig,
 	// Core。
-	"internal/agent": layerCore,
+	"internal/core/agent": layerCore,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。
-	"internal/desktop": layerStudio,
-	"internal/tui":     layerStudio,
-	"internal/cli":     layerStudio,
-	"cmd/cairn":        layerStudio,
+	"internal/tui": layerStudio,
+	"internal/cli": layerStudio,
+	"cmd/cairn":    layerStudio,
 	// 带外工具链。
 	"internal/benchmark": layerToolchain,
 }
@@ -103,7 +95,8 @@ var packageLayerPrefixes = []struct {
 	layer  packageLayer
 }{
 	{prefix: "internal/adapters/", layer: layerRuntime},
-	{prefix: "gui/", layer: layerStudio},
+	{prefix: "studio/backend", layer: layerStudio},
+	{prefix: "studio", layer: layerStudio},
 }
 
 // knownException 是一条已存在的越层依赖，按解耦步骤逐条登记、逐条删除。
@@ -121,35 +114,7 @@ type knownException struct {
 // knownExceptions 是当前 main 上已存在、尚未解耦的越层边清单。
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
-var knownExceptions = []knownException{
-	// Core 直接持有 Runtime 具体实现的 2 类引用。
-	{Importer: "internal/agent", Imported: "internal/policy", Step: stepPolicyPort, Reason: "Loop.Gate 直接持有 *policy.Gate 并穿透 Patch 规划与工作区观察"},
-	{Importer: "internal/agent", Imported: "internal/tools", Step: stepToolsPort, Reason: "Loop.Tools 直接持有 *tools.Registry，21 个生产文件引用 tools 类型"},
-
-	// 端口层依赖无运行时消费方的工作流脚手架。
-	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
-
-	// Runtime 内部反转：授权门禁依赖工具注册表判定副作用。
-	{Importer: "internal/policy", Imported: "internal/tools", Step: stepToolsPort, Reason: "policy/gate.go 依赖 tools 注册表做副作用与补丁规划"},
-
-	// Studio 越过 Application 直接使用 Core 与 Runtime。
-	{Importer: "internal/desktop", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接构造 agent.NewSteeringBridge"},
-	{Importer: "internal/desktop", Imported: "internal/tools", Step: stepStudio, Reason: "files.go 直接构造 tools.NewWorkspace 与工具常量"},
-	{Importer: "internal/desktop", Imported: "internal/userdir", Step: stepStudio, Reason: "桌面端直接解析用户配置根"},
-	{Importer: "internal/tui", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接引用 Core 类型"},
-	{Importer: "internal/tui", Imported: "internal/credential", Step: stepStudio, Reason: "终端界面直接装载凭据状态"},
-	{Importer: "internal/tui", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "终端界面直接读取模型目录建议"},
-	{Importer: "internal/tui", Imported: "internal/tools", Step: stepStudio, Reason: "补丁预览、引用展开直接使用 tools 内部类型"},
-	{Importer: "internal/cli", Imported: "internal/memory", Step: stepStudio, Reason: "CLI 直接访问记忆合同与存储"},
-	{Importer: "internal/cli", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "CLI 直接读取模型目录建议"},
-	{Importer: "internal/cli", Imported: "internal/provider", Step: stepStudio, Reason: "CLI 直接装配 Provider 身份与准入"},
-	{Importer: "internal/cli", Imported: "internal/sandboxeval", Step: stepStudio, Reason: "CLI 直接调用沙箱评测入口"},
-	{Importer: "internal/cli", Imported: "internal/tools", Step: stepStudio, Reason: "package.go 直接调用 tools.InspectPackage 等实现"},
-	{Importer: "internal/cli", Imported: "internal/userdir", Step: stepStudio, Reason: "CLI 直接解析用户配置根"},
-	{Importer: "internal/cli", Imported: "internal/workflow", Step: stepStudio, Reason: "CLI 直接读取工作流定义"},
-	{Importer: "cmd/cairn", Imported: "internal/credential", Step: stepStudio, Reason: "进程入口直接装载凭据"},
-	{Importer: "cmd/cairn", Imported: "internal/sandboxeval", Step: stepStudio, Reason: "进程入口直接调用沙箱评测"},
-}
+var knownExceptions = []knownException{}
 
 // listedPackage 是 `go list -json` 中守卫需要的字段投影。
 type listedPackage struct {
@@ -204,7 +169,7 @@ func forbiddenEdge(importer, imported packageLayer) bool {
 // toolsRegistryLeak 判断 Runtime 内部是否绕过端口直接依赖工具注册表。
 // adapters 作为装配适配器可以引用 tools，其余 Runtime 包必须经端口访问。
 func toolsRegistryLeak(importer, imported string, importerLayer packageLayer) bool {
-	if importerLayer != layerRuntime || imported != "internal/tools" || importer == "internal/tools" {
+	if importerLayer != layerRuntime || imported != "internal/runtime/tools" || importer == "internal/runtime/tools" {
 		return false
 	}
 	return !strings.HasPrefix(importer, "internal/adapters/")

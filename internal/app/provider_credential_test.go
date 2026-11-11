@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/modelcatalog"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
 )
 
 func TestSetupUsesWorkspaceCredentialWithoutExport(t *testing.T) {

@@ -2,13 +2,14 @@ package domain
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
+	"time"
+
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"strings"
-	"time"
 )
 
 // SchemaVersion 是事件信封的当前全局版本；payload 级扩展以可选字段推进，
@@ -1293,7 +1294,7 @@ func validateOperationTerminalPayload(eventType EventType, object map[string]jso
 	return resultOK, nil
 }
 
-// validateToolResultObject 校验 tools.Result 的稳定字段，同时允许历史最小结果仅含 ok。
+// validateToolResultObject 校验工具结果的稳定字段，同时允许历史最小结果仅含 ok。
 func validateToolResultObject(eventType EventType, object map[string]json.RawMessage) (bool, error) {
 	ok, err := validateOptionalPayloadBool(eventType, object, "ok")
 	if err != nil {

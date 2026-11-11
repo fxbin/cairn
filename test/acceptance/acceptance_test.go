@@ -8,21 +8,22 @@ package acceptance
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
-	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"os/exec"
+	"path/filepath"
 )
 
 type scriptedProvider struct {
@@ -134,7 +135,7 @@ func TestDockerCancellationCleanupLeavesNoContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	raw := json.RawMessage(`{"argv":["sleep","60"],"timeout_ms":120000}`)
-	done := make(chan tools.Result, 1)
+	done := make(chan contract.ToolResult, 1)
 	go func() { done <- tool.Execute(ctx, raw) }()
 
 	// 等待新容器出现，再取消

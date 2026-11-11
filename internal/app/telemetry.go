@@ -13,7 +13,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/telemetry"
+	"github.com/fxbin/cairn/internal/runtime/telemetry"
 )
 
 // 语义观测导出面的状态取值直接来自 telemetry 包的接线判定；doctor 只报告

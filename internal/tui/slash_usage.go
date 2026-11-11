@@ -5,8 +5,7 @@ package tui
 
 import (
 	"fmt"
-
-	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // UsageWarning 是一条用量告警及其修复动作。
@@ -79,8 +78,8 @@ func (console *RunConsole) appendUsagePhases() {
 		return
 	}
 	totals := console.phaseTracker.TotalByPhase()
-	active := totals[agent.UIPhaseActive]
-	prompt := totals[agent.UIPhasePrompt]
+	active := totals[app.UIPhaseActive]
+	prompt := totals[app.UIPhasePrompt]
 	console.appendLine(itemStyle.Render("阶段时长"))
 	console.appendLine(dimStyle.Render(fmt.Sprintf("  活跃 %s · 等待用户 %s", active, prompt)))
 }

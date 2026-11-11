@@ -10,9 +10,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
 )
 
 func (command Command) benchmark(ctx context.Context, arguments []string) int {
@@ -217,8 +217,8 @@ func (command Command) benchmarkFreezeEvalSet(ctx context.Context, arguments []s
 	report, err := benchmark.FreezeEvaluationAssets(ctx, benchmark.FreezeEvalSetOptions{
 		Pack: pack, TaskIDs: freezeTaskIDs, AttemptsPerTask: *attemptsPerTask,
 		BaselineConfig: configuration,
-		Variant: memory.CompactionParamsVariant{
-			SchemaVersion:           memory.EvolutionSchemaVersion,
+		Variant: app.MemoryCompactionParamsVariant{
+			SchemaVersion:           app.MemoryEvolutionSchemaVersion,
 			MaxPromptTokens:         *maxPromptTokens,
 			MaxSummaryBytes:         *maxSummaryBytes,
 			InventoryBudgetPercent:  *inventoryPercent,

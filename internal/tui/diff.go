@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // diffContextLines 是统一差异块两侧的上下文行数。
@@ -47,7 +47,7 @@ type diffOp struct {
 // 全文，delete 渲染 before 内容全文删除，update 以 before 内容重建 after 后
 // 行比较；before 不可用时 update 降级为无定位替换块、delete 如实标注。
 func renderPatchDiff(arguments json.RawMessage, before []byte, beforeKnown bool) []string {
-	var patch tools.PatchArguments
+	var patch app.ToolPatchArguments
 	if len(arguments) == 0 || json.Unmarshal(arguments, &patch) != nil {
 		return []string{warnStyle.Render("（补丁参数不可解码，无法生成差异）")}
 	}
@@ -86,8 +86,8 @@ func renderPatchDiff(arguments json.RawMessage, before []byte, beforeKnown bool)
 
 // renderPlannedPatchDiff 以补丁计划器的前后全文渲染差异：审批路径使用，after
 // 来自工具层权威计算，不经展示层重建。
-func renderPlannedPatchDiff(plan tools.PatchPlan, arguments json.RawMessage) []string {
-	var patch tools.PatchArguments
+func renderPlannedPatchDiff(plan app.ToolPatchPlan, arguments json.RawMessage) []string {
+	var patch app.ToolPatchArguments
 	if len(arguments) != 0 && json.Unmarshal(arguments, &patch) == nil {
 		header := patchHeader(&patch)
 		switch patch.Mode {
@@ -103,7 +103,7 @@ func renderPlannedPatchDiff(plan tools.PatchPlan, arguments json.RawMessage) []s
 }
 
 // patchHeader 渲染差异视图的补丁身份头。
-func patchHeader(patch *tools.PatchArguments) string {
+func patchHeader(patch *app.ToolPatchArguments) string {
 	return itemStyle.Render(fmt.Sprintf("补丁 %s · %s", patch.Mode, patch.Path))
 }
 
@@ -302,7 +302,7 @@ func lcsOps(before, after []string) []diffOp {
 // applyReplacementsText 以与工具层一致的顺序替换语义重建改写后文本；仅用于
 // 展示推导，出现次数校验仍属工具层职责。空 old 文本会被工具层拒绝，此处同
 // 样跳过以防畸形参数把逐字符注入渲染成假差异。
-func applyReplacementsText(content string, replacements []tools.Replacement) string {
+func applyReplacementsText(content string, replacements []app.ToolReplacement) string {
 	for _, replacement := range replacements {
 		if replacement.Old == "" {
 			continue

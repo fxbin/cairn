@@ -8,8 +8,6 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -20,9 +18,6 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/modelcatalog"
-	"github.com/fxbin/cairn/internal/provider"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // providerListLimit 是 provider models 无查询词时的默认返回条数上限。
@@ -390,18 +385,18 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 		fmt.Fprintln(command.Stderr, "limit must be positive")
 		return ExitUsage
 	}
-	options := modelcatalog.Options{CatalogURL: *catalogURL}
+	options := app.ModelCatalogOptions{CatalogURL: *catalogURL}
 	if *catalogCache != "" {
 		options.CachePath = *catalogCache
-	} else if cachePath, err := modelcatalog.DefaultCachePath(); err == nil {
+	} else if cachePath, err := app.ModelCatalogDefaultCachePath(); err == nil {
 		options.CachePath = cachePath
 	}
-	var catalog *modelcatalog.Catalog
+	var catalog *app.ModelCatalog
 	var err error
 	if *refresh {
-		catalog, err = modelcatalog.Refresh(options)
+		catalog, err = app.ModelCatalogRefresh(options)
 	} else {
-		catalog, err = modelcatalog.Load(options)
+		catalog, err = app.ModelCatalogLoad(options)
 	}
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "catalog error:", err)
@@ -414,7 +409,7 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 	if *providerFilter != "" {
 		entries = catalog.EntriesOf(*providerFilter)
 		if *query != "" {
-			filtered := make([]modelcatalog.ModelEntry, 0, len(entries))
+			filtered := make([]app.ModelEntry, 0, len(entries))
 			lookup := catalog.Lookup(*query)
 			allowed := map[string]struct{}{}
 			for _, item := range lookup {
@@ -428,7 +423,7 @@ func (command Command) providerModels(ctx context.Context, arguments []string) i
 			entries = filtered
 		}
 	}
-	filtered := make([]modelcatalog.ModelEntry, 0, len(entries))
+	filtered := make([]app.ModelEntry, 0, len(entries))
 	for _, entry := range entries {
 		if *toolCall && !entry.ToolCall {
 			continue
@@ -541,7 +536,7 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return ExitUsage
 	}
-	if *evidenceFingerprint == "" || *reason == "" || (*decisionValue != provider.DecisionAdmitted && *decisionValue != provider.DecisionRejected) {
+	if *evidenceFingerprint == "" || *reason == "" || (*decisionValue != app.ProviderDecisionAdmitted && *decisionValue != app.ProviderDecisionRejected) {
 		fmt.Fprintln(command.Stderr, "provider admit requires --evidence, --decision admitted|rejected and --reason")
 		return ExitUsage
 	}
@@ -550,7 +545,7 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	workspaceHash, err := cliWorkspaceHash(*workspace, configuration)
+	workspaceHash, err := app.WorkspaceHash(*workspace, configuration)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "workspace error:", err)
 		return ExitFailed
@@ -558,7 +553,7 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 	if *stateDir == "" {
 		*stateDir = app.DefaultStateDir()
 	}
-	evidenceStore, err := provider.OpenEvidenceStore(*stateDir, workspaceHash)
+	evidenceStore, err := app.ProviderOpenEvidenceStore(*stateDir, workspaceHash)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "evidence store error:", err)
 		return ExitFailed
@@ -577,14 +572,14 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 		fmt.Fprintln(command.Stderr, "evidence selection does not match the current configuration binding")
 		return ExitFailed
 	}
-	decision := provider.ProviderAdmissionDecision{
+	decision := app.ProviderAdmissionDecision{
 		SchemaVersion: 1, EvidenceFingerprint: *evidenceFingerprint,
-		Binding:  provider.AdmissionBinding{RequestProfileFingerprint: requestFingerprint, ConfigFingerprint: configuration.Fingerprint()},
+		Binding:  app.ProviderAdmissionBinding{RequestProfileFingerprint: requestFingerprint, ConfigFingerprint: configuration.Fingerprint()},
 		Decision: *decisionValue, DecidedAt: time.Now().UTC(),
-		Authority: provider.AuthorityMaintainer, Reason: *reason,
+		Authority: app.ProviderAuthorityMaintainer, Reason: *reason,
 		SupersedesDecisionFingerprint: *supersedes,
 	}
-	decisions, err := provider.OpenDecisionStore(*stateDir, workspaceHash)
+	decisions, err := app.ProviderOpenDecisionStore(*stateDir, workspaceHash)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "decision store error:", err)
 		return ExitFailed
@@ -601,7 +596,7 @@ func (command Command) providerAdmit(ctx context.Context, arguments []string) in
 		fmt.Fprintln(command.Stderr, "decision store corrupted:", err)
 		return ExitFailed
 	}
-	if _, err := provider.ResolveChainHead(partition); err != nil {
+	if _, err := app.ProviderResolveChainHead(partition); err != nil {
 		fmt.Fprintln(command.Stderr, "admission chain corrupted:", err)
 		return ExitFailed
 	}
@@ -627,7 +622,7 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	workspaceHash, err := cliWorkspaceHash(*workspace, configuration)
+	workspaceHash, err := app.WorkspaceHash(*workspace, configuration)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "workspace error:", err)
 		return ExitFailed
@@ -640,17 +635,17 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 		fmt.Fprintln(command.Stderr, "profile error:", err)
 		return ExitFailed
 	}
-	decisions, err := provider.OpenDecisionStore(*stateDir, workspaceHash)
+	decisions, err := app.ProviderOpenDecisionStore(*stateDir, workspaceHash)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "decision store error:", err)
 		return ExitFailed
 	}
-	evidenceStore, err := provider.OpenEvidenceStore(*stateDir, workspaceHash)
+	evidenceStore, err := app.ProviderOpenEvidenceStore(*stateDir, workspaceHash)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "evidence store error:", err)
 		return ExitFailed
 	}
-	outcome, err := provider.EvaluateAdmissionGate(decisions, evidenceStore, profile, configuration.Provider.Admission)
+	outcome, err := app.ProviderEvaluateAdmissionGate(decisions, evidenceStore, profile, configuration.Provider.Admission)
 	protocol := configuration.Provider.Protocol
 	if protocol == "" {
 		protocol = config.ProtocolOpenAIChatCompletions
@@ -702,8 +697,8 @@ func (command Command) providerStatus(ctx context.Context, arguments []string) i
 // resolvedProfileForConfig 由当前配置组装解析身份并返回身份选择与请求合
 // 同指纹，供 admit/status 与配置绑定对齐（与 run 前门使用同一组装路径）。
 func resolvedProfileForConfig(configuration config.Config) (contract.ResolvedProviderProfile, string, error) {
-	profile, err := provider.ResolveResolvedProfile(provider.ResolvedFacts{
-		Selection:     provider.SelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL, Protocol: configuration.Provider.Protocol},
+	profile, err := app.ProviderResolveResolvedProfile(app.ProviderResolvedFacts{
+		Selection:     app.ProviderSelectionFacts{ProviderID: configuration.Provider.ID, Model: configuration.Provider.Model, BaseURL: configuration.Provider.BaseURL, Protocol: configuration.Provider.Protocol},
 		Capability:    config.ProviderCapabilityDeclaration(configuration),
 		Generation:    config.ProviderGenerationDeclaration(configuration),
 		CredentialRef: configuration.Provider.APIKeyEnv,
@@ -716,24 +711,4 @@ func resolvedProfileForConfig(configuration config.Config) (contract.ResolvedPro
 		return contract.ResolvedProviderProfile{}, "", err
 	}
 	return profile, fingerprint, nil
-}
-
-// cliWorkspaceHash 复刻 app 装配的工作区哈希算法（符号链接解析后的绝对
-// 路径摘要），保证证据与决定分区和 run 门完全一致；与探测落盘共用同一
-// 实现。
-func cliWorkspaceHash(workspacePath string, configuration config.Config) (string, error) {
-	root := workspacePath
-	if root == "" {
-		current, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		root = current
-	}
-	workspace, err := tools.NewWorkspace(root, configuration.Workspace.Ignore, configuration.Workspace.MaxReadBytes, configuration.Workspace.MaxSearchFiles, configuration.Workspace.MaxSearchBytes)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256([]byte(workspace.Root))
-	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }

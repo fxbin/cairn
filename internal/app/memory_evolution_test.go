@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // evolutionAppFixture 在同一工作区完成两次同任务运行、捕获并巩固，

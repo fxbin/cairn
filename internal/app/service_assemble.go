@@ -15,15 +15,15 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/agent"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/policy"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。
@@ -196,7 +196,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口，保持 Loop 侧的降级语义。
-func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink) agent.Loop {
+func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
 	var artifactPort agent.ArtifactStore
 	if artifacts != nil {
 		artifactPort = artifacts
@@ -214,7 +214,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		ContextInventoryBudgetPercent:  configuration.Context.InventoryBudgetPercent,
 		ContextThresholdReservePercent: configuration.Context.ThresholdReservePercent,
 		VerificationAutoAfterPatch:     configuration.Verification.AutoAfterPatch,
-		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
+		Verification:                   verification, VerificationWorkspace: bootWorkspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifactPort, OnEvent: agent.EventSink(onEvent),
 		SystemPrompt: configuration.Prompt.Resolved,
 		Hooks:        agentHookRules(hooksFromConfig(configuration.Hooks)),

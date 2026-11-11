@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 // secretFilter 保存私有内存中的实际凭据；刷新和 HTTP 请求可并发添加，值不落盘。
