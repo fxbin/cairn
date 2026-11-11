@@ -53,18 +53,6 @@ type ExecCommand struct {
 	EnvResolver func(name string) (string, bool)
 }
 
-// ExecArguments 是 exec_command 的受限执行参数。
-type ExecArguments struct {
-	Argv           []string          `json:"argv"`
-	CWD            string            `json:"cwd"`
-	TimeoutMS      int               `json:"timeout_ms"`
-	MaxOutputBytes int               `json:"max_output_bytes"`
-	Env            map[string]string `json:"env"`
-	// EnvRefs 将进程环境变量映射到凭证名（而非明文）；执行时经 EnvResolver
-	// 取值，Journal 只见引用名，降低密钥进事件面的风险。
-	EnvRefs map[string]string `json:"env_refs,omitempty"`
-}
-
 // SideEffect 声明 ExecCommand 会产生进程级副作用。
 func (tool ExecCommand) SideEffect() contract.SideEffectClass { return contract.SideEffectProcess }
 
@@ -412,49 +400,16 @@ func waitForExitAfterKill(finished <-chan error, limit time.Duration) (error, bo
 	}
 }
 
-// exec_command 默认与上限是工具合同的硬边界：策略层与执行器共享同一组语义常量。
+// exec_command 默认与上限以合同层常量为唯一事实源；此处仅为包内使用别名。
 const (
-	defaultExecTimeoutMS  = 120_000
-	maxExecTimeoutMS      = 3_600_000
-	defaultMaxOutputBytes = 256 * 1024
-	maxAllowedOutputBytes = 1024 * 1024
+	defaultExecTimeoutMS  = contract.ExecDefaultTimeoutMS
+	maxExecTimeoutMS      = contract.ExecMaxTimeoutMS
+	defaultMaxOutputBytes = contract.ExecDefaultMaxOutputBytes
+	maxAllowedOutputBytes = contract.ExecMaxOutputBytesLimit
 	resultPreviewMaxBytes = 1024
 	// 每路 JSON 尾部占总预览预算的八分之一，兼顾两路诊断与退出事实。
 	execFailureTailEncodedBytes = resultPreviewMaxBytes / 8
 )
-
-// ParseExecArguments 校验命令参数并填充与执行器相同的默认值；策略层在审批前
-// 调用它，确保审批始终绑定到将被实际执行的命令。
-func ParseExecArguments(raw json.RawMessage) (ExecArguments, error) {
-	arguments := ExecArguments{CWD: ".", TimeoutMS: defaultExecTimeoutMS, MaxOutputBytes: defaultMaxOutputBytes}
-	if err := decodeArguments(raw, &arguments); err != nil {
-		return ExecArguments{}, err
-	}
-	if len(arguments.Argv) == 0 || arguments.Argv[0] == "" {
-		return ExecArguments{}, errors.New("argv requires a non-empty command")
-	}
-	for _, argument := range arguments.Argv {
-		if argument == "" {
-			return ExecArguments{}, errors.New("argv cannot contain empty values")
-		}
-	}
-	if arguments.TimeoutMS < 1 || arguments.TimeoutMS > maxExecTimeoutMS || arguments.MaxOutputBytes < 1 || arguments.MaxOutputBytes > maxAllowedOutputBytes {
-		return ExecArguments{}, errors.New("timeout_ms or max_output_bytes is outside its allowed range")
-	}
-	arguments.CWD = normalizeWorkspaceAlias(arguments.CWD)
-	return arguments, nil
-}
-
-// normalizeWorkspaceAlias 将模型常用的 /workspace 绝对别名收敛为受限的相对工作目录。
-func normalizeWorkspaceAlias(cwd string) string {
-	if cwd == "/workspace" {
-		return "."
-	}
-	if strings.HasPrefix(cwd, "/workspace/") {
-		return strings.TrimPrefix(cwd, "/workspace/")
-	}
-	return cwd
-}
 
 // validateEnvironment 拒绝未被 EnvAllow 明确允许的环境变量覆盖。
 func (tool ExecCommand) validateEnvironment(environment map[string]string) error {

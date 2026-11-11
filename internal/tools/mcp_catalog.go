@@ -12,21 +12,6 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-// MCPProposal 是不产生连接或调用的本地授权投影；身份来自已持久化目录。
-type MCPProposal struct {
-	Server            string          `json:"server"`
-	Identity          string          `json:"identity"`
-	EnvironmentDigest string          `json:"environment_digest,omitempty"`
-	CatalogDigest     string          `json:"catalog_digest,omitempty"`
-	ToolDigest        string          `json:"tool_digest,omitempty"`
-	ToolName          string          `json:"tool_name"`
-	Arguments         json.RawMessage `json:"arguments"`
-	Effect            string          `json:"effect"`
-	Stdio             bool            `json:"stdio"`
-	Local             bool            `json:"local"`
-	Summary           string          `json:"summary"`
-}
-
 // MCPCatalog 由 Composition Root 显式提供；成功结果落盘后才能激活新目录。
 type MCPCatalog interface {
 	Specs() []ports.ToolSpec
@@ -74,6 +59,11 @@ func NewRegistryWithMCP(catalog MCPCatalog, available ...Tool) (*Registry, error
 
 // MCPProposal 返回 MCP 的本地权限投影，供同一个 Policy Gate 判定。
 func (registry *Registry) MCPProposal(name string, arguments json.RawMessage) (MCPProposal, bool, error) {
+	return registry.Proposal(name, arguments)
+}
+
+// Proposal 实现 contract.MCPProposalSource 端口；语义与 MCPProposal 相同。
+func (registry *Registry) Proposal(name string, arguments json.RawMessage) (MCPProposal, bool, error) {
 	if registry == nil || registry.mcp == nil {
 		return MCPProposal{}, false, nil
 	}

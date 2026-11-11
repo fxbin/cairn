@@ -8,13 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/fxbin/cairn/internal/contract"
 )
 
 // TrustMarkerFile 是工作区信任标记文件名。
 const TrustMarkerFile = ".cairn-trusted"
 
 // UntrustedMarkerFile 显式标记工作区为不信任；无标记视为信任（向后兼容）。
-const UntrustedMarkerFile = ".cairn-untrusted"
+const UntrustedMarkerFile = contract.UntrustedMarkerFile
 
 // WorkspaceTrust 表示工作区信任状态。
 type WorkspaceTrust struct {
@@ -58,23 +60,6 @@ func GuardTrustedWrite(root, operation string) error {
 		return nil
 	}
 	return fmt.Errorf("workspace %q is untrusted; %s requires trust (create %s)", root, operation, TrustMarkerFile)
-}
-
-// IsExplicitlyUntrusted 检查是否存在显式拒绝标记。
-func IsExplicitlyUntrusted(root string) bool {
-	if strings.TrimSpace(root) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(root, UntrustedMarkerFile))
-	return err == nil && info.Mode().IsRegular()
-}
-
-// GuardWrite 在显式拒绝标记下拒绝写；无标记视为信任（向后兼容）。
-func GuardWrite(root, operation string) error {
-	if IsExplicitlyUntrusted(root) {
-		return fmt.Errorf("workspace %q is explicitly untrusted (remove %s to enable %s)", root, UntrustedMarkerFile, operation)
-	}
-	return nil
 }
 
 // WriteUntrustedMarker 写入显式拒绝标记。

@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -33,113 +32,6 @@ type PatchArguments struct {
 	ExpectedSHA256 string        `json:"expected_sha256"`
 	Content        *string       `json:"content,omitempty"`
 	Replacements   []Replacement `json:"replacements,omitempty"`
-}
-
-// PatchPlan 是审批与执行共用的确定性改写计划及前后摘要。
-type PatchPlan struct {
-	Path       string
-	Mode       string
-	BeforeHash string
-	AfterHash  string
-	Before     []byte
-	After      []byte
-	Exists     bool
-}
-
-// PatchPreconditionError 描述 update 或 delete 的已给定摘要与当前文件不一致；
-// 只携带相对路径和摘要，绝不携带文件内容，供上层生成可重放的恢复反馈。
-type PatchPreconditionError struct {
-	Path           string
-	ExpectedSHA256 string
-	ActualSHA256   string
-}
-
-// Error 返回不含文件内容的稳定前置条件失败说明。
-func (err *PatchPreconditionError) Error() string {
-	return "expected_sha256 does not match current file; read_file is required before retrying apply_patch"
-}
-
-// PatchArgumentsError 描述可由模型重建调用形状修复的参数错误；Mode 仅用于
-// 选择已知模式的恢复提示，Message 不包含文件正文。
-type PatchArgumentsError struct {
-	Mode    string
-	Message string
-}
-
-// Error 保留原参数拒绝说明，使既有错误前缀仍可被诊断与日志识别。
-func (err *PatchArgumentsError) Error() string {
-	return err.Message
-}
-
-// PatchTextMatchError 描述已通过摘要前置条件后发生的精确匹配失配；
-// ReplacementIndex 从零开始，Path 由 Plan 填充为已解析的相对路径，不携带文本。
-type PatchTextMatchError struct {
-	Path                string
-	ReplacementIndex    int
-	ActualOccurrences   int
-	ExpectedOccurrences int
-}
-
-// Error 报告失败位置与次数，并要求保留读取原文的空白和换行，不提供猜测替换。
-func (err *PatchTextMatchError) Error() string {
-	return fmt.Sprintf("replacement old text occurs %d time(s), want %d at replacements[%d]; copy old exactly from read_file including whitespace and newlines; target=%s", err.ActualOccurrences, err.ExpectedOccurrences, err.ReplacementIndex, err.Path)
-}
-
-// PatchFailureResult 将非空规划错误转换为无副作用的模型恢复反馈；已知参数与
-// 文本失配只附带固定动作和校验元数据，其余错误保留原 invalid 语义。
-func PatchFailureResult(cause error) contract.ToolResult {
-	var argumentError *PatchArgumentsError
-	if errors.As(cause, &argumentError) {
-		mode := argumentError.Mode
-		required := []string{"path", "mode", "expected_sha256"}
-		omit := []string{}
-		next := "Choose create, update, or delete and rebuild the complete request with path, mode, and expected_sha256. Use content only for create and replacements only for update. Do not repeat unchanged invalid arguments."
-		switch mode {
-		case "create":
-			required = append(required, "content")
-			omit = append(omit, "replacements")
-			next = "Rebuild a create request with path, mode=create, expected_sha256=absent, and content only; omit replacements."
-		case "update":
-			required = append(required, "replacements")
-			omit = append(omit, "content")
-			next = "Rebuild an update request with path, mode=update, expected_sha256 from read_file, and replacements only; omit content. Copy old exactly from the returned source, including whitespace and newlines. Do not repeat unchanged invalid arguments."
-		case "delete":
-			omit = append(omit, "content", "replacements")
-			next = "Rebuild a delete request with path, mode=delete, and expected_sha256 from read_file; omit both content and replacements."
-		default:
-			mode = ""
-		}
-		data, err := json.Marshal(struct {
-			Mode           string   `json:"mode,omitempty"`
-			RequiredFields []string `json:"required_fields"`
-			OmitFields     []string `json:"omit_fields"`
-			NextAction     string   `json:"next_action"`
-		}{Mode: mode, RequiredFields: required, OmitFields: omit, NextAction: next})
-		if err != nil {
-			return contract.ToolFailure("invalid", "patch recovery feedback could not be encoded")
-		}
-		result := contract.ToolFailure(contract.CodeInvalidPatchArguments, cause.Error())
-		result.Data = data
-		return result
-	}
-	var matchError *PatchTextMatchError
-	if errors.As(cause, &matchError) {
-		data, err := json.Marshal(struct {
-			Path                string `json:"path"`
-			ReplacementIndex    int    `json:"replacement_index"`
-			ActualOccurrences   int    `json:"actual_occurrences"`
-			ExpectedOccurrences int    `json:"expected_occurrences"`
-			NextAction          string `json:"next_action"`
-		}{Path: matchError.Path, ReplacementIndex: matchError.ReplacementIndex, ActualOccurrences: matchError.ActualOccurrences, ExpectedOccurrences: matchError.ExpectedOccurrences,
-			NextAction: "Use the exact original block returned by read_file, preserving whitespace and newlines. If it is no longer available, read only the needed target range. Rebuild a smaller exact replacement with its current sha256; omit content and do not normalize, guess, or repeat the unmatched old text."})
-		if err != nil {
-			return contract.ToolFailure("invalid", "patch recovery feedback could not be encoded")
-		}
-		result := contract.ToolFailure(contract.CodePatchTextMismatch, cause.Error())
-		result.Data = data
-		return result
-	}
-	return contract.ToolFailure("invalid", cause.Error())
 }
 
 // SideEffect 声明 ApplyPatch 会改变工作区内容。

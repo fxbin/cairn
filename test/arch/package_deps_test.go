@@ -51,7 +51,6 @@ const (
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
 const (
-	stepToolsPort = "第 7 步（tools 端口拆分）"
 	stepStudio    = "第 8 步（Studio Adapter 收敛）"
 	stepMigration = "第 9 步（目录迁移与合同归位）"
 )
@@ -123,9 +122,6 @@ type knownException struct {
 var knownExceptions = []knownException{
 	// 端口层依赖无运行时消费方的工作流脚手架。
 	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
-
-	// Runtime 内部反转：授权门禁依赖工具注册表判定副作用。
-	{Importer: "internal/policy", Imported: "internal/tools", Step: stepToolsPort, Reason: "policy/gate.go 依赖 tools 注册表做副作用与补丁规划"},
 
 	// Studio 越过 Application 直接使用 Core 与 Runtime。
 	{Importer: "internal/desktop", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接构造 agent.NewSteeringBridge"},

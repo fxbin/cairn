@@ -13,7 +13,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/hooks"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // Effect 是策略判定的三种可能结果。
@@ -25,13 +24,26 @@ const (
 	Ask   Effect = contract.AuthorizationAsk
 )
 
+// PatchAuthority 是补丁工具在授权门禁中的最小观察面：规划确定性改写、解析
+// 工作区路径并观察工具视图摘要。实现不携带写入能力；实际写入仍须经授权、
+// Journal 与工具执行链。组合根负责把具体工具装配为该接口。
+type PatchAuthority interface {
+	contract.PatchPlanner
+	// WorkspaceRoot 返回工作区根路径，用于工作区信任判定。
+	WorkspaceRoot() string
+	// ResolveWorkspace 把相对路径解析为绝对路径与规范相对路径，越界返回错误。
+	ResolveWorkspace(relative string) (string, string, error)
+	// WorkspaceObservation 返回工具视图的工作区观察摘要。
+	WorkspaceObservation() (string, error)
+}
+
 // Gate 保存副作用策略、受保护路径和 patch 规划器。
 type Gate struct {
 	WriteMode      Effect
 	ExecMode       Effect
 	ProtectedPaths []string
-	Patch          tools.ApplyPatch
-	MCPRegistry    *tools.Registry
+	Patch          PatchAuthority
+	MCPRegistry    contract.MCPProposalSource
 	// Hooks 是可选工作区钩子；只能收紧决策，不能放宽 Policy。
 	Hooks []hooks.Rule
 }
@@ -45,7 +57,7 @@ func (gate *Gate) SetHooks(rules []hooks.Rule) {
 type Decision = contract.AuthorizationDecision
 
 // New 解析策略模式并复制受保护路径，构造副作用决策门。
-func New(writeMode, execMode string, protected []string, patch tools.ApplyPatch) (*Gate, error) {
+func New(writeMode, execMode string, protected []string, patch PatchAuthority) (*Gate, error) {
 	write, err := parseEffect(writeMode, Ask)
 	if err != nil {
 		return nil, err
@@ -106,7 +118,7 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。委派会经子
 	// run 产生受控副作用，未信任工作区同样拒绝。
 	if toolName == "exec_command" || toolName == "apply_patch" || toolName == "delegate_task" {
-		if err := tools.GuardWrite(gate.Patch.Workspace.Root, toolName); err != nil {
+		if err := contract.GuardWorkspaceWrite(gate.Patch.WorkspaceRoot(), toolName); err != nil {
 			return Decision{
 				Effect:      Deny,
 				RuleID:      "untrusted_workspace",
@@ -197,17 +209,17 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(raw, &proposed); err != nil {
-			return invalidPatchDecision(raw, &tools.PatchArgumentsError{Message: err.Error()}), nil
+			return invalidPatchDecision(raw, &contract.PatchArgumentsError{Message: err.Error()}), nil
 		}
 		if proposed.Path == "" {
-			return invalidPatchDecision(raw, &tools.PatchArgumentsError{Message: "path is required"}), nil
+			return invalidPatchDecision(raw, &contract.PatchArgumentsError{Message: "path is required"}), nil
 		}
 		for _, protected := range gate.ProtectedPaths {
 			if matchesProtected(proposed.Path, protected) {
 				return Decision{Effect: Deny, RuleID: "protected_path", Fingerprint: fingerprint("apply_patch", raw), Summary: "protected path: " + proposed.Path}, nil
 			}
 		}
-		_, relative, err := gate.Patch.Workspace.Resolve(proposed.Path)
+		_, relative, err := gate.Patch.ResolveWorkspace(proposed.Path)
 		if err != nil {
 			return invalidPatchDecision(raw, err), nil
 		}
@@ -223,15 +235,15 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 		}
 		return Decision{Effect: gate.WriteMode, RuleID: "workspace_write", Fingerprint: patchFingerprint(plan), Summary: fmt.Sprintf("%s %s (%s → %s)", plan.Mode, plan.Path, plan.BeforeHash, plan.AfterHash)}, nil
 	case "exec_command":
-		proposed, err := tools.ParseExecArguments(raw)
+		proposed, err := contract.ParseExecArguments(raw)
 		if err != nil {
 			return Decision{Effect: Deny, RuleID: "invalid_command", Fingerprint: fingerprint("exec_command", raw), Summary: "invalid exec_command arguments"}, nil
 		}
-		_, relativeCWD, err := gate.Patch.Workspace.Resolve(proposed.CWD)
+		_, relativeCWD, err := gate.Patch.ResolveWorkspace(proposed.CWD)
 		if err != nil {
 			return Decision{Effect: Deny, RuleID: "invalid_command", Fingerprint: fingerprint("exec_command", raw), Summary: "invalid exec_command cwd"}, nil
 		}
-		observation, err := gate.Patch.Workspace.Observation()
+		observation, err := gate.Patch.WorkspaceObservation()
 		if err != nil {
 			return Decision{}, fmt.Errorf("observe workspace for command approval: %w", err)
 		}
@@ -262,31 +274,31 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 	case "exec_session":
 		// 会话工具不继承 exec_command 审批豁免：建会话与写入一律经 ExecMode，
 		// 读/关作为回收与观察允许；后端未启用时注册阶段就不会暴露。
-		var request tools.SessionRequest
+		var request contract.SessionRequest
 		if err := json.Unmarshal(raw, &request); err != nil {
 			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: "invalid exec_session arguments"}, nil
 		}
-		if err := tools.ValidateSessionRequest(request); err != nil {
+		if err := contract.ValidateSessionRequest(request); err != nil {
 			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: err.Error()}, nil
 		}
 		switch request.Action {
-		case tools.SessionRead:
+		case contract.SessionRead:
 			return Decision{Effect: Allow, RuleID: "session_read", Fingerprint: fingerprint("exec_session", raw), Summary: "read controlled session output"}, nil
-		case tools.SessionClose:
+		case contract.SessionClose:
 			return Decision{Effect: Allow, RuleID: "session_close", Fingerprint: fingerprint("exec_session", raw), Summary: "close controlled session"}, nil
-		case tools.SessionOpen, tools.SessionWrite:
+		case contract.SessionOpen, contract.SessionWrite:
 			effect := gate.ExecMode
 			if effect == Allow {
 				// 不继承 exec_command 的 allow 豁免；敏感动词与建会话至少 ask。
 				effect = Ask
 			}
-			if tools.IsSensitiveInput(request.Content) {
+			if contract.IsSensitiveSessionInput(request.Content) {
 				effect = Ask
 			}
 			summary := "open controlled session"
-			if request.Action == tools.SessionWrite {
+			if request.Action == contract.SessionWrite {
 				summary = "write controlled session input"
-				if tools.IsSensitiveInput(request.Content) {
+				if contract.IsSensitiveSessionInput(request.Content) {
 					summary = "write sensitive controlled session input"
 				}
 			}
@@ -296,7 +308,7 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 		}
 	default:
 		if gate.MCPRegistry != nil {
-			proposal, found, err := gate.MCPRegistry.MCPProposal(toolName, raw)
+			proposal, found, err := gate.MCPRegistry.Proposal(toolName, raw)
 			if err != nil {
 				return Decision{Effect: Deny, RuleID: "invalid_mcp_call", Fingerprint: fingerprint(toolName, raw), Summary: "invalid or unavailable MCP tool"}, nil
 			}
@@ -309,7 +321,7 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 }
 
 // decideMCP 将本地服务器权限、目录摘要和实参绑定到现有审批链；注解不授予权限。
-func (gate *Gate) decideMCP(proposal tools.MCPProposal) (Decision, error) {
+func (gate *Gate) decideMCP(proposal contract.MCPProposal) (Decision, error) {
 	effect, err := parseEffect(proposal.Effect, Ask)
 	if err != nil {
 		return Decision{}, err
@@ -323,14 +335,14 @@ func (gate *Gate) decideMCP(proposal tools.MCPProposal) (Decision, error) {
 	}
 	observation := ""
 	if proposal.Stdio {
-		observation, err = gate.Patch.Workspace.Observation()
+		observation, err = gate.Patch.WorkspaceObservation()
 		if err != nil {
 			return Decision{}, errors.New("observe workspace for MCP approval failed")
 		}
 	}
 	return Decision{MCPIdentity: proposal.EnvironmentDigest, Effect: effect, RuleID: "mcp_tool", Summary: proposal.Summary, WorkspaceObservation: observation, Fingerprint: fingerprint("mcp_call", struct {
-		Proposal             tools.MCPProposal `json:"proposal"`
-		WorkspaceObservation string            `json:"workspace_observation,omitempty"`
+		Proposal             contract.MCPProposal `json:"proposal"`
+		WorkspaceObservation string               `json:"workspace_observation,omitempty"`
 	}{Proposal: proposal, WorkspaceObservation: observation})}, nil
 }
 
@@ -338,14 +350,14 @@ func (gate *Gate) decideMCP(proposal tools.MCPProposal) (Decision, error) {
 // 过期摘要分别映射为可恢复反馈；未知错误与权限边界不因此得到授权。
 func invalidPatchDecision(raw json.RawMessage, cause error) Decision {
 	decision := Decision{Effect: Deny, RuleID: "invalid_patch", Fingerprint: fingerprint("apply_patch", raw), Summary: cause.Error()}
-	feedback := tools.PatchFailureResult(cause)
+	feedback := contract.PatchFailureResult(cause)
 	if feedback.Code == contract.CodeInvalidPatchArguments || feedback.Code == contract.CodePatchTextMismatch {
 		decision.FailureCode = feedback.Code
 		decision.FailureData = feedback.Data
 		decision.Summary = feedback.Preview
 		return decision
 	}
-	var stale *tools.PatchPreconditionError
+	var stale *contract.PatchPreconditionError
 	if !errors.As(cause, &stale) {
 		return decision
 	}
@@ -415,7 +427,7 @@ func parseEffect(value string, fallback Effect) (Effect, error) {
 }
 
 // patchFingerprint 为确定性 patch 计划计算审批绑定摘要。
-func patchFingerprint(plan tools.PatchPlan) string {
+func patchFingerprint(plan contract.PatchPlan) string {
 	return fingerprint("apply_patch", struct {
 		Version string `json:"version"`
 		Path    string `json:"path"`
@@ -426,7 +438,7 @@ func patchFingerprint(plan tools.PatchPlan) string {
 }
 
 // execFingerprint 将命令实参和执行前工作区观察值绑定为审批摘要。
-func execFingerprint(arguments tools.ExecArguments, observation string) string {
+func execFingerprint(arguments contract.ExecArguments, observation string) string {
 	return fingerprint("exec_command", struct {
 		Version              string            `json:"version"`
 		Argv                 []string          `json:"argv"`
@@ -467,7 +479,7 @@ func (gate *Gate) protectsResolvedPath(logicalPath, resolvedPath string) bool {
 		if literal == "" || strings.ContainsAny(literal, "*?[") {
 			continue
 		}
-		_, resolvedProtected, err := gate.Patch.Workspace.Resolve(literal)
+		_, resolvedProtected, err := gate.Patch.ResolveWorkspace(literal)
 		// 根目录的规范相对路径为 "."，其后代不会携带 "./" 前缀；根目标覆盖整个工作区。
 		if err == nil && (resolvedProtected == "." || resolvedPath == resolvedProtected || strings.HasPrefix(resolvedPath, resolvedProtected+"/")) {
 			return true

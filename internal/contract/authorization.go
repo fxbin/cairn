@@ -35,6 +35,7 @@ type PatchPlan struct {
 	Path       string
 	Mode       string
 	Before     []byte
+	After      []byte
 	BeforeHash string
 	AfterHash  string
 	Exists     bool

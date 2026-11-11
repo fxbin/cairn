@@ -335,17 +335,9 @@ func (tool SearchText) Execute(ctx context.Context, raw json.RawMessage) contrac
 	}{Matches: matches, ScannedFiles: scannedFiles, ScannedBytes: scannedBytes, Regex: arguments.Regex}, fmt.Sprintf("%d match(es) (regex=%t)", len(matches), arguments.Regex), scannedBytes, "", truncated)
 }
 
-// decodeArguments 严格解码单个 JSON 参数对象并拒绝未知字段。
+// decodeArguments 严格解码单个 JSON 参数对象并拒绝未知字段；实现归位合同层。
 func decodeArguments(raw json.RawMessage, target any) error {
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("invalid arguments: %w", err)
-	}
-	if decoder.More() {
-		return fmt.Errorf("invalid arguments: multiple JSON values")
-	}
-	return nil
+	return contract.DecodeToolArguments(raw, target)
 }
 
 // validateGlob 验证可选 glob 符合 path.Match 语法。

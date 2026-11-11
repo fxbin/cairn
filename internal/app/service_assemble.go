@@ -196,7 +196,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口，保持 Loop 侧的降级语义。
-func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink) agent.Loop {
+func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
 	var artifactPort agent.ArtifactStore
 	if artifacts != nil {
 		artifactPort = artifacts
@@ -214,7 +214,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		ContextInventoryBudgetPercent:  configuration.Context.InventoryBudgetPercent,
 		ContextThresholdReservePercent: configuration.Context.ThresholdReservePercent,
 		VerificationAutoAfterPatch:     configuration.Verification.AutoAfterPatch,
-		Verification:                   verification, VerificationWorkspace: gate.Patch.Workspace.ObservationView(configuration.Verification.VolatilePaths),
+		Verification:                   verification, VerificationWorkspace: bootWorkspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifactPort, OnEvent: agent.EventSink(onEvent),
 		SystemPrompt: configuration.Prompt.Resolved,
 		Hooks:        agentHookRules(hooksFromConfig(configuration.Hooks)),

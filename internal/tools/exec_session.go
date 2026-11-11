@@ -6,47 +6,19 @@ package tools
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"encoding/json"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
-	"unicode/utf8"
 )
 
 // ExecSession 限制约束会话输入输出与生命周期。
 const (
-	ExecSessionMaxWriteBytes = 4 * 1024
-	ExecSessionMaxReadBytes  = 64 * 1024
-	ExecSessionMaxSessions   = 4
-	ExecSessionTimeout       = 15 * time.Minute
+	ExecSessionMaxReadBytes = 64 * 1024
+	ExecSessionMaxSessions  = 4
+	ExecSessionTimeout      = 15 * time.Minute
 )
-
-// SessionAction 是会话动作类型。
-type SessionAction string
-
-const (
-	// SessionOpen 创建受控 tmux 会话。
-	SessionOpen SessionAction = "open"
-	// SessionWrite 向会话注入输入。
-	SessionWrite SessionAction = "write"
-	// SessionRead 读取自游标起的输出。
-	SessionRead SessionAction = "read"
-	// SessionClose 关闭会话并回收进程组。
-	SessionClose SessionAction = "close"
-)
-
-// SessionRequest 是 exec_session 的统一入参。
-type SessionRequest struct {
-	Action SessionAction `json:"action"`
-	// SessionID 是会话身份；open 时可省略由运行时分配。
-	SessionID string `json:"session_id,omitempty"`
-	// Content 是 write 的输入文本（摘要入 Journal，不记原文）。
-	Content string `json:"content,omitempty"`
-	// CWD 是会话工作目录，必须在工作区内。
-	CWD string `json:"cwd,omitempty"`
-}
 
 // SessionResult 是会话动作结果。
 type SessionResult struct {
@@ -58,50 +30,6 @@ type SessionResult struct {
 	Truncated bool `json:"truncated,omitempty"`
 	// InputDigest 是 write 的输入摘要，替代按键原文入账。
 	InputDigest string `json:"input_digest,omitempty"`
-}
-
-// sensitiveVerbs 是 write 需二次确认的敏感动词（大小写不敏感）。
-var sensitiveVerbs = []string{"sudo", "rm -rf", "curl", "wget", "chmod 777", "shutdown", "reboot", "mkfs", "dd if="}
-
-// IsSensitiveInput 判断输入是否触发二次确认。
-func IsSensitiveInput(content string) bool {
-	lower := strings.ToLower(content)
-	for _, verb := range sensitiveVerbs {
-		if strings.Contains(lower, verb) {
-			return true
-		}
-	}
-	return false
-}
-
-// ValidateSessionRequest 校验会话动作；不执行任何外部调用。
-func ValidateSessionRequest(request SessionRequest) error {
-	switch request.Action {
-	case SessionOpen:
-		if strings.TrimSpace(request.CWD) == "" {
-			return fmt.Errorf("cwd is required for open")
-		}
-	case SessionWrite:
-		if strings.TrimSpace(request.SessionID) == "" {
-			return fmt.Errorf("session_id is required for write")
-		}
-		if strings.TrimSpace(request.Content) == "" {
-			return fmt.Errorf("content is required for write")
-		}
-		if !utf8.ValidString(request.Content) {
-			return fmt.Errorf("content must be valid utf-8")
-		}
-		if len(request.Content) > ExecSessionMaxWriteBytes {
-			return fmt.Errorf("content exceeds %d bytes", ExecSessionMaxWriteBytes)
-		}
-	case SessionRead, SessionClose:
-		if strings.TrimSpace(request.SessionID) == "" {
-			return fmt.Errorf("session_id is required for %s", request.Action)
-		}
-	default:
-		return fmt.Errorf("unknown session action %q", request.Action)
-	}
-	return nil
 }
 
 // ExecSession 是受控 tmux 会话工具；默认不注册，需显式启用。

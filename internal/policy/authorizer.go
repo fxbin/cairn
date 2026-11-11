@@ -24,5 +24,5 @@ func (gate *Gate) PlanPatch(raw json.RawMessage) (contract.PatchPlan, error) {
 
 // WorkspaceObservation 沿用工具视图的观察摘要；verifier 的完整观察由独立视图提供。
 func (gate *Gate) WorkspaceObservation() (string, error) {
-	return gate.Patch.Workspace.Observation()
+	return gate.Patch.WorkspaceObservation()
 }

@@ -170,7 +170,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Verification = verification
-	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent)
+	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent, workspace)
 	boot.Loop.RequireProviderUsage = card.StreamingUsage
 	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
 	return boot, nil

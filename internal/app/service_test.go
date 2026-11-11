@@ -133,7 +133,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	configuration.Context.MaxSummaryBytes = 6_789
 	configuration.Context.InventoryBudgetPercent = 35
 	configuration.Context.ThresholdReservePercent = 15
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
 	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 ||
 		loop.ContextInventoryBudgetPercent != 35 || loop.ContextThresholdReservePercent != 15 {
 		t.Fatalf("loop context = %#v", loop)
@@ -143,7 +143,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 func TestConfiguredLoopPassesAutomaticVerificationAfterPatch(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	configuration.Verification.AutoAfterPatch = true
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil)
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
 	if !loop.VerificationAutoAfterPatch {
 		t.Fatalf("loop verification configuration = %#v", loop)
 	}
