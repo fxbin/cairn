@@ -402,7 +402,7 @@ func TestDecisionPackageDoesNotDependOnPolicyLayer(t *testing.T) {
 		"github.com/fxbin/cairn/internal/policy",
 		"github.com/fxbin/cairn/internal/tools",
 		"github.com/fxbin/cairn/internal/config",
-		"github.com/fxbin/cairn/internal/agent",
+		"github.com/fxbin/cairn/internal/core/agent",
 		"github.com/fxbin/cairn/internal/app",
 		"github.com/fxbin/cairn/internal/cli",
 	}

@@ -3,7 +3,7 @@
 //
 // 守卫规则（Issue #40 P0）：
 //  1. 合同层（domain/canonicaljson/buildinfo/contract/ports/decision）只能依赖合同层。
-//  2. Core（internal/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
+//  2. Core（internal/core/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
 //  3. Runtime 不得依赖 Core、Application、Studio 与带外工具链；Runtime 内部除
 //     adapters 外不得直接 import internal/tools（授权门禁依赖工具注册表属于反转）。
 //  4. 配置层（internal/config）不得依赖 Core、Application、Studio 与带外工具链。
@@ -82,7 +82,7 @@ var packageLayers = map[string]packageLayer{
 	// 配置层。
 	"internal/config": layerConfig,
 	// Core。
-	"internal/agent": layerCore,
+	"internal/core/agent": layerCore,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。

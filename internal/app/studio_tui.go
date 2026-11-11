@@ -1,11 +1,11 @@
 // studio_tui.go 为 TUI 提供转向桥、UI 阶段追踪与凭据写入的 Application
-// 门面；Studio 层不得直接依赖 internal/agent 与 internal/credential。
+// 门面；Studio 层不得直接依赖 internal/core/agent 与 internal/credential。
 // Author: fxbin
 package app
 
 import (
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/tools"
 )

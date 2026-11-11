@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fxbin/cairn/internal/agent"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
