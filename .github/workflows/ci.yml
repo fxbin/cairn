@@ -41,7 +41,7 @@ jobs:
     # 26.04 适配（Issue #37）：26.04 镜像自带 bubblewrap，host 收紧在 CI 上首次
     # 真正生效。沙箱根不再是只挂少数系统目录的空 tmpfs，而是逐条只读映射宿主
     # 根条目（含 /lib64 等加载器别名），临时目录根与工作区可写，随后整体重挂
-    # 只读；参数与理由见 internal/tools/ossandbox_linux.go。
+    # 只读；参数与理由见 internal/runtime/tools/ossandbox_linux.go。
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
@@ -179,7 +179,7 @@ jobs:
         run: go test ./test/e2e -tags=e2e -count=1
 
   # bwrap 边界门禁：extended 跑在 ubuntu-latest，该镜像没有 bubblewrap，
-  # internal/tools 的沙箱边界用例与 e2e 信号用例会静默 skip，导致"绿"不代表
+  # internal/runtime/tools 的沙箱边界用例与 e2e 信号用例会静默 skip，导致"绿"不代表
   # bwrap 路径被验证（与 24.04 假绿同源）。本 job 用 .github/docker 下显式
   # 安装 bubblewrap 的镜像，在 privileged 容器中实跑这两组用例；脚本同时做
   # 防空转断言：bwrap 缺失、出现 --- SKIP、目标用例缺少 --- PASS 都直接失败。
