@@ -5,9 +5,9 @@
 //  1. 合同层（domain/canonicaljson/buildinfo/contract/ports/decision）只能依赖合同层。
 //  2. Core（internal/core/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
 //  3. Runtime 不得依赖 Core、Application、Studio 与带外工具链；Runtime 内部除
-//     adapters 外不得直接 import internal/tools（授权门禁依赖工具注册表属于反转）。
+//     adapters 外不得直接 import internal/runtime/tools（授权门禁依赖工具注册表属于反转）。
 //  4. 配置层（internal/config）不得依赖 Core、Application、Studio 与带外工具链。
-//  5. Studio（studio/desktop/tui/cli/cmd）不得直接依赖 Core 与 Runtime，只能经
+//  5. Studio（studio/tui/cli/cmd）不得直接依赖 Core 与 Runtime，只能经
 //     Application、合同层与配置层交互。
 //  6. Application 是组合根、benchmark 是带外工具链，可依赖任意内部包。
 //
@@ -95,8 +95,8 @@ var packageLayerPrefixes = []struct {
 	layer  packageLayer
 }{
 	{prefix: "internal/adapters/", layer: layerRuntime},
-	{prefix: "studio/desktop/backend", layer: layerStudio},
-	{prefix: "studio/desktop", layer: layerStudio},
+	{prefix: "studio/backend", layer: layerStudio},
+	{prefix: "studio", layer: layerStudio},
 }
 
 // knownException 是一条已存在的越层依赖，按解耦步骤逐条登记、逐条删除。

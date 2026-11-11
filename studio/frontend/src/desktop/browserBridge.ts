@@ -485,7 +485,7 @@ export function createBrowserBridge() {
       return {
         root: workspace.path,
         branch: "main",
-        entries: [{ relative: "studio/desktop/frontend/src/App.tsx", status: "modified", agent_owned: false, evidence: "git_status_only" }],
+        entries: [{ relative: "studio/frontend/src/App.tsx", status: "modified", agent_owned: false, evidence: "git_status_only" }],
         added: 0,
         deleted: 0,
         modified: 1,

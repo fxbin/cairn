@@ -4,8 +4,8 @@ from pathlib import Path
 from PIL import Image
 import hashlib,json,sys
 root=Path(__file__).resolve().parents[1]
-manifest=json.loads((root/'studio/desktop/branding/icon-manifest.json').read_text(encoding='utf-8'))
-master=root/'studio/desktop/branding/cairn_icon_master.png'
+manifest=json.loads((root/'studio/branding/icon-manifest.json').read_text(encoding='utf-8'))
+master=root/'studio/branding/cairn_icon_master.png'
 assert hashlib.sha256(master.read_bytes()).hexdigest()==manifest['master_sha256']
 src=Image.open(master).convert('RGB')
 for size,entry in manifest['sizes'].items():

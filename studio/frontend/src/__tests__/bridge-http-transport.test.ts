@@ -7,7 +7,7 @@ const rawMock = vi.hoisted(() => ({
   ListRecentProjects: vi.fn(async () => []),
 }));
 
-vi.mock("../../bindings/github.com/fxbin/cairn/studio/desktop/backend/service.js", () => rawMock);
+vi.mock("../../bindings/github.com/fxbin/cairn/studio/backend/service.js", () => rawMock);
 
 type BridgeGlobals = {
   __CAIRN_HOST__?: string;

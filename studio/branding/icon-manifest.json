@@ -16,31 +16,31 @@
   "derivation": "Single PIL.Image.resize(LANCZOS) from frozen cropped board; no AI rerender",
   "sizes": {
     "1024": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-1024.png",
+      "path": "studio/frontend/public/icons/cairn-icon-1024.png",
       "sha256": "45c48b9172ad22cc0ae904eee6c04c1c54d1cd10e1071f412b5221177e6b7cb0"
     },
     "512": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-512.png",
+      "path": "studio/frontend/public/icons/cairn-icon-512.png",
       "sha256": "5df3f3ea277273bf483fdf36f31fe33b03d26c20dfdda81bef47d8997603c2f0"
     },
     "256": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-256.png",
+      "path": "studio/frontend/public/icons/cairn-icon-256.png",
       "sha256": "79f0fd0d7e7ac61bf9feddeeed78aa7e88d1b43a63033d3a869b5094d0f77bbf"
     },
     "128": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-128.png",
+      "path": "studio/frontend/public/icons/cairn-icon-128.png",
       "sha256": "0a6cb3390a78a0f324dd750571df35c910ccfdd41fabc1fcc9f23324b1318552"
     },
     "64": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-64.png",
+      "path": "studio/frontend/public/icons/cairn-icon-64.png",
       "sha256": "aab7a5006aa0298617ef36ff91700a921ceeb5c1b8aca22229ae7136dce08c45"
     },
     "32": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-32.png",
+      "path": "studio/frontend/public/icons/cairn-icon-32.png",
       "sha256": "c3577b255f1018447e6592b5cb34d86583e16be83db3def53e280c174392e95b"
     },
     "16": {
-      "path": "studio/desktop/frontend/public/icons/cairn-icon-16.png",
+      "path": "studio/frontend/public/icons/cairn-icon-16.png",
       "sha256": "f8f8edca3c0724618b7d0d9aaa9fbe77a8615f7ce1f9019b84869b14f23cb5e0"
     }
   },

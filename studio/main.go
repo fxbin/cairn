@@ -1,4 +1,4 @@
-// Cairn GUI 桌面入口：Wails v3 应用壳，绑定 studio/desktop/backend.API。
+// Cairn GUI 桌面入口：Wails v3 应用壳，绑定 studio/backend.API。
 //
 // Author: fxbin
 package main
@@ -16,7 +16,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/studio/desktop/backend"
+	"github.com/fxbin/cairn/studio/backend"
 )
 
 //go:embed all:frontend/dist

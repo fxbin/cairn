@@ -17,7 +17,7 @@ import (
 )
 
 // guardedVocabularyPackages 是必须复用统一词表的界面层包。
-var guardedVocabularyPackages = []string{"internal/cli", "internal/tui", filepath.Join("studio", "desktop", "backend")}
+var guardedVocabularyPackages = []string{"internal/cli", "internal/tui", filepath.Join("studio", "backend")}
 
 // guardedVocabularyFunctions 是每个界面层包都必须直接调用的词表函数。
 var guardedVocabularyFunctions = []string{
