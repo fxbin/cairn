@@ -50,10 +50,6 @@ const (
 )
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
-const (
-	stepMigration = "第 9 步（目录迁移与合同归位）"
-)
-
 // packageLayers 登记 internal 一级包与入口的目标分层。
 // 新增 internal 包必须在此登记，否则守卫会把它视为未分类包并失败。
 var packageLayers = map[string]packageLayer{
@@ -118,10 +114,7 @@ type knownException struct {
 // knownExceptions 是当前 main 上已存在、尚未解耦的越层边清单。
 // 每次解耦 PR 完成后必须同步删除对应条目；例外消失而未删除同样会让测试失败。
 // 清单只允许缩短，不允许为新增越层边追加条目。
-var knownExceptions = []knownException{
-	// 端口层依赖无运行时消费方的工作流脚手架。
-	{Importer: "internal/ports", Imported: "internal/runtime/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
-}
+var knownExceptions = []knownException{}
 
 // listedPackage 是 `go list -json` 中守卫需要的字段投影。
 type listedPackage struct {
