@@ -1,5 +1,5 @@
 /**
- * 桥接层共享类型。与 internal/desktop DTO 字段名保持一致；
+ * 桥接层共享类型。与 studio/desktop/backend DTO 字段名保持一致；
  * 运行事实来自 Go/Journal，此处仅描述传输结构。
  */
 

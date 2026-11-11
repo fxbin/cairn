@@ -206,8 +206,8 @@ tasks:
       - test -f darwin/icons.icns && test appicon.png -ot darwin/icons.icns && test appicon.icon/icon.json -ot darwin/icons.icns
     cmds:
       # 只生成 macOS 需要的图标。wails3 的 `-windowsfilename` 默认值是
-      # `build/windows/icon.ico`，而本任务的工作目录是 `gui/build`，默认值会落到
-      # `gui/build/build/windows/icon.ico`；该目录不在仓库里，wails3 写文件时也不会
+      # `build/windows/icon.ico`，而本任务的工作目录是 `build`，默认值会落到
+      # `build/build/windows/icon.ico`；该目录不在仓库里，wails3 写文件时也不会
       # 自动创建父目录，于是干净检出的 macOS 上本任务必然失败（open
       # build/windows/icon.ico: no such file or directory），`wails3 dev` 与
       # `wails3 build` 随之起不来。仓库没有 Windows 构建任务，Windows 图标没有

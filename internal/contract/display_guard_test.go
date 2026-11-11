@@ -17,7 +17,7 @@ import (
 )
 
 // guardedVocabularyPackages 是必须复用统一词表的界面层包。
-var guardedVocabularyPackages = []string{"cli", "tui", "desktop"}
+var guardedVocabularyPackages = []string{"internal/cli", "internal/tui", filepath.Join("studio", "desktop", "backend")}
 
 // guardedVocabularyFunctions 是每个界面层包都必须直接调用的词表函数。
 var guardedVocabularyFunctions = []string{
@@ -53,7 +53,7 @@ func TestVocabularyPackagesReuseContractFunctions(t *testing.T) {
 // TestReconcileHintHasSingleSource 锁定对账动作指引只有一处定义：应用层的
 // 下一步提示与 TUI 的等待对账提示都必须取自 contract 词表。
 func TestReconcileHintHasSingleSource(t *testing.T) {
-	for _, name := range []string{"app", "tui"} {
+	for _, name := range []string{"internal/app", "internal/tui"} {
 		source := readPackageSources(t, name)
 		if !strings.Contains(source, "contract.ReconcileActionHint") {
 			t.Fatalf("包 %s 没有引用 contract.ReconcileActionHint，对账指引必须来自统一词表", name)
@@ -81,7 +81,7 @@ func TestInterfacePackagesDoNotCopyDisplayWords(t *testing.T) {
 // readPackageSources 读取指定包的全部 Go 源码并拼成一段文本。
 func readPackageSources(t *testing.T, name string) string {
 	t.Helper()
-	directory := filepath.Join("..", name)
+	directory := filepath.Join("..", "..", name)
 	entries, err := filepath.Glob(filepath.Join(directory, "*.go"))
 	if err != nil {
 		t.Fatalf("读取包 %s 源码: %v", name, err)
@@ -106,7 +106,7 @@ func readPackageSources(t *testing.T, name string) string {
 func packageStringConstants(t *testing.T, name string) map[string]map[string]string {
 	t.Helper()
 	result := map[string]map[string]string{}
-	directory := filepath.Join("..", name)
+	directory := filepath.Join("..", "..", name)
 	entries, err := filepath.Glob(filepath.Join(directory, "*.go"))
 	if err != nil {
 		t.Fatalf("读取包 %s 源码: %v", name, err)

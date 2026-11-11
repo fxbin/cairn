@@ -3,7 +3,7 @@
  * 桌面 WebView 只使用真实 bindings；模拟桥仅允许显式演示/测试入口启用。
  */
 // @ts-ignore 生成的 JS bindings 无独立声明文件
-import * as RawAPI from "../../bindings/github.com/fxbin/cairn/internal/desktop/service.js";
+import * as RawAPI from "../../bindings/github.com/fxbin/cairn/studio/desktop/backend/service.js";
 import type {
   ProviderProbeView,
   ProviderAdmissionRequest,

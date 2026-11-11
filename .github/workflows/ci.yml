@@ -5,14 +5,14 @@
 # - extended 仅在手动触发（workflow_dispatch）或每周定时运行：race、faultinject、e2e。
 # - 全程不配置任何密钥；fault/e2e 用例使用进程内脚本化 Provider 与回环端点，
 #   不会调用真实 Provider 或付费服务；缺环境时用例显式失败，而非跳过后报告通过。
-# - frontend 是与 gate 并列的独立 job：只跑 gui/frontend 的 typecheck/test/build，
+# - frontend 是与 gate 并列的独立 job：只跑 studio/desktop/frontend 的 typecheck/test/build，
 #   依赖由 package-lock.json 固定并以 npm ci 全新安装，不借用开发机 node_modules；
-#   gate/frontend/gui 三个 job 不设 needs 依赖，各自跑在干净的 runner 上，
+#   gate/frontend/desktop 三个 job 不设 needs 依赖，各自跑在干净的 runner 上，
 #   互不影响也不互相降低覆盖。
-# - gui 是 macOS 桌面壳门禁：gate 因 //go:embed 依赖前端产物而不编译 gui 包
-#   （见 gate 内注释的分组约定，该约定不变），GUI 壳的 Go 编译与 vet 回归因此
+# - desktop 是 macOS 桌面壳门禁：gate 因 //go:embed 依赖前端产物而不编译桌面壳包
+#   （见 gate 内注释的分组约定，该约定不变），桌面壳的 Go 编译与 vet 回归因此
 #   远端抓不到。本 job 在 macos runner 上先构建前端产物，再编译、vet 并运行
-#   gui 包既有测试，作为桌面壳的远端兜底；不覆盖 Linux/Windows 桌面壳，
+#   桌面壳包既有测试，作为远端兜底；不覆盖 Linux/Windows 桌面壳，
 #   也不含真机 E2E（后者依赖带 GUI 权限的桌面会话，见本地 smoke 清单）。
 # - 恢复/审批场景矩阵与三级证据分层的完整文档在本地 docs/ci-verification-baseline.md，
 #   桌面端最小 smoke 与手动签收清单在本地 docs/desktop-smoke-checklist.md
@@ -49,9 +49,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # gui 是 Wails 桌面壳，编译依赖本地前端构建产物 gui/frontend/dist（git 忽略，
-      # 须先跑 gui 的前端构建）；按约定单独分组，不进默认门禁。顶层 Go 目录共
-      # cmd/gui/internal/test 四个，显式列举其余三个，避免 go list 因 gui 失败中断。
+      # studio/desktop 是 Wails 桌面壳，编译依赖本地前端构建产物
+      # studio/desktop/frontend/dist（git 忽略，须先跑桌面的前端构建）；按约定单独
+      # 分组，不进默认门禁，go list 仅列举 cmd/internal/test，避免因缺产物而中断。
       - name: gofmt 漂移检查
         run: |
           drift=$(gofmt -l .)
@@ -71,10 +71,10 @@ jobs:
       - name: 默认标签全量测试
         run: go test ./cmd/... ./internal/... ./test/...
 
-  # 前端门禁：gui/frontend 的类型检查、单测与生产构建。
+  # 前端门禁：studio/desktop/frontend 的类型检查、单测与生产构建。
   # 独立 job，不设 needs：与 Go gate 并行执行，任一失败只标记对应 job。
   # 前端依赖与产物都不进入 Go 门禁的覆盖范围：
-  #   - gui/frontend/node_modules 与 gui/frontend/dist 由 gui/.gitignore 忽略，
+  #   - studio/desktop/frontend/node_modules 与 studio/desktop/frontend/dist 由 studio/desktop/.gitignore 忽略，
   #     干净检出里都不存在，构建后也只落在被忽略路径上；
   #   - Go 门禁保持 go build ./cmd/cairn 的既有口径，不因本 job 降低或改动覆盖。
   frontend:
@@ -82,18 +82,18 @@ jobs:
     timeout-minutes: 20
     defaults:
       run:
-        working-directory: gui/frontend
+        working-directory: studio/desktop/frontend
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
-          # Node 主版本固定为 24：gui/frontend/package.json 未声明 engines 字段，
+          # Node 主版本固定为 24：studio/desktop/frontend/package.json 未声明 engines 字段，
           # 本地三项门禁实测版本为 Node v24.15.0（npm 11.x），24 是当前 LTS 主线；
           # Vite 5 与 Vitest 2 的 engines 下限为 Node ^18 || >=20，24 同时满足。
           # 依赖版本由 package-lock.json 固定，Node 主版本固定后即可复现安装。
           node-version: '24'
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: studio/desktop/frontend/package-lock.json
       # npm ci 严格按锁文件安装，package.json 与锁文件不一致时直接失败；
       # 不使用 --ignore-scripts：esbuild 的安装脚本是 vite 构建链的一环。
       - name: 安装前端依赖
@@ -104,7 +104,7 @@ jobs:
         run: npm test
       - name: 前端构建
         run: npm run build
-      # gui/main.go 以 //go:embed all:frontend/dist 嵌入前端产物。干净检出缺少该目录时，
+      # studio/desktop/main.go 以 //go:embed all:frontend/dist 嵌入前端产物。干净检出缺少该目录时，
       # go build ./... 的失败原因只有这一条（基线既有事实），因此这里断言产物真的生成，
       # 让构建链回归在 PR 阶段就暴露，而不是留到桌面打包阶段才被发现。
       - name: 校验静态产物
@@ -119,43 +119,42 @@ jobs:
             exit 1
           fi
 
-  # 桌面壳门禁：在 macOS 上编译 Wails 桌面端并运行 gui 包既有测试。
+  # 桌面壳门禁：在 macOS 上编译 Wails 桌面端并运行桌面壳包既有测试。
   # 独立 job，不设 needs：与 gate/frontend 并行，任一失败只标记对应 job。
   # 覆盖边界：只验 macOS 桌面壳的编译、vet 与既有测试，不改变 gate/frontend
   # 的口径，不新增测试用例，也不代替真机 E2E 与 Linux/Windows 壳验证。
-  gui:
+  desktop:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
-          # Node 主版本与 frontend job 同口径（24）：gui/frontend/package.json 无
+          # Node 主版本与 frontend job 同口径（24）：studio/desktop/frontend/package.json 无
           # engines 声明，依赖由 package-lock.json 固定，主版本固定后即可复现安装。
           node-version: '24'
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
-      # 前端产物是 gui 包的编译前置：gui/main.go 的 //go:embed all:frontend/dist
+          cache-dependency-path: studio/desktop/frontend/package-lock.json
+      # 前端产物是桌面壳包的编译前置：studio/desktop/main.go 的 //go:embed all:frontend/dist
       # 在干净检出里缺少 dist 时会让 go build/vet/test 全部失败，必须先构建。
       - name: 安装前端依赖
-        working-directory: gui/frontend
+        working-directory: studio/desktop/frontend
         run: npm ci
       - name: 构建前端嵌入产物
-        working-directory: gui/frontend
+        working-directory: studio/desktop/frontend
         run: npm run build
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # 输出必须显式 -o：裸 go build ./gui 会在仓库根生成名为 gui 的二进制，
-      # 与同名源目录冲突（build output "gui" already exists），构建必然失败。
+      # 输出显式 -o 固定产物名，避免在仓库根留下与源目录同名的二进制。
       - name: 编译桌面壳
-        run: go build -o /tmp/cairn-gui ./gui
+        run: go build -o /tmp/cairn-desktop ./studio/desktop
       - name: go vet 桌面壳
-        run: go vet ./gui
-      # 只运行 gui 包既有测试（server 端口解析等纯函数用例），不新增用例；
+        run: go vet ./studio/desktop
+      # 只运行桌面壳包既有测试（server 端口解析等纯函数用例），不新增用例；
       # wails3 依赖 cgo，macos runner 自带完整工具链。
       - name: 桌面壳既有测试
-        run: go test ./gui
+        run: go test ./studio/desktop
 
   # 扩展矩阵：race、协议合同、故障注入与端到端；仅显式入口触发
   extended:
@@ -170,7 +169,7 @@ jobs:
       # 同 gate：benchmark 测试需要本地 Docker 与 alpine 镜像
       - name: 预拉取沙箱镜像
         run: docker pull alpine:latest
-      - name: race 全量（gui 除外，同 gate 分组约定）
+      - name: race 全量（桌面壳除外，同 gate 分组约定）
         run: go test -race ./cmd/... ./internal/... ./test/...
       - name: 协议合同测试
         run: go test ./internal/adapters/provider/openaicompat -run Contract -count=1
