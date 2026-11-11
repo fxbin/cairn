@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/memory"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // TestMemoryCaptureRecallRevokeAndDoctor 锁定从终态 Journal 派生的 M0/M1

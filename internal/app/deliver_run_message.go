@@ -7,10 +7,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // deliverRunMessage 将消息投递到目标 run：制品存内容，Journal 追加 steering 事实。

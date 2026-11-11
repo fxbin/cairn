@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 const testEvolutionCandidateExpiryOffset = time.Hour

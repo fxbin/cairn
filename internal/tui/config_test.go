@@ -15,8 +15,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/modelcatalog"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
 )
 
 // testCatalogEntries 构造足够超过建议上限的目录条目，验证截断与光标循环。

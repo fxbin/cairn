@@ -11,8 +11,8 @@ import (
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/core/agent"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // variantConfigPrefix 是"展开后变体配置指纹"的版本化域前缀：视图由基线配置

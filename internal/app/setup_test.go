@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/modelcatalog"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
 )
 
 // stubCatalogLoader 返回固定目录或错误的替身。

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // frozenFakeImageDigest 是镜像自省替身返回的自描述摘要，形态须与真实 docker

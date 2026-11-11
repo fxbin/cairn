@@ -8,9 +8,9 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // TestResumeEnforcesPersistedResponseBudget 覆盖响应落盘后中断的恢复窗口，

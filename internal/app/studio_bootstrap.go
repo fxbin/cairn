@@ -10,10 +10,10 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/sandboxeval"
-	"github.com/fxbin/cairn/internal/userdir"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // UserConfigRoot 返回用户配置根；桌面端不得直接依赖 userdir。

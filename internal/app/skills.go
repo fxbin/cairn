@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
 )
 
 // SkillStoreFor 解析原生安装目录；工作区目标先经过 Workspace.Resolve 防止逃逸。

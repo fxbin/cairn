@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // PromoteCandidate 在单一事务内写入人工决策和 promoted_inactive 版本。它在

@@ -11,9 +11,9 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // rendezvousProbe 是验证只读并行执行的探针工具：进入即宣告到达并等待对端

@@ -8,7 +8,7 @@ import (
 	"fmt"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // FrozenToolRegistryFingerprint 以空工作区装配指定静态 Preset 的固定工具注册

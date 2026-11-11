@@ -14,7 +14,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // 探测结论与工具回路的闭合词表；对外稳定，供证据与命令输出共用。

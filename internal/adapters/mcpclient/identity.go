@@ -8,7 +8,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 // authenticationBinding 仅在内存中组合实际授权值；对外只输出不可逆摘要。

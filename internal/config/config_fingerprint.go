@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 type fingerprintView struct {

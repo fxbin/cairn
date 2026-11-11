@@ -17,13 +17,13 @@ import (
 	journalsqlite "github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/tools"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // faultWorkflowConfig 返回故障注入用例的固定配置：显式声明测试 Provider 能力，

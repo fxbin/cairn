@@ -17,11 +17,11 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/provider"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/provider"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	_ "modernc.org/sqlite"
 )
 

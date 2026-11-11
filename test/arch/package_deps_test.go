@@ -64,21 +64,21 @@ var packageLayers = map[string]packageLayer{
 	"internal/contract":      layerContract,
 	"internal/ports":         layerContract,
 	"internal/decision":      layerContract,
-	// Runtime 基础能力与适配器。
-	"internal/userdir":      layerRuntime,
-	"internal/lock":         layerRuntime,
-	"internal/credential":   layerRuntime,
-	"internal/hooks":        layerRuntime,
-	"internal/workflow":     layerRuntime,
-	"internal/artifact":     layerRuntime,
-	"internal/memory":       layerRuntime,
-	"internal/provider":     layerRuntime,
-	"internal/modelcatalog": layerRuntime,
-	"internal/telemetry":    layerRuntime,
-	"internal/browser":      layerRuntime,
-	"internal/sandboxeval":  layerRuntime,
-	"internal/policy":       layerRuntime,
-	"internal/tools":        layerRuntime,
+	// Runtime 基础能力与适配器（已归位 internal/runtime）。
+	"internal/runtime/userdir":      layerRuntime,
+	"internal/runtime/lock":         layerRuntime,
+	"internal/runtime/credential":   layerRuntime,
+	"internal/runtime/hooks":        layerRuntime,
+	"internal/runtime/workflow":     layerRuntime,
+	"internal/runtime/artifact":     layerRuntime,
+	"internal/runtime/memory":       layerRuntime,
+	"internal/runtime/provider":     layerRuntime,
+	"internal/runtime/modelcatalog": layerRuntime,
+	"internal/runtime/telemetry":    layerRuntime,
+	"internal/runtime/browser":      layerRuntime,
+	"internal/runtime/sandboxeval":  layerRuntime,
+	"internal/runtime/policy":       layerRuntime,
+	"internal/runtime/tools":        layerRuntime,
 	// 配置层。
 	"internal/config": layerConfig,
 	// Core。
@@ -120,7 +120,7 @@ type knownException struct {
 // 清单只允许缩短，不允许为新增越层边追加条目。
 var knownExceptions = []knownException{
 	// 端口层依赖无运行时消费方的工作流脚手架。
-	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
+	{Importer: "internal/ports", Imported: "internal/runtime/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
 }
 
 // listedPackage 是 `go list -json` 中守卫需要的字段投影。
@@ -176,7 +176,7 @@ func forbiddenEdge(importer, imported packageLayer) bool {
 // toolsRegistryLeak 判断 Runtime 内部是否绕过端口直接依赖工具注册表。
 // adapters 作为装配适配器可以引用 tools，其余 Runtime 包必须经端口访问。
 func toolsRegistryLeak(importer, imported string, importerLayer packageLayer) bool {
-	if importerLayer != layerRuntime || imported != "internal/tools" || importer == "internal/tools" {
+	if importerLayer != layerRuntime || imported != "internal/runtime/tools" || importer == "internal/runtime/tools" {
 		return false
 	}
 	return !strings.HasPrefix(importer, "internal/adapters/")

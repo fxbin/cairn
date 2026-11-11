@@ -14,9 +14,9 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // checkArtifactReferences 验证日志 payload 引用的每一个制品文件及其摘要。

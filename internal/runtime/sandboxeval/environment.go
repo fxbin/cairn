@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 // forbiddenUserDirectoryNames 是不得进入评测子进程的用户目录变量：它们会把

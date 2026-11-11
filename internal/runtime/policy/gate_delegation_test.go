@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // TestGateClassifiesDelegationWithExecMode 锁定 delegate_task 与命令执行同级：

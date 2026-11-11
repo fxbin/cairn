@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // variantFixture 返回通过全部边界校验的压缩参数变体。

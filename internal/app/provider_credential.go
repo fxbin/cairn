@@ -7,8 +7,8 @@ import (
 	"errors"
 	"os"
 
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // providerCredential 按环境、工作区凭据、用户凭据解析连接密钥；工作区文件

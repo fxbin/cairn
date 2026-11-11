@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 func Validate(config Config) error {

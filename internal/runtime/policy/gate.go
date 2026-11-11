@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/hooks"
+	"github.com/fxbin/cairn/internal/runtime/hooks"
 )
 
 // Effect 是策略判定的三种可能结果。

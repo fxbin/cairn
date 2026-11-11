@@ -12,7 +12,7 @@ import (
 
 	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // seedWorkflowStore 在指定工作区状态目录下创建真实工作流链并返回其 ID。

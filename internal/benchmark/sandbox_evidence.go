@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 const sandboxEvidenceSchemaVersion = 1

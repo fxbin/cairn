@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // TestMCPPolicyCannotBypassHostExecutionPolicy 服务器允许模式不能覆盖本机执行禁令或审批。

@@ -14,8 +14,8 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/telemetry"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/telemetry"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // ProviderHealth 汇总 Provider 的非敏感运行前提：端点、模型与密钥环境变量的

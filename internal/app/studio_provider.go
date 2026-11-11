@@ -5,8 +5,8 @@ package app
 
 import (
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/modelcatalog"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // 模型目录合同类型别名：CLI/TUI 仅作建议展示。

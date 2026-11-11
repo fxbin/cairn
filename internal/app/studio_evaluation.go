@@ -3,7 +3,7 @@
 // Author: fxbin
 package app
 
-import "github.com/fxbin/cairn/internal/sandboxeval"
+import "github.com/fxbin/cairn/internal/runtime/sandboxeval"
 
 // 评测合同类型与常量别名：CLI 仅作装载与结论判定。
 type (

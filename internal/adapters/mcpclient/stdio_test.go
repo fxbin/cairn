@@ -17,7 +17,7 @@ import (
 	"encoding/json"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"os/signal"
 	"path/filepath"

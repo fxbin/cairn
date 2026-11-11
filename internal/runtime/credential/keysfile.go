@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
 )
 
 // KeysFileName 是工作区内凭据文件的固定相对路径段；文件位于 .agent/ 目

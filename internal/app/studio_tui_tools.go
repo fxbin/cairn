@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // StudioWorkspace 是受限工作区视图的窄别名，终端层只消费不构造内部状态。

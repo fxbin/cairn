@@ -13,13 +13,13 @@ import (
 	"os"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // rewindPlanKind 与 rewindPlanVersion 标识回退 run 创建事件 task_ref 指向的

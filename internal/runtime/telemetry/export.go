@@ -564,7 +564,7 @@ type otlpNumberDataPoint struct {
 }
 
 // otlpScopeName 是导出观测的作用域名。
-const otlpScopeName = "github.com/fxbin/cairn/internal/telemetry"
+const otlpScopeName = "github.com/fxbin/cairn/internal/runtime/telemetry"
 
 // encodeTraceRequest 把快照编码为 OTLP/JSON trace 请求体。
 func encodeTraceRequest(snapshot Snapshot) ([]byte, error) {

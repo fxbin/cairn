@@ -3,7 +3,7 @@
 // Author: fxbin
 package app
 
-import "github.com/fxbin/cairn/internal/memory"
+import "github.com/fxbin/cairn/internal/runtime/memory"
 
 // 记忆合同类型别名：CLI 仅作展示与状态判定，不持有存储实现。
 type (

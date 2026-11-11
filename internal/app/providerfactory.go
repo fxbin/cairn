@@ -14,7 +14,7 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // 时失败关闭校验；显式生成参数原样透传，不在此层引入默认值。

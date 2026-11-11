@@ -19,9 +19,9 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/provider/openaicompat"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/modelcatalog"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
 )
 
 // setupProbeRequestTimeout 是向导零期望探测的单次请求与总超时。

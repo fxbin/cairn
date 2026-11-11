@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // priorContextResponseLimit 是前情卡最终回复段落的字符上限；完整回复以事

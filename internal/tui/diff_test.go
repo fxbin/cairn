@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // joinDiff 把差异行去掉样式后拼接，便于断言内容。

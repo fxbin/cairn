@@ -3,7 +3,7 @@ package ports
 import (
 	"context"
 
-	"github.com/fxbin/cairn/internal/workflow"
+	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // WorkflowStore 定义工作流事件链的追加、加载、枚举与完整性校验端口；

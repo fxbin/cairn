@@ -9,9 +9,9 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // TestContainsSensitiveToolCallBlocksCredentialFamily 逐向量锁定 P1 二轮修复的

@@ -10,7 +10,7 @@ import (
 	"os"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // NewTemplateStore 构造提示模板存储。

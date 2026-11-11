@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/hooks"
+	"github.com/fxbin/cairn/internal/runtime/hooks"
 )
 
 // TestHookActionsForPreservesRuleOrder 锁定只拼接启用且命中规则的动作，顺序与规则声明一致。

@@ -6,8 +6,8 @@ package app
 import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // toolsWorkspace 是工作区视图的窄别名，桌面端不直接持有 tools 符号。

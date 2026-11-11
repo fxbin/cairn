@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 func TestCheckpointKeepsSearchLocationsAndReadRange(t *testing.T) {

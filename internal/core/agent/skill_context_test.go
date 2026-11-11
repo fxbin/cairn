@@ -11,9 +11,9 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // newSkillLoopTest 组装真实工具、Policy、Journal 与替身 Provider，不需要外部服务。

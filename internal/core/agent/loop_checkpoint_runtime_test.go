@@ -15,9 +15,9 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // checkpointFixture 使用真实读取/补丁工具装配隔离工作区，原始任务保持独立消息。

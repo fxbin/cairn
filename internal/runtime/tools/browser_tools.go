@@ -12,9 +12,9 @@ import (
 
 	"encoding/base64"
 	"encoding/json"
-	"github.com/fxbin/cairn/internal/browser"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/browser"
 )
 
 // BrowserMaxExpressionBytes 限制求值表达式长度。

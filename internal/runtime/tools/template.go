@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fxbin/cairn/internal/lock"
+	"github.com/fxbin/cairn/internal/runtime/lock"
 	"gopkg.in/yaml.v3"
 )
 

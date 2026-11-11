@@ -14,7 +14,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/credential"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 func TestDesktopProviderCredentialIsolationAndAdmission(t *testing.T) {

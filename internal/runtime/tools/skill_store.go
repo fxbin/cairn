@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fxbin/cairn/internal/lock"
+	"github.com/fxbin/cairn/internal/runtime/lock"
 )
 
 // SkillStore 只管理 Cairn 原生技能目录；共享目录保持外部管理。

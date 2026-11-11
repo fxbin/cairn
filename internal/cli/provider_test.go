@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // offlineCatalogFlags 返回指向立即拒绝端点的目录旗标，保证向导语义离线

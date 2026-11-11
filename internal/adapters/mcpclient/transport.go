@@ -21,7 +21,7 @@ import (
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

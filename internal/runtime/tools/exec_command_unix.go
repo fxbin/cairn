@@ -20,8 +20,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/credential"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/credential"
 )
 
 // ExecBackend 标识 exec_command 的实际进程执行边界。

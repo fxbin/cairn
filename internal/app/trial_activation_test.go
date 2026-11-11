@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // TestResolveTrialActivationWithoutStoreFailsClosed 锁定显式请求但记忆库缺

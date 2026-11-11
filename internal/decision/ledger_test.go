@@ -399,8 +399,8 @@ func TestVerifyEvidenceDetectsUnresolvedCitation(t *testing.T) {
 // 依赖 Policy、工具或配置层，因此项目知识无法覆盖上层授权。
 func TestDecisionPackageDoesNotDependOnPolicyLayer(t *testing.T) {
 	forbidden := []string{
-		"github.com/fxbin/cairn/internal/policy",
-		"github.com/fxbin/cairn/internal/tools",
+		"github.com/fxbin/cairn/internal/runtime/policy",
+		"github.com/fxbin/cairn/internal/runtime/tools",
 		"github.com/fxbin/cairn/internal/config",
 		"github.com/fxbin/cairn/internal/core/agent",
 		"github.com/fxbin/cairn/internal/app",

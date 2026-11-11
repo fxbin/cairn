@@ -18,7 +18,7 @@ import (
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"unicode/utf8"
 )
 

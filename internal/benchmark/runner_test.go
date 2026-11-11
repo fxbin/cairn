@@ -17,7 +17,7 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // benchmarkTestConfig 返回满足 v2 Provider 合同的基准测试基线配置，

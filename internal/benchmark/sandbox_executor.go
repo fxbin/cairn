@@ -26,9 +26,9 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 
 // 沙箱评测执行器的闭合状态词：停止原因表示未完成计划但合同未被破坏的情形，

@@ -10,7 +10,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // ConfirmProviderAdmissionOptions 绑定用户所见的配置、请求画像和成功探测，

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // writeProjectInstructionTestFile 在隔离目录写入规约夹具，返回实际文件位置。

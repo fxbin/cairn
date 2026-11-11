@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/userdir"
 	"golang.org/x/oauth2"
 )
 

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/lock"
+	"github.com/fxbin/cairn/internal/runtime/lock"
 	"gopkg.in/yaml.v3"
 )
 

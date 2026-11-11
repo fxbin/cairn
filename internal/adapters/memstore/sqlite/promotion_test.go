@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/memory"
+	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // passedCandidateFixture 装配一个已通过冻结评测的候选及其评测行。

@@ -22,8 +22,8 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/modelcatalog"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/modelcatalog"
 )
 
 // eventWithPayload 构造带 JSON payload 的测试事件。

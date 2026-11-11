@@ -15,15 +15,15 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
-	"github.com/fxbin/cairn/internal/credential"
-	"github.com/fxbin/cairn/internal/lock"
-	"github.com/fxbin/cairn/internal/policy"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
+	"github.com/fxbin/cairn/internal/runtime/credential"
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // workspaceFor 创建受限工作区视图，并以其规范根路径计算稳定工作区哈希。

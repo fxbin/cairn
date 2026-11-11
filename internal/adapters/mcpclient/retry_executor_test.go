@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxbin/cairn/internal/provider"
+	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
 // TestRetryExecutorRetriesIdempotent 锁定幂等工具失败后重试。

@@ -11,11 +11,11 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // withTestProvider 为测试配置补齐能力卡所需的模型与显式声明。

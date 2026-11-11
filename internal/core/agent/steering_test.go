@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
-	"github.com/fxbin/cairn/internal/artifact"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
+	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // TestSteeringConsumedAtSafetyPointOnce 锁定安全点消费一次、幂等跳过重复 ID。
