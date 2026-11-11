@@ -51,7 +51,6 @@ const (
 
 // 解耦步骤名称，与 Issue #40 P0 底稿的拆分 PR 顺序一一对应。
 const (
-	stepStudio    = "第 8 步（Studio Adapter 收敛）"
 	stepMigration = "第 9 步（目录迁移与合同归位）"
 )
 
@@ -122,24 +121,6 @@ type knownException struct {
 var knownExceptions = []knownException{
 	// 端口层依赖无运行时消费方的工作流脚手架。
 	{Importer: "internal/ports", Imported: "internal/workflow", Step: stepMigration, Reason: "ports/workflow.go 直接引用 workflow 合同，归位后再删"},
-
-	// Studio 越过 Application 直接使用 Core 与 Runtime。
-	{Importer: "internal/desktop", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接构造 agent.NewSteeringBridge"},
-	{Importer: "internal/desktop", Imported: "internal/tools", Step: stepStudio, Reason: "files.go 直接构造 tools.NewWorkspace 与工具常量"},
-	{Importer: "internal/desktop", Imported: "internal/userdir", Step: stepStudio, Reason: "桌面端直接解析用户配置根"},
-	{Importer: "internal/tui", Imported: "internal/agent", Step: stepStudio, Reason: "run.go 直接引用 Core 类型"},
-	{Importer: "internal/tui", Imported: "internal/credential", Step: stepStudio, Reason: "终端界面直接装载凭据状态"},
-	{Importer: "internal/tui", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "终端界面直接读取模型目录建议"},
-	{Importer: "internal/tui", Imported: "internal/tools", Step: stepStudio, Reason: "补丁预览、引用展开直接使用 tools 内部类型"},
-	{Importer: "internal/cli", Imported: "internal/memory", Step: stepStudio, Reason: "CLI 直接访问记忆合同与存储"},
-	{Importer: "internal/cli", Imported: "internal/modelcatalog", Step: stepStudio, Reason: "CLI 直接读取模型目录建议"},
-	{Importer: "internal/cli", Imported: "internal/provider", Step: stepStudio, Reason: "CLI 直接装配 Provider 身份与准入"},
-	{Importer: "internal/cli", Imported: "internal/sandboxeval", Step: stepStudio, Reason: "CLI 直接调用沙箱评测入口"},
-	{Importer: "internal/cli", Imported: "internal/tools", Step: stepStudio, Reason: "package.go 直接调用 tools.InspectPackage 等实现"},
-	{Importer: "internal/cli", Imported: "internal/userdir", Step: stepStudio, Reason: "CLI 直接解析用户配置根"},
-	{Importer: "internal/cli", Imported: "internal/workflow", Step: stepStudio, Reason: "CLI 直接读取工作流定义"},
-	{Importer: "cmd/cairn", Imported: "internal/credential", Step: stepStudio, Reason: "进程入口直接装载凭据"},
-	{Importer: "cmd/cairn", Imported: "internal/sandboxeval", Step: stepStudio, Reason: "进程入口直接调用沙箱评测"},
 }
 
 // listedPackage 是 `go list -json` 中守卫需要的字段投影。

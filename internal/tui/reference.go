@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // referencePattern 匹配任务文本中的 @引用 token：@ 后跟路径字符序列，前
@@ -27,7 +27,7 @@ const referencePreviewLimit = 8192
 // expandTaskReferences 解析并展开任务文本中的 @ 文件引用：每个引用经工作
 // 区解析（边界内、拒绝绝对路径与越界符号链接）、读取并截断到上限后按
 // 引用块附加到任务原文末尾。无引用时原文原样返回。
-func expandTaskReferences(task string, workspace tools.Workspace) (string, error) {
+func expandTaskReferences(task string, workspace app.StudioWorkspace) (string, error) {
 	matches := referencePattern.FindAllStringSubmatch(task, -1)
 	if len(matches) == 0 {
 		return task, nil
@@ -69,8 +69,8 @@ func referenceBlock(reference string, content []byte) string {
 
 // workspaceForRoot 为引用解析构造工具层工作区视图；忽略清单与读取上限与
 // 生产装配的安全默认一致。
-func workspaceForRoot(root string) (tools.Workspace, error) {
-	return tools.NewWorkspace(root, nil, referencePreviewLimit*4, 512, 1<<20)
+func workspaceForRoot(root string) (app.StudioWorkspace, error) {
+	return app.NewStudioWorkspace(root, nil, referencePreviewLimit*4, 512, 1<<20)
 }
 
 // workspaceRootOrDefault 把可能为空的工作区参数解析为当前目录。

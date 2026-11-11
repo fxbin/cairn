@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 )
 
@@ -290,7 +289,7 @@ type RunController struct {
 	session  map[string]string
 	lastSeq  map[string]uint64
 	running  map[string]bool
-	steering map[string]*agent.SteeringBridge
+	steering map[string]*app.SteeringBridge
 	baseCtx  context.Context
 	baseStop context.CancelFunc
 	wg       sync.WaitGroup

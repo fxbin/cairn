@@ -9,8 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // templateCommand 管理显式本地提示模板：list/show/render；渲染参数显式传入。
@@ -46,14 +45,14 @@ func (command Command) templateCommand(ctx context.Context, arguments []string) 
 	}
 	templateRoot := strings.TrimSpace(*root)
 	if templateRoot == "" {
-		path, err := userdir.Path("templates")
+		path, err := app.UserDirPath("templates")
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "resolve template root failed")
 			return ExitFailed
 		}
 		templateRoot = path
 	}
-	store, err := tools.NewTemplateStore(templateRoot)
+	store, err := app.NewTemplateStore(templateRoot)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "template store failed:", err)
 		return ExitFailed
@@ -74,7 +73,7 @@ func (command Command) templateCommand(ctx context.Context, arguments []string) 
 					return ExitFailed
 				}
 			} else {
-				fmt.Fprintln(command.Stdout, tools.TemplateSummary(entry))
+				fmt.Fprintln(command.Stdout, app.TemplateSummary(entry))
 			}
 		}
 		return ExitOK
@@ -120,7 +119,7 @@ func (command Command) templateCommand(ctx context.Context, arguments []string) 
 			}
 			values[strings.TrimSpace(name)] = value
 		}
-		rendered, renderErr := tools.RenderTemplate(document, values)
+		rendered, renderErr := app.RenderTemplate(document, values)
 		if renderErr != nil {
 			fmt.Fprintln(command.Stderr, "template render failed:", renderErr)
 			return ExitFailed

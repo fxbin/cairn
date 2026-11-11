@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // appendModels 按关键字检索并展示模型条目。
 func (console *RunConsole) appendModels(argument string) {
 	query := strings.TrimSpace(argument)
 	entries := console.modelEntries()
-	matched := tools.SearchModels(query, entries)
+	matched := app.SearchToolModels(query, entries)
 	if len(matched) == 0 {
 		console.appendLine(dimStyle.Render("无匹配模型（/models [关键字] 可过滤）"))
 		return
@@ -27,15 +27,15 @@ func (console *RunConsole) appendModels(argument string) {
 }
 
 // modelEntries 从当前配置与解析项组装可检索目录。
-func (console RunConsole) modelEntries() []tools.ModelSearchEntry {
-	entries := []tools.ModelSearchEntry{{
+func (console RunConsole) modelEntries() []app.ToolModelSearchEntry {
+	entries := []app.ToolModelSearchEntry{{
 		ID:       console.input.Config.Provider.Model,
 		Name:     console.input.Config.Provider.Model,
 		Provider: "active",
 	}}
 	for _, item := range console.input.Config.Resolution {
 		if item.Field == "provider.model" && item.Value != "" {
-			entries = append(entries, tools.ModelSearchEntry{
+			entries = append(entries, app.ToolModelSearchEntry{
 				ID:       item.Value,
 				Name:     item.Value,
 				Provider: "resolved",

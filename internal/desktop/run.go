@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/agent"
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -26,7 +25,7 @@ func NewRunController(service app.Service, prefs *PrefsStore, emit Emitter) *Run
 		session:  map[string]string{},
 		lastSeq:  map[string]uint64{},
 		running:  map[string]bool{},
-		steering: map[string]*agent.SteeringBridge{},
+		steering: map[string]*app.SteeringBridge{},
 		baseCtx:  baseCtx,
 		baseStop: baseStop,
 	}
@@ -57,7 +56,7 @@ func (controller *RunController) launch(work func()) error {
 }
 
 // registerRun 在 ACK 前登记取消、补充输入和会话身份，拒绝重复登记。
-func (controller *RunController) registerRun(runID, sessionID string, cancel context.CancelFunc, steering *agent.SteeringBridge) error {
+func (controller *RunController) registerRun(runID, sessionID string, cancel context.CancelFunc, steering *app.SteeringBridge) error {
 	controller.mu.Lock()
 	defer controller.mu.Unlock()
 	if controller.closing {
@@ -229,7 +228,7 @@ func (controller *RunController) StartRun(ctx context.Context, request StartRunR
 			return StartRunAck{}, saveErr
 		}
 	}
-	bridge := agent.NewSteeringBridge()
+	bridge := app.NewSteeringBridge()
 	options.Steering = bridge
 	if err := controller.registerRun(runID, options.SessionID, cancel, bridge); err != nil {
 		cancel()
@@ -300,7 +299,7 @@ func (controller *RunController) ResumeRun(ctx context.Context, request ResumeRe
 	if err != nil {
 		return StartRunAck{}, err
 	}
-	bridge := agent.NewSteeringBridge()
+	bridge := app.NewSteeringBridge()
 	options.Steering = bridge
 	if err := controller.registerRun(request.RunID, "", cancel, bridge); err != nil {
 		cancel()
@@ -508,7 +507,7 @@ func (controller *RunController) ConfirmQueue(ctx context.Context, request Queue
 	}
 	ackCh := make(chan StartRunAck, 1)
 	resultCh := make(chan queueConfirmResult, 1)
-	bridge := agent.NewSteeringBridge()
+	bridge := app.NewSteeringBridge()
 	options := app.QueueConfirmOptions{
 		Workspace: workspace, StateDir: resolveStateDir(request.StateDir), Config: configuration, InputID: request.InputID,
 	}
@@ -826,7 +825,7 @@ func (controller *RunController) RunWorkflow(ctx context.Context, workspace, wor
 		}
 		prepared = append(prepared, app.RunOptions{
 			Task: step.Task, Workspace: abs, StateDir: resolveStateDir(""), Config: configuration,
-			PreassignedRunID: domain.NewRunID(), SessionID: sessionID, Steering: agent.NewSteeringBridge(),
+			PreassignedRunID: domain.NewRunID(), SessionID: sessionID, Steering: app.NewSteeringBridge(),
 		})
 	}
 	runCtx, cancel, err := controller.runContext()

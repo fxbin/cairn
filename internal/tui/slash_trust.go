@@ -5,7 +5,7 @@ package tui
 import (
 	"fmt"
 
-	"github.com/fxbin/cairn/internal/tools"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // appendTrust 展示或切换工作区信任状态。
@@ -13,8 +13,8 @@ func (console *RunConsole) appendTrust(argument string) {
 	root := console.input.Workspace
 	switch argument {
 	case "":
-		trusted := tools.IsTrusted(root)
-		untrusted := tools.IsExplicitlyUntrusted(root)
+		trusted := app.IsWorkspaceTrusted(root)
+		untrusted := app.IsWorkspaceExplicitlyUntrusted(root)
 		status := "默认信任（无显式标记）"
 		if trusted {
 			status = "已信任（.cairn-trusted）"
@@ -26,24 +26,24 @@ func (console *RunConsole) appendTrust(argument string) {
 		console.appendLine(dimStyle.Render(fmt.Sprintf("  %s", status)))
 		console.appendLine(dimStyle.Render("  /trust trust|untrust|reset 切换状态"))
 	case "trust":
-		if err := tools.TrustWorkspace(root); err != nil {
+		if err := app.TrustWorkspace(root); err != nil {
 			console.appendLine(warnStyle.Render("标记失败: " + err.Error()))
 			return
 		}
 		console.appendLine(okStyle.Render("已标记为信任（.cairn-trusted）"))
 	case "untrust":
-		if err := tools.UntrustWorkspace(root); err != nil {
+		if err := app.UntrustWorkspace(root); err != nil {
 			console.appendLine(warnStyle.Render("操作失败: " + err.Error()))
 			return
 		}
-		if err := tools.WriteUntrustedMarker(root); err != nil {
+		if err := app.WriteUntrustedMarker(root); err != nil {
 			console.appendLine(warnStyle.Render("标记失败: " + err.Error()))
 			return
 		}
 		console.appendLine(okStyle.Render("已标记为不信任（.cairn-untrusted），写操作将被拒绝"))
 	case "reset":
-		_ = tools.UntrustWorkspace(root)
-		_ = tools.RemoveUntrustedMarker(root)
+		_ = app.UntrustWorkspace(root)
+		_ = app.RemoveUntrustedMarker(root)
 		console.appendLine(okStyle.Render("已恢复默认信任状态"))
 	default:
 		console.appendLine(warnStyle.Render("用法: /trust [trust|untrust|reset]"))

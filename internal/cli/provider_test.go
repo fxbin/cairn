@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/provider"
 )
 
@@ -84,7 +85,7 @@ func TestProviderAdmitStatusClosedLoop(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspaceHash, err := cliWorkspaceHash(workspace, loadConfigOrDie(t, configPath))
+	workspaceHash, err := app.WorkspaceHash(workspace, loadConfigOrDie(t, configPath))
 	if err != nil {
 		t.Fatal(err)
 	}

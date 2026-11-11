@@ -11,7 +11,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/workflow"
 )
 
 // workflowCommand 分派工作流域的固定子命令，不接受任意脚本。
@@ -58,7 +57,7 @@ func (command Command) workflowStatus(ctx context.Context, arguments []string) i
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	view, err := command.Service.WorkflowStatus(ctx, *workspace, *stateDir, configuration, workflow.ID(flags.Arg(0)))
+	view, err := command.Service.WorkflowStatus(ctx, *workspace, *stateDir, configuration, app.WorkflowID(flags.Arg(0)))
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "workflow status failed:", err)
 		return exitFor(err)
@@ -125,7 +124,7 @@ func (command Command) workflowResume(ctx context.Context, arguments []string) i
 		return ExitUsage
 	}
 	outcome, err := command.Service.WorkflowResume(ctx, app.WorkflowResumeOptions{
-		WorkflowID: workflow.ID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+		WorkflowID: app.WorkflowID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration,
 	})
 	return command.reportWorkflowOutcome("workflow resume", outcome, err, *jsonOutput)
 }
@@ -154,7 +153,7 @@ func (command Command) workflowAccept(ctx context.Context, arguments []string) i
 		return ExitUsage
 	}
 	outcome, err := command.Service.WorkflowAccept(ctx, app.WorkflowAcceptOptions{
-		WorkflowID: workflow.ID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+		WorkflowID: app.WorkflowID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration,
 	})
 	return command.reportWorkflowOutcome("workflow accept", outcome, err, *jsonOutput)
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/userdir"
 )
 
 // 本文件放置桥接层内部辅助：路径解析、配置装载与小型校验，避免把宿主细节
@@ -21,7 +20,7 @@ func errInvalid(message string) error {
 }
 
 func userConfigRoot() (string, error) {
-	return userdir.Root()
+	return app.UserConfigRoot()
 }
 
 // resolveStateDir 使用显式状态目录或平台默认值。

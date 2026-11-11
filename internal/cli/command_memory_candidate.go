@@ -13,8 +13,6 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/benchmark"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/memory"
-	"github.com/fxbin/cairn/internal/sandboxeval"
 )
 
 func (command Command) memoryCandidate(ctx context.Context, arguments []string) int {
@@ -94,8 +92,8 @@ func (command Command) memoryCandidateCreate(ctx context.Context, arguments []st
 		BaselineFingerprint:   *baselineFingerprint,
 		EvalSetFingerprint:    *evalSetFingerprint,
 		NoteDigest:            *noteDigest,
-		Variant: memory.CompactionParamsVariant{
-			SchemaVersion:           memory.EvolutionSchemaVersion,
+		Variant: app.MemoryCompactionParamsVariant{
+			SchemaVersion:           app.MemoryEvolutionSchemaVersion,
 			MaxPromptTokens:         *maxPromptTokens,
 			MaxSummaryBytes:         *maxSummaryBytes,
 			InventoryBudgetPercent:  *inventoryPercent,
@@ -172,14 +170,14 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		fmt.Fprintln(command.Stderr, "frozen agent configuration error:", err)
 		return ExitUsage
 	}
-	variant := memory.CompactionParamsVariant{
-		SchemaVersion:           memory.EvolutionSchemaVersion,
+	variant := app.MemoryCompactionParamsVariant{
+		SchemaVersion:           app.MemoryEvolutionSchemaVersion,
 		MaxPromptTokens:         *maxPromptTokens,
 		MaxSummaryBytes:         *maxSummaryBytes,
 		InventoryBudgetPercent:  *inventoryPercent,
 		ThresholdReservePercent: *reservePercent,
 	}
-	specDigest, err := memory.VariantSpecDigest(variant)
+	specDigest, err := app.MemoryVariantSpecDigest(variant)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "variant parameters rejected:", err)
 		return ExitUsage
@@ -189,7 +187,7 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		fmt.Fprintf(command.Stderr, "memory candidate evaluate failed: %v; create the candidate first with memory candidate create\n", err)
 		return exitFor(err)
 	}
-	if inspected.Candidate.Status != memory.CandidateStateReady && inspected.Candidate.Status != memory.CandidateStateEvaluating {
+	if inspected.Candidate.Status != app.MemoryCandidateStateReady && inspected.Candidate.Status != app.MemoryCandidateStateEvaluating {
 		fmt.Fprintf(command.Stderr, "memory candidate evaluate requires a ready or evaluating candidate, got %s; create it first or resolve its current state\n", inspected.Candidate.Status)
 		return ExitFailed
 	}
@@ -197,17 +195,17 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 		fmt.Fprintln(command.Stderr, "restated variant parameters diverge from the registered candidate specification")
 		return ExitFailed
 	}
-	evalSet, err := sandboxeval.LoadEvalSet(*evalSetPath)
+	evalSet, err := app.SandboxLoadEvalSet(*evalSetPath)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "frozen eval set error:", err)
 		return ExitUsage
 	}
-	lease, err := sandboxeval.LoadCredentialLease(*leasePath)
+	lease, err := app.SandboxLoadCredentialLease(*leasePath)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "credential lease error:", err)
 		return ExitUsage
 	}
-	policy, err := sandboxeval.LoadCredentialPolicy(*policyPath)
+	policy, err := app.SandboxLoadCredentialPolicy(*policyPath)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "credential policy error:", err)
 		return ExitUsage
@@ -248,14 +246,14 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 	}
 	if *jsonOutput {
 		projection := struct {
-			DryRun        bool                   `json:"dry_run"`
-			EvaluationID  string                 `json:"evaluation_id,omitempty"`
-			CandidateID   string                 `json:"candidate_id,omitempty"`
-			Conclusion    sandboxeval.Conclusion `json:"conclusion"`
-			ResultDigest  string                 `json:"result_digest,omitempty"`
-			RunsCompleted int                    `json:"runs_completed"`
-			StopReason    string                 `json:"stop_reason,omitempty"`
-			StopDetail    string                 `json:"stop_detail,omitempty"`
+			DryRun        bool                  `json:"dry_run"`
+			EvaluationID  string                `json:"evaluation_id,omitempty"`
+			CandidateID   string                `json:"candidate_id,omitempty"`
+			Conclusion    app.SandboxConclusion `json:"conclusion"`
+			ResultDigest  string                `json:"result_digest,omitempty"`
+			RunsCompleted int                   `json:"runs_completed"`
+			StopReason    string                `json:"stop_reason,omitempty"`
+			StopDetail    string                `json:"stop_detail,omitempty"`
 		}{
 			DryRun:        outcome.DryRun,
 			EvaluationID:  outcome.Evaluation.ID,
@@ -281,7 +279,7 @@ func (command Command) memoryCandidateEvaluate(ctx context.Context, arguments []
 			fmt.Fprintf(command.Stdout, "evaluate: %s status=%s trigger=%s runs=%d result=%s\n", outcome.Evaluation.ID, conclusion.Status, conclusion.Trigger, outcome.RunsCompleted, outcome.ResultDigest)
 		}
 	}
-	if outcome.DryRun || outcome.Conclusion.Status == sandboxeval.ConclusionPassed {
+	if outcome.DryRun || outcome.Conclusion.Status == app.SandboxConclusionPassed {
 		return ExitOK
 	}
 	return ExitFailed
@@ -320,7 +318,7 @@ func (command Command) memoryCandidateEvidence(ctx context.Context, arguments []
 		fmt.Fprintln(command.Stderr, "memory candidate evidence failed: candidate has no evaluation")
 		return ExitFailed
 	}
-	evalSet, err := sandboxeval.LoadEvalSet(*evalSetPath)
+	evalSet, err := app.SandboxLoadEvalSet(*evalSetPath)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "frozen eval set error:", err)
 		return ExitUsage
@@ -344,7 +342,7 @@ func (command Command) memoryCandidateEvidence(ctx context.Context, arguments []
 		fmt.Fprintf(command.Stdout, "baseline: success=%d/%d input_tokens=%d output_tokens=%d cost_units=%d median_wall_ms=%d repeated_explorations=%d security_incidents=%d doctor_replay_broken=%d tool_pairing_breaks=%d\n", evidence.Baseline.Successes, evidence.Baseline.Runs, evidence.Baseline.InputTokens, evidence.Baseline.OutputTokens, evidence.Baseline.CostUnits, evidence.Baseline.MedianWallMS, evidence.Baseline.RepeatedExplorations, evidence.Baseline.SecurityIncidents, evidence.Baseline.DoctorReplayBroken, evidence.Baseline.ToolPairingBreaks)
 		fmt.Fprintf(command.Stdout, "variant: success=%d/%d input_tokens=%d output_tokens=%d cost_units=%d median_wall_ms=%d repeated_explorations=%d security_incidents=%d doctor_replay_broken=%d tool_pairing_breaks=%d\n", evidence.Variant.Successes, evidence.Variant.Runs, evidence.Variant.InputTokens, evidence.Variant.OutputTokens, evidence.Variant.CostUnits, evidence.Variant.MedianWallMS, evidence.Variant.RepeatedExplorations, evidence.Variant.SecurityIncidents, evidence.Variant.DoctorReplayBroken, evidence.Variant.ToolPairingBreaks)
 	}
-	if evidence.Status != sandboxeval.ConclusionPassed {
+	if evidence.Status != app.SandboxConclusionPassed {
 		return ExitFailed
 	}
 	return ExitOK

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 // 本文件提供有界文件树与安全预览：禁止符号链接逃逸工作区，拒绝敏感与超大/
@@ -179,7 +179,7 @@ func ListFileTree(workspace string) (FileNode, error) {
 }
 
 // resolveReadableRelative 统一预览/Diff/外部打开的路径边界：
-// 使用 tools.Workspace.Resolve 约束符号链接逃逸，并对别名与解析目标
+// 经 Application 工作区视图约束符号链接逃逸，并对别名与解析目标
 // 同时执行敏感/忽略拒绝，禁止只校验用户给定别名。
 func resolveReadableRelative(workspace, relative string) (root string, resolved string, canonical string, err error) {
 	root, err = absWorkspace(workspace)
@@ -193,7 +193,7 @@ func resolveReadableRelative(workspace, relative string) (root string, resolved 
 		return "", "", "", errInvalid("absolute paths are not allowed")
 	}
 	ignore := workspaceIgnore(root)
-	ws, err := tools.NewWorkspace(root, ignore, 0, 0, 0)
+	ws, err := app.NewStudioWorkspace(root, ignore, 0, 0, 0)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -512,7 +512,7 @@ func WriteProjectInstructions(workspace, content string) error {
 	if err != nil {
 		return err
 	}
-	ws, err := tools.NewWorkspace(root, nil, 0, 0, 0)
+	ws, err := app.NewStudioWorkspace(root, nil, 0, 0, 0)
 	if err != nil {
 		return err
 	}

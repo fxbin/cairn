@@ -8,10 +8,10 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 func (console RunConsole) loadApprovalDetail(waiting *ports.WaitingApprovalError) []string {
@@ -84,7 +84,7 @@ func (console RunConsole) patchApprovalDiff() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan, err := tools.ApplyPatch{Workspace: workspace}.Plan(arguments)
+	plan, err := app.PlanApplyPatch(workspace, arguments)
 	if err != nil {
 		return nil, err
 	}
@@ -93,9 +93,9 @@ func (console RunConsole) patchApprovalDiff() ([]string, error) {
 
 // previewWorkspace 构造补丁差异预览用的工作区视图：与 Boot 装配同一 ignore
 // 与读取上限配置来源，保证 Plan 的边界判定与策略侧一致。
-func (console RunConsole) previewWorkspace() (tools.Workspace, error) {
+func (console RunConsole) previewWorkspace() (app.StudioWorkspace, error) {
 	configuration := console.input.Config
-	return tools.NewWorkspace(workspaceRootOrDefault(console.input.Workspace), configuration.Workspace.Ignore, configuration.Workspace.MaxReadBytes, configuration.Workspace.MaxSearchFiles, configuration.Workspace.MaxSearchBytes)
+	return app.NewStudioWorkspace(workspaceRootOrDefault(console.input.Workspace), configuration.Workspace.Ignore, configuration.Workspace.MaxReadBytes, configuration.Workspace.MaxSearchFiles, configuration.Workspace.MaxSearchBytes)
 }
 
 // proposalArgumentsForOperation 从事件流提取指定操作的工具提议身份与参数。

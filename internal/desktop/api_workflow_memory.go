@@ -7,7 +7,6 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
 func (api *API) ListProjectInstructions(_ context.Context, workspace string) (ProjectInstructionsView, error) {
@@ -15,11 +14,7 @@ func (api *API) ListProjectInstructions(_ context.Context, workspace string) (Pr
 	if err != nil {
 		return ProjectInstructionsView{}, err
 	}
-	ws, err := tools.NewWorkspace(abs, nil, 0, 0, 0)
-	if err != nil {
-		return ProjectInstructionsView{}, err
-	}
-	snapshot, err := tools.LoadProjectInstructions(ws)
+	snapshot, err := app.StudioProjectInstructions(abs)
 	if err != nil {
 		return ProjectInstructionsView{}, err
 	}

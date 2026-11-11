@@ -9,8 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fxbin/cairn/internal/tools"
-	"github.com/fxbin/cairn/internal/userdir"
+	"github.com/fxbin/cairn/internal/app"
 )
 
 // packageCommand 管理本地内容包：inspect/install/list/enable/disable。
@@ -42,7 +41,7 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 	}
 	storeRoot := strings.TrimSpace(*root)
 	if storeRoot == "" {
-		path, err := userdir.Path("packages")
+		path, err := app.UserDirPath("packages")
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "resolve package root failed")
 			return ExitFailed
@@ -59,7 +58,7 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 			fmt.Fprintln(command.Stderr, "package inspect requires source directory")
 			return ExitUsage
 		}
-		manifest, err := tools.InspectPackage(sourcePath)
+		manifest, err := app.InspectPackage(sourcePath)
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "package inspect failed:", err)
 			return ExitFailed
@@ -81,7 +80,7 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 			fmt.Fprintln(command.Stderr, "package install requires source directory")
 			return ExitUsage
 		}
-		store, err := tools.NewPackageStore(storeRoot)
+		store, err := app.NewPackageStore(storeRoot)
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "package store failed:", err)
 			return ExitFailed
@@ -97,10 +96,10 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 			}
 			return ExitOK
 		}
-		fmt.Fprintln(command.Stdout, tools.PackageSummary(entry))
+		fmt.Fprintln(command.Stdout, app.PackageSummary(entry))
 		return ExitOK
 	case "list":
-		store, err := tools.NewPackageStore(storeRoot)
+		store, err := app.NewPackageStore(storeRoot)
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "package store failed:", err)
 			return ExitFailed
@@ -116,7 +115,7 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 					return ExitFailed
 				}
 			} else {
-				fmt.Fprintln(command.Stdout, tools.PackageSummary(item))
+				fmt.Fprintln(command.Stdout, app.PackageSummary(item))
 			}
 		}
 		return ExitOK
@@ -126,7 +125,7 @@ func (command Command) packageCommand(ctx context.Context, arguments []string) i
 			fmt.Fprintln(command.Stderr, "package "+action+" requires name")
 			return ExitUsage
 		}
-		store, err := tools.NewPackageStore(storeRoot)
+		store, err := app.NewPackageStore(storeRoot)
 		if err != nil {
 			fmt.Fprintln(command.Stderr, "package store failed:", err)
 			return ExitFailed

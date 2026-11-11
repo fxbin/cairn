@@ -13,13 +13,12 @@ import (
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/tools"
 )
 
-func (console RunConsole) referenceWorkspace() tools.Workspace {
+func (console RunConsole) referenceWorkspace() app.StudioWorkspace {
 	workspace, err := workspaceForRoot(workspaceRootOrDefault(console.input.Workspace))
 	if err != nil {
-		return tools.Workspace{}
+		return app.StudioWorkspace{}
 	}
 	return workspace
 }
