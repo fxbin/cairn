@@ -125,8 +125,9 @@ export default function AppV2() {
     return () => { window.removeEventListener("resize", onResize); window.removeEventListener("keydown", onKeyDown); };
   }, []);
 
+  // 始终包含归档项：选中的归档会话仍须由 Journal 状态判定 running，归档视图也依赖同一数据源。
   const refreshRuns = useCallback(async (path: string, generation: number) => {
-    const data = await desktop.listRuns({ workspace: path });
+    const data = await desktop.listRuns({ workspace: path, include_archived: true });
     if (generation === generationRef.current && projectRef.current === path) setRuns(data);
     return data;
   }, []);
@@ -144,6 +145,7 @@ export default function AppV2() {
     setRunId(null);
     setDetail(null);
     setLiveEvents([]);
+    setSending(false);
     setSendingText("");
     setWorkspaceStatus(null);
     setBridgeStatus("connecting");
@@ -161,7 +163,7 @@ export default function AppV2() {
     closeSmallNav();
     setNotice("");
     try {
-      const [ws, history, health] = await Promise.all([desktop.observeWorkspace(path), desktop.listRuns({ workspace: path }), desktop.health().catch(() => null)]);
+      const [ws, history, health] = await Promise.all([desktop.observeWorkspace(path), desktop.listRuns({ workspace: path, include_archived: true }), desktop.health().catch(() => null)]);
       if (generation !== generationRef.current) return;
       setWorkspaceStatus(ws);
       setBridgeStatus(health?.ok ? "healthy" : "disconnected");
