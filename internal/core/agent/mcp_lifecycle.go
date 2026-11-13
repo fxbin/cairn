@@ -15,7 +15,7 @@ import (
 // quiesceMCP 只关闭已由本次 Boot 持有的资源；失败保持 started，不能先完成或验证运行。
 // 清理不消耗模型调用额度，资源回收必须能够在业务预算耗尽后继续执行。
 func (loop *Loop) quiesceMCP(ctx context.Context, projection *domain.RunProjection, input RunInput) error {
-	if !loop.Tools.MCPNeedsQuiescence() {
+	if !loop.mcpNeedsQuiescence() {
 		return nil
 	}
 	if projection.PendingOperation != nil {

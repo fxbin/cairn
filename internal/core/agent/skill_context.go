@@ -31,7 +31,7 @@ func (loop *Loop) restoreSkillResults(events []domain.Event) error {
 			break
 		}
 	}
-	loop.Tools.PrepareSkills(task)
+	loop.prepareSkillContext(task)
 	proposals := make(map[domain.OperationID]string)
 	succeeded := make(map[domain.OperationID]skillSuccessReceipt)
 	for _, event := range events {
@@ -69,7 +69,7 @@ func (loop *Loop) restoreSkillResults(events []domain.Event) error {
 			if err != nil || otherErr != nil || a != b {
 				return errors.New("skill activation does not match its operation receipt")
 			}
-			if err := loop.Tools.AcceptSkillResult("skill", result); err != nil {
+			if err := loop.acceptSkillResult("skill", result); err != nil {
 				return err
 			}
 		}
@@ -82,7 +82,7 @@ func (loop *Loop) skillContextMessages() []ports.Message {
 	if loop.Tools == nil {
 		return nil
 	}
-	contents := loop.Tools.ActiveSkills()
+	contents := loop.activeSkillContents()
 	if len(contents) == 0 {
 		return nil
 	}
