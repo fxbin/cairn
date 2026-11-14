@@ -51,6 +51,9 @@ func TestBootContextProvidersRespectExplicitSkillConfiguration(t *testing.T) {
 			if len(boot.Loop.ContextProviders) != test.count {
 				t.Fatalf("context providers=%d want=%d", len(boot.Loop.ContextProviders), test.count)
 			}
+			if len(boot.Loop.ResultObservers) != test.count {
+				t.Fatalf("result observers=%d want=%d", len(boot.Loop.ResultObservers), test.count)
+			}
 			if boot.Loop.ConfigFingerprint != configuration.Fingerprint() {
 				t.Fatal("context assembly changed frozen configuration identity")
 			}

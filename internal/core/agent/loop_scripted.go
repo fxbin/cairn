@@ -74,10 +74,7 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 			return Result{}, fmt.Errorf("replay scripted run after repairing tool results: %w", err)
 		}
 	}
-	if err := loop.restoreMCPResults(events); err != nil {
-		return Result{}, err
-	}
-	if err := loop.restoreSkillResults(events); err != nil {
+	if err := loop.restoreResultProjections(events); err != nil {
 		return Result{}, err
 	}
 	if err := loop.restoreProjectInstructions(events); err != nil {
@@ -325,7 +322,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err := loop.appendToolResult(ctx, projection, input, turnID, pending.OperationID, result); err != nil {
 		return Result{RunID: input.RunID}, err
 	}
-	if err := loop.acceptCapabilityResults(call.Name, result); err != nil {
+	if err := loop.observeToolResult(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {

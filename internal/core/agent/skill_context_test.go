@@ -36,7 +36,7 @@ func newSkillLoopTest(t *testing.T, workspacePath, skillsPath string, provider p
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, ContextProviders: []ContextProvider{skills.NewContext(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ContextProviders: []ContextProvider{skills.NewContext(registry)}, ResultObservers: []ToolResultObserver{skills.NewHistory(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
 }
 
 // skillLoopSource 创建包含工具声明的技能，权限声明必须保持为无效授权。
@@ -97,7 +97,9 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 	withoutReceipt := []domain.Event{}
 	for _, event := range events {
 		if event.Type == domain.EventOperationSucceeded {
-			var receipt skillSuccessReceipt
+			var receipt struct {
+				ToolName string `json:"tool_name"`
+			}
 			_ = json.Unmarshal(event.Payload, &receipt)
 			if receipt.ToolName == "skill" {
 				continue
@@ -105,7 +107,7 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 		}
 		withoutReceipt = append(withoutReceipt, event)
 	}
-	if err := next.restoreSkillResults(withoutReceipt); err == nil || len(next.activeSkillContents()) != 0 {
+	if err := next.restoreResultProjections(withoutReceipt); err == nil || len(next.Tools.(*tools.Registry).ActiveSkills()) != 0 {
 		t.Fatal("skill activated without matching success receipt")
 	}
 }

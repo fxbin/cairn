@@ -66,6 +66,9 @@ func (loop *Loop) quiesceMCP(ctx context.Context, projection *domain.RunProjecti
 	if err := loop.appendToolResult(resultContext, projection, input, turnID, operationID, result); err != nil {
 		return err
 	}
+	if err := loop.observeToolResult(call.Name, result); err != nil {
+		return err
+	}
 	if createdTurn {
 		return loop.append(resultContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnClosed, TurnID: &turnID, Payload: mustJSON(domain.TurnClosedPayload{Outcome: "continue"})})
 	}

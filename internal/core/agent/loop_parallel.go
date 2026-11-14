@@ -74,16 +74,15 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			continue
 		}
 		if err := loop.ensureToolBudget(ctx, input.RunID); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
+			finishErr := loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
 			outcomes[index] = toolCallOutcome{err: err}
-			return err
+			return errors.Join(err, finishErr)
 		}
 		// 策略判定先于事件追加：非 allow 调用直接回退串行路径，由 executeTool
 		// 走完整单份提议链，避免组内留下停在 denied/awaiting 的孤儿提议。
 		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 		if err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
+			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		decision = freshApprovalDecision(*projection, decision)
 		decision = loop.bindMCPDeclaration(call.Name, decision)
@@ -91,28 +90,23 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}
 			if err != nil {
-				loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-				return err
+				return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 			}
 			continue
 		}
 		operationID := domain.NewOperationID()
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolCallProposed, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(toolCallPayload{CallID: call.ID, ToolName: call.Name, Arguments: call.Arguments})}); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
+			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
+			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		startedPayload, err := loop.plannedOperationPayload(call)
 		if err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
+			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(startedPayload)}); err != nil {
-			loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes)
-			return err
+			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		prepared = append(prepared, preparedReadonlyCall{index: index, call: call, operationID: operationID, decision: decision})
 	}
@@ -171,7 +165,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
-		if err := loop.acceptCapabilityResults(item.call.Name, result); err != nil {
+		if err := loop.observeToolResult(item.call.Name, result); err != nil {
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
@@ -193,8 +187,9 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 }
 
 // finishPreparedReadonly 在并行组准备阶段中断时补执行并落盘已 started 的调用，
-// 避免留下悬空只读操作。
-func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, prepared []preparedReadonlyCall, outcomes []toolCallOutcome) {
+// 避免留下悬空只读操作，并返回所有持久化或投影错误供调用方保留原始触发原因。
+func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, prepared []preparedReadonlyCall, outcomes []toolCallOutcome) error {
+	var finishErr error
 	for _, item := range prepared {
 		result := loop.executeToolWithIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
 		result = redactToolResult(result)
@@ -209,15 +204,22 @@ func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain
 		cancel()
 		if appendErr != nil {
 			outcomes[item.index] = toolCallOutcome{result: result, err: appendErr}
+			finishErr = errors.Join(finishErr, appendErr)
 			continue
 		}
 		if err := loop.appendToolResult(ctx, projection, input, turnID, item.operationID, result); err != nil {
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
+			finishErr = errors.Join(finishErr, err)
 			continue
 		}
-		_ = loop.acceptCapabilityResults(item.call.Name, result)
+		if err := loop.observeToolResult(item.call.Name, result); err != nil {
+			outcomes[item.index] = toolCallOutcome{result: result, err: err}
+			finishErr = errors.Join(finishErr, err)
+			continue
+		}
 		outcomes[item.index] = toolCallOutcome{result: result}
 	}
+	return finishErr
 }
 
 // toolNamesOf 提取批次工具名，供并行分组使用。

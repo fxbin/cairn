@@ -7,71 +7,9 @@ import (
 	"strings"
 
 	"encoding/json"
-	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
-
-// mcpSuccessReceipt 只读取成功终态中的显式工具结果，不能由失败回执授予目录状态。
-type mcpSuccessReceipt struct {
-	ToolName string              `json:"tool_name"`
-	Result   contract.ToolResult `json:"result"`
-}
-
-// restoreMCPResults 保留 Journal 的成功回执边界，不连接或重发任何外部调用。
-func (loop *Loop) restoreMCPResults(events []domain.Event) error {
-	loop.resetMCPProjection()
-	loop.mcpModelDeclarations = nil
-	proposals := make(map[domain.OperationID]string)
-	succeeded := make(map[domain.OperationID]mcpSuccessReceipt)
-	for _, event := range events {
-		if event.Type == domain.EventModelRequestStarted {
-			loop.captureMCPDeclarations(loop.Tools.Specs())
-			continue
-		}
-		if event.OperationID == nil {
-			continue
-		}
-		switch event.Type {
-		case domain.EventToolCallProposed:
-			var proposal toolCallPayload
-			if json.Unmarshal(event.Payload, &proposal) == nil {
-				proposals[*event.OperationID] = proposal.ToolName
-			}
-		case domain.EventOperationSucceeded:
-			var payload mcpSuccessReceipt
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				succeeded[*event.OperationID] = payload
-			}
-		case domain.EventToolResultAppended:
-			name := proposals[*event.OperationID]
-			if name != "mcp_discover" && name != "tool_search" {
-				continue
-			}
-			var result contract.ToolResult
-			if json.Unmarshal(event.Payload, &result) != nil {
-				return errors.New("decode persisted MCP result failed")
-			}
-			if !result.OK || result.Code != "ok" {
-				continue
-			}
-			receipt, found := succeeded[*event.OperationID]
-			if !found || receipt.ToolName != name || !receipt.Result.OK || receipt.Result.Code != "ok" {
-				return errors.New("persisted MCP catalog has no successful operation receipt")
-			}
-			receiptDigest, receiptErr := canonicaljson.Fingerprint("cairn-mcp-result-v1", receipt.Result)
-			resultDigest, resultErr := canonicaljson.Fingerprint("cairn-mcp-result-v1", result)
-			if receiptErr != nil || resultErr != nil || receiptDigest != resultDigest {
-				return errors.New("persisted MCP result does not match its operation receipt")
-			}
-			if err := loop.acceptMCPResult(name, result); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
 
 // captureMCPDeclarations 冻结本次模型请求看见的 MCP 声明，加载只影响后续请求。
 func (loop *Loop) captureMCPDeclarations(specs []ports.ToolSpec) {
@@ -107,14 +45,21 @@ func (loop *Loop) bindMCPDeclaration(name string, decision AuthorizationDecision
 	return decision
 }
 
-// modelToolResultJSON 为目录发现与技能加载生成精简视图，普通工具保持既有回放内容。
+// modelToolResultJSON 为显式观察的工具生成模型视图，普通工具保持既有回放内容。
 func (loop *Loop) modelToolResultJSON(name string, raw json.RawMessage) (string, error) {
-	if name != "mcp_discover" && name != "tool_search" && name != "skill" {
+	projected := false
+	for _, observer := range loop.ResultObservers {
+		if observer != nil && observer.HandlesToolResult(name) {
+			projected = true
+			break
+		}
+	}
+	if !projected {
 		return string(raw), nil
 	}
 	var result contract.ToolResult
 	if json.Unmarshal(raw, &result) != nil {
-		return "", errors.New("decode persisted MCP result failed")
+		return "", errors.New("decode persisted projected tool result failed")
 	}
 	encoded, err := json.Marshal(loop.Tools.ModelResult(name, result))
 	return string(encoded), err

@@ -65,10 +65,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 			return Result{}, fmt.Errorf("replay run after repairing tool results: %w", err)
 		}
 	}
-	if err := loop.restoreMCPResults(events); err != nil {
-		return Result{}, err
-	}
-	if err := loop.restoreSkillResults(events); err != nil {
+	if err := loop.restoreResultProjections(events); err != nil {
 		return Result{}, err
 	}
 	if err := loop.restoreProjectInstructions(events); err != nil {
@@ -342,7 +339,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.appendToolResult(ctx, &projection, input, turnID, pending.OperationID, result); err != nil {
 		return Result{}, err
 	}
-	if err := loop.acceptCapabilityResults(call.Name, result); err != nil {
+	if err := loop.observeToolResult(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {

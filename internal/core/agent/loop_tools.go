@@ -218,7 +218,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
 		return contract.ToolResult{}, err
 	}
-	if err := loop.acceptCapabilityResults(call.Name, result); err != nil {
+	if err := loop.observeToolResult(call.Name, result); err != nil {
 		return contract.ToolResult{}, err
 	}
 	if cancelled {
@@ -304,6 +304,9 @@ func freshApprovalDecision(projection domain.RunProjection, decision Authorizati
 // 标注副作用类别，apply_patch 额外携带确定性改写计划（相对路径与前后摘要），
 // 并在改写现文件前生成可回退的 before 快照引用。
 func (loop *Loop) plannedOperationPayload(call ports.ToolCall) (operationPayload, error) {
+	if err := loop.validateResultObservers(call.Name); err != nil {
+		return operationPayload{}, err
+	}
 	sideEffect := loop.Tools.SideEffect(call.Name)
 	payload := operationPayload{ToolName: call.Name, SideEffectClass: string(sideEffect), MutationBarrier: sideEffect == contract.SideEffectProcess}
 	if call.Name != "apply_patch" {

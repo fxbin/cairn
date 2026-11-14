@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/contract"
@@ -20,6 +21,11 @@ type Tool interface {
 // SideEffectTool 由具有副作用分类的工具实现。
 type SideEffectTool interface {
 	SideEffect() contract.SideEffectClass
+}
+
+// ResultProjectionTool 声明工具的成功回执必须经过可恢复投影接纳。
+type ResultProjectionTool interface {
+	RequiresResultObserver() bool
 }
 
 // Registry 按注册顺序保存名称唯一的固定工具。
@@ -115,4 +121,15 @@ func (registry *Registry) SideEffect(name string) contract.SideEffectClass {
 // ReadonlyToolNames 返回固定工具中副作用为 none 的只读工具名集合。
 func (registry *Registry) ReadonlyToolNames() map[string]bool {
 	return ReadonlyToolNames(registry)
+}
+
+// RequiresResultObserver 为内核提供安全元数据，不暴露具体能力类型。
+// 固定基础工具为空行为，保留能力命名空间要求观察器；普通未知工具仍返回结构化失败。
+func (registry *Registry) RequiresResultObserver(name string) bool {
+	if tool, exists := registry.tools[name]; exists {
+		projection, ok := tool.(ResultProjectionTool)
+		return ok && projection.RequiresResultObserver()
+	}
+	return name == "mcp_discover" || name == "tool_search" || name == "skill" ||
+		name == contract.MCPQuiesceTool || strings.HasPrefix(name, "mcp__")
 }

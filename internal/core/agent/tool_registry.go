@@ -22,4 +22,6 @@ type ToolRegistry interface {
 	ModelResult(name string, result contract.ToolResult) contract.ToolResult
 	// ReadonlyToolNames 返回静态工具的只读集合，供并行计划使用。
 	ReadonlyToolNames() map[string]bool
+	// RequiresResultObserver 标记结果包含可恢复状态的工具，不改变普通未知工具的失败行为。
+	RequiresResultObserver(name string) bool
 }
