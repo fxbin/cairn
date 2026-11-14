@@ -27,7 +27,9 @@ type MemoryRecallRequest struct {
 }
 
 // MemoryRecall 只读召回工具。
-type MemoryRecall struct{}
+type MemoryRecall struct {
+	Explain MemoryExplainFunc
+}
 
 // Spec 返回模型可见工具声明。
 func (MemoryRecall) Spec() ports.ToolSpec {
@@ -51,8 +53,8 @@ func (MemoryRecall) Spec() ports.ToolSpec {
 func (MemoryRecall) SideEffect() contract.SideEffectClass { return contract.SideEffectNone }
 
 // Execute 执行只读召回；未装配回调时失败关闭。
-func (MemoryRecall) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
-	explain := defaultMemoryExplain()
+func (tool MemoryRecall) Execute(ctx context.Context, raw json.RawMessage) contract.ToolResult {
+	explain := tool.Explain
 	if explain == nil {
 		return contract.ToolFailure("memory_recall_unavailable", "memory recall is not configured for this runtime")
 	}

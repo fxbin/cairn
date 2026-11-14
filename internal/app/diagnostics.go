@@ -355,6 +355,11 @@ func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset s
 
 // presetToolsWithWeb 按 opt-in 决定是否暴露网络与会话工具。
 func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig) []tools.Tool {
+	return presetToolsWithCallbacks(workspace, execTool, preset, options, nil, nil)
+}
+
+// presetToolsWithCallbacks 显式装配实例回调并保持工具规格与注册顺序；最小组合不引用回调。
+func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig, explain tools.MemoryExplainFunc, deliver tools.MessageDeliverFunc) []tools.Tool {
 	if preset == config.PresetMinimal {
 		return minimalTools(workspace, execTool)
 	}
@@ -370,7 +375,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 		tools.GitCommit{Workspace: workspace},
 		patchTool,
 		execTool,
-		tools.SendMessage{},
+		tools.SendMessage{Deliver: deliver},
 		tools.DelegateTask{},
 	}
 	// 网络工具 opt-in：与 dsh Web Search 设置一致，默认不暴露。
@@ -390,7 +395,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	}
 	if preset == config.PresetReadOnly {
 		readOnly := append([]tools.Tool(nil), available[:7]...)
-		readOnly = append(readOnly, tools.MemoryRecall{})
+		readOnly = append(readOnly, tools.MemoryRecall{Explain: explain})
 		if options.LspDiagnostics {
 			readOnly = append(readOnly, tools.LspDiagnostics{Workspace: workspace})
 		}
@@ -399,7 +404,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 	if options.LspDiagnostics {
 		available = append(available, tools.LspDiagnostics{Workspace: workspace})
 	}
-	available = append(available, tools.MemoryRecall{})
+	available = append(available, tools.MemoryRecall{Explain: explain})
 	return available
 }
 
