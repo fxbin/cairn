@@ -37,6 +37,11 @@ func TestMinimalBootExposesOnlyBasicPorts(t *testing.T) {
 	if got := boot.Registry.Names(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools=%v want=%v", got, want)
 	}
+	for _, name := range []string{"memory_recall", "send_message"} {
+		if result := boot.Registry.Execute(context.Background(), name, json.RawMessage(`{}`)); result.OK || result.Code != "unknown_tool" {
+			t.Fatalf("minimal boot wired optional tool %s: %+v", name, result)
+		}
+	}
 	if boot.MCP != nil || boot.Loop.Delegator != nil || boot.Loop.AsyncChildren != nil || len(boot.Loop.Verification) != 0 || len(boot.Loop.Hooks) != 0 {
 		t.Fatal("minimal boot created an optional capability")
 	}
@@ -170,14 +175,6 @@ func TestMinimalKernelBasicWorkflowAndColdResume(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "input.txt"), []byte("seed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	previousExplain, previousDeliver := tools.CurrentMemoryExplain(), tools.CurrentMessageDeliver()
-	defer tools.BindMemoryExplain(previousExplain)
-	defer tools.BindMessageDeliver(previousDeliver)
-	marker := errors.New("outer message callback")
-	tools.BindMemoryExplain(func(context.Context, tools.MemoryRecallRequest) (json.RawMessage, error) {
-		return json.RawMessage(`{"outer":true}`), nil
-	})
-	tools.BindMessageDeliver(func(context.Context, string, string, string) error { return marker })
 	digest := sha256.Sum256([]byte("seed\n"))
 	patch, err := json.Marshal(tools.PatchArguments{Path: "input.txt", Mode: "update", ExpectedSHA256: "sha256:" + hex.EncodeToString(digest[:]), Replacements: []tools.Replacement{{Old: "seed", New: "changed"}}})
 	if err != nil {
@@ -208,10 +205,7 @@ func TestMinimalKernelBasicWorkflowAndColdResume(t *testing.T) {
 			if strings.Join(names, ",") != "list_files,read_file,search_text,apply_patch,exec_command" {
 				return fmt.Errorf("advanced tools exposed: %v", names)
 			}
-			result, err := tools.CurrentMemoryExplain()(context.Background(), tools.MemoryRecallRequest{})
-			if err != nil || string(result) != `{"outer":true}` || !errors.Is(tools.CurrentMessageDeliver()(context.Background(), "", "", ""), marker) {
-				return errors.New("minimal run replaced optional tool callbacks")
-			}
+
 			return nil
 		}}
 		providerInstances++

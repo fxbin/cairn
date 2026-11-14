@@ -139,7 +139,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		}
 		boot.MCP = catalog
 	}
-	available := presetTools(workspace, execTool, cfg.Preset, cfg.Tools)
+	available := service.bootTools(boot, stateDir)
 	if allowSharedLock {
 		// 子运行工具面不注册委派工具：与 Loop 侧 Delegator 只绑根运行一致，
 		// 子不嵌套委派，规格也不暴露给子模型，避免可达的 not_wired 失败提议。

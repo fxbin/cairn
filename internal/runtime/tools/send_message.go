@@ -19,7 +19,7 @@ const SendMessageMaxBytes = 8 * 1024
 
 // SendMessage 需要 Deliver 才能真正投递；未装配时执行失败关闭。
 type SendMessage struct {
-	Deliver func(ctx context.Context, toRunID, content, reason string) error
+	Deliver MessageDeliverFunc
 }
 
 // Spec 返回工具声明。
@@ -67,9 +67,6 @@ func (tool SendMessage) Execute(ctx context.Context, raw json.RawMessage) contra
 		return contract.ToolFailure("message_too_large", "content 超出上限")
 	}
 	deliver := tool.Deliver
-	if deliver == nil {
-		deliver = defaultMessageDeliver()
-	}
 	if deliver == nil {
 		return contract.ToolFailure("not_wired", ErrMessageNotWired.Error())
 	}

@@ -14,8 +14,6 @@ import (
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/memory"
-	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 var (
@@ -223,42 +221,6 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
 	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
-	// 嵌套运行恢复：委派回调会在本 Run 内嵌套子 Run，子 Run 会覆盖进程级
-	// 回调绑定；先保存外层绑定并在返回时恢复，保证父 Loop 后续 send_message
-	// 与 memory_recall 仍指向父 Boot 的存活资源。
-	if options.Config.Preset != config.PresetMinimal {
-		previousDeliver := tools.CurrentMessageDeliver()
-		previousExplain := tools.CurrentMemoryExplain()
-		defer tools.BindMessageDeliver(previousDeliver)
-		defer tools.BindMemoryExplain(previousExplain)
-		// send_message 投递：写入对端 run Journal（父/子跟进）。
-		tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
-			return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)
-		})
-		// memory_recall：只读证据账本；服务端强制工作区，模型无法写入或跨区检索。
-		tools.BindMemoryExplain(func(ctx context.Context, request tools.MemoryRecallRequest) (json.RawMessage, error) {
-			ledger, err := service.ExplainMemoryRecall(ctx, MemoryExplainOptions{
-				Query: memory.RecallQuery{
-					TaskPromptDigest:    request.TaskPromptDigest,
-					Outcomes:            request.Outcomes,
-					FailureClasses:      request.FailureClasses,
-					TrustedVerification: request.TrustedVerification,
-					CreatedFrom:         request.CreatedFrom,
-					CreatedUntil:        request.CreatedUntil,
-					Limit:               request.Limit,
-					Precision:           request.Precision,
-				},
-				Workspace: options.Workspace,
-				StateDir:  options.StateDir,
-				Config:    options.Config,
-				Now:       time.Now().UTC(),
-			})
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(ledger)
-		})
-	}
 
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{}, err
