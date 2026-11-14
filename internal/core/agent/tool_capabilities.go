@@ -10,12 +10,11 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// mcpToolCapability 是外部工具目录、授权身份和资源生命周期的可选端口。
+// mcpToolCapability 是外部工具授权身份与资源生命周期的过渡端口。
 // 实现方须提供完整契约，避免出现仅支持执行而不支持结果核验的半接线状态。
 type mcpToolCapability interface {
 	ExecuteWithMCPIdentity(context.Context, string, json.RawMessage, string) contract.ToolResult
 	MCPNeedsQuiescence() bool
-	MCPDeclarationFingerprint(string) (string, bool)
 }
 
 // mcpCapability 仅在注册表实现完整扩展契约时返回有效端口。
@@ -40,12 +39,4 @@ func (loop *Loop) executeToolWithIdentity(ctx context.Context, name string, argu
 func (loop *Loop) mcpNeedsQuiescence() bool {
 	capability := loop.mcpCapability()
 	return capability != nil && capability.MCPNeedsQuiescence()
-}
-
-// mcpDeclarationFingerprint 获取外部工具声明的当前身份。
-func (loop *Loop) mcpDeclarationFingerprint(name string) (string, bool) {
-	if capability := loop.mcpCapability(); capability != nil {
-		return capability.MCPDeclarationFingerprint(name)
-	}
-	return "", false
 }

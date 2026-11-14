@@ -85,7 +85,6 @@ func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.Too
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
-	decision = loop.bindMCPDeclaration(call.Name, decision)
 	return freshApprovalDecision(projection, decision), nil
 }
 
@@ -120,7 +119,6 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		if err != nil {
 			return contract.ToolResult{}, err
 		}
-		decision = loop.bindMCPDeclaration(call.Name, decision)
 		decision = freshApprovalDecision(*projection, decision)
 		if decision.Effect == AuthorizationAsk {
 			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
@@ -143,7 +141,6 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return contract.ToolResult{}, err
 	}
 	decision = freshApprovalDecision(*projection, decision)
-	decision = loop.bindMCPDeclaration(call.Name, decision)
 	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 		return contract.ToolResult{}, err
 	}

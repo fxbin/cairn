@@ -85,7 +85,6 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			return errors.Join(err, loop.finishPreparedReadonly(ctx, projection, input, turnID, prepared, outcomes))
 		}
 		decision = freshApprovalDecision(*projection, decision)
-		decision = loop.bindMCPDeclaration(call.Name, decision)
 		if decision.Effect != AuthorizationAllow {
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}

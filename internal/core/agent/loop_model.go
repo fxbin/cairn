@@ -68,7 +68,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 	toolCallIDs := make(map[string]struct{})
 	done := false
 	specs := loop.Tools.Specs()
-	loop.captureMCPDeclarations(specs)
+	if err := loop.captureRequestScope(specs); err != nil {
+		return response, err
+	}
 	err := loop.Provider.Stream(ctx, ports.ModelRequest{Model: loop.Model, Messages: messages, Tools: specs}, func(event ports.ModelEvent) error {
 		if done {
 			return errors.New("provider emitted event after done")

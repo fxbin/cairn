@@ -24,7 +24,6 @@ import (
 	"github.com/fxbin/cairn/internal/runtime/artifact"
 	"github.com/fxbin/cairn/internal/runtime/credential"
 	"github.com/fxbin/cairn/internal/runtime/lock"
-	"github.com/fxbin/cairn/internal/runtime/policy"
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
@@ -199,7 +198,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口。minimal 只注入基础工具方法集，
 // 其余组合沿用可选能力识别，保持既有执行与恢复语义。
-func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
+func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
 	var registryPort agent.ToolRegistry = registry
 	if configuration.Preset == config.PresetMinimal {
 		registryPort = minimalToolRegistry{ToolRegistry: registry}

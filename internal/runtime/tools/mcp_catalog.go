@@ -108,3 +108,6 @@ func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name strin
 	}
 	return registry.Execute(ctx, name, raw)
 }
+
+// RequiresRequestScope 要求存在外部目录时使用绑定模型请求作用域的完整授权端口，避免遗漏声明约束。
+func (registry *Registry) RequiresRequestScope() bool { return registry.mcp != nil }

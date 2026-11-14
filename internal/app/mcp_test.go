@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -28,6 +29,9 @@ func TestMCPBootAndStatusAreLazy(t *testing.T) {
 	}
 	if boot.MCP == nil {
 		t.Fatal("MCP was not explicitly assembled")
+	}
+	if _, scoped := boot.Loop.Gate.(agent.RequestScope); !scoped || !boot.Registry.RequiresRequestScope() {
+		t.Fatal("MCP authorizer lost its paired request scope")
 	}
 	specs := boot.Registry.Specs()
 	found := false
