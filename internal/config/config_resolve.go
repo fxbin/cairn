@@ -88,7 +88,8 @@ func resolveProviderConnection(cfg *Config, overlay providerOverlay, recorder *r
 	return nil
 }
 
-// normalizePreset 归一化并应用静态 Preset 的组合语义：read-only 强制写入与
+// normalizePreset 归一化静态能力组合；minimal 的能力冲突由 Validate 拒绝。
+// read-only 强制写入与
 // 执行策略为 deny 并记录来源（Preset 即组合，显式 allow 配置被组合覆盖且在
 // Resolution 中可见）；benchmark 复用 coding 工具集，其冻结配置、Docker 与
 // 隔离约束由 benchmark runner 自行强制，不在通用配置层重复。presetSource 由
@@ -99,7 +100,7 @@ func normalizePreset(cfg *Config, recorder *resolutionRecorder, presetSource str
 		cfg.Preset = PresetCoding
 		recorder.record("preset", PresetCoding, presetSource)
 		return nil
-	case PresetCoding, PresetBenchmark:
+	case PresetMinimal, PresetCoding, PresetBenchmark:
 		recorder.record("preset", cfg.Preset, presetSource)
 		return nil
 	case PresetReadOnly:
@@ -117,7 +118,7 @@ func normalizePreset(cfg *Config, recorder *resolutionRecorder, presetSource str
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s)", cfg.Preset, PresetCoding, PresetReadOnly, PresetBenchmark)
+		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s, %s)", cfg.Preset, PresetMinimal, PresetCoding, PresetReadOnly, PresetBenchmark)
 	}
 }
 

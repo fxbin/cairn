@@ -184,8 +184,12 @@ type SessionTree struct {
 	Roots []domain.RunID                   `json:"roots"`
 }
 
-// Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop；返回前关闭
+// Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop，返回前关闭 Boot。
+// 最小组合先校验能力冲突，不绑定可选工具回调或创建委派运行时。
 func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
+	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
 	}
@@ -222,37 +226,40 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	// 嵌套运行恢复：委派回调会在本 Run 内嵌套子 Run，子 Run 会覆盖进程级
 	// 回调绑定；先保存外层绑定并在返回时恢复，保证父 Loop 后续 send_message
 	// 与 memory_recall 仍指向父 Boot 的存活资源。
-	previousDeliver := tools.CurrentMessageDeliver()
-	previousExplain := tools.CurrentMemoryExplain()
-	defer tools.BindMessageDeliver(previousDeliver)
-	defer tools.BindMemoryExplain(previousExplain)
-	// send_message 投递：写入对端 run Journal（父/子跟进）。
-	tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
-		return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)
-	})
-	// memory_recall：只读证据账本；服务端强制工作区，模型无法写入或跨区检索。
-	tools.BindMemoryExplain(func(ctx context.Context, request tools.MemoryRecallRequest) (json.RawMessage, error) {
-		ledger, err := service.ExplainMemoryRecall(ctx, MemoryExplainOptions{
-			Query: memory.RecallQuery{
-				TaskPromptDigest:    request.TaskPromptDigest,
-				Outcomes:            request.Outcomes,
-				FailureClasses:      request.FailureClasses,
-				TrustedVerification: request.TrustedVerification,
-				CreatedFrom:         request.CreatedFrom,
-				CreatedUntil:        request.CreatedUntil,
-				Limit:               request.Limit,
-				Precision:           request.Precision,
-			},
-			Workspace: options.Workspace,
-			StateDir:  options.StateDir,
-			Config:    options.Config,
-			Now:       time.Now().UTC(),
+	if options.Config.Preset != config.PresetMinimal {
+		previousDeliver := tools.CurrentMessageDeliver()
+		previousExplain := tools.CurrentMemoryExplain()
+		defer tools.BindMessageDeliver(previousDeliver)
+		defer tools.BindMemoryExplain(previousExplain)
+		// send_message 投递：写入对端 run Journal（父/子跟进）。
+		tools.BindMessageDeliver(func(ctx context.Context, toRunID, content, reason string) error {
+			return deliverRunMessage(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, domain.RunID(toRunID), content, reason)
 		})
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(ledger)
-	})
+		// memory_recall：只读证据账本；服务端强制工作区，模型无法写入或跨区检索。
+		tools.BindMemoryExplain(func(ctx context.Context, request tools.MemoryRecallRequest) (json.RawMessage, error) {
+			ledger, err := service.ExplainMemoryRecall(ctx, MemoryExplainOptions{
+				Query: memory.RecallQuery{
+					TaskPromptDigest:    request.TaskPromptDigest,
+					Outcomes:            request.Outcomes,
+					FailureClasses:      request.FailureClasses,
+					TrustedVerification: request.TrustedVerification,
+					CreatedFrom:         request.CreatedFrom,
+					CreatedUntil:        request.CreatedUntil,
+					Limit:               request.Limit,
+					Precision:           request.Precision,
+				},
+				Workspace: options.Workspace,
+				StateDir:  options.StateDir,
+				Config:    options.Config,
+				Now:       time.Now().UTC(),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(ledger)
+		})
+	}
+
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{}, err
 	}
@@ -309,7 +316,7 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 		if err := enforceSubagentToolNarrowing(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, boot.Registry, options); err != nil {
 			return RunResult{}, err
 		}
-	} else {
+	} else if options.Config.Preset != config.PresetMinimal {
 		// 模型侧委派仅绑定根运行（子运行不嵌套委派）；回调复用本次装配的
 		// Journal 与配置，父 Loop 在工具执行期间阻塞等待子终态或审批暂停。
 		// 异步委派显式启用时装配进程内运行时：子完成信号登记表接入父 Loop，

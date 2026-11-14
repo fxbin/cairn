@@ -104,7 +104,7 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 		}
 		withoutReceipt = append(withoutReceipt, event)
 	}
-	if err := next.restoreSkillResults(withoutReceipt); err == nil || len(next.Tools.ActiveSkills()) != 0 {
+	if err := next.restoreSkillResults(withoutReceipt); err == nil || len(next.activeSkillContents()) != 0 {
 		t.Fatal("skill activated without matching success receipt")
 	}
 }

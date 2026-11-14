@@ -22,6 +22,4 @@ type ToolRegistry interface {
 	ModelResult(name string, result contract.ToolResult) contract.ToolResult
 	// ReadonlyToolNames 返回静态工具的只读集合，供并行计划使用。
 	ReadonlyToolNames() map[string]bool
-	// ActiveSkills 保留已激活技能的只读投影；技能准备与回执接纳使用可选端口。
-	ActiveSkills() []contract.SkillContent
 }

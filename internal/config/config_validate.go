@@ -14,7 +14,11 @@ import (
 	"github.com/fxbin/cairn/internal/runtime/provider"
 )
 
+// Validate 校验完整执行配置及静态能力组合，冲突声明在任何运行资源创建前失败关闭。
 func Validate(config Config) error {
+	if err := validateMinimalPreset(config); err != nil {
+		return err
+	}
 	if err := validateSkills(config.Skills, config.Preset); err != nil {
 		return err
 	}
@@ -44,9 +48,9 @@ func Validate(config Config) error {
 		return fmt.Errorf("profile must be %s or %s", ProfileDefault, ProfileComplex)
 	}
 	switch config.Preset {
-	case "", PresetCoding, PresetReadOnly, PresetBenchmark:
+	case "", PresetMinimal, PresetCoding, PresetReadOnly, PresetBenchmark:
 	default:
-		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s)", config.Preset, PresetCoding, PresetReadOnly, PresetBenchmark)
+		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s, %s)", config.Preset, PresetMinimal, PresetCoding, PresetReadOnly, PresetBenchmark)
 	}
 	if config.Preset == PresetReadOnly {
 		if config.Policy.Write != "deny" || config.Policy.Exec != "deny" || len(config.Verification.Commands) != 0 {
