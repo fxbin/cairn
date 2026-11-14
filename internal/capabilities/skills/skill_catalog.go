@@ -1,6 +1,6 @@
-// Package tools 为 SKILL.md 技能提供有界目录和不可授予权限的内容快照。
+// Package skills 为 SKILL.md 技能提供有界目录和不可授予权限的内容快照。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"crypto/sha256"
@@ -70,6 +70,7 @@ type SkillDiagnostic struct {
 // SkillCatalog 保存启动时发现的元数据；扫描不执行任何技能代码。
 type SkillCatalog struct {
 	entries     []SkillEntry
+	openPackage PackageViewFactory
 	Diagnostics []SkillDiagnostic
 }
 
@@ -145,8 +146,11 @@ func parseSkill(raw []byte, directoryName string) (skillFrontmatter, string, err
 }
 
 // DiscoverSkills 按显式优先级扫描一级技能目录，拒绝越界链接并报告冲突。
-func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
-	catalog := &SkillCatalog{}
+func DiscoverSkills(roots []SkillRoot, openPackage PackageViewFactory) (*SkillCatalog, error) {
+	if openPackage == nil {
+		return nil, errors.New("skill package view factory is required")
+	}
+	catalog := &SkillCatalog{openPackage: openPackage}
 	seen := make(map[string]bool)
 	for _, root := range roots {
 		if _, err := os.Lstat(root.Path); errors.Is(err, os.ErrNotExist) {
@@ -154,11 +158,11 @@ func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
 		} else if err != nil {
 			return nil, errors.New("inspect skill root failed")
 		}
-		workspace, err := NewWorkspace(root.Path, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
+		workspace, workspaceRoot, err := openPackageView(openPackage, root.Path)
 		if err != nil {
 			return nil, errors.New("open skill root failed")
 		}
-		entries, err := skillDirectoryEntries(workspace.Root)
+		entries, err := skillDirectoryEntries(workspaceRoot)
 		if err != nil {
 			return nil, errors.New("read skill root failed")
 		}
@@ -169,12 +173,12 @@ func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
 			if len(catalog.entries)+len(catalog.Diagnostics) >= SkillMaxCatalogEntries {
 				return nil, errors.New("skill catalog exceeds entry limit")
 			}
-			directory, err := resolveSkillDirectory(workspace, candidate, root.AllowLinkedPackages)
+			directory, err := resolveSkillDirectory(workspace, workspaceRoot, candidate, root.AllowLinkedPackages)
 			if err != nil {
 				catalog.Diagnostics = append(catalog.Diagnostics, skillDiagnostic(candidate.Name(), root.Scope, "invalid_directory"))
 				continue
 			}
-			view, err := NewWorkspace(directory, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
+			view, _, err := openPackageView(openPackage, directory)
 			if err != nil {
 				return nil, errors.New("open skill directory failed")
 			}
@@ -213,9 +217,9 @@ func skillDiagnostic(name, scope, code string) SkillDiagnostic {
 }
 
 // resolveSkillDirectory 仅对显式授权的用户共享根接纳包级链接，包内读取仍限制在规范根中。
-func resolveSkillDirectory(view Workspace, candidate os.DirEntry, allowLinked bool) (string, error) {
+func resolveSkillDirectory(view PackageView, root string, candidate os.DirEntry, allowLinked bool) (string, error) {
 	if allowLinked && candidate.Type()&os.ModeSymlink != 0 {
-		directory, err := filepath.EvalSymlinks(filepath.Join(view.Root, candidate.Name()))
+		directory, err := filepath.EvalSymlinks(filepath.Join(root, candidate.Name()))
 		if err != nil {
 			return "", errors.New("linked skill is unavailable")
 		}
@@ -239,7 +243,7 @@ func (catalog *SkillCatalog) Entries() []SkillEntry {
 
 // Inspect 为用户显式查看已停用的技能，保持目录本身的启停状态不变。
 func (catalog *SkillCatalog) Inspect(name string) (contract.SkillContent, error) {
-	copy := &SkillCatalog{entries: catalog.Entries()}
+	copy := &SkillCatalog{entries: catalog.Entries(), openPackage: catalog.openPackage}
 	for index := range copy.entries {
 		if copy.entries[index].Name == name {
 			copy.entries[index].Disabled = false
@@ -264,8 +268,8 @@ func (catalog *SkillCatalog) Load(name string) (contract.SkillContent, error) {
 	if !found || entry.Disabled {
 		return contract.SkillContent{}, errors.New("skill is unavailable")
 	}
-	view, err := NewWorkspace(entry.directory, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
-	if err != nil || skillDigest([]byte(view.Root)) != entry.SourceDigest {
+	view, canonicalRoot, err := openPackageView(catalog.openPackage, entry.directory)
+	if err != nil || skillDigest([]byte(canonicalRoot)) != entry.SourceDigest {
 		return contract.SkillContent{}, errors.New("skill source changed")
 	}
 	raw, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
@@ -276,7 +280,7 @@ func (catalog *SkillCatalog) Load(name string) (contract.SkillContent, error) {
 	if err != nil {
 		return contract.SkillContent{}, err
 	}
-	resources, err := skillResources(view)
+	resources, err := skillResources(view, canonicalRoot)
 	if err != nil {
 		return contract.SkillContent{}, err
 	}
@@ -300,8 +304,8 @@ func (catalog *SkillCatalog) ReadResource(content contract.SkillContent, relativ
 	if resource == nil {
 		return nil, errors.New("resource is not in the activated skill snapshot")
 	}
-	view, err := NewWorkspace(entry.directory, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
-	if err != nil || skillDigest([]byte(view.Root)) != content.SourceDigest {
+	view, canonicalRoot, err := openPackageView(catalog.openPackage, entry.directory)
+	if err != nil || skillDigest([]byte(canonicalRoot)) != content.SourceDigest {
 		return nil, errors.New("skill source changed")
 	}
 	main, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
@@ -316,8 +320,8 @@ func (catalog *SkillCatalog) ReadResource(content contract.SkillContent, relativ
 }
 
 // skillResources 对包内每个普通文件计算摘要，禁止链接、敏感文件和超限包。
-func skillResources(view Workspace) ([]contract.SkillResource, error) {
-	root, err := os.OpenRoot(view.Root)
+func skillResources(view PackageView, canonicalRoot string) ([]contract.SkillResource, error) {
+	root, err := os.OpenRoot(canonicalRoot)
 	if err != nil {
 		return nil, errors.New("open skill package failed")
 	}

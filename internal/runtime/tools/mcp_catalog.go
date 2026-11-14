@@ -80,8 +80,10 @@ func (registry *Registry) AcceptMCPResult(name string, result contract.ToolResul
 
 // ModelResult 从目录证据生成精简的模型视图，Journal 仍保留完整发现快照。
 func (registry *Registry) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
-	if name == "skill" {
-		return skillModelResult(result)
+	if tool, exists := registry.tools[name]; exists {
+		if projection, ok := tool.(ModelResultTool); ok {
+			return projection.ModelResult(result)
+		}
 	}
 	if registry.mcp == nil {
 		return result

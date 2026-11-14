@@ -1,7 +1,7 @@
 // skill_audit.go 在显式请求时调用外部 skillshare audit；无二进制时返回
 // unavailable，不假装通过。不执行被审计技能内容。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"bytes"

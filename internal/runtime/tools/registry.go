@@ -28,6 +28,11 @@ type ResultProjectionTool interface {
 	RequiresResultObserver() bool
 }
 
+// ModelResultTool 为已注册工具提供模型结果视图，完整 Journal 回执不受影响。
+type ModelResultTool interface {
+	ModelResult(contract.ToolResult) contract.ToolResult
+}
+
 // Registry 按注册顺序保存名称唯一的固定工具。
 type Registry struct {
 	tools map[string]Tool

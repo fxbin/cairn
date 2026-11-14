@@ -232,7 +232,7 @@ func (store PackageStore) InstallPackage(source string) (entry PackageEntry, err
 	if err := writePackageResource(target, PackageManifestFile, manifestRaw); err != nil {
 		return PackageEntry{}, err
 	}
-	if err := syncSkillTree(target); err != nil {
+	if err := syncPackageTree(target); err != nil {
 		return PackageEntry{}, errors.New("sync package failed")
 	}
 	if _, statErr := root.Lstat(manifest.Name); !errors.Is(statErr, os.ErrNotExist) {
@@ -241,7 +241,7 @@ func (store PackageStore) InstallPackage(source string) (entry PackageEntry, err
 	if err := root.Rename(temporaryName, manifest.Name); err != nil {
 		return PackageEntry{}, errors.New("publish package failed")
 	}
-	if err := syncSkillStore(root); err != nil {
+	if err := syncPackageDirectory(root, "."); err != nil {
 		return PackageEntry{}, err
 	}
 	return PackageEntry{Name: manifest.Name, Version: manifest.Package, SHA256: packageDigest(manifestRaw), Files: len(manifest.Resources)}, nil

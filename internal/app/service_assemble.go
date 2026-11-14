@@ -198,7 +198,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口。minimal 只注入基础工具方法集，
 // 其余组合沿用可选能力识别，保持既有执行与恢复语义。
-func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
+func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace, skillTool *skills.Skill) agent.Loop {
 	var registryPort agent.ToolRegistry = registry
 	if configuration.Preset == config.PresetMinimal {
 		registryPort = minimalToolRegistry{ToolRegistry: registry}
@@ -229,8 +229,14 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		AsyncDelegateEnabled: configuration.Tools.DelegateAsync,
 	}
 	if configuration.Preset != config.PresetMinimal && configuration.Skills != nil && configuration.Skills.Enabled {
-		loop.ContextProviders = []agent.ContextProvider{skills.NewContext(registry)}
-		loop.ResultObservers = append(loop.ResultObservers, skills.NewHistory(registry))
+		var contextSource skills.SnapshotSource
+		var historySource skills.HistorySource
+		if skillTool != nil {
+			contextSource = skillTool
+			historySource = skillTool
+		}
+		loop.ContextProviders = []agent.ContextProvider{skills.NewContext(contextSource)}
+		loop.ResultObservers = append(loop.ResultObservers, skills.NewHistory(historySource))
 	}
 	if configuration.Preset != config.PresetMinimal && configuration.MCP != nil && hasEnabledMCP(configuration.MCP) {
 		loop.ResultObservers = append(loop.ResultObservers, mcp.NewHistory(registry))

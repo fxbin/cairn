@@ -18,17 +18,20 @@ import (
 )
 
 // newSkillLoopTest 组装真实工具、Policy、Journal 与替身 Provider，不需要外部服务。
-func newSkillLoopTest(t *testing.T, workspacePath, skillsPath string, provider ports.Provider, journal *memory.Journal, exec *countingExecTool) *Loop {
+func newSkillLoopTest(t *testing.T, workspacePath, skillsPath string, provider ports.Provider, journal *memory.Journal, exec *countingExecTool) (*Loop, *skills.Skill) {
 	t.Helper()
 	workspace, err := tools.NewWorkspace(workspacePath, nil, 16*1024, 100, 64*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := tools.DiscoverSkills([]tools.SkillRoot{{Path: skillsPath, Scope: "workspace"}})
+	catalog, err := skills.DiscoverSkills([]skills.SkillRoot{{Path: skillsPath, Scope: "workspace"}}, func(root string) (skills.PackageView, error) {
+		return tools.NewWorkspace(root, nil, skills.SkillMaxResourceBytes, skills.SkillMaxFiles, skills.SkillMaxPackageBytes)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := tools.NewRegistry(&tools.Skill{Catalog: catalog}, tools.ReadFile{Workspace: workspace}, exec)
+	skillTool := &skills.Skill{Catalog: catalog}
+	registry, err := tools.NewRegistry(skillTool, tools.ReadFile{Workspace: workspace}, exec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +39,7 @@ func newSkillLoopTest(t *testing.T, workspacePath, skillsPath string, provider p
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, ContextProviders: []ContextProvider{skills.NewContext(registry)}, ResultObservers: []ToolResultObserver{skills.NewHistory(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ContextProviders: []ContextProvider{skills.NewContext(skillTool)}, ResultObservers: []ToolResultObserver{skills.NewHistory(skillTool)}, Gate: gate, Model: "fake", MaxTurns: 4}, skillTool
 }
 
 // skillLoopSource 创建包含工具声明的技能，权限声明必须保持为无效授权。
@@ -65,7 +68,7 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "exec", Name: "exec_command", Arguments: json.RawMessage(`{"argv":["true"]}`)}}, {Kind: ports.Done}},
 	}}
 	exec := &countingExecTool{}
-	loop := newSkillLoopTest(t, workspace, root, provider, journal, exec)
+	loop, _ := newSkillLoopTest(t, workspace, root, provider, journal, exec)
 	input := RunInput{RunID: runID, Task: task, WorkspaceHash: "workspace"}
 	_, err := loop.Run(context.Background(), input)
 	var waiting *ports.WaitingApprovalError
@@ -80,7 +83,7 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 	}
 	nextProvider := &scriptedProvider{scripts: [][]ports.ModelEvent{{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.Done}}}}
 	nextExec := &countingExecTool{}
-	next := newSkillLoopTest(t, workspace, root, nextProvider, journal, nextExec)
+	next, nextSkill := newSkillLoopTest(t, workspace, root, nextProvider, journal, nextExec)
 	if _, err := next.Resume(context.Background(), input, ports.Approval{Approve: true, Fingerprint: waiting.Fingerprint}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +110,7 @@ func TestSkillColdResumeKeepsJournalBodyAndRequiresExecApproval(t *testing.T) {
 		}
 		withoutReceipt = append(withoutReceipt, event)
 	}
-	if err := next.restoreResultProjections(withoutReceipt); err == nil || len(next.Tools.(*tools.Registry).ActiveSkills()) != 0 {
+	if err := next.restoreResultProjections(withoutReceipt); err == nil || len(nextSkill.ActiveSkills()) != 0 {
 		t.Fatal("skill activated without matching success receipt")
 	}
 }
@@ -126,7 +129,7 @@ func TestSkillInstructionsSurviveCompaction(t *testing.T) {
 		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "load", Name: "skill", Arguments: json.RawMessage(`{"name":"review-code"}`)}}, {Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "read", Name: "read_file", Arguments: json.RawMessage(`{"path":"large.txt","limit":14000}`)}}, {Kind: ports.Done}},
 		{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.Done}},
 	}}
-	loop := newSkillLoopTest(t, workspace, root, provider, journal, &countingExecTool{})
+	loop, _ := newSkillLoopTest(t, workspace, root, provider, journal, &countingExecTool{})
 	loop.ContextAutoCompact = true
 	loop.ContextMaxPromptTokens = 4000
 	loop.ContextMaxSummaryBytes = 512

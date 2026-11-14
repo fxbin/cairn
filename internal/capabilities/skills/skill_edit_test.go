@@ -1,7 +1,7 @@
 // skill_edit_test 锁定 SKL-05 技能草稿校验、摘要与版本比较。
 //
 // Author: fxbin
-package tools
+package skills
 
 import "testing"
 

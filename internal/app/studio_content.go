@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 
+	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
@@ -44,13 +45,13 @@ func PackageSummary(entry tools.PackageEntry) string {
 }
 
 // SkillSummary 返回单条技能的展示摘要。
-func SkillSummary(entry tools.SkillEntry) string {
-	return tools.SkillSummary(entry)
+func SkillSummary(entry skills.SkillEntry) string {
+	return skills.SkillSummary(entry)
 }
 
 // RunSkillshareAudit 在沙箱边界内审计 skillshare 来源包。
 func RunSkillshareAudit(ctx context.Context, name string) (string, error) {
-	return tools.RunSkillshareAudit(ctx, name)
+	return skills.RunSkillshareAudit(ctx, name)
 }
 
 // WorkspaceHash 复刻装配的工作区哈希算法（符号链接解析后的绝对路径摘要），

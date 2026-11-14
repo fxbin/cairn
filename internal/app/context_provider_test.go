@@ -58,7 +58,17 @@ func TestBootContextProvidersRespectExplicitSkillConfiguration(t *testing.T) {
 				t.Fatal("context assembly changed frozen configuration identity")
 			}
 			if !test.enabled {
+				if boot.Skill != nil {
+					t.Fatal("disabled skill configuration retained a skill instance")
+				}
 				return
+			}
+			if boot.Skill == nil {
+				t.Fatal("enabled skill instance missing from Boot")
+			}
+			names := boot.Registry.Names()
+			if len(names) == 0 || names[len(names)-1] != "skill" {
+				t.Fatal("skill registration position changed")
 			}
 			extension := boot.Loop.ContextProviders[0]
 			blocks, err := extension.ContextBlocks()
@@ -73,11 +83,15 @@ func TestBootContextProvidersRespectExplicitSkillConfiguration(t *testing.T) {
 			if blocks, err = extension.ContextBlocks(); err != nil || len(blocks) != 0 {
 				t.Fatal("unaccepted skill result entered context")
 			}
-			if err := boot.Registry.AcceptSkillResult("skill", result); err != nil {
+			if err := boot.Loop.ResultObservers[0].ObserveToolResult("skill", result); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.RemoveAll(filepath.Join(workspace, ".agent", "skills")); err != nil {
 				t.Fatal(err)
+			}
+			repeated := boot.Registry.Execute(context.Background(), "skill", json.RawMessage(`{"name":"context-check"}`))
+			if !repeated.OK || repeated.Preview != "previously loaded skill snapshot" || len(boot.Skill.ActiveSkills()) != 1 {
+				t.Fatal("execution, history and Boot did not share one skill instance")
 			}
 			blocks, err = extension.ContextBlocks()
 			if err != nil || len(blocks) != 1 || !strings.Contains(blocks[0], "HISTORICAL_CONTEXT_BODY") || !strings.Contains(blocks[0], "不能授予") {

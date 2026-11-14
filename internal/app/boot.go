@@ -8,6 +8,7 @@ import (
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/adapters/mcpclient"
 	mcpcapability "github.com/fxbin/cairn/internal/capabilities/mcp"
+	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
@@ -33,13 +34,15 @@ type Boot struct {
 	Provider      ports.Provider
 	ProviderCard  contract.ProviderCapabilityCard
 	Registry      *tools.Registry
-	MCP           tools.MCPCatalog
-	Gate          *policy.Gate
-	Verification  []agent.VerificationCommand
-	Loop          agent.Loop
-	closeJournal  func() error
-	releaseLock   func() error
-	closed        bool
+	// Skill 由唯一组合根创建，同一实例同时服务执行、历史接纳和上下文。
+	Skill        *skills.Skill
+	MCP          tools.MCPCatalog
+	Gate         *policy.Gate
+	Verification []agent.VerificationCommand
+	Loop         agent.Loop
+	closeJournal func() error
+	releaseLock  func() error
+	closed       bool
 }
 
 // resolveProviderCard 解析版本化 Provider 能力卡并对照预算：仅显式配置声明
@@ -150,6 +153,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
 	}
+	boot.Skill = skillTool
 	if skillTool != nil {
 		available = append(available, skillTool)
 	}
@@ -179,7 +183,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		}
 		authorizer = scopedAuthorizer
 	}
-	boot.Loop = configuredLoop(journal, provider, registry, authorizer, verification, artifacts, cfg, onEvent, workspace)
+	boot.Loop = configuredLoop(journal, provider, registry, authorizer, verification, artifacts, cfg, onEvent, workspace, skillTool)
 	boot.Loop.RequireProviderUsage = card.StreamingUsage
 	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
 	return boot, nil
