@@ -115,7 +115,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if containsSensitiveToolCall(call) {
 		return contract.ToolResult{}, errors.New("model tool arguments contain a secret-like value")
 	}
-	if loop.Tools.MCPNeedsQuiescence() {
+	if loop.mcpNeedsQuiescence() {
 		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 		if err != nil {
 			return contract.ToolResult{}, err
@@ -195,7 +195,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if call.Name == contract.DelegateTaskName {
 		result = loop.executeDelegateTask(ctx, projection, input, call)
 	} else {
-		result = loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+		result = loop.executeToolWithIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 		result = redactToolResult(result)
 	}
 	if result.Code == contract.CodeTerminationUnconfirmed {
@@ -218,10 +218,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if err := loop.appendToolResult(ctx, projection, input, turnID, operationID, result); err != nil {
 		return contract.ToolResult{}, err
 	}
-	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
-		return contract.ToolResult{}, err
-	}
-	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
+	if err := loop.acceptCapabilityResults(call.Name, result); err != nil {
 		return contract.ToolResult{}, err
 	}
 	if cancelled {

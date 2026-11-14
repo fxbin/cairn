@@ -65,7 +65,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 	prepared := make([]preparedReadonlyCall, 0, len(indexes))
 	for _, index := range indexes {
 		call := calls[index]
-		if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) || containsSensitiveToolCall(call) || loop.Tools.MCPNeedsQuiescence() {
+		if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) || containsSensitiveToolCall(call) || loop.mcpNeedsQuiescence() {
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}
 			if err != nil {
@@ -137,7 +137,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 				return
 			}
 			item := prepared[slot]
-			result := loop.Tools.ExecuteWithMCPIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
+			result := loop.executeToolWithIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
 			execResults[slot] = execOutcome{result: redactToolResult(result)}
 		}(i)
 	}
@@ -171,11 +171,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
-		if err := loop.Tools.AcceptMCPResult(item.call.Name, result); err != nil {
-			outcomes[item.index] = toolCallOutcome{result: result, err: err}
-			return err
-		}
-		if err := loop.Tools.AcceptSkillResult(item.call.Name, result); err != nil {
+		if err := loop.acceptCapabilityResults(item.call.Name, result); err != nil {
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			return err
 		}
@@ -200,7 +196,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 // 避免留下悬空只读操作。
 func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, prepared []preparedReadonlyCall, outcomes []toolCallOutcome) {
 	for _, item := range prepared {
-		result := loop.Tools.ExecuteWithMCPIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
+		result := loop.executeToolWithIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
 		result = redactToolResult(result)
 		eventType := domain.EventOperationSucceeded
 		if !result.OK {
@@ -219,8 +215,7 @@ func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain
 			outcomes[item.index] = toolCallOutcome{result: result, err: err}
 			continue
 		}
-		_ = loop.Tools.AcceptMCPResult(item.call.Name, result)
-		_ = loop.Tools.AcceptSkillResult(item.call.Name, result)
+		_ = loop.acceptCapabilityResults(item.call.Name, result)
 		outcomes[item.index] = toolCallOutcome{result: result}
 	}
 }

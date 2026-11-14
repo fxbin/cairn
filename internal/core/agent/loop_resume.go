@@ -321,7 +321,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err
 	}
-	result := loop.Tools.ExecuteWithMCPIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+	result := loop.executeToolWithIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
 	result = redactToolResult(result)
 	if result.Code == contract.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}
@@ -342,10 +342,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.appendToolResult(ctx, &projection, input, turnID, pending.OperationID, result); err != nil {
 		return Result{}, err
 	}
-	if err := loop.Tools.AcceptMCPResult(call.Name, result); err != nil {
-		return Result{}, err
-	}
-	if err := loop.Tools.AcceptSkillResult(call.Name, result); err != nil {
+	if err := loop.acceptCapabilityResults(call.Name, result); err != nil {
 		return Result{}, err
 	}
 	if cancelled {

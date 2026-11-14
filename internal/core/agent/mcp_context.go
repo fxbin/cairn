@@ -21,7 +21,7 @@ type mcpSuccessReceipt struct {
 
 // restoreMCPResults 保留 Journal 的成功回执边界，不连接或重发任何外部调用。
 func (loop *Loop) restoreMCPResults(events []domain.Event) error {
-	loop.Tools.ResetMCPProjection()
+	loop.resetMCPProjection()
 	loop.mcpModelDeclarations = nil
 	proposals := make(map[domain.OperationID]string)
 	succeeded := make(map[domain.OperationID]mcpSuccessReceipt)
@@ -65,7 +65,7 @@ func (loop *Loop) restoreMCPResults(events []domain.Event) error {
 			if receiptErr != nil || resultErr != nil || receiptDigest != resultDigest {
 				return errors.New("persisted MCP result does not match its operation receipt")
 			}
-			if err := loop.Tools.AcceptMCPResult(name, result); err != nil {
+			if err := loop.acceptMCPResult(name, result); err != nil {
 				return err
 			}
 		}
@@ -78,7 +78,7 @@ func (loop *Loop) captureMCPDeclarations(specs []ports.ToolSpec) {
 	loop.mcpModelDeclarations = make(map[string]string)
 	for _, spec := range specs {
 		if strings.HasPrefix(spec.Name, "mcp__") {
-			digest, found := loop.Tools.MCPDeclarationFingerprint(spec.Name)
+			digest, found := loop.mcpDeclarationFingerprint(spec.Name)
 			if found {
 				loop.mcpModelDeclarations[spec.Name] = digest
 			}
@@ -95,7 +95,7 @@ func (loop *Loop) bindMCPDeclaration(name string, decision AuthorizationDecision
 	expected, declared := loop.mcpModelDeclarations[name]
 	matched := false
 	if declared {
-		digest, found := loop.Tools.MCPDeclarationFingerprint(name)
+		digest, found := loop.mcpDeclarationFingerprint(name)
 		matched = found && digest == expected
 	}
 	if !matched {

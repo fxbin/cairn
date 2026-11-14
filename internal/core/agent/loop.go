@@ -729,7 +729,7 @@ func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.Ru
 	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return nil, err
 	}
-	if len(loop.Tools.ActiveSkills()) != 0 {
+	if len(loop.activeSkillContents()) != 0 {
 		events, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 		if loadErr != nil {
 			return nil, loadErr
