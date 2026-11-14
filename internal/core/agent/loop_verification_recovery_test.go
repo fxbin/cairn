@@ -67,7 +67,7 @@ func TestResumeZeroMutationVerificationStages(t *testing.T) {
 				t.Fatal(err)
 			}
 			verificationTool := &countingExecTool{}
-			registry, err := tools.NewRegistry(verificationTool)
+			registry, err := tools.NewRegistry(verificationTool, tools.ApplyPatch{Workspace: workspace})
 			if err != nil {
 				t.Fatal(err)
 			}

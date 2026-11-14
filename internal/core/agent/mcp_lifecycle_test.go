@@ -163,7 +163,7 @@ func TestMCPRestoreRequiresSuccessfulMatchingReceipt(t *testing.T) {
 			{Type: terminal, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "mcp_discover", Result: receipt})},
 			{Type: domain.EventToolResultAppended, OperationID: &operationID, Payload: mustJSON(appended)},
 		}
-		if err := loop.restoreMCPResults(events); err == nil || catalog.active || catalog.accepted != 0 {
+		if err := loop.restoreResultProjections(events); err == nil || catalog.active || catalog.accepted != 0 {
 			t.Fatal("invalid receipt granted catalog state")
 		}
 	}

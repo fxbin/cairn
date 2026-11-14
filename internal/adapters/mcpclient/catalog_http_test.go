@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	journalmemory "github.com/fxbin/cairn/internal/adapters/journal/memory"
+	capabilitymcp "github.com/fxbin/cairn/internal/capabilities/mcp"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
@@ -311,7 +312,7 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 		}
 	}
 	provider := &schemaLoopProvider{}
-	loop := agent.Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "offline-schema-provider", MaxTurns: 4, MaxToolCalls: 4, VerificationWorkspace: manager.workspace.ObservationView(nil)}
+	loop := agent.Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []agent.ToolResultObserver{capabilitymcp.NewHistory(registry)}, Gate: gate, Model: "offline-schema-provider", MaxTurns: 4, MaxToolCalls: 4, VerificationWorkspace: manager.workspace.ObservationView(nil)}
 	result, err := loop.Run(t.Context(), input)
 	if err != nil || result.Response != "schema flow complete" || fixture.count("tools/call") != 1 {
 		t.Fatalf("schema 没有通过真实运行链并完成业务调用：response=%s err=%v calls=%d", result.Response, err, fixture.count("tools/call"))

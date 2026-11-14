@@ -84,6 +84,7 @@ var packageLayers = map[string]packageLayer{
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
 	"internal/capabilities/skills": layerCapability,
+	"internal/capabilities/mcp":    layerCapability,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。

@@ -7,6 +7,7 @@ import (
 
 	"encoding/json"
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/capabilities/mcp"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -83,7 +84,7 @@ func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provi
 		t.Fatal(err)
 	}
 	gate.MCPRegistry = registry
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 4}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []ToolResultObserver{mcp.NewHistory(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
 }
 
 // TestMCPLoadInSameResponseCannotInvokeUndeclaredTool 发现可为下一轮加载工具，不能改变当前响应的授权声明。
@@ -142,7 +143,7 @@ func TestMCPApprovalPrecedesConnectionAndColdResumeRestoresCatalog(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := replayLoop.restoreMCPResults(events); err != nil || !replayCatalog.active || len(replayCatalog.calls) != 0 {
+	if err := replayLoop.restoreResultProjections(events); err != nil || !replayCatalog.active || len(replayCatalog.calls) != 0 {
 		t.Fatalf("restore reissued external discovery: %v %#v", err, replayCatalog)
 	}
 }
@@ -183,4 +184,38 @@ func (catalog *loopMCPCatalog) NeedsQuiescence() bool { return false }
 
 func (catalog *loopMCPCatalog) ExecuteWithIdentity(ctx context.Context, name string, raw json.RawMessage, _ string) contract.ToolResult {
 	return catalog.Execute(ctx, name, raw)
+}
+
+// TestMCPReplayPreservesHistoricalDeclarationBoundary 最终可见目录不能污染更早模型请求，冷回放不执行发现。
+func TestMCPReplayPreservesHistoricalDeclarationBoundary(t *testing.T) {
+	catalog := &loopMCPCatalog{}
+	loop := newMCPLoopTest(t, catalog, &scriptedProvider{}, memory.New())
+	operationID := domain.NewOperationID()
+	result := contract.ToolSuccess(struct{}{}, "done", 0, "", false)
+	events := []domain.Event{
+		{Type: domain.EventModelRequestStarted},
+		{Type: domain.EventToolCallProposed, OperationID: &operationID, Payload: mustJSON(toolCallPayload{ToolName: "mcp_discover", Arguments: json.RawMessage(`{}`)})},
+		{Type: domain.EventOperationSucceeded, OperationID: &operationID, Payload: mustJSON(operationPayload{ToolName: "mcp_discover", Result: result})},
+		{Type: domain.EventToolResultAppended, OperationID: &operationID, Payload: mustJSON(result)},
+	}
+	if err := loop.restoreResultProjections(events); err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.active || len(catalog.calls) != 0 {
+		t.Fatal("catalog replay executed discovery or failed to activate evidence")
+	}
+	decision := loop.bindMCPDeclaration(testMCPName, AuthorizationDecision{Effect: AuthorizationAllow})
+	if decision.Effect != AuthorizationDeny || decision.FailureCode != "mcp_not_declared" {
+		t.Fatal("final catalog polluted earlier model request")
+	}
+	events = append(events, domain.Event{Type: domain.EventModelRequestStarted})
+	if err := loop.restoreResultProjections(events); err != nil {
+		t.Fatal(err)
+	}
+	if decision = loop.bindMCPDeclaration(testMCPName, AuthorizationDecision{Effect: AuthorizationAllow}); decision.Effect != AuthorizationAllow {
+		t.Fatal("next model declaration was not restored")
+	}
+	if len(catalog.calls) != 0 {
+		t.Fatal("repeated replay executed an external tool")
+	}
 }

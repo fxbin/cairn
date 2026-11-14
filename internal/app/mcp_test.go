@@ -23,6 +23,9 @@ func TestMCPBootAndStatusAreLazy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer boot.Close()
+	if len(boot.Loop.ResultObservers) != 1 || !boot.Loop.ResultObservers[0].HandlesToolResult("mcp_discover") {
+		t.Fatal("MCP historical result projection was not explicitly assembled")
+	}
 	if boot.MCP == nil {
 		t.Fatal("MCP was not explicitly assembled")
 	}

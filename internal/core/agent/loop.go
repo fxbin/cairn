@@ -42,6 +42,8 @@ type Loop struct {
 	AllowedProviderStopReasons []string
 	// ContextProviders 由组合根按固定顺序显式注入；空列表不增加上下文。
 	ContextProviders []ContextProvider
+	// ResultObservers 由组合根显式注入，按固定顺序恢复并接纳持久化结果。
+	ResultObservers []ToolResultObserver
 	// contextBlocks 冻结安全点的纯文本投影，供消息重建、预算与压缩共用。
 	contextBlocks                  []string
 	ContextAutoCompact             bool
@@ -279,10 +281,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := loop.restoreMCPResults(events); err != nil {
-		return Result{}, err
-	}
-	if err := loop.restoreSkillResults(events); err != nil {
+	if err := loop.restoreResultProjections(events); err != nil {
 		return Result{}, err
 	}
 	if err := loop.restoreProjectInstructions(events); err != nil {
@@ -503,26 +502,28 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 		patched := false
 		allToolCallsSucceeded := true
 		outcomes, batchErr := loop.executeToolCalls(ctx, &projection, input, turnID, response.ToolCalls)
-		if batchErr != nil && (len(outcomes) == 0 || outcomes[len(outcomes)-1].err == nil) {
-			// 错误位于非末位（其后调用未执行）时由本分支统一分类；分类集与
-			// 单调用分支保持一致：落盘失败与对账暂停不得被误终态化或降级。
+		if batchErr != nil {
+			// 批次错误统一分类并保留原始错误树；准备失败与已启动项的
+			// 收尾错误可能同时存在，不能只返回其中一个暂停或预算原因。
 			if special := classifyBatchSpecialError(batchErr); special != nil {
 				return Result{RunID: input.RunID}, special
 			}
 			var waiting *ports.WaitingApprovalError
 			if errors.As(batchErr, &waiting) {
-				return Result{RunID: input.RunID}, waiting
+				return Result{RunID: input.RunID}, batchErr
 			}
 			var budget *ports.BudgetExceededError
 			if errors.As(batchErr, &budget) {
-				return loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
+				result, persistErr := loop.persistBudgetExceeded(ctx, &projection, input, budget.Dimension)
+				return result, errors.Join(batchErr, persistErr)
 			}
 			var guard *ports.LoopGuardExceededError
 			if errors.As(batchErr, &guard) {
-				return Result{RunID: input.RunID}, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason)
+				return Result{RunID: input.RunID}, errors.Join(batchErr, loop.persistLoopGuardExceeded(ctx, &projection, input, guard.Reason))
 			}
 			if ctx.Err() != nil {
-				return loop.persistCancellation(ctx, &projection, input, &turnID)
+				result, cancelErr := loop.persistCancellation(ctx, &projection, input, &turnID)
+				return result, errors.Join(batchErr, cancelErr)
 			}
 			return loop.failCurrentTurn(ctx, &projection, input, turnID, batchErr)
 		}

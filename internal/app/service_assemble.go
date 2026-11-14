@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/mcp"
 	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -230,6 +231,10 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 	}
 	if configuration.Preset != config.PresetMinimal && configuration.Skills != nil && configuration.Skills.Enabled {
 		loop.ContextProviders = []agent.ContextProvider{skills.NewContext(registry)}
+		loop.ResultObservers = append(loop.ResultObservers, skills.NewHistory(registry))
+	}
+	if configuration.Preset != config.PresetMinimal && configuration.MCP != nil && hasEnabledMCP(configuration.MCP) {
+		loop.ResultObservers = append(loop.ResultObservers, mcp.NewHistory(registry))
 	}
 	if guard := configuration.Guard; guard != nil {
 		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures

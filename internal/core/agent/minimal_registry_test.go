@@ -58,7 +58,7 @@ func TestLoopRunsWithBasicToolRegistry(t *testing.T) {
 		{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.Done}},
 	}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "test", MaxTurns: 3, MaxToolCalls: 5}
-	if loop.mcpCapability() != nil || loop.skillCapability() != nil {
+	if loop.mcpCapability() != nil || len(loop.ResultObservers) != 0 {
 		t.Fatal("basic registry unexpectedly exposes an advanced capability")
 	}
 	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "read input", WorkspaceHash: "workspace"})
@@ -73,7 +73,9 @@ func TestLoopRunsWithBasicToolRegistry(t *testing.T) {
 		t.Fatal("basic execution did not persist exactly one tool operation and completion")
 	}
 	success := contract.ToolSuccess(struct{}{}, "receipt", 0, "", false)
-	if loop.acceptMCPResult("mcp_discover", success) == nil || loop.acceptSkillResult("skill", success) == nil {
+	if loop.observeToolResult("mcp_discover", success) == nil || loop.observeToolResult("skill", success) == nil {
 		t.Fatal("missing capability silently accepted an advanced success receipt")
 	}
 }
+
+func (*basicOnlyRegistry) RequiresResultObserver(name string) bool { return name != "read_file" }

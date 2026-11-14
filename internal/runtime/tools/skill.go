@@ -234,3 +234,6 @@ func skillModelResult(result contract.ToolResult) contract.ToolResult {
 	}
 	return result
 }
+
+// RequiresResultObserver 要求成功技能回执由历史投影核验，正文不能在未持久化时激活。
+func (*Skill) RequiresResultObserver() bool { return true }
