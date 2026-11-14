@@ -26,12 +26,6 @@ type SkillVersion struct {
 	SourceSHA string `json:"source_sha256"`
 }
 
-// ContentDigest 计算正文摘要。
-func ContentDigest(body string) string {
-	sum := sha256.Sum256([]byte(body))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
 // ValidateSkillDraft 校验名称、结构与相对资源引用；拒绝越界路径。
 func ValidateSkillDraft(draft SkillDraft) error {
 	if !skillNamePattern.MatchString(draft.Name) {
