@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -31,6 +32,14 @@ const (
 	packageDisabledFile     = ".cairn-disabled"
 	packageLockName         = ".cairn-packages.lock"
 )
+
+// packageNamePattern 固定内容包的可移植 ASCII 名称语法，不依赖技能实现。
+var packageNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// validPackageName 保持内容包名称的原有语法与长度限制，拒绝路径和连续连字符。
+func validPackageName(name string) bool {
+	return len(name) <= PackageMaxNameChars && packageNamePattern.MatchString(name)
+}
 
 // PackageResource 声明包内一个普通文件的相对路径与内容摘要。
 type PackageResource struct {
@@ -86,7 +95,7 @@ func ParsePackageManifest(raw []byte) (PackageManifest, error) {
 	if manifest.Version != PackageContentVersion {
 		return PackageManifest{}, errors.New("unsupported package manifest version")
 	}
-	if !ValidSkillName(manifest.Name) || len(manifest.Name) > PackageMaxNameChars {
+	if !validPackageName(manifest.Name) {
 		return PackageManifest{}, errors.New("invalid package name")
 	}
 	if strings.TrimSpace(manifest.Package) == "" || len(manifest.Package) > PackageMaxVersionChars {
@@ -145,7 +154,7 @@ func InspectPackage(source string) (PackageManifest, error) {
 	if err != nil {
 		return PackageManifest{}, errors.New("open package source failed")
 	}
-	raw, err := skillReadFile(view, PackageManifestFile, PackageMaxManifestBytes)
+	raw, err := view.ReadBoundedFile(PackageManifestFile, PackageMaxManifestBytes)
 	if err != nil {
 		return PackageManifest{}, errors.New("read package manifest failed")
 	}
@@ -155,7 +164,7 @@ func InspectPackage(source string) (PackageManifest, error) {
 	}
 	totalBytes := 0
 	for _, resource := range manifest.Resources {
-		content, readErr := skillReadFile(view, resource.Path, PackageMaxFileBytes)
+		content, readErr := view.ReadBoundedFile(resource.Path, PackageMaxFileBytes)
 		if readErr != nil {
 			return PackageManifest{}, fmt.Errorf("package resource %s unavailable", resource.Path)
 		}
@@ -208,7 +217,7 @@ func (store PackageStore) InstallPackage(source string) (entry PackageEntry, err
 	}
 	defer func() { err = errors.Join(err, target.Close()) }()
 	for _, resource := range manifest.Resources {
-		content, readErr := skillReadFile(view, resource.Path, PackageMaxFileBytes)
+		content, readErr := view.ReadBoundedFile(resource.Path, PackageMaxFileBytes)
 		if readErr != nil || packageDigest(content) != normalizePackageDigest(resource.SHA256) {
 			return PackageEntry{}, errors.New("package source changed during installation")
 		}
@@ -272,7 +281,7 @@ func (store PackageStore) ListPackages() ([]PackageEntry, error) {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		raw, readErr := skillReadFile(view, filepath.Join(entry.Name(), PackageManifestFile), PackageMaxManifestBytes)
+		raw, readErr := view.ReadBoundedFile(filepath.Join(entry.Name(), PackageManifestFile), PackageMaxManifestBytes)
 		if readErr != nil {
 			continue
 		}
@@ -295,7 +304,7 @@ func (store PackageStore) ListPackages() ([]PackageEntry, error) {
 
 // SetPackageEnabled 通过包内私有标记保存启停；不删除资源、不改写清单。
 func (store PackageStore) SetPackageEnabled(name string, enabled bool) error {
-	if !ValidSkillName(name) {
+	if !validPackageName(name) {
 		return errors.New("invalid package name")
 	}
 	lockPath := filepath.Join(store.Root, packageLockName)
