@@ -293,7 +293,7 @@ func (store TemplateStore) read(relative string) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("open template store failed")
 	}
-	return skillReadFile(view, relative, TemplateMaxBodyBytes)
+	return view.ReadBoundedFile(relative, TemplateMaxBodyBytes)
 }
 
 // Save 原子写入模板；已存在名称失败关闭，不覆盖用户内容。

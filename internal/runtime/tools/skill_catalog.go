@@ -178,7 +178,7 @@ func DiscoverSkills(roots []SkillRoot) (*SkillCatalog, error) {
 			if err != nil {
 				return nil, errors.New("open skill directory failed")
 			}
-			raw, err := skillReadFile(view, "SKILL.md", SkillMaxInstructionsBytes)
+			raw, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
 			if err != nil {
 				catalog.Diagnostics = append(catalog.Diagnostics, skillDiagnostic(candidate.Name(), root.Scope, "invalid_skill_file"))
 				continue
@@ -268,7 +268,7 @@ func (catalog *SkillCatalog) Load(name string) (contract.SkillContent, error) {
 	if err != nil || skillDigest([]byte(view.Root)) != entry.SourceDigest {
 		return contract.SkillContent{}, errors.New("skill source changed")
 	}
-	raw, err := skillReadFile(view, "SKILL.md", SkillMaxInstructionsBytes)
+	raw, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
 	if err != nil || skillDigest(raw) != entry.SHA256 {
 		return contract.SkillContent{}, errors.New("skill instructions changed; restart with the reviewed version")
 	}
@@ -304,44 +304,13 @@ func (catalog *SkillCatalog) ReadResource(content contract.SkillContent, relativ
 	if err != nil || skillDigest([]byte(view.Root)) != content.SourceDigest {
 		return nil, errors.New("skill source changed")
 	}
-	main, err := skillReadFile(view, "SKILL.md", SkillMaxInstructionsBytes)
+	main, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
 	if err != nil || skillDigest(main) != content.SHA256 {
 		return nil, errors.New("skill instructions changed")
 	}
-	raw, err := skillReadFile(view, relative, SkillMaxResourceBytes)
+	raw, err := view.ReadBoundedFile(relative, SkillMaxResourceBytes)
 	if err != nil || int64(len(raw)) != resource.Bytes || skillDigest(raw) != resource.SHA256 {
 		return nil, errors.New("skill resource changed or is unavailable")
-	}
-	return raw, nil
-}
-
-// skillReadFile 先经过 Workspace.Resolve，再用根目录句柄约束实际打开，拒绝特殊文件和无限读取。
-func skillReadFile(view Workspace, relative string, maximum int64) ([]byte, error) {
-	root, err := os.OpenRoot(view.Root)
-	if err != nil {
-		return nil, errors.New("open skill root failed")
-	}
-	defer root.Close()
-	_, resolved, err := view.Resolve(relative)
-	if err != nil || view.Ignore(resolved) {
-		return nil, errors.New("skill path is not allowed")
-	}
-	info, err := root.Lstat(filepath.FromSlash(resolved))
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maximum {
-		return nil, errors.New("skill file is not a bounded regular file")
-	}
-	file, err := root.Open(filepath.FromSlash(resolved))
-	if err != nil {
-		return nil, errors.New("open skill file failed")
-	}
-	defer file.Close()
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("invalid skill file")
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
-	if err != nil || int64(len(raw)) > maximum {
-		return nil, errors.New("skill file exceeds limit")
 	}
 	return raw, nil
 }
@@ -368,7 +337,7 @@ func skillResources(view Workspace) ([]contract.SkillResource, error) {
 		if len(resources) >= SkillMaxFiles {
 			return errors.New("skill package has too many files")
 		}
-		raw, err := skillReadFile(view, path, SkillMaxResourceBytes)
+		raw, err := view.ReadBoundedFile(path, SkillMaxResourceBytes)
 		if err != nil {
 			return err
 		}

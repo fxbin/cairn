@@ -48,7 +48,7 @@ func (store SkillStore) Install(source string) (name string, err error) {
 	if err != nil {
 		return "", errors.New("open local skill source failed")
 	}
-	raw, err := skillReadFile(view, "SKILL.md", SkillMaxInstructionsBytes)
+	raw, err := view.ReadBoundedFile("SKILL.md", SkillMaxInstructionsBytes)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +79,7 @@ func (store SkillStore) Install(source string) (name string, err error) {
 		return "", errors.New("open temporary skill package failed")
 	}
 	for _, resource := range resources {
-		content, readErr := skillReadFile(view, resource.Path, SkillMaxResourceBytes)
+		content, readErr := view.ReadBoundedFile(resource.Path, SkillMaxResourceBytes)
 		if readErr != nil || skillDigest(content) != resource.SHA256 {
 			_ = target.Close()
 			return "", errors.New("skill source changed during installation")
