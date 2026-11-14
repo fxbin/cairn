@@ -76,6 +76,8 @@ const (
 // 静态 Preset 是编译期已知组件的能力组合：工具子集、策略模式与验证要求。
 // 不存在目录扫描、自注册或动态加载；未知 Preset 在校验层失败关闭。
 const (
+	// PresetMinimal 仅装配基础文件工具与受控命令，不启用高级能力。
+	PresetMinimal   = "minimal"
 	PresetCoding    = "coding"
 	PresetReadOnly  = "read-only"
 	PresetBenchmark = "benchmark"

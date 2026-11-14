@@ -355,6 +355,9 @@ func presetTools(workspace tools.Workspace, execTool tools.ExecCommand, preset s
 
 // presetToolsWithWeb 按 opt-in 决定是否暴露网络与会话工具。
 func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig) []tools.Tool {
+	if preset == config.PresetMinimal {
+		return minimalTools(workspace, execTool)
+	}
 	patchTool := tools.ApplyPatch{Workspace: workspace}
 	available := []tools.Tool{
 		tools.ListFiles{Workspace: workspace},

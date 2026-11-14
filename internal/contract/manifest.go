@@ -285,7 +285,7 @@ func validateFrozenConfigView(view frozenConfigView) error {
 		return fmt.Errorf("contract: frozen config profile %q is unsupported", view.Profile)
 	}
 	switch view.Preset {
-	case "coding", "read-only", "benchmark":
+	case "minimal", "coding", "read-only", "benchmark":
 	case "":
 		return errors.New("contract: frozen config preset is required")
 	default:
@@ -311,6 +311,9 @@ func validateFrozenConfigView(view frozenConfigView) error {
 	}
 	if view.Preset == "read-only" && (view.Policy.Write != "deny" || view.Policy.Exec != "deny" || view.VerificationCommands != 0) {
 		return errors.New("contract: read-only frozen config requires deny policies and no verification commands")
+	}
+	if view.Preset == "minimal" && view.VerificationCommands != 0 {
+		return errors.New("contract: minimal frozen config forbids verification commands")
 	}
 	if view.VerificationCommands < 0 {
 		return errors.New("contract: frozen config verification command count cannot be negative")

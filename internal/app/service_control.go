@@ -16,8 +16,12 @@ import (
 	"github.com/fxbin/cairn/internal/ports"
 )
 
-// Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
+// Resume 按冻结合同恢复既有运行，沿用同一 Boot 装配并合并资源关闭错误。
+// 最小组合先校验能力冲突，不在校验前创建可选观测资源。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
+	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
 	// 语义观测导出是可选旁路：导出失败不改变恢复语义与运行终态。
 	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
 	if telemetryErr != nil {
@@ -104,6 +108,9 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 // Reconcile 为已开始但未持久化终态的外部操作写入人工判定；它绝不重新执行原命令或 patch。
 // 返回前关闭 Boot，关闭错误与执行错误一并合并上报，绝不静默丢弃。
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
+	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
 	// 语义观测导出是可选旁路：导出失败不改变对账判定与运行终态。
 	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
 	if telemetryErr != nil {
@@ -298,6 +305,9 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 // cancelling 运行的唯一恢复出口：进程在 run_created/run_started 之间或取消序列中途
 // 崩溃后，工作区会被非终态 run 永久阻塞，此处按状态机允许的起点补写终态。
 func (service Service) Abort(ctx context.Context, options AbortOptions) (outcome RunResult, err error) {
+	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
 	// 语义观测导出是可选旁路：导出失败不改变收尾判定与运行终态。
 	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)
 	if telemetryErr != nil {

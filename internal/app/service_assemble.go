@@ -195,14 +195,19 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 }
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
-// artifacts 为具体存储；nil 时不注入端口，保持 Loop 侧的降级语义。
+// artifacts 为具体存储；nil 时不注入端口。minimal 只注入基础工具方法集，
+// 其余组合沿用可选能力识别，保持既有执行与恢复语义。
 func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate *policy.Gate, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace) agent.Loop {
+	var registryPort agent.ToolRegistry = registry
+	if configuration.Preset == config.PresetMinimal {
+		registryPort = minimalToolRegistry{ToolRegistry: registry}
+	}
 	var artifactPort agent.ArtifactStore
 	if artifacts != nil {
 		artifactPort = artifacts
 	}
 	loop := agent.Loop{
-		Journal: journal, Provider: provider, Tools: registry, Gate: gate,
+		Journal: journal, Provider: provider, Tools: registryPort, Gate: gate,
 		Model: configuration.Provider.Model, ConfigFingerprint: configuration.Fingerprint(),
 		ProviderKind: providerKindForProtocol(configuration.Provider.Protocol),
 		MaxTurns:     configuration.Budget.MaxTurns, MaxToolCalls: configuration.Budget.MaxToolCalls,
