@@ -29,17 +29,21 @@ type Loop struct {
 	ConfigFingerprint string
 	MaxTurns          int
 	// Guard 阈值：零值回落默认；显式配置经 fingerprintView 进入配置指纹。
-	GuardConsecutiveFailures       int
-	GuardPeriodicWindow            int
-	GuardNoProgressLimit           int
-	MaxToolCalls                   int
-	MaxInputTokens                 int
-	MaxOutputTokens                int
-	MaxCostUSD                     float64
-	InputTokenUSD                  float64
-	OutputTokenUSD                 float64
-	RequireProviderUsage           bool
-	AllowedProviderStopReasons     []string
+	GuardConsecutiveFailures   int
+	GuardPeriodicWindow        int
+	GuardNoProgressLimit       int
+	MaxToolCalls               int
+	MaxInputTokens             int
+	MaxOutputTokens            int
+	MaxCostUSD                 float64
+	InputTokenUSD              float64
+	OutputTokenUSD             float64
+	RequireProviderUsage       bool
+	AllowedProviderStopReasons []string
+	// ContextProviders 由组合根按固定顺序显式注入；空列表不增加上下文。
+	ContextProviders []ContextProvider
+	// contextBlocks 冻结安全点的纯文本投影，供消息重建、预算与压缩共用。
+	contextBlocks                  []string
 	ContextAutoCompact             bool
 	ContextMaxPromptTokens         int
 	ContextMaxSummaryBytes         int
@@ -729,7 +733,11 @@ func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.Ru
 	if err := loop.closeContinuationTurn(ctx, projection, input, turnID); err != nil {
 		return nil, err
 	}
-	if len(loop.activeSkillContents()) != 0 {
+	changed, err := loop.refreshContextProviders()
+	if err != nil {
+		return nil, err
+	}
+	if changed || len(loop.contextBlocks) != 0 {
 		events, loadErr := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)
 		if loadErr != nil {
 			return nil, loadErr
@@ -740,7 +748,7 @@ func (loop *Loop) closeTurnAndCompact(ctx context.Context, projection *domain.Ru
 		}
 		messages = rebuilt
 	}
-	messages, err := loop.compactContextIfNeeded(ctx, projection, input, messages)
+	messages, err = loop.compactContextIfNeeded(ctx, projection, input, messages)
 	if err != nil {
 		return nil, err
 	}

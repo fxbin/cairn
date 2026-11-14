@@ -201,14 +201,16 @@ func (loop *Loop) contextInventoryBudgetPercent() int {
 	return loop.ContextInventoryBudgetPercent
 }
 
-// contextMessages 按系统提示、项目规约、会话前情、技能、原始任务和检查点的固定顺序构建持久上下文。
+// contextMessages 按系统提示、项目规约、会话前情、扩展文本、原始任务和检查点的固定顺序构建持久上下文。
 func (loop *Loop) contextMessages(task, priorContext, summary string) []ports.Message {
 	messages := []ports.Message{{Role: "system", Content: loop.prompt()}}
 	messages = append(messages, loop.projectInstructionMessages()...)
 	if priorContext != "" {
 		messages = append(messages, ports.Message{Role: "user", Content: sessionContextBlock(priorContext)})
 	}
-	messages = append(messages, loop.skillContextMessages()...)
+	for _, block := range loop.contextBlocks {
+		messages = append(messages, ports.Message{Role: "user", Content: block})
+	}
 	messages = append(messages, ports.Message{Role: "user", Content: task})
 	if summary != "" {
 		messages = append(messages, ports.Message{Role: "user", Content: contextCheckpointPrefix + summary})

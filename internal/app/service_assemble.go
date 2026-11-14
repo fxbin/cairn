@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
@@ -226,6 +227,9 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		// 异步委派语义由配置显式开启；停靠与交付所需的子完成信号登记表由
 		// service.Run 在装配委派回调时注入。
 		AsyncDelegateEnabled: configuration.Tools.DelegateAsync,
+	}
+	if configuration.Preset != config.PresetMinimal && configuration.Skills != nil && configuration.Skills.Enabled {
+		loop.ContextProviders = []agent.ContextProvider{skills.NewContext(registry)}
 	}
 	if guard := configuration.Guard; guard != nil {
 		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures

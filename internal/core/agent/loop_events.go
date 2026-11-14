@@ -69,6 +69,9 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 	if err := loop.restoreProjectInstructions(events); err != nil {
 		return nil, err
 	}
+	if _, err := loop.refreshContextProviders(); err != nil {
+		return nil, err
+	}
 	task := fallbackTask
 	priorContext := loop.PriorContext
 	priorRef := loop.PriorContextRef

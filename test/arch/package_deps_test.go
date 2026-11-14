@@ -9,7 +9,8 @@
 //  4. 配置层（internal/config）不得依赖 Core、Application、Studio 与带外工具链。
 //  5. Studio（studio/tui/cli/cmd）不得直接依赖 Core 与 Runtime，只能经
 //     Application、合同层与配置层交互。
-//  6. Application 是组合根、benchmark 是带外工具链，可依赖任意内部包。
+//  6. 可选能力仅消费合同层，不能依赖 Core、Runtime 或其他入口实现。
+//  7. Application 是组合根、benchmark 是带外工具链，可依赖任意内部包。
 //
 // 当前实现尚未完成解耦，因此把已存在的越层边逐条登记在 knownExceptions 中；
 // 新增越层边、未登记分层的新包、以及例外消失后未同步删除，都会让本测试失败。
@@ -41,6 +42,8 @@ const (
 	layerConfig packageLayer = "配置层"
 	// layerCore 是 Agent 智能执行核心。
 	layerCore packageLayer = "Core"
+	// layerCapability 是显式装配的可选能力，只消费合同层。
+	layerCapability packageLayer = "能力层"
 	// layerApplication 是用例编排与组合根。
 	layerApplication packageLayer = "Application"
 	// layerStudio 是 CLI、TUI、Desktop 与 GUI 入口。
@@ -79,6 +82,8 @@ var packageLayers = map[string]packageLayer{
 	"internal/config": layerConfig,
 	// Core。
 	"internal/core/agent": layerCore,
+	// 显式可选能力。
+	"internal/capabilities/skills": layerCapability,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。
@@ -148,6 +153,9 @@ func layerOf(relativePath string) (packageLayer, bool) {
 // forbiddenEdge 判断 importer 层是否禁止依赖 imported 层。
 // Application 是组合根、工具链是带外入口，二者不受层内限制。
 func forbiddenEdge(importer, imported packageLayer) bool {
+	if importer == layerCapability {
+		return imported != layerContract
+	}
 	if importer == imported {
 		return false
 	}
@@ -155,13 +163,13 @@ func forbiddenEdge(importer, imported packageLayer) bool {
 	case layerApplication, layerToolchain:
 		return false
 	case layerStudio:
-		return imported == layerCore || imported == layerRuntime
+		return imported == layerCore || imported == layerRuntime || imported == layerCapability
 	case layerCore, layerContract:
-		// Core 与合同层只允许停留在合同层。
+		// Core、合同层与可选能力的跨层依赖只允许指向合同层。
 		return imported != layerContract
 	case layerRuntime, layerConfig:
 		return imported == layerCore || imported == layerApplication ||
-			imported == layerStudio || imported == layerToolchain
+			imported == layerStudio || imported == layerToolchain || imported == layerCapability
 	}
 	return true
 }
