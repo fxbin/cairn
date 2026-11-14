@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/adapters/journal/memory"
+	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/runtime/policy"
@@ -35,7 +36,7 @@ func newSkillLoopTest(t *testing.T, workspacePath, skillsPath string, provider p
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "fake", MaxTurns: 4}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ContextProviders: []ContextProvider{skills.NewContext(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
 }
 
 // skillLoopSource 创建包含工具声明的技能，权限声明必须保持为无效授权。
