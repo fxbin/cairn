@@ -152,6 +152,9 @@ func (service Service) WorkflowRun(ctx context.Context, options WorkflowRunOptio
 	if err := ctx.Err(); err != nil {
 		return WorkflowOutcome{}, err
 	}
+	if err := validateHookConfiguration(options.Config); err != nil {
+		return WorkflowOutcome{}, err
+	}
 	commands, err := verificationCommands(options.Config.Verification)
 	if err != nil {
 		return WorkflowOutcome{}, fmt.Errorf("build frozen verification commands: %w", err)
@@ -213,6 +216,9 @@ func (service Service) WorkflowResume(ctx context.Context, options WorkflowResum
 	if err := ctx.Err(); err != nil {
 		return WorkflowOutcome{}, err
 	}
+	if err := validateHookConfiguration(options.Config); err != nil {
+		return WorkflowOutcome{}, err
+	}
 	_, hash, err := workspaceFor(options.Workspace, options.Config)
 	if err != nil {
 		return WorkflowOutcome{}, err
@@ -253,6 +259,9 @@ func (service Service) WorkflowResume(ctx context.Context, options WorkflowResum
 // 记录。其余状态一律拒绝，不存在任何自动通过路径。
 func (service Service) WorkflowAccept(ctx context.Context, options WorkflowAcceptOptions) (WorkflowOutcome, error) {
 	if err := ctx.Err(); err != nil {
+		return WorkflowOutcome{}, err
+	}
+	if err := validateHookConfiguration(options.Config); err != nil {
 		return WorkflowOutcome{}, err
 	}
 	_, hash, err := workspaceFor(options.Workspace, options.Config)

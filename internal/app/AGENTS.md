@@ -11,7 +11,8 @@ boot.go: Boot 统一资源所有权。钩子先校验，冻结规则分别注入
 boot_test.go: 回归 Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
 boot_tool_callbacks.go: Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
 boot_tool_callbacks_test.go: 回归 Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
-hooks_test.go: 非法钩子在资源创建前拒绝。冻结授权与动作共用同一投影。
+hooks.go: 纯校验执行配置并转换冻结规则。工作流与运行入口共用。
+hooks_test.go: 真实运行与Workflow入口拒绝非法规则。冻结投影和Doctor口径回归。
 context_provider_test.go: 验证显式技能配置与历史正文投影装配。
 contract.go: FrozenRunConfig 绑定运行清单与历史配置。恢复沿用同一序列化合同。
 delegate_async.go: AsyncDelegateRuntime 跟踪子运行生命周期。父运行返回前回收进程内任务。
@@ -45,11 +46,11 @@ queue.go: Queue 将输入持久化为待处理、关联或取消状态。锁竞�
 queue_test.go: 回归 Queue 将输入持久化为待处理、关联或取消状态。锁竞争有界失败。
 rewind.go: Rewind 从无损 before 制品生成回退计划。每次文件写入走完整授权链。
 rewind_test.go: 回归 Rewind 从无损 before 制品生成回退计划。每次文件写入走完整授权链。
-service.go: Service.Run 校验冻结身份并驱动 Boot。运行事实来自 Journal。
+service.go: Service.Run 在观测前校验钩子并驱动Boot。运行事实来自Journal。
 service_admission.go: AdmissionGate 统一运行和诊断的准入检查。过期证据失败关闭。
 service_artifacts.go: ArtifactIntegrity 校验历史引用和摘要。损坏制品阻止恢复。
 service_assemble.go: ConfiguredLoop 注入同实例投影与释放参与者。授权保留请求作用域。
-service_control.go: Resume、Reconcile 和 Abort 复用装配边界。对账不重发不确定操作。
+service_control.go: 恢复与对账在观测前校验钩子。应急终止不激活钩子。
 service_query.go: RunQuery 只读投影运行与证据。缺失账本不生成虚构记录。
 service_session.go: SessionAncestry 校验会话来源和工作区身份。循环与损坏链失败关闭。
 service_test.go: 回归 Service.Run 校验冻结身份并驱动 Boot。运行事实来自 Journal。
@@ -94,7 +95,7 @@ telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出�
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 trial_activation_test.go: 回归 TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 user_directory_test.go: 验证用户根 OAuth 存储、权限与按身份退出。
-workflow_exec.go: WorkflowExecution 连接执行、恢复与人工验收。能力事件与 Run 事实分别持久化。
+workflow_exec.go: 工作流写入前校验钩子。执行、恢复与人工验收分别持久化。
 workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
 workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。

@@ -1,3 +1,8 @@
+// [INPUT]: 依赖运行输入、冻结配置与Boot。
+// [OUTPUT]: 提供新运行、前情与Journal驱动结果。
+// [POS]: 公共执行入口在观测和运行资源前校验钩子。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
 package app
 
@@ -186,6 +191,9 @@ type SessionTree struct {
 // 最小组合先校验能力冲突，不绑定可选工具回调或创建委派运行时。
 func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
 	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
+	if err := validateHookConfiguration(options.Config); err != nil {
 		return RunResult{}, err
 	}
 	if options.Task == "" {
