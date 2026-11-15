@@ -3,6 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      try {
+        const saved =
+          localStorage.getItem("cairn.gui.colorScheme") ??
+          localStorage.getItem("cairn.v2.colorScheme");
+        const meta = document.querySelector('meta[name="color-scheme"]');
+        if (meta && (saved === "light" || saved === "dark")) {
+          meta.content = saved;
+        }
+      } catch (_) {}
+    </script>
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/cairn-icon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/cairn-icon-16.png" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
