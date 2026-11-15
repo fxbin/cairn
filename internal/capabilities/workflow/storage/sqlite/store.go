@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖父能力的事件合同与 SQLite 驱动。
+ * [OUTPUT]: 提供Store、只读打开、CAS 追加与完整性检查。
+ * [POS]: 能力的持久化叶子；App 显式创建并关闭连接。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // Package sqlite 持久化 Cairn 工作流执行链的追加式事件存储。
 // Author: fxbin
 package sqlite
@@ -16,7 +22,7 @@ import (
 	modernsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/fxbin/cairn/internal/runtime/workflow"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
 )
 
 // ErrPersistedContent 表示行可读取，但持久化的事件字段无法解码。

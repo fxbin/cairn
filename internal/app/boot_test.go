@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖真实 Boot 装配与生产导入库存。
+ * [OUTPUT]: 提供资源释放与组合根依赖边界回归。
+ * [POS]: 应用装配测试；移除已归位的旧工作流适配器登记。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 package app
 
 import (
@@ -244,7 +250,6 @@ func TestCompositionRootDependencyDirection(t *testing.T) {
 		"github.com/fxbin/cairn/internal/adapters/mcpclient":                  true,
 		"github.com/fxbin/cairn/internal/adapters/journal/sqlite":             true,
 		"github.com/fxbin/cairn/internal/adapters/memstore/sqlite":            true,
-		"github.com/fxbin/cairn/internal/adapters/workflow/sqlite":            true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openaicompat":      true,
 		"github.com/fxbin/cairn/internal/adapters/provider/anthropicmessages": true,
 		"github.com/fxbin/cairn/internal/adapters/provider/openairesponses":   true,

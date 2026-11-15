@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖标准时间与字符串校验。
+ * [OUTPUT]: 提供步骤状态、Plan 与恢复位置。
+ * [POS]: 能力的纯步骤合同；不执行 Run 或创建存储。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // Package workflow 定义工作流步骤进度、失败与恢复合同：每步输入输出可引用，
 // 取消/恢复位置明确；不确定副作用必须对账，禁止整流程重跑掩盖。
 //
@@ -112,6 +118,7 @@ func (plan *Plan) MarkStep(id string, state StepState, input, output StepIO, err
 	return fmt.Errorf("step %q not found", id)
 }
 
+// allowedTransition 只允许步骤合同声明的迁移；不确定结果先对账。
 func allowedTransition(from, to StepState) bool {
 	switch from {
 	case StepPending:

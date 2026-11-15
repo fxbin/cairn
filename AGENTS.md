@@ -32,7 +32,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/runtime/memory/`、`internal/runtime/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
 | `internal/runtime/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
-| `internal/runtime/workflow/` | 持久化步骤与状态合同；应用层已有执行、验证和人工验收入口，Scheduler 尚未接线 |
+| `internal/capabilities/workflow/` | 步骤、独立事件链及能力内 SQLite 存储；应用层连接显式执行、验证与人工验收，Scheduler 尚未接线 |
 
 ## 不可绕过的边界
 
@@ -99,5 +99,6 @@ go test ./test/e2e -tags=e2e -count=1
 - [事件持久化](internal/adapters/journal/sqlite/AGENTS.md)。
 - [共享合同](internal/contract/AGENTS.md)、[Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
 - [工具基础设施](internal/runtime/tools/AGENTS.md)、[基础授权](internal/runtime/policy/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
-- [MCP 能力](internal/capabilities/mcp/AGENTS.md) 与 [技能能力](internal/capabilities/skills/AGENTS.md)。
+- [MCP 能力](internal/capabilities/mcp/AGENTS.md)、[技能能力](internal/capabilities/skills/AGENTS.md) 与 [工作流能力](internal/capabilities/workflow/AGENTS.md)。
+- [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md)。
 - 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。

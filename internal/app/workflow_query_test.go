@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖真实工作流 SQLite 链与 Service 查询。
+ * [OUTPUT]: 提供只读状态、缺失链、损坏链及路径回归。
+ * [POS]: 应用查询测试；不启动工作流步骤。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流只读查询的应用层测试：真实存储往返、未找到与损坏链失败关闭。
 package app
 
@@ -10,9 +16,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // seedWorkflowStore 在指定工作区状态目录下创建真实工作流链并返回其 ID。

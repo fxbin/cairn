@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖go list 真实生产导入边与明确包分层。
+ * [OUTPUT]: 提供包依赖守卫与能力单元边界回归。
+ * [POS]: 架构测试；同能力子包可组合，反向和跨能力依赖仍拒绝。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // Package arch_test 提供 Cairn 的包依赖守卫：以 `go list` 的真实 import 边为准，
 // 阻止 Core、合同层、Runtime、配置层与 Studio 之间新增越层引用。
 //
@@ -9,7 +15,7 @@
 //  4. 配置层（internal/config）不得依赖 Core、Application、Studio 与带外工具链。
 //  5. Studio（studio/tui/cli/cmd）不得直接依赖 Core 与 Runtime，只能经
 //     Application、合同层与配置层交互。
-//  6. 可选能力仅消费合同层，不能依赖 Core、Runtime 或其他入口实现。
+//  6. 可选能力消费合同层及本能力子包，不依赖其他能力或入口实现。
 //  7. Application 是组合根、benchmark 是带外工具链，可依赖任意内部包。
 //
 // 当前实现尚未完成解耦，因此把已存在的越层边逐条登记在 knownExceptions 中；
@@ -42,7 +48,7 @@ const (
 	layerConfig packageLayer = "配置层"
 	// layerCore 是 Agent 智能执行核心。
 	layerCore packageLayer = "Core"
-	// layerCapability 是显式装配的可选能力，只消费合同层。
+	// layerCapability 是显式装配的可选能力，消费合同与本能力子包。
 	layerCapability packageLayer = "能力层"
 	// layerApplication 是用例编排与组合根。
 	layerApplication packageLayer = "Application"
@@ -68,7 +74,6 @@ var packageLayers = map[string]packageLayer{
 	"internal/runtime/lock":         layerRuntime,
 	"internal/runtime/credential":   layerRuntime,
 	"internal/runtime/hooks":        layerRuntime,
-	"internal/runtime/workflow":     layerRuntime,
 	"internal/runtime/artifact":     layerRuntime,
 	"internal/runtime/memory":       layerRuntime,
 	"internal/runtime/provider":     layerRuntime,
@@ -83,8 +88,10 @@ var packageLayers = map[string]packageLayer{
 	// Core。
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
-	"internal/capabilities/skills": layerCapability,
-	"internal/capabilities/mcp":    layerCapability,
+	"internal/capabilities/skills":                  layerCapability,
+	"internal/capabilities/mcp":                     layerCapability,
+	"internal/capabilities/workflow":                layerCapability,
+	"internal/capabilities/workflow/storage/sqlite": layerCapability,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。
@@ -175,6 +182,27 @@ func forbiddenEdge(importer, imported packageLayer) bool {
 	return true
 }
 
+// forbiddenPackageEdge 将能力内部依赖限制在同一能力单元。
+// 只有已登记的能力包适用；跨能力仍按原层级规则拒绝。
+func forbiddenPackageEdge(importer, imported string, importerLayer, importedLayer packageLayer) bool {
+	if importerLayer == layerCapability && importedLayer == layerCapability {
+		unit := capabilityUnit(importer)
+		if unit != "" && unit == capabilityUnit(imported) {
+			return false
+		}
+	}
+	return forbiddenEdge(importerLayer, importedLayer)
+}
+
+// capabilityUnit 提取 capabilities 下的首级能力名，不混淆前缀相似的能力。
+func capabilityUnit(path string) string {
+	const prefix = "internal/capabilities/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	return strings.SplitN(strings.TrimPrefix(path, prefix), "/", 2)[0]
+}
+
 // toolsRegistryLeak 判断 Runtime 内部是否绕过端口直接依赖工具注册表。
 // adapters 作为装配适配器可以引用 tools，其余 Runtime 包必须经端口访问。
 func toolsRegistryLeak(importer, imported string, importerLayer packageLayer) bool {
@@ -212,7 +240,7 @@ func TestPackageDependencyGuard(t *testing.T) {
 				unclassified = append(unclassified, imported)
 				continue
 			}
-			if forbiddenEdge(importerLayer, importedLayer) || toolsRegistryLeak(importer, imported, importerLayer) {
+			if forbiddenPackageEdge(importer, imported, importerLayer, importedLayer) || toolsRegistryLeak(importer, imported, importerLayer) {
 				actual[dependencyEdge{Importer: importer, Imported: imported}] = struct{}{}
 			}
 		}
@@ -354,4 +382,33 @@ func uniqueSorted(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// TestCapabilityUnitBoundary 允许单元内的存储叶子，保持其他层与能力隔离。
+func TestCapabilityUnitBoundary(t *testing.T) {
+	cases := []struct {
+		name, importer, imported string
+		from, to                 packageLayer
+		forbidden                bool
+	}{
+		{"storage_to_contract", "internal/capabilities/workflow/storage/sqlite", "internal/capabilities/workflow", layerCapability, layerCapability, false},
+		{"parent_to_leaf", "internal/capabilities/workflow", "internal/capabilities/workflow/storage/sqlite", layerCapability, layerCapability, false},
+		{"sibling", "internal/capabilities/workflow/storage/sqlite", "internal/capabilities/workflow/other", layerCapability, layerCapability, false},
+		{"cross_capability", "internal/capabilities/workflow", "internal/capabilities/mcp", layerCapability, layerCapability, true},
+		{"similar_prefix", "internal/capabilities/workflow", "internal/capabilities/workflow_extra", layerCapability, layerCapability, true},
+		{"runtime_to_capability", "internal/runtime/tools", "internal/capabilities/workflow", layerRuntime, layerCapability, true},
+		{"core_to_capability", "internal/core/agent", "internal/capabilities/workflow", layerCore, layerCapability, true},
+		{"config_to_capability", "internal/config", "internal/capabilities/workflow", layerConfig, layerCapability, true},
+		{"studio_to_capability", "internal/cli", "internal/capabilities/workflow", layerStudio, layerCapability, true},
+		{"capability_to_runtime", "internal/capabilities/workflow", "internal/runtime/tools", layerCapability, layerRuntime, true},
+		{"capability_to_app", "internal/capabilities/workflow", "internal/app", layerCapability, layerApplication, true},
+		{"shared_contract", "internal/capabilities/workflow", "internal/domain", layerCapability, layerContract, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := forbiddenPackageEdge(c.importer, c.imported, c.from, c.to); got != c.forbidden {
+				t.Fatalf("forbidden=%v want %v", got, c.forbidden)
+			}
+		})
+	}
 }

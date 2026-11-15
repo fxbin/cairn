@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖真实临时 SQLite 与父能力事件合同。
+ * [OUTPUT]: 提供CAS 冲突、旧链读取、迁移和损坏拒绝回归。
+ * [POS]: 持久化叶子测试；只读不建库断言保持。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流 SQLite 存储的合同测试：追加 CAS、往返读取、只读打开与完整性校验。
 package sqlite
 
@@ -9,7 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/runtime/workflow"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
 )
 
 // appendCreated 追加创建事件并返回新链的事件列表。

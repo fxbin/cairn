@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖真实工作流 SQLite 链与命令输出。
+ * [OUTPUT]: 提供状态渲染、单行 JSON 与用法拒绝回归。
+ * [POS]: CLI 接线测试；生产命令仅调用 App。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流子命令的 CLI 接线测试：真实存储只读渲染、NDJSON 输出与用法约束。
 package cli
 
@@ -11,11 +17,11 @@ import (
 	"strings"
 	"testing"
 
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/runtime/tools"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // workspaceHashForCLI 以与应用层一致的方式计算工作区状态哈希。

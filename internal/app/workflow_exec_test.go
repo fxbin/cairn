@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖Service、临时工作区与脚本化 Provider。
+ * [OUTPUT]: 提供执行、验证、人工门、取消和恢复拒绝回归。
+ * [POS]: 应用工作流测试；不确定结果与绑定 Run 唯一性断言保持。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流执行链的应用层合同测试（ADR-0021 片 2）：创建前置失败关闭、顺序推进、
 // 人工审批门、恢复唯一性、验证证据边界与配置漂移拒绝。
 package app
@@ -11,12 +17,12 @@ import (
 	"strings"
 	"testing"
 
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // workflowExecConfig 返回允许写入与执行的应用层测试配置；验证命令为空时
