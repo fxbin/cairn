@@ -1,6 +1,11 @@
-// Package tools 静态提供技能加载工具；读取说明不执行脚本或改变 Policy。
+// [INPUT]: 发现目录及已持久化的技能成功回执。
+// [OUTPUT]: 提供静态工具、激活状态与精简模型视图。
+// [POS]: 同一实例服务执行、History 和 Context。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package skills 静态提供技能加载工具；读取说明不执行脚本或改变 Policy。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"bytes"
@@ -169,29 +174,17 @@ func (skill *Skill) accept(result contract.ToolResult) error {
 	return nil
 }
 
-// skillTool 返回静态注册的技能工具，不从任意外部类型建立扩展机制。
-func (registry *Registry) skillTool() *Skill {
-	tool, ok := registry.tools["skill"].(*Skill)
-	if !ok {
-		return nil
-	}
-	return tool
-}
-
 // PrepareSkills 将原始用户任务传给技能可见性判断，并清空上次运行的激活投影。
-func (registry *Registry) PrepareSkills(task string) {
-	if skill := registry.skillTool(); skill != nil {
-		skill.PrepareTask(task)
-		skill.active = nil
-	}
+func (skill *Skill) PrepareSkills(task string) {
+	skill.PrepareTask(task)
+	skill.active = nil
 }
 
 // AcceptSkillResult 只在调用方已成功落盘操作与工具回执后更新技能投影。
-func (registry *Registry) AcceptSkillResult(name string, result contract.ToolResult) error {
+func (skill *Skill) AcceptSkillResult(name string, result contract.ToolResult) error {
 	if name != "skill" {
 		return nil
 	}
-	skill := registry.skillTool()
 	if skill == nil {
 		return errors.New("persisted skill result has no configured skill tool")
 	}
@@ -199,8 +192,7 @@ func (registry *Registry) AcceptSkillResult(name string, result contract.ToolRes
 }
 
 // ActiveSkills 按名称返回来自成功回执的完整说明，供压缩后保留和预算计算。
-func (registry *Registry) ActiveSkills() []contract.SkillContent {
-	skill := registry.skillTool()
+func (skill *Skill) ActiveSkills() []contract.SkillContent {
 	if skill == nil {
 		return nil
 	}
@@ -213,8 +205,8 @@ func (registry *Registry) ActiveSkills() []contract.SkillContent {
 	return contents
 }
 
-// skillModelResult 避免与持久技能上下文重复复制正文，Journal 始终保留完整加载回执。
-func skillModelResult(result contract.ToolResult) contract.ToolResult {
+// ModelResult 避免与持久技能上下文重复复制正文，Journal 始终保留完整加载回执。
+func (skill *Skill) ModelResult(result contract.ToolResult) contract.ToolResult {
 	if !result.OK {
 		return result
 	}

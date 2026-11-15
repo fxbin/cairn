@@ -1,21 +1,42 @@
-// Package tools 以显式本地操作安装和管理技能包，不执行安装钩子。
+// [INPUT]: 原生目标根、文件视图工厂和目录锁。
+// [OUTPUT]: 锁内安装、移除和启停技能包。
+// [POS]: 技能发布事务，不写共享只读来源。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package skills 以显式本地操作安装和管理技能包，不执行安装钩子。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/fxbin/cairn/internal/runtime/lock"
 )
 
 // SkillStore 只管理 Cairn 原生技能目录；共享目录保持外部管理。
-type SkillStore struct{ Root string }
+type SkillStore struct {
+	Root        string
+	openPackage PackageViewFactory
+	acquireLock StoreLockAcquirer
+}
+
+// NewSkillStore 绑定原生目录与实际的读取和排他锁能力，构造时不创建目录或取得锁。
+func NewSkillStore(root string, openPackage PackageViewFactory, acquireLock StoreLockAcquirer) (SkillStore, error) {
+	if openPackage == nil {
+		return SkillStore{}, errors.New("skill package view factory is required")
+	}
+	if acquireLock == nil {
+		return SkillStore{}, errors.New("skill store lock acquirer is required")
+	}
+	return SkillStore{Root: root, openPackage: openPackage, acquireLock: acquireLock}, nil
+}
 
 // open 创建私有目录并取得进程级排他锁，防止并发管理操作覆盖彼此。
-func (store SkillStore) open() (*os.Root, *lock.Lock, error) {
+func (store SkillStore) open() (*os.Root, StoreLock, error) {
+	if store.openPackage == nil || store.acquireLock == nil {
+		return nil, nil, errors.New("skill store dependencies are required")
+	}
 	if err := os.MkdirAll(store.Root, 0700); err != nil {
 		return nil, nil, errors.New("create skill store failed")
 	}
@@ -23,7 +44,7 @@ func (store SkillStore) open() (*os.Root, *lock.Lock, error) {
 	if err != nil || !info.IsDir() {
 		return nil, nil, errors.New("skill store must be a real directory")
 	}
-	view, err := NewWorkspace(store.Root, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
+	view, canonicalRoot, err := openPackageView(store.openPackage, store.Root)
 	if err != nil {
 		return nil, nil, errors.New("open skill store failed")
 	}
@@ -31,11 +52,11 @@ func (store SkillStore) open() (*os.Root, *lock.Lock, error) {
 	if err != nil {
 		return nil, nil, errors.New("invalid skill store lock")
 	}
-	guard, err := lock.Acquire(lockPath)
-	if err != nil {
+	guard, err := store.acquireLock(lockPath)
+	if err != nil || guard == nil {
 		return nil, nil, errors.New("skill store is locked or unavailable")
 	}
-	root, err := os.OpenRoot(view.Root)
+	root, err := os.OpenRoot(canonicalRoot)
 	if err != nil {
 		return nil, nil, errors.Join(errors.New("open skill store failed"), guard.Release())
 	}
@@ -44,7 +65,7 @@ func (store SkillStore) open() (*os.Root, *lock.Lock, error) {
 
 // Install 将经过校验的普通文件复制到临时包，全部同步后原子发布；已有名称失败关闭。
 func (store SkillStore) Install(source string) (name string, err error) {
-	view, err := NewWorkspace(source, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
+	view, canonicalRoot, err := openPackageView(store.openPackage, source)
 	if err != nil {
 		return "", errors.New("open local skill source failed")
 	}
@@ -52,11 +73,11 @@ func (store SkillStore) Install(source string) (name string, err error) {
 	if err != nil {
 		return "", err
 	}
-	metadata, _, err := parseSkill(raw, filepath.Base(view.Root))
+	metadata, _, err := parseSkill(raw, filepath.Base(canonicalRoot))
 	if err != nil {
 		return "", err
 	}
-	resources, err := skillResources(view)
+	resources, err := skillResources(view, canonicalRoot)
 	if err != nil {
 		return "", err
 	}

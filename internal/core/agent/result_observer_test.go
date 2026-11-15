@@ -1,3 +1,8 @@
+// [INPUT]: 通用状态工具、Journal 和观察器探针。
+// [OUTPUT]: 验证唯一所有者与未知成功失败关闭。
+// [POS]: Core 能力投影的安全合同回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -218,23 +223,27 @@ func TestReplayObserverErrorsAndUnknownSuccessFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	loop.Tools, loop.ResultObservers = registry, nil
-	operationID := domain.NewOperationID()
-	events := []domain.Event{
-		{Type: domain.EventToolCallProposed, OperationID: &operationID, Payload: mustJSON(toolCallPayload{ToolName: "unknown", Arguments: json.RawMessage(`{}`)})},
-		{Type: domain.EventToolResultAppended, OperationID: &operationID, Payload: mustJSON(contract.ToolFailure("unknown_tool", "unknown tool"))},
-	}
-	if err := loop.restoreResultProjections(events); err != nil {
-		t.Fatalf("unknown failure changed: %v", err)
-	}
-	if err := loop.observeToolResult("unknown", contract.ToolFailure("unknown_tool", "unknown tool")); err != nil {
-		t.Fatal(err)
-	}
-	events[1].Payload = mustJSON(contract.ToolSuccess(struct{}{}, "unexpected success", 0, "", false))
-	if err := loop.restoreResultProjections(events); err == nil {
-		t.Fatal("unknown successful history silently lost its projection")
-	}
-	if err := loop.observeToolResult("unknown", contract.ToolSuccess(struct{}{}, "unexpected success", 0, "", false)); err == nil {
-		t.Fatal("unknown live success silently lost its projection")
+	for _, name := range []string{"unknown", "skill"} {
+		t.Run(name, func(t *testing.T) {
+			operationID := domain.NewOperationID()
+			events := []domain.Event{
+				{Type: domain.EventToolCallProposed, OperationID: &operationID, Payload: mustJSON(toolCallPayload{ToolName: name, Arguments: json.RawMessage(`{}`)})},
+				{Type: domain.EventToolResultAppended, OperationID: &operationID, Payload: mustJSON(contract.ToolFailure("unknown_tool", "unknown tool"))},
+			}
+			if err := loop.restoreResultProjections(events); err != nil {
+				t.Fatalf("unknown failure changed: %v", err)
+			}
+			if err := loop.observeToolResult(name, contract.ToolFailure("unknown_tool", "unknown tool")); err != nil {
+				t.Fatal(err)
+			}
+			events[1].Payload = mustJSON(contract.ToolSuccess(struct{}{}, "unexpected success", 0, "", false))
+			if err := loop.restoreResultProjections(events); err == nil {
+				t.Fatal("unknown successful history silently lost its projection")
+			}
+			if err := loop.observeToolResult(name, contract.ToolSuccess(struct{}{}, "unexpected success", 0, "", false)); err == nil {
+				t.Fatal("unknown live success silently lost its projection")
+			}
+		})
 	}
 }
 

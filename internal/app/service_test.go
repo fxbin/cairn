@@ -1,3 +1,8 @@
+// [INPUT]: 应用装配、内存替身与隔离工作区。
+// [OUTPUT]: 验证运行准入、配置和恢复失败边界。
+// [POS]: Service 的跨模块合同回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -133,7 +138,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 	configuration.Context.MaxSummaryBytes = 6_789
 	configuration.Context.InventoryBudgetPercent = 35
 	configuration.Context.ThresholdReservePercent = 15
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{}, nil)
 	if loop.ContextAutoCompact || loop.ContextMaxPromptTokens != 12_345 || loop.ContextMaxSummaryBytes != 6_789 ||
 		loop.ContextInventoryBudgetPercent != 35 || loop.ContextThresholdReservePercent != 15 {
 		t.Fatalf("loop context = %#v", loop)
@@ -143,7 +148,7 @@ func TestConfiguredLoopPassesContextLimits(t *testing.T) {
 func TestConfiguredLoopPassesAutomaticVerificationAfterPatch(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	configuration.Verification.AutoAfterPatch = true
-	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{})
+	loop := configuredLoop(nil, nil, nil, &policy.Gate{}, nil, nil, configuration, nil, tools.Workspace{}, nil)
 	if !loop.VerificationAutoAfterPatch {
 		t.Fatalf("loop verification configuration = %#v", loop)
 	}

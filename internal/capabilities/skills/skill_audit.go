@@ -1,7 +1,12 @@
+// [INPUT]: 显式审计命令与受限技能根。
+// [OUTPUT]: 返回真实审计结果或不可用状态。
+// [POS]: 技能管理旁路，不执行技能内容。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // skill_audit.go 在显式请求时调用外部 skillshare audit；无二进制时返回
 // unavailable，不假装通过。不执行被审计技能内容。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"bytes"
