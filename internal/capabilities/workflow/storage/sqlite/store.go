@@ -1,7 +1,7 @@
 /*
- * [INPUT]: 依赖父能力的事件合同与 SQLite 驱动。
+ * [INPUT]: 依赖父能力事件、行扫描端口与SQLite驱动。
  * [OUTPUT]: 提供Store、只读打开、CAS 追加与完整性检查。
- * [POS]: 能力的持久化叶子；取消保留原因，字段损坏失败关闭。
+ * [POS]: 能力存储叶子；已观察取消先于解码，损坏仍拒绝。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
 // Package sqlite 持久化 Cairn 工作流执行链的追加式事件存储。
@@ -225,8 +225,17 @@ const loadWorkflowEventsSQL = `SELECT schema_version, event_id, workflow_id, wor
 		payload_json, prev_hash, event_hash
 		FROM workflow_events WHERE workflow_id = ? ORDER BY seq ASC`
 
+// workflowEventRow 限定读取当前行所需的观察错误与扫描端口。
+type workflowEventRow interface {
+	Err() error
+	Scan(dest ...any) error
+}
+
 // scanWorkflowEvent 解码当前行；仅字段转换与时间解码失败代表内容损坏。
-func scanWorkflowEvent(rows *sql.Rows) (workflow.Event, error) {
+func scanWorkflowEvent(rows workflowEventRow) (workflow.Event, error) {
+	if err := rows.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return workflow.Event{}, fmt.Errorf("scan workflow event: %w", err)
+	}
 	var event workflow.Event
 	var occurredAt string
 	var payload []byte
