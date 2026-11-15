@@ -1,12 +1,19 @@
 /**
  * 对 Wails 生成 bindings 的薄封装。
  * 桌面 WebView 只使用真实 bindings；模拟桥仅允许显式演示/测试入口启用。
+ * Author: fxbin
  */
 // @ts-ignore 生成的 JS bindings 无独立声明文件
 import * as RawAPI from "../../bindings/github.com/fxbin/cairn/studio/backend/service.js";
 import type {
+  ModelCatalogRequest,
+  ModelCatalogView,
+  ProviderPresetView,
   ProviderProbeView,
   ProviderAdmissionRequest,
+  ProviderSetupRequest,
+  ProviderSetupView,
+  SaveProviderPresetRequest,
   AbortRequest,
   CancelRequest,
   ChangeSet,
@@ -74,9 +81,12 @@ interface DesktopBindings {
   SaveWorkflow(def: { id?: string; workspace: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }): Promise<OKResult>;
   RunWorkflow(workspace: string, workflowID: string, dryRun: boolean): Promise<{ workflow_id: string; run_ids?: string[]; state: string }>;
   ListMemories(request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>>;
-  ListProviderPresets(request: WorkspaceRequest): Promise<Array<{ name: string; protocol: string; model: string; base_url: string; api_key_env: string; admission: string; active: boolean }>>;
+  ListModelCatalog(request: ModelCatalogRequest): Promise<ModelCatalogView>;
+  ListProviderPresets(request: WorkspaceRequest): Promise<ProviderPresetView[]>;
   UseProviderPreset(workspace: string, name: string): Promise<OKResult>;
-  RunProviderSetup(request: { base_url: string; model: string; api_key_env: string; workspace: string; admission?: string; overwrite?: boolean; user_scope?: boolean }): Promise<{ config_path: string; api_key_env: string; catalog_matched: boolean; probe_ran: boolean; notes?: string[] }>;
+  SaveProviderPreset(request: SaveProviderPresetRequest): Promise<OKResult>;
+  RemoveProviderPreset(workspace: string, name: string): Promise<OKResult>;
+  RunProviderSetup(request: ProviderSetupRequest): Promise<ProviderSetupView>;
   RevokeMemory(request: { workspace: string; candidate_id: string; reason: string }): Promise<unknown>;
   ListCommands(): Promise<Array<{ name: string; description: string; scope: string }>>;
   InstallSkill(workspace: string, scope: string, source: string): Promise<{ name: string }>;
