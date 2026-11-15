@@ -205,16 +205,21 @@ export interface ChangeEntry {
   status: string;
   agent_owned: boolean;
   evidence?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface ChangeSet {
   root: string;
   branch?: string;
+  base_branch?: string;
   entries: ChangeEntry[];
   added: number;
   deleted: number;
   modified: number;
   untracked: number;
+  total_additions?: number;
+  total_deletions?: number;
 }
 
 export interface QueueItem {

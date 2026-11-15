@@ -7,18 +7,21 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { desktop } from "./desktop/client";
-import DiffViewer from "./workbench/DiffViewer";
 import { ReconciliationPanel, AbortRunPanel } from "./workbench/RecoveryPanel";
-import { QueuePanel } from "./workbench/QueuePanel";
 import CapabilitySettings, {
   type CapabilityCounts,
   type CapabilitySection,
 } from "./workbench/CapabilitySettings";
 import ProviderSettings from "./workbench/ProviderSettings";
 import UsageView from "./workbench/UsageView";
-import FilesPanel from "./workbench/FilesPanel";
 import OpenLocationIcon from "./workbench/OpenLocationIcon";
 import SessionRow from "./workbench/SessionRow";
+import SidecarWorkbench, {
+  buildBuiltinSidecarTab,
+  buildFileSidecarTab,
+  type SidecarTab,
+  type SidecarTabKind,
+} from "./workbench/SidecarWorkbench";
 import WorkflowsView from "./workbench/WorkflowsView";
 import {
   filterTimelineByKind,
@@ -48,7 +51,7 @@ import type {
   WorkspaceStatus,
 } from "./desktop/types";
 
-type Panel = "closed" | "workbench" | "changes" | "evidence" | "queue" | "subagents" | "files";
+type Panel = "closed" | SidecarTabKind;
 type Page = "home" | "workflow" | "settings";
 type HeroPopover = "none" | "workspace" | "model";
 type ActivityTab = "heatmap" | "overview";
@@ -787,6 +790,11 @@ export default function App() {
   const [fontSize, setFontSize] = useState(readSavedFontSize);
   const [page, setPage] = useState<Page>("home");
   const [panel, setPanel] = useState<Panel>("closed");
+  const [sidecarTabs, setSidecarTabs] = useState<SidecarTab[]>(() => [
+    buildBuiltinSidecarTab("workbench"),
+  ]);
+  const [activeSidecarTabId, setActiveSidecarTabId] = useState("workbench");
+  const [omniboxFocusRev, setOmniboxFocusRev] = useState(0);
   const [expandedDiff, setExpandedDiff] = useState(false);
   const [changes, setChanges] = useState<ChangeSet | null>(null);
   const [selectedFile, setSelectedFile] = useState("");
@@ -836,6 +844,7 @@ export default function App() {
     dark: null,
   });
   const stepperBumpTimerRef = useRef<number | null>(null);
+  const shortcutHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
 
   useEffect(() => {
     return () => {
@@ -900,25 +909,7 @@ export default function App() {
       if (window.innerWidth <= 760) setSidebarOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing || event.keyCode === 229) return;
-      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
-        event.preventDefault();
-        setPage((current) => {
-          if (current === "settings") {
-            return "home";
-          }
-          setPanel("closed");
-          if (window.innerWidth <= 760) setSidebarOpen(false);
-          return "settings";
-        });
-        return;
-      }
-      if (event.key === "Escape") {
-        setSidebarOpen(false);
-        setHeroPopover("none");
-        setEditorMenuOpen(false);
-        setPage((current) => (current === "settings" ? "home" : current));
-      }
+      shortcutHandlerRef.current(event);
     };
     window.addEventListener("resize", onResize);
     window.addEventListener("keydown", onKeyDown);
@@ -1034,6 +1025,21 @@ export default function App() {
       });
   }, []);
 
+  const refreshChanges = useCallback((path: string, generation: number) => {
+    if (!path || typeof desktop.listChanges !== "function") {
+      setChanges(null);
+      return;
+    }
+    void Promise.resolve(desktop.listChanges(path))
+      .then((result) => {
+        if (!result || generation !== generationRef.current || projectRef.current !== path) return;
+        setChanges(result);
+      })
+      .catch(() => {
+        // 静默忽略后台变更概览预刷新错误，显式打开面板时再走错误提示。
+      });
+  }, []);
+
   const switchProject = useCallback(
     async (path: string, options?: { preservePage?: boolean }) => {
       if (!path) return;
@@ -1070,6 +1076,9 @@ export default function App() {
       setDoctorRunning(false);
       setDoctorReport(null);
       setDoctorError("");
+      setSidecarTabs([buildBuiltinSidecarTab("workbench")]);
+      setActiveSidecarTabId("workbench");
+      setExpandedDiff(false);
       diffRequestRef.current += 1;
       if (!options?.preservePage) {
         setPage("home");
@@ -1105,6 +1114,7 @@ export default function App() {
         refreshQueueCount(path, generation);
         refreshPresets(path, generation);
         refreshOpenLocations(path, generation);
+        refreshChanges(path, generation);
         if (typeof desktop.rememberProject === "function") {
           void desktop.rememberProject(path);
         }
@@ -1112,7 +1122,7 @@ export default function App() {
         if (generation === generationRef.current) setNotice(textError(err));
       }
     },
-    [refreshQueueCount, refreshPresets, refreshOpenLocations],
+    [refreshQueueCount, refreshPresets, refreshOpenLocations, refreshChanges],
   );
 
   useEffect(() => {
@@ -1240,6 +1250,11 @@ export default function App() {
         }
       });
   }, [panel, workspace, runId, detail?.state]);
+
+  useEffect(() => {
+    if (!workspace || !detail?.state) return;
+    refreshChanges(workspace, generationRef.current);
+  }, [workspace, detail?.state, refreshChanges]);
 
   const selected = runs.find((run) => run.run_id === runId);
   const running = selected
@@ -1398,16 +1413,13 @@ export default function App() {
     }
   };
 
-  const openPanel = async (next: Panel) => {
-    const willOpen = panel !== next;
-    setPanel(willOpen ? next : "closed");
-    setExpandedDiff(false);
-    if (!workspace || !willOpen || next === "closed") return;
+  const loadSidecarDataForKind = async (kind: SidecarTabKind) => {
+    if (!workspace) return;
     const request = ++diffRequestRef.current;
     try {
-      if (next === "changes" || next === "workbench") {
+      if ((kind === "changes" || kind === "workbench") && typeof desktop.listChanges === "function") {
         const result = await desktop.listChanges(workspace);
-        if (projectRef.current !== workspace || request !== diffRequestRef.current) return;
+        if (!result || projectRef.current !== workspace || request !== diffRequestRef.current) return;
         setChanges(result);
         const first = result.entries[0]?.relative || "";
         setSelectedFile(first);
@@ -1418,23 +1430,115 @@ export default function App() {
           setDiff(resultDiff);
         }
       }
-      if (next === "evidence" && runId) {
-        const result = await desktop.evidence({ workspace, run_id: runId });
-        if (projectRef.current === workspace && runRef.current === runId) setEvidence(result);
+      if (kind === "evidence" && runRef.current && typeof desktop.evidence === "function") {
+        const activeRun = runRef.current;
+        const result = await desktop.evidence({ workspace, run_id: activeRun });
+        if (projectRef.current === workspace && runRef.current === activeRun) {
+          setEvidence(result);
+        }
       }
     } catch (err) {
       setNotice(textError(err));
     }
   };
 
+  const activateBuiltinTab = async (kind: Exclude<SidecarTabKind, "file">) => {
+    const tab = buildBuiltinSidecarTab(kind);
+    setSidecarTabs((prev) => (prev.some((item) => item.id === tab.id) ? prev : [...prev, tab]));
+    setActiveSidecarTabId(tab.id);
+    setPanel(kind);
+    await loadSidecarDataForKind(kind);
+  };
+
+  const openPanel = async (next: Exclude<SidecarTabKind, "file">) => {
+    if (panel !== "closed" && activeSidecarTabId === next) {
+      setPanel("closed");
+      setExpandedDiff(false);
+      return;
+    }
+    await activateBuiltinTab(next);
+  };
+
+  const toggleSidecar = () => {
+    if (!projectRef.current) return;
+    if (panel !== "closed") {
+      setPanel("closed");
+      setExpandedDiff(false);
+      return;
+    }
+    const currentTab =
+      sidecarTabs.find((item) => item.id === activeSidecarTabId) ||
+      sidecarTabs[0] ||
+      buildBuiltinSidecarTab("workbench");
+    if (!sidecarTabs.some((item) => item.id === currentTab.id)) {
+      setSidecarTabs([currentTab]);
+    }
+    setActiveSidecarTabId(currentTab.id);
+    setPanel(currentTab.kind);
+    if (currentTab.kind !== "file") {
+      void loadSidecarDataForKind(currentTab.kind);
+    }
+  };
+
+  const openFileTab = (relativePath: string) => {
+    const clean = relativePath.trim();
+    if (!clean) return;
+    const tab = buildFileSidecarTab(clean);
+    setSidecarTabs((prev) => (prev.some((item) => item.id === tab.id) ? prev : [...prev, tab]));
+    setActiveSidecarTabId(tab.id);
+    setPanel("file");
+  };
+
+  const activateSidecarTab = (tabId: string) => {
+    const target = sidecarTabs.find((item) => item.id === tabId);
+    if (!target) return;
+    setActiveSidecarTabId(target.id);
+    setPanel(target.kind);
+    if (target.kind !== "file") {
+      void loadSidecarDataForKind(target.kind);
+    }
+  };
+
+  const closeSidecarTab = (tabId: string) => {
+    const idx = sidecarTabs.findIndex((item) => item.id === tabId);
+    if (idx < 0) return;
+    const remaining = sidecarTabs.filter((item) => item.id !== tabId);
+    if (remaining.length === 0) {
+      const fallback = buildBuiltinSidecarTab("workbench");
+      setSidecarTabs([fallback]);
+      setActiveSidecarTabId(fallback.id);
+      setPanel("closed");
+      setExpandedDiff(false);
+      return;
+    }
+    setSidecarTabs(remaining);
+    if (activeSidecarTabId === tabId) {
+      const nextTab = remaining[Math.min(idx, remaining.length - 1)];
+      setActiveSidecarTabId(nextTab.id);
+      setPanel(nextTab.kind);
+      if (nextTab.kind !== "file") {
+        void loadSidecarDataForKind(nextTab.kind);
+      }
+    }
+  };
+
+  const openNewLauncherTab = () => {
+    void activateBuiltinTab("workbench");
+    setOmniboxFocusRev((rev) => rev + 1);
+  };
+
   const inspectChangedFile = async (targetPath: string) => {
     if (!workspace) return;
+    const changesTab = buildBuiltinSidecarTab("changes");
+    setSidecarTabs((prev) =>
+      prev.some((item) => item.id === changesTab.id) ? prev : [...prev, changesTab],
+    );
+    setActiveSidecarTabId(changesTab.id);
     setPanel("changes");
-    setExpandedDiff(false);
     const request = ++diffRequestRef.current;
     try {
       const result = await desktop.listChanges(workspace);
-      if (projectRef.current !== workspace || request !== diffRequestRef.current) return;
+      if (!result || projectRef.current !== workspace || request !== diffRequestRef.current) return;
       setChanges(result);
       const matched = matchChangedRelativePath(result.entries, targetPath);
       setSelectedFile(matched);
@@ -1462,6 +1566,23 @@ export default function App() {
     } catch (err) {
       setNotice(textError(err));
     }
+  };
+
+  const saveDiffComment = async (line: string, body: string, relativeOverride?: string) => {
+    const targetFile = relativeOverride || selectedFile;
+    if (!targetFile) return;
+    await desktop.saveReviewNote({ workspace, relative: targetFile, line, body });
+    setDraft((old) =>
+      old
+        ? old + "\n\n审查意见：" + targetFile + ":" + line + " — " + body
+        : "请根据这条代码审查意见进一步检查：" +
+          targetFile +
+          ":" +
+          line +
+          " — " +
+          body,
+    );
+    setNotice("已保存行级审查备注，意见已带入当前会话输入框；尚未执行修改。");
   };
 
   const pickProject = async (preservePage = false) => {
@@ -1656,6 +1777,56 @@ export default function App() {
     setParentRun(currentParent);
   };
 
+  shortcutHandlerRef.current = (event: KeyboardEvent) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    const keyLower = event.key.toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+      event.preventDefault();
+      setPage((current) => {
+        if (current === "settings") {
+          return "home";
+        }
+        setPanel("closed");
+        if (window.innerWidth <= 760) setSidebarOpen(false);
+        return "settings";
+      });
+      return;
+    }
+    if (page === "home" && workspace) {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && (keyLower === "b" || event.key === "\\")) {
+        event.preventDefault();
+        toggleSidecar();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && keyLower === "p") {
+        event.preventDefault();
+        openNewLauncherTab();
+        return;
+      }
+      if (event.ctrlKey && event.shiftKey && keyLower === "g") {
+        event.preventDefault();
+        void activateBuiltinTab("changes");
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && keyLower === "e" && runId) {
+        event.preventDefault();
+        void activateBuiltinTab("evidence");
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && keyLower === "s" && runId) {
+        event.preventDefault();
+        forkRun(runId);
+        return;
+      }
+    }
+    if (event.key === "Escape") {
+      setSidebarOpen(false);
+      setHeroPopover("none");
+      setEditorMenuOpen(false);
+      setPage((current) => (current === "settings" ? "home" : current));
+    }
+  };
+
   const stickyGate =
     runId && selected && (selected.waiting_approval || selected.waiting_reconcile) ? (
       <div className="wb-sticky-gate" role="status">
@@ -1766,6 +1937,60 @@ export default function App() {
 
   const compose = (
     <div style={{ width: "100%", maxWidth: 780, margin: "0 auto" }}>
+      {changes && changes.entries.length > 0 && (
+        <div className="wb-composer-change-bar">
+          <button
+            type="button"
+            className="wb-composer-change-summary"
+            onClick={() => void activateBuiltinTab("changes")}
+          >
+            <span className="wb-composer-change-count">
+              {changes.entries.length} 个文件已更改
+            </span>
+            <span className="wb-composer-change-stats">
+              {(changes.total_additions ?? 0) > 0 || (changes.total_deletions ?? 0) > 0 ? (
+                <>
+                  {(changes.total_additions ?? 0) > 0 && (
+                    <ins>+{changes.total_additions}</ins>
+                  )}
+                  {(changes.total_deletions ?? 0) > 0 && (
+                    <del>-{changes.total_deletions}</del>
+                  )}
+                </>
+              ) : (
+                <>
+                  {changes.added > 0 && <ins>+{changes.added}</ins>}
+                  {changes.modified > 0 && <em>~{changes.modified}</em>}
+                  {changes.deleted > 0 && <del>-{changes.deleted}</del>}
+                  {changes.untracked > 0 && <small>?{changes.untracked}</small>}
+                </>
+              )}
+            </span>
+            <span className="wb-composer-change-chevron" aria-hidden="true">›</span>
+          </button>
+          <button
+            type="button"
+            className="wb-composer-review-btn"
+            onClick={() => void activateBuiltinTab("changes")}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2.5" y="2.2" width="11" height="11.6" rx="1.8" />
+              <path d="M6.2 6h3.6M8 4.2v3.6M6.2 10.6h3.6" />
+            </svg>
+            <span>审查变更</span>
+          </button>
+        </div>
+      )}
       <div className="wb-composer">
         {stickyGate}
         {forkSource && (
@@ -3002,6 +3227,36 @@ export default function App() {
               >
                 ◐
               </button>
+              {page === "home" && workspace && (
+                <button
+                  type="button"
+                  className={
+                    "wb-icon-btn wb-sidecar-toggle-btn" + (panel !== "closed" ? " is-active" : "")
+                  }
+                  title="切换右侧工作台 (⌘B)"
+                  aria-label="切换右侧工作台"
+                  aria-expanded={panel !== "closed"}
+                  onClick={toggleSidecar}
+                >
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.45"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="2" y="2.5" width="12" height="11" rx="2" />
+                    <path d="M9.8 2.5v11" />
+                  </svg>
+                  {panel === "closed" && changes && changes.entries.length > 0 && (
+                    <span className="wb-sidecar-toggle-dot" aria-hidden="true" />
+                  )}
+                </button>
+              )}
             </div>
           </header>
           {notice && (
@@ -3297,338 +3552,55 @@ export default function App() {
             </section>
           )}
         </main>
-      {page === "home" && runId && panel !== "closed" && (
-        <aside className="wb-inspector" aria-label="会话右侧工作台">
-          <div className="wb-inspector-head">
-            <strong>
-              {panel === "workbench"
-                ? "Agent 工作台"
-                : panel === "changes"
-                  ? "检查变更"
-                  : panel === "queue"
-                    ? "任务队列"
-                    : panel === "subagents"
-                      ? "子智能体"
-                      : panel === "files"
-                        ? "项目文件"
-                        : "验证与证据"}
-            </strong>
-            <div>
-              {panel === "changes" && (
-                <button
-                  type="button"
-                  title={expandedDiff ? "恢复侧边栏" : "放大审查"}
-                  onClick={() => setExpandedDiff((open) => !open)}
-                >
-                  {expandedDiff ? "还原" : "⛶"}
-                </button>
-              )}
-              <button
-                type="button"
-                aria-label="关闭右侧面板"
-                onClick={() => {
-                  setPanel("closed");
-                  setExpandedDiff(false);
-                }}
-              >
-                ×
-              </button>
-            </div>
-          </div>
-          {panel === "files" && <FilesPanel workspace={workspace} notify={onQueueError} />}
-          {panel === "queue" && (
-            <QueuePanel
-              workspace={workspace}
-              revision={queueRevision}
-              onRun={onRunFromQueue}
-              onError={onQueueError}
-            />
-          )}
-          {panel === "subagents" && (
-            <div className="wb-panel-body">
-              <div className="wb-label">Agent Delegate</div>
-              <h2>子智能体与委派树</h2>
-              <p className="wb-hint">
-                会话树：{sessionTree ? Object.keys(sessionTree.nodes).length + " 个 Run" : "暂无可用投影"}
-              </p>
-              <div className="wb-tree-card">
-                <div>
-                  <span className="wb-badge is-accent">当前 Run</span>
-                  <strong>{runId}</strong>
-                </div>
-                <p>{selected?.title || selected?.task || "当前会话任务"}</p>
-                {subagents.length > 0 ? (
-                  <div className="wb-tree-children">
-                    {subagents.map((child) => {
-                      const isDone = child.state === "completed";
-                      return (
-                        <div className="wb-tree-card" key={child.childRunId}>
-                          <div>
-                            <span className={"wb-badge " + (isDone ? "is-ok" : "is-warn")}>
-                              {!isDone && <i className="wb-pulse-dot" aria-hidden="true" />}
-                              {child.state}
-                            </span>
-                            <strong>{child.childRunId}</strong>
-                          </div>
-                          {child.task && <p>{child.task}</p>}
-                          <p>
-                            {child.outcome || "尚无完成结论"} ·{" "}
-                            {child.usageReported
-                              ? `${child.toolCalls} 次工具调用 · 输入 ${child.promptTokens.toLocaleString()} / 输出 ${child.completionTokens.toLocaleString()} tokens`
-                              : "用量未回报"}
-                          </p>
-                          <button
-                            type="button"
-                            className="wb-secondary"
-                            onClick={() => openChild(child.childRunId)}
-                          >
-                            查看子运行
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="wb-empty">当前 Run 没有已记录的子智能体委派。</div>
-                )}
-              </div>
-              {sessionTree && (sessionTree.nodes[runId]?.children?.length ?? 0) > 0 && (
-                <>
-                  <div className="wb-panel-separator" />
-                  <div className="wb-label">后续与分支运行</div>
-                  <div className="wb-tree-children">
-                    {sessionTree.nodes[runId]?.children?.map((childId) => {
-                      const childNode = sessionTree.nodes[childId];
-                      return (
-                        <div className="wb-tree-card" key={childId}>
-                          <div>
-                            <span className="wb-badge is-muted">
-                              {childNode?.phase || childNode?.state || "关联"}
-                            </span>
-                            <strong>{childId}</strong>
-                          </div>
-                          {childNode?.task && <p>{childNode.task}</p>}
-                          <button
-                            type="button"
-                            className="wb-secondary"
-                            onClick={() => openChild(childId)}
-                          >
-                            打开关联 Run
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          {panel === "workbench" && (
-            <div className="wb-panel-body">
-              <div className="wb-label">当前运行</div>
-              <h2>{selected?.title || "Agent 任务"}</h2>
-              <p>{statusName(selected)}</p>
-              <div className="wb-panel-separator" />
-              <div className="wb-label">工作区变更</div>
-              <p>{changes ? changes.entries.length + " 个文件（工作区实时状态）" : "读取中…"}</p>
-              {changes && (
-                <p data-testid="change-summary">
-                  新增 {changes.added} · 修改 {changes.modified} · 删除 {changes.deleted} · 未跟踪{" "}
-                  {changes.untracked}
-                </p>
-              )}
-              <button
-                type="button"
-                className="wb-secondary"
-                onClick={() => void openPanel("changes")}
-              >
-                检查变更 →
-              </button>
-            </div>
-          )}
-          {panel === "changes" && (
-            <div className="wb-change-layout">
-              <div className="wb-file-list">
-                {changes?.entries.map((item) => (
-                  <button
-                    type="button"
-                    key={item.relative}
-                    className={selectedFile === item.relative ? "current" : ""}
-                    onClick={() => void chooseFile(item.relative)}
-                  >
-                    <span>{item.status}</span>
-                    <span>{item.relative}</span>
-                    <em className={"wb-owner-tag " + (item.agent_owned ? "is-agent" : "is-local")}>
-                      {item.agent_owned ? "Agent 修改" : "本地已有"}
-                    </em>
-                  </button>
-                ))}
-                {changes?.entries.length === 0 && <div className="wb-hint">当前没有文件变更。</div>}
-              </div>
-              <div className="wb-diff">
-                <div className="wb-diff-title">{selectedFile || "请选择文件"}</div>
-                {selectedFile ? (
-                  <DiffViewer
-                    text={diff}
-                    relative={selectedFile}
-                    workspace={workspace}
-                    onComment={async (line, body) => {
-                      await desktop.saveReviewNote({ workspace, relative: selectedFile, line, body });
-                      setDraft((old) =>
-                        old
-                          ? old + "\n\n审查意见：" + selectedFile + ":" + line + " — " + body
-                          : "请根据这条代码审查意见进一步检查：" +
-                            selectedFile +
-                            ":" +
-                            line +
-                            " — " +
-                            body,
-                      );
-                      setPanel("closed");
-                      setExpandedDiff(false);
-                      setNotice("已保存行级审查备注，意见已带入当前会话输入框；尚未执行修改。");
-                    }}
-                  />
-                ) : (
-                  <div className="wb-empty">选择文件后查看变更。</div>
-                )}
-              </div>
-            </div>
-          )}
-          {panel === "evidence" && (
-            <div className="wb-panel-body">
-              {!evidence ? (
-                <p>暂无已读取的证据。</p>
-              ) : (
-                <>
-                  <div
-                    className={
-                      "wb-trust-banner " +
-                      (evidence.trusted && evidence.verification?.verification_ok
-                        ? "is-trusted"
-                        : "is-unverified")
-                    }
-                  >
-                    <div>
-                      <div className="wb-label">
-                        运行终态：{evidence.state_label || evidence.state}
-                        {evidence.outcome_label || evidence.outcome
-                          ? ` · ${evidence.outcome_label || evidence.outcome}`
-                          : ""}
-                      </div>
-                      <strong>
-                        验证可信度：{evidence.trust_label || (evidence.trusted ? "可信" : "未确认")}
-                        {evidence.verification
-                          ? ` (verification_ok: ${String(Boolean(evidence.verification.verification_ok))}${evidence.verification.verification_seq ? ` · seq #${evidence.verification.verification_seq}` : ""})`
-                          : ""}
-                      </strong>
-                      <p>运行完成与验证可信严格分离；无 Verifier 证据绝不宣称已验证。</p>
-                    </div>
-                  </div>
-                  <div className="wb-metric-grid">
-                    <div>
-                      <span>输入 Token</span>
-                      <strong>{(evidence.metrics?.input_tokens ?? 0).toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>输出 Token</span>
-                      <strong>{(evidence.metrics?.output_tokens ?? 0).toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>回合 / 工具调用</span>
-                      <strong>
-                        {evidence.metrics?.turns ?? 0} 回合 · {evidence.metrics?.tool_calls ?? 0} 次调用
-                      </strong>
-                    </div>
-                    <div>
-                      <span>上下文压缩</span>
-                      <strong>{evidence.metrics?.context_compactions ?? compactions.length} 次</strong>
-                    </div>
-                  </div>
-                  <p className="wb-hint">
-                    {evidence.metrics?.usage_estimated
-                      ? "以上用量包含估算数据。"
-                      : "用量来自已记录的运行证据。"}
-                    费用不可用时不做推断。
-                  </p>
-                </>
-              )}
-              {compactions.length > 0 && (
-                <>
-                  <div className="wb-panel-separator" />
-                  <div className="wb-label">上下文压缩检查点</div>
-                  {compactions.map((item) => (
-                    <div className="wb-compaction-card" key={item.seq}>
-                      <div>
-                        <strong>
-                          #{item.seq} · 触发 {item.trigger}
-                        </strong>
-                        <span className="wb-badge is-accent">{item.strategy}</span>
-                      </div>
-                      <p>
-                        {item.unitsBefore !== null || item.unitsAfter !== null
-                          ? `估算单位 ${item.unitsBefore ?? "—"} → ${item.unitsAfter ?? "—"} · `
-                          : ""}
-                        折叠 {item.compactedTurns} 个回合
-                        {item.lastProviderPromptTokens > 0
-                          ? ` · 最近 Prompt ${item.lastProviderPromptTokens.toLocaleString()} tokens`
-                          : ""}
-                      </p>
-                      {item.summaryPreview && <p>{item.summaryPreview}</p>}
-                    </div>
-                  ))}
-                </>
-              )}
-              <div className="wb-panel-separator" />
-              <div className="wb-label">Event Journal 时间线</div>
-              <div className="wb-timeline-filters" role="group" aria-label="时间线筛选">
-                {(
-                  [
-                    ["all", "全部"],
-                    ["tool", "工具"],
-                    ["subagent", "子运行"],
-                    ["compaction", "压缩"],
-                  ] as const
-                ).map(([kind, label]) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    className={timelineKind === kind ? "current" : ""}
-                    onClick={() => setTimelineKind(kind)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {filteredTimeline.length > 0 ? (
-                <div className="wb-timeline-list">
-                  {filteredTimeline.map((item) => {
-                    const hash = eventHashBySeq.get(item.seq);
-                    return (
-                      <div className={`wb-timeline-item tone-${item.tone}`} key={item.id}>
-                        <div>
-                          <strong>
-                            #{item.seq} · {item.label}
-                          </strong>
-                          {hash && (
-                            <span className="wb-hash-pill" title={hash}>
-                              {hash.slice(0, 10)}
-                            </span>
-                          )}
-                        </div>
-                        {item.detail && <p>{item.detail}</p>}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="wb-hint">当前筛选条件下暂无已记录的领域事件。</p>
-              )}
-            </div>
-          )}
-        </aside>
+      {page === "home" && Boolean(workspace) && panel !== "closed" && (
+        <SidecarWorkbench
+          workspace={workspace}
+          runId={runId}
+          selectedRun={selected}
+          runStatusText={statusName(selected)}
+          tabs={sidecarTabs}
+          activeTabId={activeSidecarTabId}
+          expanded={expandedDiff}
+          omniboxFocusRevision={omniboxFocusRev}
+          changes={changes}
+          selectedFile={selectedFile}
+          diff={diff}
+          evidence={evidence}
+          compactions={compactions}
+          timelineKind={timelineKind}
+          filteredTimeline={filteredTimeline}
+          recentTimeline={timelineItems}
+          eventHashBySeq={eventHashBySeq}
+          subagents={subagents}
+          sessionTree={sessionTree}
+          pendingQueueCount={pendingQueueCount}
+          queueRevision={queueRevision}
+          openLocations={openLocations}
+          onActivateTab={activateSidecarTab}
+          onCloseTab={closeSidecarTab}
+          onOpenNewLauncherTab={openNewLauncherTab}
+          onSelectBuiltinPanel={(kind) => void activateBuiltinTab(kind)}
+          onOpenFileTab={openFileTab}
+          onInspectChangedFile={(rel) => void inspectChangedFile(rel)}
+          onChooseDiffFile={(rel) => void chooseFile(rel)}
+          onSaveDiffComment={saveDiffComment}
+          onRefreshChanges={() => loadSidecarDataForKind("changes")}
+          onChangeTimelineKind={setTimelineKind}
+          onOpenChildRun={openChild}
+          onForkCurrentRun={() => {
+            if (runId) forkRun(runId);
+          }}
+          onOpenWorkspaceInLocation={(locId) => void handleOpenWorkspaceInEditor(locId)}
+          onRunFromQueue={onRunFromQueue}
+          onToggleExpanded={() => setExpandedDiff((open) => !open)}
+          onCloseSidecar={() => {
+            setPanel("closed");
+            setExpandedDiff(false);
+          }}
+          notify={onQueueError}
+        />
       )}
-      {page === "home" && runId && (
+      {page === "home" && Boolean(workspace) && (
         <nav className="wb-right-dock" aria-label="工作台面板导航">
           <button
             type="button"
@@ -3684,47 +3656,83 @@ export default function App() {
               </span>
             )}
           </button>
-          <button
-            type="button"
-            className={"wb-dock-btn" + (panel === "evidence" ? " current" : "")}
-            data-tooltip="验证证据"
-            aria-label="验证证据"
-            aria-pressed={panel === "evidence"}
-            onClick={() => void openPanel("evidence")}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.45"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
+          {runId && (
+            <button
+              type="button"
+              className={"wb-dock-btn" + (panel === "evidence" ? " current" : "")}
+              data-tooltip="验证证据"
+              aria-label="验证证据"
+              aria-pressed={panel === "evidence"}
+              onClick={() => void openPanel("evidence")}
             >
-              <path d="M8 2.2 12.8 4v3.8c0 3.1-2.1 5.1-4.8 6-2.7-.9-4.8-2.9-4.8-6V4L8 2.2Z" />
-              <path d="m6 8.1 1.4 1.4L10.3 6.6" />
-            </svg>
-            {evidence && (
-              <span
-                className={
-                  "wb-dock-badge " +
-                  (evidence.trusted && evidence.verification?.verification_ok ? "is-ok" : "is-warn")
-                }
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.45"
+                strokeLinecap="round"
+                strokeLinejoin="round"
                 aria-hidden="true"
               >
-                {evidence.trusted && evidence.verification?.verification_ok ? "✓" : "…"}
-              </span>
-            )}
-          </button>
+                <path d="M8 2.2 12.8 4v3.8c0 3.1-2.1 5.1-4.8 6-2.7-.9-4.8-2.9-4.8-6V4L8 2.2Z" />
+                <path d="m6 8.1 1.4 1.4L10.3 6.6" />
+              </svg>
+              {evidence && (
+                <span
+                  className={
+                    "wb-dock-badge " +
+                    (evidence.trusted && evidence.verification?.verification_ok ? "is-ok" : "is-warn")
+                  }
+                  aria-hidden="true"
+                >
+                  {evidence.trusted && evidence.verification?.verification_ok ? "✓" : "…"}
+                </span>
+              )}
+            </button>
+          )}
+          {runId && (
+            <button
+              type="button"
+              className={"wb-dock-btn" + (panel === "subagents" ? " current" : "")}
+              data-tooltip="子智能体"
+              aria-label="子智能体"
+              aria-pressed={panel === "subagents"}
+              onClick={() => void openPanel("subagents")}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.45"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="3.5" r="1.6" />
+                <circle cx="4" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <path d="M8 5.1v2.6M8 7.7 4.6 10.5M8 7.7l3.4 2.8" />
+              </svg>
+              {subagents.length > 0 && (
+                <span className="wb-dock-badge" aria-hidden="true">
+                  {subagents.length}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
-            className={"wb-dock-btn" + (panel === "subagents" ? " current" : "")}
-            data-tooltip="子智能体"
-            aria-label="子智能体"
-            aria-pressed={panel === "subagents"}
-            onClick={() => void openPanel("subagents")}
+            className={
+              "wb-dock-btn" + (panel === "files" || panel === "file" ? " current" : "")
+            }
+            data-tooltip="文件"
+            aria-label="文件"
+            aria-pressed={panel === "files" || panel === "file"}
+            onClick={() => void openPanel("files")}
           >
             <svg
               width="16"
@@ -3737,16 +3745,8 @@ export default function App() {
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <circle cx="8" cy="3.5" r="1.6" />
-              <circle cx="4" cy="12" r="1.6" />
-              <circle cx="12" cy="12" r="1.6" />
-              <path d="M8 5.1v2.6M8 7.7 4.6 10.5M8 7.7l3.4 2.8" />
+              <path d="M2.3 4.3c0-.7.5-1.3 1.2-1.3h2.6l1.3 1.5h5.1c.7 0 1.2.5 1.2 1.2v6.1c0 .7-.5 1.2-1.2 1.2H3.5c-.7 0-1.2-.5-1.2-1.2V4.3Z" />
             </svg>
-            {subagents.length > 0 && (
-              <span className="wb-dock-badge" aria-hidden="true">
-                {subagents.length}
-              </span>
-            )}
           </button>
           <button
             type="button"
@@ -3775,28 +3775,6 @@ export default function App() {
                 {pendingQueueCount}
               </span>
             )}
-          </button>
-          <button
-            type="button"
-            className={"wb-dock-btn" + (panel === "files" ? " current" : "")}
-            data-tooltip="文件"
-            aria-label="文件"
-            aria-pressed={panel === "files"}
-            onClick={() => void openPanel("files")}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.45"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M2.3 4.3c0-.7.5-1.3 1.2-1.3h2.6l1.3 1.5h5.1c.7 0 1.2.5 1.2 1.2v6.1c0 .7-.5 1.2-1.2 1.2H3.5c-.7 0-1.2-.5-1.2-1.2V4.3Z" />
-            </svg>
           </button>
         </nav>
       )}

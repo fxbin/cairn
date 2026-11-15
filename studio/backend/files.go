@@ -1,12 +1,14 @@
 package desktop
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -24,6 +26,8 @@ const (
 	maxTreeEntries = 2000
 	// maxTreeDepth 限制目录展开深度。
 	maxTreeDepth = 8
+	// maxUntrackedStatFiles 限制单次变更列表对未跟踪文件做行数扫描的最大文件数。
+	maxUntrackedStatFiles = 80
 )
 
 // FileNode 是有界文件树节点。
@@ -52,21 +56,26 @@ type FilePreview struct {
 // ChangeEntry 是工作区改动摘要；归属需证据，不能猜测。
 type ChangeEntry struct {
 	Relative string `json:"relative"`
-	Status   string `json:"status"` // untracked | modified | deleted | staged | other
+	Status   string `json:"status"`
 	// AgentOwned 仅在有明确证据时为真；未知保持 false 并标注 Evidence。
 	AgentOwned bool   `json:"agent_owned"`
 	Evidence   string `json:"evidence,omitempty"`
+	Additions  int    `json:"additions,omitempty"`
+	Deletions  int    `json:"deletions,omitempty"`
 }
 
 // ChangeSet 是改动列表与统计。
 type ChangeSet struct {
-	Root      string        `json:"root"`
-	Branch    string        `json:"branch,omitempty"`
-	Entries   []ChangeEntry `json:"entries"`
-	Added     int           `json:"added"`
-	Deleted   int           `json:"deleted"`
-	Modified  int           `json:"modified"`
-	Untracked int           `json:"untracked"`
+	Root           string        `json:"root"`
+	Branch         string        `json:"branch,omitempty"`
+	BaseBranch     string        `json:"base_branch,omitempty"`
+	Entries        []ChangeEntry `json:"entries"`
+	Added          int           `json:"added"`
+	Deleted        int           `json:"deleted"`
+	Modified       int           `json:"modified"`
+	Untracked      int           `json:"untracked"`
+	TotalAdditions int           `json:"total_additions,omitempty"`
+	TotalDeletions int           `json:"total_deletions,omitempty"`
 }
 
 // ListFileTree 生成工作区有界文件树。
@@ -279,12 +288,15 @@ func ListChanges(workspace string) (ChangeSet, error) {
 	if gitRoot == "" {
 		return set, nil
 	}
+	set.BaseBranch = detectBaseBranch(canonicalRoot)
+	numstats := collectDiffNumstats(canonicalRoot, gitRoot)
 	// -z 保证含空格/中文/重命名的路径不被截断。
 	out, err := runGit(root, "status", "--porcelain", "-z", "--", ".")
 	if err != nil {
 		return set, nil
 	}
 	records := splitPorcelainZ(out)
+	untrackedCounted := 0
 	for _, record := range records {
 		if len(record) < 4 {
 			continue
@@ -302,7 +314,22 @@ func ListChanges(workspace string) (ChangeSet, error) {
 			continue
 		}
 		status := classifyPorcelain(statusCode)
-		entry := ChangeEntry{Relative: relative, Status: status, AgentOwned: false, Evidence: "git_status_porcelain_z"}
+		slashRel := filepath.ToSlash(relative)
+		stat := numstats[slashRel]
+		if status == "untracked" && stat[0] == 0 && untrackedCounted < maxUntrackedStatFiles {
+			untrackedCounted++
+			stat[0] = countUntrackedLines(root, relative)
+		}
+		entry := ChangeEntry{
+			Relative:   relative,
+			Status:     status,
+			AgentOwned: false,
+			Evidence:   "git_status_porcelain_z",
+			Additions:  stat[0],
+			Deletions:  stat[1],
+		}
+		set.TotalAdditions += entry.Additions
+		set.TotalDeletions += entry.Deletions
 		switch status {
 		case "deleted":
 			set.Deleted++
@@ -316,6 +343,103 @@ func ListChanges(workspace string) (ChangeSet, error) {
 		set.Entries = append(set.Entries, entry)
 	}
 	return set, nil
+}
+
+// detectBaseBranch 只读探测本地已知的默认基线引用名称，不访问网络且失败时返回空字符串。
+func detectBaseBranch(workspace string) string {
+	if out, err := runGit(workspace, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if ref := strings.TrimSpace(string(out)); ref != "" {
+			return ref
+		}
+	}
+	for _, candidate := range []struct {
+		ref  string
+		name string
+	}{
+		{ref: "refs/remotes/origin/main", name: "origin/main"},
+		{ref: "refs/remotes/origin/master", name: "origin/master"},
+		{ref: "refs/heads/main", name: "main"},
+		{ref: "refs/heads/master", name: "master"},
+	} {
+		if _, err := runGit(workspace, "show-ref", "--verify", "--quiet", candidate.ref); err == nil {
+			return candidate.name
+		}
+	}
+	return ""
+}
+
+// collectDiffNumstats 只读汇总工作区相对 HEAD（或无提交仓库的 index+工作区）的单文件增删行数。
+func collectDiffNumstats(canonicalRoot, gitRoot string) map[string][2]int {
+	result := make(map[string][2]int)
+	mergeRaw := func(raw []byte) {
+		tokens := strings.Split(string(raw), "\x00")
+		for idx := 0; idx < len(tokens); idx++ {
+			tok := tokens[idx]
+			if tok == "" {
+				continue
+			}
+			parts := strings.SplitN(tok, "\t", 3)
+			if len(parts) < 3 {
+				continue
+			}
+			add, addErr := strconv.Atoi(parts[0])
+			del, delErr := strconv.Atoi(parts[1])
+			if addErr != nil {
+				add = 0
+			}
+			if delErr != nil {
+				del = 0
+			}
+			repoRel := parts[2]
+			if repoRel == "" && idx+2 < len(tokens) {
+				repoRel = tokens[idx+2]
+				idx += 2
+			}
+			if repoRel == "" {
+				continue
+			}
+			rel, err := filepath.Rel(canonicalRoot, filepath.Join(gitRoot, repoRel))
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			key := filepath.ToSlash(rel)
+			prev := result[key]
+			result[key] = [2]int{prev[0] + add, prev[1] + del}
+		}
+	}
+	if out, err := runGit(canonicalRoot, "diff", "--numstat", "-z", "HEAD", "--", "."); err == nil {
+		mergeRaw(out)
+		return result
+	}
+	if out, err := runGit(canonicalRoot, "diff", "--numstat", "-z", "--", "."); err == nil {
+		mergeRaw(out)
+	}
+	if out, err := runGit(canonicalRoot, "diff", "--cached", "--numstat", "-z", "--", "."); err == nil {
+		mergeRaw(out)
+	}
+	return result
+}
+
+// countUntrackedLines 对安全可读的未跟踪文本文件做有界行数统计，二进制或敏感路径返回 0。
+func countUntrackedLines(root, relative string) int {
+	_, full, _, err := resolveReadableRelative(root, relative)
+	if err != nil {
+		return 0
+	}
+	file, err := os.Open(full)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	buf, err := io.ReadAll(io.LimitReader(file, maxPreviewBytes))
+	if err != nil || len(buf) == 0 || isBinary(buf) {
+		return 0
+	}
+	lines := bytes.Count(buf, []byte{'\n'})
+	if buf[len(buf)-1] != '\n' {
+		lines++
+	}
+	return lines
 }
 
 // splitPorcelainZ 拆分 git status -z 输出；路径可含空格与非 ASCII。
