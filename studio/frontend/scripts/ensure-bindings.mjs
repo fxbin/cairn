@@ -139,11 +139,16 @@ function resolveWailsVersion() {
  *
  * 输入：无（从环境变量 WAILS_BINDINGS_FLAGS 读取构建标签，默认 "-tags server"）。
  * 输出：无（子进程输出直接继承至当前终端，绑定文件写入 studio/frontend/bindings/）。
- * 约束：使用 @version 语法运行 wails3，绝不修改根 go.mod / go.sum；不经过 shell 拼接参数。
+ * 约束：使用 @version 语法运行 wails3，绝不修改根 go.mod / go.sum；不经过 shell 拼接参数；
+ * 默认以 CGO_ENABLED=0 运行，因为绑定生成仅做 Go 类型分析，无需 Linux WebKitGTK/GTK4 头文件。
  */
 function generateBindings() {
   const version = resolveWailsVersion();
   const buildFlags = process.env.WAILS_BINDINGS_FLAGS ?? defaultBuildFlags;
+  const childEnv = {
+    ...process.env,
+    CGO_ENABLED: process.env.CGO_ENABLED ?? "0",
+  };
   execFileSync(
     "go",
     [
@@ -159,6 +164,7 @@ function generateBindings() {
     ],
     {
       cwd: studioDir,
+      env: childEnv,
       stdio: "inherit",
     },
   );
