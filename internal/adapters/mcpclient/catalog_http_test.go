@@ -300,7 +300,11 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate.MCPRegistry = registry
+	operationPolicy, err := capabilitymcp.NewOperationPolicy(registry, gate, "ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.ToolRules = []policy.ToolRule{operationPolicy}
 	journal := journalmemory.New()
 	input := agent.RunInput{RunID: domain.NewRunID(), Task: "验证 MCP schema 的持久化与模型声明", WorkspaceHash: "schema-workspace"}
 	created, err := json.Marshal(domain.RunCreatedPayload{Task: input.Task, Workspace: manager.workspace.Root})

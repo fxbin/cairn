@@ -88,7 +88,11 @@ func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provi
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate.MCPRegistry = registry
+	operationPolicy, err := mcp.NewOperationPolicy(registry, gate, "ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.ToolRules = []policy.ToolRule{operationPolicy}
 	scopedAuthorizer, err := mcp.NewRequestAuthorizer(gate, registry)
 	if err != nil {
 		t.Fatal(err)

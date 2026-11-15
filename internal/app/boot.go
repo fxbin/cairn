@@ -173,7 +173,13 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Gate = gate
-	gate.MCPRegistry = registry
+	if catalog != nil {
+		operationPolicy, err := mcpcapability.NewOperationPolicy(registry, gate, cfg.Policy.Exec)
+		if err != nil {
+			return nil, bootAssemblyFailure(boot, err)
+		}
+		gate.ToolRules = []policy.ToolRule{operationPolicy}
+	}
 	gate.SetHooks(hooksFromConfig(cfg.Hooks))
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {

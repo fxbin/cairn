@@ -7,7 +7,7 @@ Boot 统一资源所有权。能力按有效配置显式装配。
 ## 成员
 
 AGENTS.md: 模块职责地图与文件成员入口。
-boot.go: Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
+boot.go: Boot 统一资源所有权。显式装配工具、技能与 MCP 授权规则。
 boot_test.go: 回归 Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
 boot_tool_callbacks.go: Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
 boot_tool_callbacks_test.go: 回归 Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
