@@ -1,3 +1,8 @@
+// [INPUT]: 无网络 Policy 与声明来源替身。
+// [OUTPUT]: 验证旧判定字段、请求边界和委托参数。
+// [POS]: MCP 请求授权器的独立回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package mcp
 
 import (

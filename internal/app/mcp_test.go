@@ -1,3 +1,8 @@
+// [INPUT]: Boot、MCP 配置与本地 HTTP 请求计数器。
+// [OUTPUT]: 验证惰性构造及请求作用域配对。
+// [POS]: 应用层外部能力装配回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (

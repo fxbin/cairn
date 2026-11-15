@@ -1,3 +1,8 @@
+// [INPUT]: 通用作用域探针与模型、工具计数器。
+// [OUTPUT]: 验证缺失接线、同份规格和错误短路。
+// [POS]: 请求作用域消费方回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (

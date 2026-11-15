@@ -1,3 +1,8 @@
+// [INPUT]: 显式 MCPCatalog 与固定工具注册表。
+// [OUTPUT]: 提供目录、身份和请求作用域需求投影。
+// [POS]: Runtime 的 MCP 桥接，不隐式创建客户端。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 为显式 MCP 客户端提供目录与持久化结果的窄边界。
 // Author: fxbin
 package tools

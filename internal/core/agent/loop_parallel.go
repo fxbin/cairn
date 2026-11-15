@@ -1,3 +1,8 @@
+// [INPUT]: 只读分组、授权判定与工具执行端口。
+// [OUTPUT]: 并发执行工具，按序持久化结果。
+// [POS]: Loop 只读批次执行。写入仍串行。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // loop_parallel.go 实现只读工具组的分阶段并行：授权事件仍按单写入者顺序
 // 落盘，只读操作可并发 started（domain 已允许），仅执行段交给有界并发；
 // 副作用工具与需要审批的调用保持完整串行合同。结果按调用下标顺序回传。
