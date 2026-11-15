@@ -90,7 +90,7 @@ subagent_review_test.go: 回归 SubagentReview 区分产出与独立验收来源
 subagent_start.go: SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_start_test.go: 回归 SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_test.go: 回归 Subagent 合同绑定父子身份与预算。委派不能扩大父权限。
-telemetry.go: Telemetry 装配可选导出并收束资源。导出失败不改变运行事实。
+telemetry.go: 显式装配遥测能力并收束资源。Doctor共用接线判定，导出失败不改变运行事实。
 telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出失败不改变运行事实。
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 trial_activation_test.go: 回归 TrialActivation 只读解析显式试运行变体。不改变生产默认配置。

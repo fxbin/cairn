@@ -1,3 +1,8 @@
+// [INPUT]: 依赖应用入口、遥测能力与本地接收器。
+// [OUTPUT]: 回归Journal后导出、关闭隔离与Doctor口径。
+// [POS]: 应用集成回归，保留原默认关闭和隐私断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -10,10 +15,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fxbin/cairn/internal/capabilities/telemetry"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/telemetry"
 )
 
 // telemetryTaskMarker 是测试任务的唯一标记；它绝不允许出现在任何导出内容里。

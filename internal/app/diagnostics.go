@@ -1,4 +1,4 @@
-// [INPUT]: 依赖配置、Memory召回工具与只读环境探测。
+// [INPUT]: 依赖配置、记忆及遥测能力与只读环境探测。
 // [OUTPUT]: 提供Doctor报告与显式预设工具组合。
 // [POS]: 应用装配门面，保持工具规格顺序和只读诊断。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
@@ -17,10 +17,10 @@ import (
 	"runtime/debug"
 
 	"github.com/fxbin/cairn/internal/buildinfo"
+	"github.com/fxbin/cairn/internal/capabilities/telemetry"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/runtime/telemetry"
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 

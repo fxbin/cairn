@@ -75,7 +75,6 @@ var packageLayers = map[string]packageLayer{
 	"internal/runtime/artifact":     layerRuntime,
 	"internal/runtime/provider":     layerRuntime,
 	"internal/runtime/modelcatalog": layerRuntime,
-	"internal/runtime/telemetry":    layerRuntime,
 	"internal/runtime/browser":      layerRuntime,
 	"internal/runtime/sandboxeval":  layerRuntime,
 	"internal/runtime/policy":       layerRuntime,
@@ -85,6 +84,7 @@ var packageLayers = map[string]packageLayer{
 	// Core。
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
+	"internal/capabilities/telemetry":               layerCapability,
 	"internal/capabilities/skills":                  layerCapability,
 	"internal/capabilities/memory":                  layerCapability,
 	"internal/capabilities/memory/storage/sqlite":   layerCapability,

@@ -1,3 +1,8 @@
+// [INPUT]: 依赖本能力聚合器、导出端口与domain事件。
+// [OUTPUT]: 提供终态单次导出及Flush、Close资源边界。
+// [POS]: 只消费成功Journal回执，导出失败不改变运行。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件实现语义观测运行时：把已持久化事件投影为快照并交给导出器。
 //
 // Author: fxbin

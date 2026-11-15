@@ -6,6 +6,6 @@
 ## 成员
 
 AGENTS.md: 模块职责地图与成员入口。
-package_deps_test.go: go list 依赖分层、同能力单元边界与未知包拒绝。
+package_deps_test.go: go list 依赖分层、同能力单元边界与未知包拒绝。遥测登记为能力层。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md
