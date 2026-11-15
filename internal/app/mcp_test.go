@@ -1,3 +1,8 @@
+// [INPUT]: Boot、MCP 配置与本地 HTTP 请求计数器。
+// [OUTPUT]: 验证惰性构造及请求作用域配对。
+// [POS]: 应用层外部能力装配回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -7,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -28,6 +34,9 @@ func TestMCPBootAndStatusAreLazy(t *testing.T) {
 	}
 	if boot.MCP == nil {
 		t.Fatal("MCP was not explicitly assembled")
+	}
+	if _, scoped := boot.Loop.Gate.(agent.RequestScope); !scoped || !boot.Registry.RequiresRequestScope() {
+		t.Fatal("MCP authorizer lost its paired request scope")
 	}
 	specs := boot.Registry.Specs()
 	found := false

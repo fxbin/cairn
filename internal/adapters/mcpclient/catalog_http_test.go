@@ -1,3 +1,8 @@
+// [INPUT]: 本地 HTTP MCP 夹具、真实 Loop 与内存 Journal。
+// [OUTPUT]: 验证 schema、身份漂移与成功回执冷恢复。
+// [POS]: MCP 适配器的协议与持久化联检入口。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package mcpclient
 
 import (
@@ -312,7 +317,11 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 		}
 	}
 	provider := &schemaLoopProvider{}
-	loop := agent.Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []agent.ToolResultObserver{capabilitymcp.NewHistory(registry)}, Gate: gate, Model: "offline-schema-provider", MaxTurns: 4, MaxToolCalls: 4, VerificationWorkspace: manager.workspace.ObservationView(nil)}
+	scopedAuthorizer, err := capabilitymcp.NewRequestAuthorizer(gate, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := agent.Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []agent.ToolResultObserver{capabilitymcp.NewHistory(registry)}, Gate: scopedAuthorizer, Model: "offline-schema-provider", MaxTurns: 4, MaxToolCalls: 4, VerificationWorkspace: manager.workspace.ObservationView(nil)}
 	result, err := loop.Run(t.Context(), input)
 	if err != nil || result.Response != "schema flow complete" || fixture.count("tools/call") != 1 {
 		t.Fatalf("schema 没有通过真实运行链并完成业务调用：response=%s err=%v calls=%d", result.Response, err, fixture.count("tools/call"))

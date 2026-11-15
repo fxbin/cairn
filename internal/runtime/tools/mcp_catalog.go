@@ -1,3 +1,8 @@
+// [INPUT]: 显式 MCPCatalog 与固定工具注册表。
+// [OUTPUT]: 提供目录、身份和请求作用域需求投影。
+// [POS]: Runtime 的 MCP 桥接，不隐式创建客户端。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 为显式 MCP 客户端提供目录与持久化结果的窄边界。
 // Author: fxbin
 package tools
@@ -108,3 +113,6 @@ func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name strin
 	}
 	return registry.Execute(ctx, name, raw)
 }
+
+// RequiresRequestScope 要求存在外部目录时使用绑定模型请求作用域的完整授权端口，避免遗漏声明约束。
+func (registry *Registry) RequiresRequestScope() bool { return registry.mcp != nil }

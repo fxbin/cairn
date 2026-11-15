@@ -1,3 +1,8 @@
+// [INPUT]: 模型端口、冻结消息与工具规格。
+// [OUTPUT]: 收集响应并校验协议、用量和调用结构。
+// [POS]: Loop 模型边界。请求前冻结授权作用域。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -68,7 +73,9 @@ func (loop *Loop) callModel(ctx context.Context, messages []ports.Message) (coll
 	toolCallIDs := make(map[string]struct{})
 	done := false
 	specs := loop.Tools.Specs()
-	loop.captureMCPDeclarations(specs)
+	if err := loop.captureRequestScope(specs); err != nil {
+		return response, err
+	}
 	err := loop.Provider.Stream(ctx, ports.ModelRequest{Model: loop.Model, Messages: messages, Tools: specs}, func(event ports.ModelEvent) error {
 		if done {
 			return errors.New("provider emitted event after done")

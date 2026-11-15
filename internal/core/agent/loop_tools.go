@@ -1,3 +1,8 @@
+// [INPUT]: Authorizer、工具、Journal 和制品端口。
+// [OUTPUT]: 执行受审计工具链与确定性补丁计划。
+// [POS]: Loop 工具边界。双落盘后更新能力投影。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -85,7 +90,6 @@ func (loop *Loop) resumeDecision(projection domain.RunProjection, call ports.Too
 	if err != nil {
 		return AuthorizationDecision{}, err
 	}
-	decision = loop.bindMCPDeclaration(call.Name, decision)
 	return freshApprovalDecision(projection, decision), nil
 }
 
@@ -120,7 +124,6 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		if err != nil {
 			return contract.ToolResult{}, err
 		}
-		decision = loop.bindMCPDeclaration(call.Name, decision)
 		decision = freshApprovalDecision(*projection, decision)
 		if decision.Effect == AuthorizationAsk {
 			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
@@ -143,7 +146,6 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 		return contract.ToolResult{}, err
 	}
 	decision = freshApprovalDecision(*projection, decision)
-	decision = loop.bindMCPDeclaration(call.Name, decision)
 	if err := loop.append(ctx, projection, policyDecisionDraft(input, turnID, operationID, decision)); err != nil {
 		return contract.ToolResult{}, err
 	}

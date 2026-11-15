@@ -1,3 +1,8 @@
+// [INPUT]: 有效配置、Provider、工具和存储构造器。
+// [OUTPUT]: 提供统一 Boot 装配和资源关闭。
+// [POS]: 应用层唯一组合根。运行与恢复共用。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
 package app
 
@@ -7,6 +12,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/adapters/mcpclient"
+	mcpcapability "github.com/fxbin/cairn/internal/capabilities/mcp"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/core/agent"
@@ -170,7 +176,15 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Verification = verification
-	boot.Loop = configuredLoop(journal, provider, registry, gate, verification, artifacts, cfg, onEvent, workspace)
+	var authorizer agent.Authorizer = gate
+	if catalog != nil {
+		scopedAuthorizer, err := mcpcapability.NewRequestAuthorizer(gate, registry)
+		if err != nil {
+			return nil, bootAssemblyFailure(boot, err)
+		}
+		authorizer = scopedAuthorizer
+	}
+	boot.Loop = configuredLoop(journal, provider, registry, authorizer, verification, artifacts, cfg, onEvent, workspace)
 	boot.Loop.RequireProviderUsage = card.StreamingUsage
 	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
 	return boot, nil

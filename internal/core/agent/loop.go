@@ -1,3 +1,8 @@
+// [INPUT]: Journal、Provider、工具与授权窄端口。
+// [OUTPUT]: 推进单写入者 Loop 的运行事实。
+// [POS]: Core 主循环。可选能力由组合根注入。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package agent 包含串行、单写入者的 Agent 执行循环。
 package agent
 
@@ -15,11 +20,10 @@ import (
 
 // Loop 协调模型、策略、工具、事件日志、恢复和固定验证流程。
 type Loop struct {
-	mcpModelDeclarations map[string]string
-	projectInstructions  contract.ProjectInstructions
-	Journal              ports.Journal
-	Provider             ports.Provider
-	Tools                ToolRegistry
+	projectInstructions contract.ProjectInstructions
+	Journal             ports.Journal
+	Provider            ports.Provider
+	Tools               ToolRegistry
 	// Gate 是宿主注入的授权端口；Core 不持有 Policy 的具体类型与内部结构。
 	Gate  Authorizer
 	Model string

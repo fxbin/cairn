@@ -1,3 +1,8 @@
+// [INPUT]: 真实策略、Journal 与无外部传输目录替身。
+// [OUTPUT]: 验证声明、审批、脚本与冷恢复边界。
+// [POS]: Core 对 MCP 装配合同的兼容回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -84,7 +89,11 @@ func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provi
 		t.Fatal(err)
 	}
 	gate.MCPRegistry = registry
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []ToolResultObserver{mcp.NewHistory(registry)}, Gate: gate, Model: "fake", MaxTurns: 4}
+	scopedAuthorizer, err := mcp.NewRequestAuthorizer(gate, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []ToolResultObserver{mcp.NewHistory(registry)}, Gate: scopedAuthorizer, Model: "fake", MaxTurns: 4}
 }
 
 // TestMCPLoadInSameResponseCannotInvokeUndeclaredTool 发现可为下一轮加载工具，不能改变当前响应的授权声明。
@@ -204,7 +213,10 @@ func TestMCPReplayPreservesHistoricalDeclarationBoundary(t *testing.T) {
 	if !catalog.active || len(catalog.calls) != 0 {
 		t.Fatal("catalog replay executed discovery or failed to activate evidence")
 	}
-	decision := loop.bindMCPDeclaration(testMCPName, AuthorizationDecision{Effect: AuthorizationAllow})
+	decision, err := loop.Gate.Decide(testMCPName, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if decision.Effect != AuthorizationDeny || decision.FailureCode != "mcp_not_declared" {
 		t.Fatal("final catalog polluted earlier model request")
 	}
@@ -212,10 +224,50 @@ func TestMCPReplayPreservesHistoricalDeclarationBoundary(t *testing.T) {
 	if err := loop.restoreResultProjections(events); err != nil {
 		t.Fatal(err)
 	}
-	if decision = loop.bindMCPDeclaration(testMCPName, AuthorizationDecision{Effect: AuthorizationAllow}); decision.Effect != AuthorizationAllow {
+	if decision, err = loop.Gate.Decide(testMCPName, json.RawMessage(`{}`)); err != nil || decision.Effect != AuthorizationAllow {
 		t.Fatal("next model declaration was not restored")
 	}
 	if len(catalog.calls) != 0 {
 		t.Fatal("repeated replay executed an external tool")
+	}
+}
+
+// TestMCPScriptPlanClearsPreviousModelScope 新脚本计划不继承旧模型请求声明，仍走既有显式授权链。
+func TestMCPScriptPlanClearsPreviousModelScope(t *testing.T) {
+	catalog := &loopMCPCatalog{}
+	journal := memory.New()
+	loop := newMCPLoopTest(t, catalog, &scriptedProvider{}, journal)
+	input := RunInput{RunID: domain.NewRunID(), Task: "script MCP plan", WorkspaceHash: "workspace"}
+	appendInitialRunningEvents(t, journal, input.RunID, input.Task)
+	if err := loop.Gate.(RequestScope).CaptureRequest(nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := []ports.ToolCall{{ID: "discover", Name: "mcp_discover", Arguments: json.RawMessage(`{"server":"docs"}`)}, {ID: "external", Name: testMCPName, Arguments: json.RawMessage(`{}`)}}
+	if _, err := loop.RunScriptedToolPlan(context.Background(), input, ports.Approval{}, calls); err != nil {
+		t.Fatal(err)
+	}
+	events, err := journal.Load(context.Background(), input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.calls) != 2 || countEvent(events, domain.EventModelRequestStarted) != 0 || countEvent(events, domain.EventRunCompleted) != 1 {
+		t.Fatal("script plan inherited a stale model scope or called Provider")
+	}
+}
+
+// TestMCPLostRequestScopeFailsBeforeProvider 装饰器若隐藏作用域端口，MCP目录元数据必须阻止无声明保护的模型调用。
+func TestMCPLostRequestScopeFailsBeforeProvider(t *testing.T) {
+	catalog := &loopMCPCatalog{}
+	journal := memory.New()
+	provider := &scriptedProvider{}
+	loop := newMCPLoopTest(t, catalog, provider, journal)
+	input := RunInput{RunID: domain.NewRunID(), Task: "missing MCP scope", WorkspaceHash: "workspace"}
+	appendInitialRunningEvents(t, journal, input.RunID, input.Task)
+	loop.Gate = &captureOnlyAuthorizer{Authorizer: loop.Gate}
+	if _, err := loop.Run(context.Background(), input); err == nil {
+		t.Fatal("MCP directory ran without its complete request scope")
+	}
+	if len(provider.requests) != 0 || len(catalog.calls) != 0 {
+		t.Fatal("missing request scope made external work reachable")
 	}
 }

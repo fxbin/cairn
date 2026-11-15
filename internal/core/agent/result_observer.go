@@ -1,3 +1,8 @@
+// [INPUT]: 持久化事件、工具元数据和显式观察器。
+// [OUTPUT]: 恢复能力投影并通知唯一结果所有者。
+// [POS]: Core 事实消费边界，不执行能力回放副作用。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package agent 按持久化事实调度显式装配的能力投影，不执行扩展回放中的外部动作。
 // Author: fxbin
 package agent
@@ -76,7 +81,9 @@ func (loop *Loop) observeToolResult(name string, result contract.ToolResult) err
 // restoreResultProjections 按装配顺序清空并逐事件回放；未知成功工具同样必须证明投影归属。
 // 模型声明仍在对应历史安全点冻结，不能使用最终目录反推更早的模型请求。
 func (loop *Loop) restoreResultProjections(events []domain.Event) error {
-	loop.mcpModelDeclarations = nil
+	if err := loop.resetRequestScope(); err != nil {
+		return err
+	}
 	for index, observer := range loop.ResultObservers {
 		if observer == nil {
 			return fmt.Errorf("tool result observer %d is nil", index)
@@ -120,7 +127,9 @@ func (loop *Loop) restoreResultProjections(events []domain.Event) error {
 			}
 		}
 		if event.Type == domain.EventModelRequestStarted {
-			loop.captureMCPDeclarations(loop.Tools.Specs())
+			if err := loop.captureRequestScope(loop.Tools.Specs()); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -141,4 +150,24 @@ func (loop *Loop) validatePersistedResultObserver(name string) error {
 		}
 	}
 	return errors.New("unknown successful tool result requires a projection observer")
+}
+
+// modelToolResultJSON 为显式观察的工具生成模型视图，普通工具保持既有回放内容。
+func (loop *Loop) modelToolResultJSON(name string, raw json.RawMessage) (string, error) {
+	projected := false
+	for _, observer := range loop.ResultObservers {
+		if observer != nil && observer.HandlesToolResult(name) {
+			projected = true
+			break
+		}
+	}
+	if !projected {
+		return string(raw), nil
+	}
+	var result contract.ToolResult
+	if json.Unmarshal(raw, &result) != nil {
+		return "", errors.New("decode persisted projected tool result failed")
+	}
+	encoded, err := json.Marshal(loop.Tools.ModelResult(name, result))
+	return string(encoded), err
 }
