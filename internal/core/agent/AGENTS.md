@@ -40,12 +40,12 @@ loop_model.go: Provider 请求冻结工具规格并收集完整响应。连续�
 loop_parallel.go: ReadonlyGroup 并发执行已授权调用。事件与结果按固定顺序落盘。
 loop_parallel_test.go: 回归ReadonlyGroup 并发执行已授权调用。事件与结果按固定顺序落盘。
 loop_patch_feedback_test.go: 验证过期补丁反馈与重新读取后的唯一写入。
-loop_resume.go: Resume 重放历史并恢复审批。已 started 的未知结果先进入对账。
+loop_resume.go: Resume 重放历史并恢复审批。悬挂副作用先对账，只读中断补写结果。
 loop_resume_cancel.go: CancellationRepair 补齐取消请求和终态。恢复不猜测副作用结果。
 loop_resume_index.go: ToolEventIndex 配对历史调用与模型响应。索引只消费 Journal。
 loop_resume_repair.go: OperationRepair 补齐未启动终态和缺失回执。已启动副作用不自动重试。
 loop_resume_terminal.go: TerminalRepair 根据持久化证据补齐运行终态。缺少事实时拒绝收尾。
-loop_resume_test.go: 回归Resume 重放历史并恢复审批。已 started 的未知结果先进入对账。
+loop_resume_test.go: 回归Resume 重放历史并恢复审批。悬挂副作用先对账，只读中断补写结果。
 loop_scripted.go: ScriptedPlan 不调用模型。固定工具计划复用授权、恢复和验证链。
 loop_scripted_test.go: 回归ScriptedPlan 不调用模型。固定工具计划复用授权、恢复和验证链。
 loop_secret_compaction_test.go: 验证压缩与重放不把旧凭据写入模型上下文。
