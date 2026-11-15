@@ -1,3 +1,8 @@
+// [INPUT]: 依赖本能力账本、证据替身与冻结时钟。
+// [OUTPUT]: 回归人工确认、项目主体隔离、历史与并发安全。
+// [POS]: 能力内回归同时检查生产导入，不验证模型行为。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package decision
 
 import (

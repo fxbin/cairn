@@ -1,3 +1,10 @@
+// [INPUT]: 依赖本能力有效状态、证据定位与标准库编码。
+// [OUTPUT]: 提供固定预算下的只读决策上下文投影。
+// [POS]: 纯投影尚无运行时消费方，不自动注入模型。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的上下文投影：注入上下文的只有决策陈述与证据定位，

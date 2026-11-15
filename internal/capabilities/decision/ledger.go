@@ -1,3 +1,10 @@
+// [INPUT]: 依赖本能力记录、人工确认凭据与标准库同步。
+// [OUTPUT]: 提供候选录入、人工状态迁移、查询与历史审计。
+// [POS]: 进程内账本保持项目与主体隔离，不写Journal。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的进程内实现：受控录入、状态迁移与只读查询都在此完成。
