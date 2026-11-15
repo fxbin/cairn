@@ -1,4 +1,4 @@
-// [INPUT]: 真实 Gate、能力规则与原审批夹具。
+// [INPUT]: 真实 Gate、共享提议合同与原审批夹具。
 // [OUTPUT]: 验证宿主执行限制及身份漂移仍使审批失效。
 // [POS]: Policy 与 MCP 的接线回归，不弱化原安全断言。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
@@ -28,7 +28,7 @@ func TestMCPPolicyCannotBypassHostExecutionPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decision, err := decideMCPTest(t, gate, tools.MCPProposal{Stdio: true, Effect: test.local, Arguments: json.RawMessage(`{}`)})
+		decision, err := decideMCPTest(t, gate, contract.MCPProposal{Stdio: true, Effect: test.local, Arguments: json.RawMessage(`{}`)})
 		if err != nil || decision.Effect != test.want {
 			t.Fatalf("global=%s local=%s decision=%#v error=%v", test.global, test.local, decision, err)
 		}
@@ -38,12 +38,12 @@ func TestMCPPolicyCannotBypassHostExecutionPolicy(t *testing.T) {
 // TestMCPApprovalBindsIdentityAndArguments 身份、目录、实际环境和输入漂移都要求重新审批。
 func TestMCPApprovalBindsIdentityAndArguments(t *testing.T) {
 	gate := Gate{}
-	base := tools.MCPProposal{Effect: "ask", Server: "docs", Identity: "server", EnvironmentDigest: "environment", CatalogDigest: "catalog", ToolDigest: "schema", ToolName: "mcp__docs__lookup", Arguments: json.RawMessage(`{"id":1}`)}
+	base := contract.MCPProposal{Effect: "ask", Server: "docs", Identity: "server", EnvironmentDigest: "environment", CatalogDigest: "catalog", ToolDigest: "schema", ToolName: "mcp__docs__lookup", Arguments: json.RawMessage(`{"id":1}`)}
 	original, err := decideMCPTest(t, &gate, base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range []func(*tools.MCPProposal){func(p *tools.MCPProposal) { p.Identity = "other" }, func(p *tools.MCPProposal) { p.EnvironmentDigest = "other" }, func(p *tools.MCPProposal) { p.CatalogDigest = "other" }, func(p *tools.MCPProposal) { p.ToolDigest = "other" }, func(p *tools.MCPProposal) { p.Arguments = json.RawMessage(`{"id":2}`) }} {
+	for _, change := range []func(*contract.MCPProposal){func(p *contract.MCPProposal) { p.Identity = "other" }, func(p *contract.MCPProposal) { p.EnvironmentDigest = "other" }, func(p *contract.MCPProposal) { p.CatalogDigest = "other" }, func(p *contract.MCPProposal) { p.ToolDigest = "other" }, func(p *contract.MCPProposal) { p.Arguments = json.RawMessage(`{"id":2}`) }} {
 		proposal := base
 		change(&proposal)
 		decision, err := decideMCPTest(t, &gate, proposal)

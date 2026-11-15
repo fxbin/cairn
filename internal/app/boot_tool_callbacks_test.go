@@ -1,3 +1,8 @@
+// [INPUT]: 真实 Boot、记忆来源与组合工具视图。
+// [OUTPUT]: 验证并行及父子 Boot 的回调实例隔离。
+// [POS]: 应用回调回归，组合注册表迁移不改变原断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -65,7 +70,7 @@ func appendCallbackTarget(t *testing.T, boot *Boot, stateDir string, id domain.R
 }
 
 // assertCallbackRecall 验证账本只包含当前工作区来源，模型额外字段不能改变范围。
-func assertCallbackRecall(registry *tools.Registry, f callbackFixture, hash string) error {
+func assertCallbackRecall(registry assembledToolRegistry, f callbackFixture, hash string) error {
 	result := registry.Execute(context.Background(), "memory_recall", json.RawMessage(`{"outcomes":["completed"],"workspace_hash":"other-workspace"}`))
 	if !result.OK {
 		return fmt.Errorf("recall failed: %+v", result)

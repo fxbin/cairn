@@ -1,13 +1,20 @@
 // [INPUT]: Boot、MCP 配置与本地 HTTP 请求计数器。
-// [OUTPUT]: 验证惰性构造及请求作用域配对。
+// [OUTPUT]: 验证惰性构造、请求作用域与缺失来源拒绝。
 // [POS]: 应用层外部能力装配回归。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package app
 
 import (
+	"context"
+	journalmemory "github.com/fxbin/cairn/internal/adapters/journal/memory"
+	mcpcap "github.com/fxbin/cairn/internal/capabilities/mcp"
+	"github.com/fxbin/cairn/internal/domain"
+	"github.com/fxbin/cairn/internal/runtime/policy"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -54,5 +61,46 @@ func TestMCPBootAndStatusAreLazy(t *testing.T) {
 	}
 	if requests.Load() != 0 || len(statuses) != 1 || statuses[0].Name != "docs" || statuses[0].CredentialsPresent {
 		t.Fatalf("boot/status issued a connection or misrepresented credentials: %d %#v", requests.Load(), statuses)
+	}
+}
+
+// TestConfiguredLoopRejectsMCPWithoutProvider 在模型或工具启动前拒绝缺失或空指针能力来源。
+func TestConfiguredLoopRejectsMCPWithoutProvider(t *testing.T) {
+	for _, variant := range []string{"static-only", "typed-nil"} {
+		t.Run(variant, func(t *testing.T) {
+			workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
+			if err != nil {
+				t.Fatal(err)
+			}
+			static, err := tools.NewRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate, err := policy.New("ask", "ask", nil, tools.ApplyPatch{Workspace: workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var registry assembledToolRegistry = static
+			if variant == "typed-nil" {
+				var missing *mcpcap.Registry
+				registry = missing
+			}
+			configuration := withTestProvider(config.Defaults())
+			configuration.MCP = &config.MCPConfig{Servers: []config.MCPServerConfig{{Name: "docs", Transport: config.MCPTransportHTTP, URL: "http://127.0.0.1:1", Exposure: config.MCPExposureDirect}}}
+			journal := journalmemory.New()
+			provider := &admissionGuardProvider{}
+			loop := configuredLoop(journal, provider, registry, gate, nil, nil, configuration, nil, workspace, nil)
+			runID := domain.NewRunID()
+			if _, err := loop.Run(context.Background(), agent.RunInput{RunID: runID, Task: "missing provider", WorkspaceHash: "workspace"}); err == nil || !strings.Contains(err.Error(), "lifecycle participant has an invalid release proposal") {
+				t.Fatalf("missing MCP source did not fail closed: %v", err)
+			}
+			events, err := journal.Load(context.Background(), runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider.calls != 0 || len(events) != 0 {
+				t.Fatalf("missing source started work: provider=%d events=%d", provider.calls, len(events))
+			}
+		})
 	}
 }

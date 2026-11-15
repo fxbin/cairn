@@ -38,7 +38,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 
 - Event Journal 是运行事实源；TUI、记忆、遥测和合同投影不能替代它。Domain 不依赖 CLI、HTTP、SQLite 或文件系统；`--json` 的 stdout 仅输出 NDJSON。
 - 副作用顺序固定：提议 → Policy → 必要时审批 → `operation_started` → 结果或对账 → 关闭 Turn。写入和命令默认 `ask`；回退同样走完整授权链。
-- 内置工具由 `tools.NewRegistry` 静态注册；MCP 客户端由配置和 Composition Root 显式装配，发现目录及工具暴露状态从成功的 Journal 结果投影。外部调用保持完整授权链，目录/schema 漂移失败关闭，不自动重试结果不确定的调用。保持窄边界，不引入普通插件、daemon/RPC 或 Team 实体。
+- 内置工具由 `tools.NewRegistry` 静态注册；能力层 `mcp.Registry` 显式组合目录，MCP 客户端由配置和 Composition Root 显式装配，发现目录及工具暴露状态从成功的 Journal 结果投影。外部调用保持完整授权链，目录/schema 漂移失败关闭，不自动重试结果不确定的调用。保持窄边界，不引入普通插件、daemon/RPC 或 Team 实体。
 - Skill 是本地 `SKILL.md` 内容包，由配置显式启用并通过固定 `skill` 工具按需读取；正文激活只来自成功的 Journal 回执，压缩与冷恢复保留历史正文，资源读取绑定来源与摘要。技能的 `allowed-tools`、hooks、模型或子代理声明不能授予权限或执行代码；脚本仍走工作区、Policy、审批和沙箱边界。管理命令只写原生目录，跨客户端共享目录仅作显式只读来源。
 - 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
 - 语义观测是可选旁路：只消费已成功持久化的 Journal 事件，导出失败不改变 Run 终态、Replay、Resume 或对账语义；默认关闭，关闭时零网络导出，并尊重 `OTEL_SDK_DISABLED` 全局关闭开关与 `OTEL_TRACES_EXPORTER`/`OTEL_METRICS_EXPORTER` 的 none 语义。指标维度只允许受限枚举，run 标识只作关联属性；Prompt、密钥、原始工具结果、验证证据与绝对路径不得进入观测内容。接线判定只有一处，运行路径与 doctor 共用；doctor 分面报告记忆侧、语义面与 SDK 面，如实区分 disabled、sdk_disabled、no_signal、instrumented 与 config_error，不宣称采集成功。

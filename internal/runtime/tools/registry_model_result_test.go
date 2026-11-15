@@ -1,6 +1,6 @@
-// [INPUT]: 普通静态工具与目录视图替身。
-// [OUTPUT]: 验证模型视图优先级与原始证据保留。
-// [POS]: 通用工具投影分派回归。
+// [INPUT]: 普通静态工具与通用模型视图。
+// [OUTPUT]: 验证投影认领和原始证据保留。
+// [POS]: 基础注册表回归，不装配高级目录。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package tools
@@ -25,49 +25,22 @@ func (tool *nativeModelResultTool) ModelResult(result contract.ToolResult) contr
 	return result
 }
 
-// modelResultCatalog 只观察本测试消费的目录结果方法，其他生命周期不被调用。
-type modelResultCatalog struct {
-	MCPCatalog
-	calls []string
-}
-
-func (catalog *modelResultCatalog) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
-	catalog.calls = append(catalog.calls, name)
-	result.Preview = "catalog-model-view"
-	return result
-}
-
-// TestRegistryModelResultUsesRegisteredToolAndPreservesMCPFallback 已注册工具的
-// 窄方法优先投影；未提供投影和未知名称保持原 MCP fallback 或原始结果行为。
-func TestRegistryModelResultUsesRegisteredToolAndPreservesMCPFallback(t *testing.T) {
+// TestRegistryModelResultUsesRegisteredTool 验证已认领投影与原始回执分别保留。
+func TestRegistryModelResultUsesRegisteredTool(t *testing.T) {
 	projected := &nativeModelResultTool{staticSpecTool: staticSpecTool{spec: ports.ToolSpec{Name: "native-projection"}}}
 	registry, err := NewRegistry(projected, staticSpecTool{spec: ports.ToolSpec{Name: "plain"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog := &modelResultCatalog{}
-	registry.mcp = catalog
 	original := contract.ToolSuccess(struct {
 		Body string `json:"body"`
 	}{Body: "complete journal evidence"}, "original", 25, "identity", false)
 	got := registry.ModelResult("native-projection", original)
-	if got.Preview != "native-model-view" || projected.calls != 1 || len(catalog.calls) != 0 {
-		t.Fatalf("native projection bypassed: result=%+v calls=%d catalog=%v", got, projected.calls, catalog.calls)
-	}
 	expected := original
 	expected.Preview = "native-model-view"
-	if !reflect.DeepEqual(got, expected) || original.Preview != "original" {
+	if !reflect.DeepEqual(got, expected) || projected.calls != 1 || original.Preview != "original" {
 		t.Fatal("model projection changed full receipt fields")
 	}
-	for _, name := range []string{"plain", "unknown"} {
-		if got := registry.ModelResult(name, original); got.Preview != "catalog-model-view" {
-			t.Fatalf("MCP fallback lost for %s: %+v", name, got)
-		}
-	}
-	if !reflect.DeepEqual(catalog.calls, []string{"plain", "unknown"}) {
-		t.Fatalf("unexpected MCP routing: %v", catalog.calls)
-	}
-	registry.mcp = nil
 	for _, name := range []string{"plain", "unknown"} {
 		if got := registry.ModelResult(name, original); !reflect.DeepEqual(got, original) {
 			t.Fatalf("unprojected result changed for %s", name)

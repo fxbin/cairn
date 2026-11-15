@@ -1,6 +1,6 @@
-// [INPUT]: 基础设施、同一授权实例与技能对象。
-// [OUTPUT]: 装配最小工具端口和显式能力投影。
-// [POS]: Boot 的确定性接线，不发现或执行插件。
+// [INPUT]: 应用配置、组合工具视图与能力实例。
+// [OUTPUT]: 装配同源的历史投影、释放参与者和 Core 端口。
+// [POS]: 运行与恢复共用的 Loop 接线，缺失能力源失败关闭。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 装配 helper：工作区、执行工具、Journal、制品库与 Loop。
@@ -203,7 +203,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口。minimal 只注入基础工具方法集，
 // 其余组合沿用可选能力识别，保持既有执行与恢复语义。
-func configuredLoop(journal ports.Journal, provider ports.Provider, registry *tools.Registry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace, skillTool *skills.Skill) agent.Loop {
+func configuredLoop(journal ports.Journal, provider ports.Provider, registry assembledToolRegistry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace, skillTool *skills.Skill) agent.Loop {
 	var registryPort agent.ToolRegistry = registry
 	if configuration.Preset == config.PresetMinimal {
 		registryPort = minimalToolRegistry{ToolRegistry: registry}
@@ -244,8 +244,14 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 		loop.ResultObservers = append(loop.ResultObservers, skills.NewHistory(historySource))
 	}
 	if configuration.Preset != config.PresetMinimal && configuration.MCP != nil && hasEnabledMCP(configuration.MCP) {
-		loop.ResultObservers = append(loop.ResultObservers, mcp.NewHistory(registry))
-		loop.LifecycleParticipants = []agent.LifecycleParticipant{mcp.NewLifecycle(registry)}
+		var historySource mcp.ProjectionSource
+		var resourceSource mcp.QuiescenceSource
+		if provider, ok := registry.(*mcp.Registry); ok && provider != nil {
+			historySource = provider
+			resourceSource = provider
+		}
+		loop.ResultObservers = append(loop.ResultObservers, mcp.NewHistory(historySource))
+		loop.LifecycleParticipants = []agent.LifecycleParticipant{mcp.NewLifecycle(resourceSource)}
 	}
 	if guard := configuration.Guard; guard != nil {
 		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures

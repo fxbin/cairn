@@ -1,6 +1,6 @@
-// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
-// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
-// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [INPUT]: 真实 Core、Journal 与显式 MCP 生命周期。
+// [OUTPUT]: 验证释放失败、冷恢复及预算分类。
+// [POS]: 生命周期能力组合回归，保持既有不重发断言。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package agent
@@ -16,7 +16,6 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 type lifecycleCatalog struct {
@@ -27,9 +26,9 @@ type lifecycleCatalog struct {
 }
 
 func (catalog *lifecycleCatalog) NeedsQuiescence() bool { return catalog.live }
-func (catalog *lifecycleCatalog) Proposal(name string, raw json.RawMessage) (tools.MCPProposal, bool, error) {
+func (catalog *lifecycleCatalog) Proposal(name string, raw json.RawMessage) (contract.MCPProposal, bool, error) {
 	if name == contract.MCPQuiesceTool {
-		return tools.MCPProposal{ToolName: name, Effect: "allow", Local: true, Summary: "close owned MCP resources", Arguments: raw}, true, nil
+		return contract.MCPProposal{ToolName: name, Effect: "allow", Local: true, Summary: "close owned MCP resources", Arguments: raw}, true, nil
 	}
 	return catalog.loopMCPCatalog.Proposal(name, raw)
 }

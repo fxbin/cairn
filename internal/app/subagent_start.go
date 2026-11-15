@@ -1,3 +1,8 @@
+// [INPUT]: 持久委派事实、父工具集合与组合工具视图。
+// [OUTPUT]: 提供受控子运行启动和工具范围收窄。
+// [POS]: 应用委派准入，不依赖具体工具注册表。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // subagent_start.go 实现 AGT-02 显式委派与受控启动：子 run 必须先有
 // delegated 事实，工具集从父收窄，共享工作区保持排他锁语义；无运行时
 // 不得虚构子代理身份。
@@ -138,7 +143,7 @@ func BuildStartEvidence(parent, child domain.RunID, narrowed []string, at time.T
 // enforceSubagentToolNarrowing 在子 run 启动前强制工具面收窄：子可见工具必须
 // ⊆ 父工具集。父集合优先取调用方显式传入的 ParentTools；缺失时按父冻结配置
 // 的 Preset 重建基础工具面（不含 opt-in 扩展），保持失败关闭。
-func enforceSubagentToolNarrowing(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, workspaceHash string, registry *tools.Registry, options RunOptions) error {
+func enforceSubagentToolNarrowing(ctx context.Context, journal ports.Journal, artifacts *artifact.Store, workspaceHash string, registry assembledToolRegistry, options RunOptions) error {
 	if registry == nil {
 		return fmt.Errorf("%w: tool registry is required", ErrSubagentStart)
 	}

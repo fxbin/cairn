@@ -1,3 +1,8 @@
+// [INPUT]: 显式配置、受控传输与共享 MCP 提议合同。
+// [OUTPUT]: 提供惰性会话、受审计目录及本地权限投影。
+// [POS]: 协议叶子适配；组合与授权由能力层和应用层完成。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package mcpclient 以显式配置、受审计发现快照和惰性连接接入外部 MCP 工具。
 // Author: fxbin
 package mcpclient
@@ -170,26 +175,26 @@ func (manager *Manager) serverSummary() string {
 }
 
 // Proposal 只解析和绑定本地目录，不连接或刷新远端，也不信任工具注解。
-func (manager *Manager) Proposal(name string, raw json.RawMessage) (tools.MCPProposal, bool, error) {
+func (manager *Manager) Proposal(name string, raw json.RawMessage) (contract.MCPProposal, bool, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	if name == contract.MCPQuiesceTool {
 		if string(bytes.TrimSpace(raw)) != "{}" {
-			return tools.MCPProposal{}, true, errors.New("invalid MCP lifecycle arguments")
+			return contract.MCPProposal{}, true, errors.New("invalid MCP lifecycle arguments")
 		}
 		identity, err := canonicaljson.Fingerprint("cairn-mcp-close-v1", manager.catalogIdentities())
-		return tools.MCPProposal{Identity: identity, ToolName: name, Arguments: raw, Effect: "allow", Local: true, Summary: "关闭本次运行持有的 MCP 会话"}, true, err
+		return contract.MCPProposal{Identity: identity, ToolName: name, Arguments: raw, Effect: "allow", Local: true, Summary: "关闭本次运行持有的 MCP 会话"}, true, err
 	}
 	if name == DiscoverTool {
 		var arguments struct {
 			Server string `json:"server"`
 		}
 		if decode(raw, &arguments) != nil {
-			return tools.MCPProposal{}, true, errors.New("invalid discovery arguments")
+			return contract.MCPProposal{}, true, errors.New("invalid discovery arguments")
 		}
 		server, found := manager.servers[arguments.Server]
 		if !found {
-			return tools.MCPProposal{}, true, errors.New("unknown MCP server")
+			return contract.MCPProposal{}, true, errors.New("unknown MCP server")
 		}
 		summary := "连接 MCP " + strconv.Quote(server.Name) + ": " + server.URL
 		if server.Transport == config.MCPTransportStdio {
@@ -198,47 +203,47 @@ func (manager *Manager) Proposal(name string, raw json.RawMessage) (tools.MCPPro
 		}
 		environmentDigest, err := manager.environmentDigest(server)
 		if err != nil {
-			return tools.MCPProposal{}, true, err
+			return contract.MCPProposal{}, true, err
 		}
-		return tools.MCPProposal{Server: server.Name, Identity: server.Fingerprint(), EnvironmentDigest: environmentDigest, ToolName: name, Arguments: raw, Effect: server.ConnectPolicy, Stdio: server.Transport == config.MCPTransportStdio, Summary: summary}, true, nil
+		return contract.MCPProposal{Server: server.Name, Identity: server.Fingerprint(), EnvironmentDigest: environmentDigest, ToolName: name, Arguments: raw, Effect: server.ConnectPolicy, Stdio: server.Transport == config.MCPTransportStdio, Summary: summary}, true, nil
 	}
 	if name == SearchTool {
 		var arguments searchArguments
 		if decode(raw, &arguments) != nil || strings.TrimSpace(arguments.Query) == "" || arguments.Limit < 0 || arguments.Limit > manager.configuration.MaxSearchResults {
-			return tools.MCPProposal{}, true, errors.New("invalid search arguments")
+			return contract.MCPProposal{}, true, errors.New("invalid search arguments")
 		}
 		if arguments.Server != "" {
 			if _, found := manager.servers[arguments.Server]; !found {
-				return tools.MCPProposal{}, true, errors.New("unknown MCP server")
+				return contract.MCPProposal{}, true, errors.New("unknown MCP server")
 			}
 		}
 		identity, err := canonicaljson.Fingerprint("cairn-mcp-search-v1", manager.catalogIdentities())
-		return tools.MCPProposal{Identity: identity, ToolName: name, Arguments: raw, Effect: "allow", Local: true, Summary: "search audited MCP tool catalog"}, true, err
+		return contract.MCPProposal{Identity: identity, ToolName: name, Arguments: raw, Effect: "allow", Local: true, Summary: "search audited MCP tool catalog"}, true, err
 	}
 	serverName, definition, found := manager.lookup(name)
 	if !found || !manager.active[name] {
 		if strings.HasPrefix(name, "mcp__") {
-			return tools.MCPProposal{}, true, errors.New("MCP tool is not loaded")
+			return contract.MCPProposal{}, true, errors.New("MCP tool is not loaded")
 		}
-		return tools.MCPProposal{}, false, nil
+		return contract.MCPProposal{}, false, nil
 	}
 	if !json.Valid(raw) || len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '{' {
-		return tools.MCPProposal{}, true, errors.New("MCP arguments must be an object")
+		return contract.MCPProposal{}, true, errors.New("MCP arguments must be an object")
 	}
 	server := manager.servers[serverName]
 	environmentDigest, err := manager.environmentDigest(server)
 	if err != nil {
-		return tools.MCPProposal{}, true, err
+		return contract.MCPProposal{}, true, err
 	}
 	if live := manager.sessions[server.Name]; live != nil && live.credentialDigest() != environmentDigest {
-		return tools.MCPProposal{}, true, errors.New("MCP live session identity changed; discover the server again")
+		return contract.MCPProposal{}, true, errors.New("MCP live session identity changed; discover the server again")
 	}
 	effect := server.CallPolicy
 	connectRequired := manager.sessions[server.Name] == nil
 	if connectRequired {
 		effect = combinedPolicy(effect, server.ConnectPolicy)
 	}
-	return tools.MCPProposal{Server: server.Name, Identity: server.Fingerprint(), EnvironmentDigest: environmentDigest, CatalogDigest: manager.catalogs[serverName].Digest, ToolDigest: definition.Digest, ToolName: name, Arguments: raw, Effect: effect, Stdio: server.Transport == config.MCPTransportStdio, Summary: "调用 MCP " + strconv.Quote(server.Name) + "/" + strconv.Quote(definition.OriginalName)}, true, nil
+	return contract.MCPProposal{Server: server.Name, Identity: server.Fingerprint(), EnvironmentDigest: environmentDigest, CatalogDigest: manager.catalogs[serverName].Digest, ToolDigest: definition.Digest, ToolName: name, Arguments: raw, Effect: effect, Stdio: server.Transport == config.MCPTransportStdio, Summary: "调用 MCP " + strconv.Quote(server.Name) + "/" + strconv.Quote(definition.OriginalName)}, true, nil
 }
 
 // environmentDigest 绑定实际环境或 HTTP 认证摘要；只读取本机事实，恢复审批检测身份漂移。

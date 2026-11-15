@@ -1,6 +1,6 @@
-// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
-// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
-// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [INPUT]: 真实 Core、静态工具与显式 MCP 能力包装。
+// [OUTPUT]: 验证声明、审批和不确定结果的恢复边界。
+// [POS]: 高级能力组合回归，不向 Core 注入协议实现。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package agent
@@ -41,15 +41,15 @@ func (catalog *loopMCPCatalog) Specs() []ports.ToolSpec {
 func (catalog *loopMCPCatalog) DeclarationFingerprint(name string) (string, bool) {
 	return "schema-v1", catalog.active && name == testMCPName
 }
-func (catalog *loopMCPCatalog) Proposal(name string, raw json.RawMessage) (tools.MCPProposal, bool, error) {
+func (catalog *loopMCPCatalog) Proposal(name string, raw json.RawMessage) (contract.MCPProposal, bool, error) {
 	if name != "mcp_discover" && (name != testMCPName || !catalog.active) {
-		return tools.MCPProposal{}, true, errors.New("unavailable")
+		return contract.MCPProposal{}, true, errors.New("unavailable")
 	}
 	effect := "allow"
 	if catalog.ask {
 		effect = "ask"
 	}
-	return tools.MCPProposal{Server: "docs", Identity: "identity", ToolName: name, Effect: effect, Arguments: raw, Summary: "MCP test operation"}, true, nil
+	return contract.MCPProposal{Server: "docs", Identity: "identity", ToolName: name, Effect: effect, Arguments: raw, Summary: "MCP test operation"}, true, nil
 }
 func (catalog *loopMCPCatalog) Execute(_ context.Context, name string, _ json.RawMessage) contract.ToolResult {
 	catalog.calls = append(catalog.calls, name)
@@ -74,13 +74,17 @@ func (catalog *loopMCPCatalog) ModelResult(_ string, result contract.ToolResult)
 func (catalog *loopMCPCatalog) Close() error { return nil }
 
 // newMCPLoopTest 装配真实 Loop、Policy 和 Journal，只有外部传输使用窄端口替身。
-func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provider, journal *memory.Journal) *Loop {
+func newMCPLoopTest(t *testing.T, catalog mcp.Catalog, provider ports.Provider, journal *memory.Journal) *Loop {
 	t.Helper()
 	workspace, err := tools.NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := tools.NewRegistryWithMCP(catalog)
+	static, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := mcp.NewRegistry(static, catalog)
 	if err != nil {
 		t.Fatal(err)
 	}

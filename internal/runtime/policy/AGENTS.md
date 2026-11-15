@@ -13,7 +13,7 @@ dangerous_command_test.go: 验证危险 argv 的拒绝与允许边界。
 gate.go: Gate 先求固定工具或能力规则，再统一应用 hooks。审批绑定仍由各规则生成。
 gate_delegation_test.go: 验证委派沿用执行策略与参数边界。
 gate_test.go: 验证补丁、命令和验证计划的独立审批身份。
-mcp_test.go: 保留 MCP 身份漂移与宿主执行策略回归。规则由能力包提供。
+mcp_test.go: 保留 MCP 身份漂移与宿主执行策略回归。提议只消费共享合同。
 safety_event.go: SafetyLog 有界记录安全判定。不改变授权结果。
 safety_event_test.go: 验证安全日志容量、快照与统计。
 

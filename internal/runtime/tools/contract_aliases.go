@@ -1,3 +1,8 @@
+// [INPUT]: 共享参数、补丁与会话合同。
+// [OUTPUT]: 保留基础工具既有合同符号。
+// [POS]: 工具参数兼容入口，只承载基础工具数据。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // contract_aliases.go 保留工具层既有符号名：纯数据合同已归位 internal/contract，
 // 这里以类型别名和函数转发维持 tools 包的对外表面，避免扩大无关改动面。
 // Author: fxbin
@@ -44,9 +49,6 @@ func ValidateSessionRequest(request SessionRequest) error {
 func IsSensitiveInput(content string) bool {
 	return contract.IsSensitiveSessionInput(content)
 }
-
-// MCPProposal 是不产生连接或调用的本地授权投影，合同归位 contract 层。
-type MCPProposal = contract.MCPProposal
 
 // PatchArgumentsError 描述可由模型重建调用形状修复的参数错误。
 type PatchArgumentsError = contract.PatchArgumentsError

@@ -1,6 +1,6 @@
-// [INPUT]: 有效配置、能力对象与基础设施构造器。
-// [OUTPUT]: 提供统一 Boot 和配对的技能、授权实例。
-// [POS]: 唯一组合根。执行与恢复共用资源所有权。
+// [INPUT]: 有效配置、固定注册表与显式能力包装。
+// [OUTPUT]: 提供统一 Boot 和同实例的授权、历史及资源所有权。
+// [POS]: 唯一组合根；基础工具不持有高级目录。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
@@ -25,6 +25,15 @@ import (
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
+// assembledToolRegistry 是应用装配、子工具收窄与冻结身份共用的工具视图。
+// Core 仅消费其中的 ToolRegistry，能力端口由组合根显式选取。
+type assembledToolRegistry interface {
+	agent.ToolRegistry
+	Names() []string
+	Fingerprint() (string, error)
+	RequiresRequestScope() bool
+}
+
 // Boot 是唯一的 Composition Root：按确定顺序装配一次执行所需的全部组件，
 // 并持有 Journal 与工作区锁的唯一资源所有权。Run、Resume 与 Reconcile 共享
 // 同一条装配路径；不引入容器、注册表或生命周期事件总线。
@@ -38,10 +47,10 @@ type Boot struct {
 	Artifacts     *artifact.Store
 	Provider      ports.Provider
 	ProviderCard  contract.ProviderCapabilityCard
-	Registry      *tools.Registry
+	Registry      assembledToolRegistry
 	// Skill 由唯一组合根创建，同一实例同时服务执行、历史接纳和上下文。
 	Skill        *skills.Skill
-	MCP          tools.MCPCatalog
+	MCP          mcpcapability.Catalog
 	Gate         *policy.Gate
 	Verification []agent.VerificationCommand
 	Loop         agent.Loop
@@ -136,7 +145,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		return nil, bootAssemblyFailure(boot, err)
 	}
 	boot.Artifacts = artifacts
-	var catalog tools.MCPCatalog
+	var catalog mcpcapability.Catalog
 	if cfg.MCP != nil && hasEnabledMCP(cfg.MCP) {
 		authDirectory, err := mcpclient.CredentialDirectory()
 		if err != nil {
@@ -162,9 +171,18 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 	if skillTool != nil {
 		available = append(available, skillTool)
 	}
-	registry, err := tools.NewRegistryWithMCP(catalog, available...)
+	static, err := tools.NewRegistry(available...)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
+	}
+	var registry assembledToolRegistry = static
+	var mcpRegistry *mcpcapability.Registry
+	if catalog != nil {
+		mcpRegistry, err = mcpcapability.NewRegistry(static, catalog)
+		if err != nil {
+			return nil, bootAssemblyFailure(boot, err)
+		}
+		registry = mcpRegistry
 	}
 	boot.Registry = registry
 	patchTool := tools.ApplyPatch{Workspace: workspace}
@@ -174,7 +192,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 	}
 	boot.Gate = gate
 	if catalog != nil {
-		operationPolicy, err := mcpcapability.NewOperationPolicy(registry, gate, cfg.Policy.Exec)
+		operationPolicy, err := mcpcapability.NewOperationPolicy(mcpRegistry, gate, cfg.Policy.Exec)
 		if err != nil {
 			return nil, bootAssemblyFailure(boot, err)
 		}
@@ -188,7 +206,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 	boot.Verification = verification
 	var authorizer agent.Authorizer = gate
 	if catalog != nil {
-		scopedAuthorizer, err := mcpcapability.NewRequestAuthorizer(gate, registry)
+		scopedAuthorizer, err := mcpcapability.NewRequestAuthorizer(gate, mcpRegistry)
 		if err != nil {
 			return nil, bootAssemblyFailure(boot, err)
 		}
