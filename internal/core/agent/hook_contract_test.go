@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Core动作合同与真实钩子能力的纯求值。
+// [OUTPUT]: 提供匹配、JSON和动作顺序等价回归。
+// [POS]: 跨实现合同测试；生产Core不依赖能力。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // hook_contract_test.go 锁定 Core 侧钩子动作分发的求值顺序，并与运行时实现做等价对照。
 // Author: fxbin
 package agent
@@ -6,7 +11,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/fxbin/cairn/internal/runtime/hooks"
+	"github.com/fxbin/cairn/internal/capabilities/hooks"
 )
 
 // TestHookActionsForPreservesRuleOrder 锁定只拼接启用且命中规则的动作，顺序与规则声明一致。

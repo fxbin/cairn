@@ -202,7 +202,7 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 
 // configuredLoop 将应用配置与基础设施依赖装配为一个 Agent Loop。
 // artifacts 为具体存储；nil 时不注入端口。minimal 只注入基础工具方法集，
-// 其余组合沿用可选能力识别，保持既有执行与恢复语义。
+// 其余组合沿用可选能力识别；Hooks 由 Boot 注入已校验的冻结投影。
 func configuredLoop(journal ports.Journal, provider ports.Provider, registry assembledToolRegistry, gate agent.Authorizer, verification []agent.VerificationCommand, artifacts *artifact.Store, configuration config.Config, onEvent EventSink, bootWorkspace tools.Workspace, skillTool *skills.Skill) agent.Loop {
 	var registryPort agent.ToolRegistry = registry
 	if configuration.Preset == config.PresetMinimal {
@@ -228,7 +228,6 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry ass
 		Verification:                   verification, VerificationWorkspace: bootWorkspace.ObservationView(configuration.Verification.VolatilePaths),
 		Artifacts: artifactPort, OnEvent: agent.EventSink(onEvent),
 		SystemPrompt: configuration.Prompt.Resolved,
-		Hooks:        agentHookRules(hooksFromConfig(configuration.Hooks)),
 		// 异步委派语义由配置显式开启；停靠与交付所需的子完成信号登记表由
 		// service.Run 在装配委派回调时注入。
 		AsyncDelegateEnabled: configuration.Tools.DelegateAsync,

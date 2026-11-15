@@ -1,3 +1,8 @@
+// [INPUT]: 依赖配置、能力纯校验与只读环境探测。
+// [OUTPUT]: 提供Doctor报告与分面的就绪事实。
+// [POS]: 只读诊断共用钩子准入口径，不创建执行资源。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
 package app
 
@@ -125,6 +130,9 @@ type TelemetryHealth struct {
 // 新工作区没有 journal 时不报错，journal_state=absent 并继续给出 ready 判定。
 func (service Service) Doctor(ctx context.Context, workspacePath, stateDir string, configuration config.Config) (DoctorReport, error) {
 	validationErr := config.Validate(configuration)
+	if validationErr == nil {
+		validationErr = validateHookConfiguration(configuration)
+	}
 	// 语义观测接线判定与运行路径同源：doctor 报告的状态与运行时是否导出
 	// 永远一致，不会出现"doctor 说可用、运行却不导出"的分叉。
 	semanticPlan := telemetrySemanticPlan(configuration)

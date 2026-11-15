@@ -1,3 +1,8 @@
+// [INPUT]: 依赖规则求值与显式事件夹具。
+// [OUTPUT]: 提供拒绝优先、不得放宽与动作过滤回归。
+// [POS]: 能力规则测试；保留原全部安全断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package hooks
 
 import "testing"

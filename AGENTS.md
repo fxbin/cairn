@@ -28,7 +28,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
 | `internal/adapters/` | Journal、Memory 的 SQLite 存储及 OpenAI-compatible 协议适配 |
 | `internal/runtime/tools/`、`internal/runtime/policy/`、`internal/runtime/artifact/`、`internal/runtime/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
-| `internal/runtime/hooks/` | 工作区钩子：仅收紧 Policy，动作仅 `queue_followup`；不得授予权限 |
+| `internal/capabilities/hooks/` | 工作区钩子校验、匹配与收紧候选；Runtime强制不得放宽，动作仅 `queue_followup` |
 | `internal/runtime/memory/`、`internal/runtime/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
 | `internal/runtime/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
@@ -42,6 +42,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - Skill 是本地 `SKILL.md` 内容包，由配置显式启用并通过固定 `skill` 工具按需读取；正文激活只来自成功的 Journal 回执，压缩与冷恢复保留历史正文，资源读取绑定来源与摘要。技能的 `allowed-tools`、hooks、模型或子代理声明不能授予权限或执行代码；脚本仍走工作区、Policy、审批和沙箱边界。管理命令只写原生目录，跨客户端共享目录仅作显式只读来源。
 - 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
 - 语义观测是可选旁路：只消费已成功持久化的 Journal 事件，导出失败不改变 Run 终态、Replay、Resume 或对账语义；默认关闭，关闭时零网络导出，并尊重 `OTEL_SDK_DISABLED` 全局关闭开关与 `OTEL_TRACES_EXPORTER`/`OTEL_METRICS_EXPORTER` 的 none 语义。指标维度只允许受限枚举，run 标识只作关联属性；Prompt、密钥、原始工具结果、验证证据与绝对路径不得进入观测内容。接线判定只有一处，运行路径与 doctor 共用；doctor 分面报告记忆侧、语义面与 SDK 面，如实区分 disabled、sdk_disabled、no_signal、instrumented 与 config_error，不宣称采集成功。
+- Hooks 在执行及工作流入口先做纯校验，配置错误不得先创建运行状态。应急终止不激活 Hooks，保留既有收尾路径。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - 沙箱写范围有界：host 后端默认拒绝，只放行临时目录根与工作区本身，写入工作区父目录在真实目录下因此被拒。临时写范围不得被任何拒绝规则覆盖——那会连带拒绝编译器缓存与验证子进程的临时写；粗粒度地拒绝工作区父目录子树曾打断端到端流程，不采用。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
@@ -99,6 +100,7 @@ go test ./test/e2e -tags=e2e -count=1
 - [事件持久化](internal/adapters/journal/sqlite/AGENTS.md)。
 - [共享合同](internal/contract/AGENTS.md)、[Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
 - [工具基础设施](internal/runtime/tools/AGENTS.md)、[基础授权](internal/runtime/policy/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
+- [钩子能力](internal/capabilities/hooks/AGENTS.md)。
 - [MCP 能力](internal/capabilities/mcp/AGENTS.md)、[技能能力](internal/capabilities/skills/AGENTS.md) 与 [工作流能力](internal/capabilities/workflow/AGENTS.md)。
 - [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md)。
 - 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。

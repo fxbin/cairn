@@ -1,6 +1,6 @@
 // [INPUT]: 基础工具提议、补丁规划与显式能力规则。
 // [OUTPUT]: 提供统一策略求值及独立验证审批。
-// [POS]: Runtime 基础门禁不依赖 MCP 合同，hooks 始终最后收紧。
+// [POS]: Runtime 基础门禁不持有可选规则实现，通用约束始终最后收紧。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package policy 决定提议的副作用是允许、拒绝还是需要一次人工审批。
@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/runtime/hooks"
 )
 
 // Effect 是策略判定的三种可能结果。
@@ -43,7 +42,7 @@ type PatchAuthority interface {
 }
 
 // ToolRule 只判定显式能力的本地提议；不得执行工具或扩大固定工具权限。
-// claimed 为 false 时继续后续规则，最终候选仍经 Gate 的统一 hooks 收紧。
+// claimed 为 false 时继续后续规则，最终候选仍经 Gate 的通用约束收紧。
 type ToolRule interface {
 	DecideTool(string, json.RawMessage) (contract.AuthorizationDecision, bool, error)
 }
@@ -55,13 +54,8 @@ type Gate struct {
 	ProtectedPaths []string
 	Patch          PatchAuthority
 	ToolRules      []ToolRule
-	// Hooks 是可选工作区钩子；只能收紧决策，不能放宽 Policy。
-	Hooks []hooks.Rule
-}
-
-// SetHooks 覆盖钩子规则列表（装配层调用）。
-func (gate *Gate) SetHooks(rules []hooks.Rule) {
-	gate.Hooks = append([]hooks.Rule(nil), rules...)
+	// ToolConstraints 仅收紧候选效果，不能改写审批身份或执行绑定。
+	ToolConstraints []ToolConstraint
 }
 
 // Decision 是可持久化的策略结论及其审批绑定信息。
@@ -81,7 +75,7 @@ func New(writeMode, execMode string, protected []string, patch PatchAuthority) (
 }
 
 // Decide 对模型提议的固定工具调用作出策略判定，并为审批生成绑定指纹。
-// 先算基础策略，再套钩子收紧（钩子不得放宽 Policy）。
+// 先求基础策略，再应用通用约束；约束不能放宽 Policy。
 // 注意：ProtectedPaths 是防篡改边界而非保密边界——只读工具对受保护路径恒
 // allow 是有意设计（敏感文件已由工作区层 sensitivePath/ignore 拦截），模型
 // 需要读取（如受写保护的配置文件）才能完成任务的场景不因此被阻断。
@@ -90,42 +84,10 @@ func (gate *Gate) Decide(toolName string, raw json.RawMessage) (Decision, error)
 	if err != nil {
 		return decision, err
 	}
-	return gate.applyToolHooks(toolName, decision), nil
+	return gate.applyToolConstraints(toolName, decision)
 }
 
-// applyToolHooks 用 pre_tool 钩子收紧决策；Deny/Ask 不可被钩子放宽。
-func (gate *Gate) applyToolHooks(toolName string, decision Decision) Decision {
-	if len(gate.Hooks) == 0 {
-		return decision
-	}
-	policyAllows := decision.Effect == Allow
-	hookDecision := hooks.EvaluateTool(gate.Hooks, toolName, policyAllows)
-	switch hookDecision.Effect {
-	case hooks.EffectDeny:
-		decision.Effect = Deny
-		decision.RuleID = "hook_deny"
-		decision.Summary = firstNonEmptyHook(hookDecision.Reason, "denied by workspace hook")
-	case hooks.EffectAsk:
-		if decision.Effect == Allow {
-			decision.Effect = Ask
-			decision.RuleID = "hook_ask"
-			decision.Summary = firstNonEmptyHook(hookDecision.Reason, "approval required by workspace hook")
-		}
-	}
-	return decision
-}
-
-// firstNonEmptyHook 选择首个非空钩子说明，保留统一拒绝文案。
-func firstNonEmptyHook(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-// decideBase 是未叠加钩子的原始策略判定。
+// decideBase 是应用通用约束前的基础策略判定。
 func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, error) {
 	// 显式拒绝标记下拒绝写/执行（向后兼容：无标记视为信任）。委派会经子
 	// run 产生受控副作用，未信任工作区同样拒绝。

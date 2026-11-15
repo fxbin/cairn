@@ -1,3 +1,8 @@
+// [INPUT]: 依赖标准字符串与路径模式匹配。
+// [OUTPUT]: 提供钩子规则、校验、匹配与受限动作。
+// [POS]: 能力的纯规则合同；不执行脚本、工具或运行。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // hooks.go 定义工作区钩子：事件匹配与有限效果。
 // 钩子不得授予权限；tool 类效果只收紧 Policy，动作类仅 queue_followup。
 // Author: fxbin
@@ -174,6 +179,7 @@ func ActionsFor(rules []Rule, event Event, toolName string) []Action {
 	return out
 }
 
+// firstNonEmpty 保留首个非空说明，不扩大钩子效果。
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

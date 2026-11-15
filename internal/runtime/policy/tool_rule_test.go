@@ -8,8 +8,8 @@ package policy
 import (
 	"encoding/json"
 	"errors"
+	"github.com/fxbin/cairn/internal/capabilities/hooks"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/runtime/hooks"
 	"testing"
 )
 
@@ -29,13 +29,13 @@ func (rule *toolRuleProbe) DecideTool(string, json.RawMessage) (contract.Authori
 func TestToolRulesKeepBuiltinPriorityAndHooks(t *testing.T) {
 	rule := &toolRuleProbe{claimed: true, effect: Allow}
 	gate := &Gate{ToolRules: []ToolRule{rule}}
-	gate.SetHooks([]hooks.Rule{{ID: "restrict", Event: hooks.EventPreTool, ToolMatch: "*", Effect: hooks.EffectDeny, Enabled: true}})
+	setHookConstraint(t, gate, []hooks.Rule{{ID: "restrict", Event: hooks.EventPreTool, ToolMatch: "*", Effect: hooks.EffectDeny, Enabled: true}})
 	decision, err := gate.Decide("read_file", json.RawMessage(`{}`))
 	if err != nil || rule.calls != 0 || decision.Effect != Deny || decision.RuleID != "hook_deny" {
 		t.Fatalf("builtin decision=%+v calls=%d err=%v", decision, rule.calls, err)
 	}
 	for _, hook := range []hooks.Effect{hooks.EffectAsk, hooks.EffectDeny, hooks.EffectAllow} {
-		gate.SetHooks([]hooks.Rule{{ID: "restrict", Event: hooks.EventPreTool, ToolMatch: "*", Effect: hook, Enabled: true}})
+		setHookConstraint(t, gate, []hooks.Rule{{ID: "restrict", Event: hooks.EventPreTool, ToolMatch: "*", Effect: hook, Enabled: true}})
 		decision, err = gate.Decide("extension", json.RawMessage(`{}`))
 		if err != nil || string(decision.Effect) != string(hook) || decision.Fingerprint != "bound" || decision.ExecutionBinding != "identity" {
 			t.Fatalf("candidate=%+v err=%v", decision, err)
@@ -71,5 +71,18 @@ func TestToolRulesRejectNilAndErrors(t *testing.T) {
 	gate.ToolRules = []ToolRule{claimed}
 	if _, err = gate.Decide("extension", json.RawMessage(`{}`)); !errors.Is(err, sentinel) {
 		t.Fatal("rule error lost")
+	}
+}
+
+// setHookConstraint 为旧安全断言显式装配真实能力约束。
+func setHookConstraint(t *testing.T, gate *Gate, rules []hooks.Rule) {
+	t.Helper()
+	constraint, err := hooks.NewConstraint(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.ToolConstraints = nil
+	if constraint != nil {
+		gate.ToolConstraints = []ToolConstraint{constraint}
 	}
 }

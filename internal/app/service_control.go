@@ -1,3 +1,8 @@
+// [INPUT]: 依赖历史Journal、人工判定与Boot。
+// [OUTPUT]: 提供恢复、对账与应急终止用例。
+// [POS]: 执行恢复先校验钩子；应急终止不激活钩子。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 控制面用例：Resume / Reconcile / Abort。
 // Author: fxbin
 package app
@@ -20,6 +25,9 @@ import (
 // 最小组合先校验能力冲突，不在校验前创建可选观测资源。
 func (service Service) Resume(ctx context.Context, options ResumeOptions) (outcome RunResult, err error) {
 	if err := validateMinimalRunConfiguration(options.Config); err != nil {
+		return RunResult{}, err
+	}
+	if err := validateHookConfiguration(options.Config); err != nil {
 		return RunResult{}, err
 	}
 	// 语义观测导出是可选旁路：导出失败不改变恢复语义与运行终态。
@@ -110,6 +118,11 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) (outcome RunResult, err error) {
 	if err := validateMinimalRunConfiguration(options.Config); err != nil {
 		return RunResult{}, err
+	}
+	if options.Verdict != "abort_run" {
+		if err := validateHookConfiguration(options.Config); err != nil {
+			return RunResult{}, err
+		}
 	}
 	// 语义观测导出是可选旁路：导出失败不改变对账判定与运行终态。
 	runtime, _, telemetryErr := newTelemetryRuntime(options.Config)

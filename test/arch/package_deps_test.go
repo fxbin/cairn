@@ -73,7 +73,6 @@ var packageLayers = map[string]packageLayer{
 	"internal/runtime/userdir":      layerRuntime,
 	"internal/runtime/lock":         layerRuntime,
 	"internal/runtime/credential":   layerRuntime,
-	"internal/runtime/hooks":        layerRuntime,
 	"internal/runtime/artifact":     layerRuntime,
 	"internal/runtime/memory":       layerRuntime,
 	"internal/runtime/provider":     layerRuntime,
@@ -89,6 +88,7 @@ var packageLayers = map[string]packageLayer{
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
 	"internal/capabilities/skills":                  layerCapability,
+	"internal/capabilities/hooks":                   layerCapability,
 	"internal/capabilities/mcp":                     layerCapability,
 	"internal/capabilities/workflow":                layerCapability,
 	"internal/capabilities/workflow/storage/sqlite": layerCapability,
