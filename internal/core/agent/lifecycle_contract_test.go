@@ -36,6 +36,7 @@ type lifecycleRegistryFixture struct {
 	basicOnlyRegistry
 	owner    *lifecycleFixture
 	releases int
+	binding  string
 	failed   bool
 }
 
@@ -67,7 +68,7 @@ type lifecycleAuthorityFixture struct{ Authorizer }
 
 func (gate lifecycleAuthorityFixture) Decide(name string, raw json.RawMessage) (AuthorizationDecision, error) {
 	if name == fixtureReleaseTool {
-		return AuthorizationDecision{Effect: AuthorizationAllow, Fingerprint: stableFingerprint("fixture-release")}, nil
+		return AuthorizationDecision{Effect: AuthorizationAllow, Fingerprint: stableFingerprint("fixture-release"), ExecutionBinding: "release-binding"}, nil
 	}
 	return gate.Authorizer.Decide(name, raw)
 }
@@ -117,7 +118,7 @@ func TestGenericLifecycleKeepsAuditAndReconciliation(t *testing.T) {
 			if replayErr != nil {
 				t.Fatal(replayErr)
 			}
-			if registry.calls != 1 || registry.releases != 1 || loop.startedOperations != 1 {
+			if registry.calls != 1 || registry.releases != 1 || loop.startedOperations != 1 || registry.binding != "release-binding" {
 				t.Fatalf("business=%d releases=%d budget=%d err=%v", registry.calls, registry.releases, loop.startedOperations, err)
 			}
 			if failed {
@@ -247,4 +248,12 @@ func TestLifecycleModelCannotInvokeRelease(t *testing.T) {
 	if len(catalog.calls) != 0 || countEvent(events, domain.EventOperationStarted) != 0 {
 		t.Fatal("hidden model call executed")
 	}
+}
+
+// ExecuteWithBinding 记录真实释放执行接收的授权绑定，基础调用仍复用同一工具实例。
+func (registry *lifecycleRegistryFixture) ExecuteWithBinding(ctx context.Context, name string, raw json.RawMessage, binding string) contract.ToolResult {
+	if name == fixtureReleaseTool {
+		registry.binding = binding
+	}
+	return registry.Execute(ctx, name, raw)
 }

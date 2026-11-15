@@ -80,6 +80,9 @@ func (loop *Loop) resourcesNeedQuiescence() bool {
 
 // quiesceResources 按装配顺序释放资源；预算耗尽后仍执行清理，失败保持 started 待对账。
 func (loop *Loop) quiesceResources(ctx context.Context, projection *domain.RunProjection, input RunInput) error {
+	if err := loop.validateToolExecution(); err != nil {
+		return err
+	}
 	if err := loop.validateLifecycleParticipants(); err != nil {
 		return err
 	}
@@ -132,7 +135,7 @@ func (loop *Loop) quiesceParticipant(ctx context.Context, projection *domain.Run
 	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(payload)}); err != nil {
 		return err
 	}
-	result := loop.Tools.Execute(context.WithoutCancel(ctx), call.Name, call.Arguments)
+	result := loop.executeToolWithBinding(context.WithoutCancel(ctx), call.Name, call.Arguments, decision.ExecutionBinding)
 	resultContext, resultCancel := loop.commitContext(ctx)
 	defer resultCancel()
 	if !result.OK {
