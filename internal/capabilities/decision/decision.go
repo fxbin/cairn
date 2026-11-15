@@ -1,6 +1,6 @@
 // [INPUT]: 依赖canonicaljson与标准库的摘要和时间能力。
 // [OUTPUT]: 提供受限决策记录、指纹、保留期与状态迁移合同。
-// [POS]: 决策能力的纯合同，不授予权限或决定运行。
+// [POS]: 类型与快照复制共用纯合同，不授予权限或决定运行。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package decision 定义项目级决策账本的合同与状态机：一条决策记录必须能
@@ -148,6 +148,17 @@ type DecisionRecord struct {
 	CreatedAt     time.Time     `json:"created_at"`
 	ReviewedAt    *time.Time    `json:"reviewed_at,omitempty"`
 	ExpiresAt     time.Time     `json:"expires_at"`
+}
+
+// cloneDecisionRecord 复制记录的可变引用，隔离账本与调用方的快照所有权。
+func cloneDecisionRecord(record DecisionRecord) DecisionRecord {
+	cloned := record
+	cloned.Evidence = append([]EvidenceRef(nil), record.Evidence...)
+	if record.ReviewedAt != nil {
+		reviewedAt := *record.ReviewedAt
+		cloned.ReviewedAt = &reviewedAt
+	}
+	return cloned
 }
 
 // AuditEntry 是决策状态迁移的脱敏审计行；Reason 只取封闭词表。
