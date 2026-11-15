@@ -7,7 +7,8 @@ App 显式选择可写或只读打开，并关闭连接。
 ## 成员
 
 AGENTS.md: 模块职责地图与成员入口。
-store.go: 单连接 SQLite、迁移校验、CAS 追加与只读完整性检查。
+store.go: 单连接 SQLite、迁移校验、CAS 追加与只读完整性检查。扫描取消不代表内容损坏。
+scan_cancellation_test.go: 真实查询取消与截止时间回归。字段损坏仍失败关闭。
 store_test.go: 持久化、只读不建库、链头冲突与损坏拒绝回归。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md
