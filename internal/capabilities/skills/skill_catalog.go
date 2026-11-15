@@ -1,3 +1,8 @@
+// [INPUT]: 显式技能根、受限视图和共享内容合同。
+// [OUTPUT]: 发现并加载绑定来源与摘要的正文和资源。
+// [POS]: 技能目录事实与只读资源校验。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package skills 为 SKILL.md 技能提供有界目录和不可授予权限的内容快照。
 // Author: fxbin
 package skills

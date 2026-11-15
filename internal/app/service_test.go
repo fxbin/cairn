@@ -1,3 +1,8 @@
+// [INPUT]: 应用装配、内存替身与隔离工作区。
+// [OUTPUT]: 验证运行准入、配置和恢复失败边界。
+// [POS]: Service 的跨模块合同回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (

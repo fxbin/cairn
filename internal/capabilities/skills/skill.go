@@ -1,3 +1,8 @@
+// [INPUT]: 发现目录及已持久化的技能成功回执。
+// [OUTPUT]: 提供静态工具、激活状态与精简模型视图。
+// [POS]: 同一实例服务执行、History 和 Context。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package skills 静态提供技能加载工具；读取说明不执行脚本或改变 Policy。
 // Author: fxbin
 package skills

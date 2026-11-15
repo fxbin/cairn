@@ -1,3 +1,8 @@
+// [INPUT]: 配置、用户根与 Runtime 文件和锁原语。
+// [OUTPUT]: 提供技能用例和能力所需的显式依赖。
+// [POS]: 应用层 Skill 组合入口，保留原生写范围。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package app 装配技能目录与显式本机管理用例，不连接 Provider 或执行技能代码。
 // Author: fxbin
 package app

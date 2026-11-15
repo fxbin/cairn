@@ -1,3 +1,8 @@
+// [INPUT]: 技能草稿与版本摘要实现。
+// [OUTPUT]: 验证正文、路径、摘要和版本比较边界。
+// [POS]: 技能编辑合同回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // skill_edit_test 锁定 SKL-05 技能草稿校验、摘要与版本比较。
 //
 // Author: fxbin

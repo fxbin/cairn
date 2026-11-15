@@ -1,6 +1,6 @@
-// [INPUT]: 显式 MCPCatalog 与固定工具注册表。
-// [OUTPUT]: 提供目录、身份和请求作用域需求投影。
-// [POS]: Runtime 的 MCP 桥接，不隐式创建客户端。
+// [INPUT]: MCP 显式目录及固定工具的模型视图端口。
+// [OUTPUT]: 投影外部目录，并优先分派已注册工具视图。
+// [POS]: Runtime 目录桥接，不识别技能具体类型。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package tools 为显式 MCP 客户端提供目录与持久化结果的窄边界。

@@ -1,3 +1,8 @@
+// [INPUT]: 固定工具与通用投影元数据端口。
+// [OUTPUT]: 提供静态注册、指纹和模型视图分派。
+// [POS]: Runtime 工具入口，不绑定技能名称。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 管理 Cairn 的内置工具与显式装配的 MCP 客户端目录。
 package tools
 
@@ -129,12 +134,12 @@ func (registry *Registry) ReadonlyToolNames() map[string]bool {
 }
 
 // RequiresResultObserver 为内核提供安全元数据，不暴露具体能力类型。
-// 固定基础工具为空行为，保留能力命名空间要求观察器；普通未知工具仍返回结构化失败。
+// 固定工具通过元数据要求观察器；MCP 保留命名空间保持失败关闭。
 func (registry *Registry) RequiresResultObserver(name string) bool {
 	if tool, exists := registry.tools[name]; exists {
 		projection, ok := tool.(ResultProjectionTool)
 		return ok && projection.RequiresResultObserver()
 	}
-	return name == "mcp_discover" || name == "tool_search" || name == "skill" ||
+	return name == "mcp_discover" || name == "tool_search" ||
 		name == contract.MCPQuiesceTool || strings.HasPrefix(name, "mcp__")
 }

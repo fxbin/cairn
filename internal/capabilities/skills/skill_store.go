@@ -1,3 +1,8 @@
+// [INPUT]: 原生目标根、文件视图工厂和目录锁。
+// [OUTPUT]: 锁内安装、移除和启停技能包。
+// [POS]: 技能发布事务，不写共享只读来源。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package skills 以显式本地操作安装和管理技能包，不执行安装钩子。
 // Author: fxbin
 package skills

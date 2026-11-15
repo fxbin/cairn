@@ -1,3 +1,8 @@
+// [INPUT]: 真实 Loop、Policy 和同一技能能力实例。
+// [OUTPUT]: 验证历史正文、冷恢复与观察器前置门禁。
+// [POS]: Core 对技能装配与权限合同的回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -164,4 +169,26 @@ func requestContainsSkill(request ports.ModelRequest, marker string) bool {
 		}
 	}
 	return false
+}
+
+// TestRegisteredSkillRequiresHistoryBeforeProvider 缺失历史观察器时，注册技能不得请求模型或激活正文。
+func TestRegisteredSkillRequiresHistoryBeforeProvider(t *testing.T) {
+	journal := memory.New()
+	runID := domain.NewRunID()
+	appendInitialRunningEvents(t, journal, runID, "review with skill")
+	provider := &scriptedProvider{scripts: [][]ports.ModelEvent{
+		{{Kind: ports.ToolCallEvent, ToolCall: &ports.ToolCall{ID: "load", Name: "skill", Arguments: json.RawMessage(`{"name":"review-code"}`)}}, {Kind: ports.Done}},
+	}}
+	loop, skillTool := newSkillLoopTest(t, t.TempDir(), skillLoopSource(t), provider, journal, &countingExecTool{})
+	loop.ResultObservers = nil
+	if _, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "review with skill", WorkspaceHash: "workspace"}); err == nil {
+		t.Fatal("registered skill accepted missing history observer")
+	}
+	events, err := journal.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.requests) != 0 || countEvent(events, domain.EventOperationStarted) != 0 || len(skillTool.ActiveSkills()) != 0 {
+		t.Fatal("skill execution began before history wiring was accepted")
+	}
 }

@@ -1,3 +1,8 @@
+// [INPUT]: 受限文件读取、清单与本域同步原语。
+// [OUTPUT]: 校验并发布声明式内容包。
+// [POS]: Runtime 内容发布，不依赖技能实现。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 提供声明式内容包安装：清单只声明资源，安装不执行脚本或钩子。
 // Author: fxbin
 package tools

@@ -1,3 +1,8 @@
+// [INPUT]: Boot、技能文件与显式配置夹具。
+// [OUTPUT]: 验证工具、History 与 Context 使用同一对象。
+// [POS]: 应用层技能装配回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (

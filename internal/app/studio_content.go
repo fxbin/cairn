@@ -1,3 +1,8 @@
+// [INPUT]: 内容存储与技能应用用例。
+// [OUTPUT]: 向 Studio 暴露稳定的数据和操作形状。
+// [POS]: 界面到内容能力的应用门面。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // studio_content.go 为 CLI 提供内容包、提示模板、技能摘要与工作区哈希的
 // Application 门面；Studio 层不得直接依赖 internal/tools。
 // Author: fxbin

@@ -1,3 +1,8 @@
+// [INPUT]: 临时内容包与目录同步实现。
+// [OUTPUT]: 验证嵌套发布和目录项预算。
+// [POS]: 内容包同步回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package tools
 
 import (

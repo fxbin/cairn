@@ -1,3 +1,8 @@
+// [INPUT]: 普通静态工具与目录视图替身。
+// [OUTPUT]: 验证模型视图优先级与原始证据保留。
+// [POS]: 通用工具投影分派回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package tools
 
 import (

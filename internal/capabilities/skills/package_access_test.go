@@ -1,3 +1,8 @@
+// [INPUT]: 显式视图和锁的替身及真实受限工具。
+// [OUTPUT]: 验证缺依赖关闭、来源与锁释放边界。
+// [POS]: Skill 文件和装配端口回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package skills
 
 import (

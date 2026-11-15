@@ -1,3 +1,8 @@
+// [INPUT]: 隔离目录、受限视图与技能工具。
+// [OUTPUT]: 验证包遍历、来源、资源和激活边界。
+// [POS]: 技能完整运行与原生管理回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package skills
 
 import (

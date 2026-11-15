@@ -1,3 +1,8 @@
+// [INPUT]: 显式草稿正文和相对资源路径。
+// [OUTPUT]: 校验编辑输入并计算可比较的内容版本。
+// [POS]: 技能编辑合同，与运行历史来源摘要分离。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // skill_edit.go 实现 SKL-05 技能编辑、校验与版本比较：仅在合法原生路径
 // 编辑，校验结构与相对资源引用，内容摘要可比较；旧运行继续使用历史正文。
 // Author: fxbin

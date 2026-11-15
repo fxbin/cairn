@@ -1,3 +1,8 @@
+// [INPUT]: 共享合同、受限文件视图和目录锁。
+// [OUTPUT]: 定义工厂与锁端口，并取得规范物理根。
+// [POS]: Skill 能力基础设施边界，不依赖 Runtime。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package skills 声明技能包读取与管理所需的最小基础设施能力。
 // Author: fxbin
 package skills

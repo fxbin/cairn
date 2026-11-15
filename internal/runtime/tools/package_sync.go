@@ -1,3 +1,8 @@
+// [INPUT]: 临时包根句柄与有界目录遍历。
+// [OUTPUT]: 由深到浅同步目录并保留错误证据。
+// [POS]: 内容包发布的持久化边界。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 保持内容包发布前的根句柄同步与有界目录遍历。
 // Author: fxbin
 package tools
