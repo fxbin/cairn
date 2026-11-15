@@ -1,4 +1,4 @@
-// [INPUT]: 真实 SQLite 行和可取消查询上下文。
+// [INPUT]: 真实SQLite行、观察取消替身与可取消查询。
 // [OUTPUT]: 验证扫描取消保留错误身份，损坏内容仍失败关闭。
 // [POS]: Journal 读取取消与持久化完整性的边界回归。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
@@ -30,7 +30,7 @@ func journalScanFixture(t *testing.T) (*Journal, domain.RunID) {
 	return journal, runID
 }
 
-// TestScanJournalEventPreservesCancellation 在 Next 后、Scan 前取消真实查询，固定触发原竞态窗口。
+// TestScanJournalEventPreservesCancellation 在 Next 后取消真实查询，验证已观察取消的身份。
 func TestScanJournalEventPreservesCancellation(t *testing.T) {
 	journal, runID := journalScanFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,6 +74,40 @@ func TestLoadStillRejectsMalformedPersistedRow(t *testing.T) {
 			events, err := journal.Load(context.Background(), runID)
 			if !errors.Is(err, ErrPersistedContent) || len(events) != 0 {
 				t.Fatalf("malformed row accepted: events=%v err=%v", events, err)
+			}
+		})
+	}
+}
+
+// observedCancellationRow 固定 Err 已可见、Scan 仍能读取缓冲行的标准库窗口。
+type observedCancellationRow struct {
+	cancellation error
+	scanned      bool
+}
+
+// Err 返回已经观察到的取消身份。
+func (row *observedCancellationRow) Err() error {
+	return row.cancellation
+}
+
+// Scan 保留关闭发生前仍可成功解码的时间字段，并记录是否触碰当前行。
+func (row *observedCancellationRow) Scan(dest ...any) error {
+	row.scanned = true
+	*dest[5].(*string) = time.Unix(1_700_000_000, 0).UTC().Format(time.RFC3339Nano)
+	return nil
+}
+
+// TestScanJournalEventHonorsObservedCancellation 锁定观察取消后不再扫描缓冲行。
+func TestScanJournalEventHonorsObservedCancellation(t *testing.T) {
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(want.Error(), func(t *testing.T) {
+			row := &observedCancellationRow{cancellation: errors.Join(errors.New("observed cancellation"), want)}
+			_, err := scanJournalEvent(row)
+			if !errors.Is(err, want) || errors.Is(err, ErrPersistedContent) {
+				t.Fatalf("observed cancellation lost identity: %v", err)
+			}
+			if row.scanned {
+				t.Fatal("observed cancellation still scanned a buffered row")
 			}
 		})
 	}
