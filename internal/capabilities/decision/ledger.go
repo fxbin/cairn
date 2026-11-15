@@ -377,10 +377,11 @@ func (ledger *Ledger) Query(query Query) ([]DecisionRecord, error) {
 	if len(matched) > limit {
 		matched = matched[:limit]
 	}
-	for index := range matched {
-		matched[index] = cloneDecisionRecord(matched[index])
+	snapshots := make([]DecisionRecord, len(matched))
+	for index, record := range matched {
+		snapshots[index] = cloneDecisionRecord(record)
 	}
-	return matched, nil
+	return snapshots, nil
 }
 
 // Audits 返回指定记录的脱敏审计历史，按发生顺序排列。

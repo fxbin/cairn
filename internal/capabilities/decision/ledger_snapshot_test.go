@@ -121,3 +121,31 @@ func TestProjectContextReturnsIndependentReferences(t *testing.T) {
 		t.Fatal("context projection rewrote its input record")
 	}
 }
+
+// TestLedgerQueryLimitHidesBackingRecords 锁定返回条数上限也约束可重切片的可见记录。
+func TestLedgerQueryLimitHidesBackingRecords(t *testing.T) {
+	ledger := NewLedger()
+	for index := 0; index < 2; index++ {
+		proposal := fixtureProposal()
+		proposal.Decision += strings.Repeat("补充", index)
+		record, err := ledger.Propose(proposal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ledger.Confirm(record.ID, fixtureApproval()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := ledger.Query(Query{Project: fixtureProject, Principal: fixtureOwner, Limit: 1, Now: fixtureApproval().At.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(records))
+	}
+	for _, hidden := range records[len(records):cap(records)] {
+		if hidden.ID != "" || len(hidden.Evidence) != 0 || hidden.ReviewedAt != nil {
+			t.Fatal("query exposed a backing record beyond its limit")
+		}
+	}
+}
