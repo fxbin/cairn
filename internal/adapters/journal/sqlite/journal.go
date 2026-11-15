@@ -1,3 +1,8 @@
+// [INPUT]: SQLite 行、领域事件和调用方取消上下文。
+// [OUTPUT]: 提供追加、读取及完整性检查的 Journal 实现。
+// [POS]: 持久化适配器，取消错误与损坏证据保持分离。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package sqlite persists Cairn's append-only event journal in SQLite.
 package sqlite
 
@@ -269,37 +274,52 @@ func (journal *Journal) Append(ctx context.Context, expectedSeq uint64, draft do
 
 // Load 按序号升序读取指定运行的全部持久化事件。
 func (journal *Journal) Load(ctx context.Context, runID domain.RunID) ([]domain.Event, error) {
-	rows, err := journal.db.QueryContext(ctx, `SELECT schema_version, event_id, run_id, workspace_hash, seq, occurred_at, event_type,
-		turn_id, operation_id, attempt_id, payload_json, prev_hash, event_hash
-		FROM events WHERE run_id = ? ORDER BY seq ASC`, runID)
+	rows, err := journal.db.QueryContext(ctx, loadRunEventsSQL, runID)
 	if err != nil {
 		return nil, fmt.Errorf("load journal events: %w", err)
 	}
 	defer rows.Close()
 	var events []domain.Event
 	for rows.Next() {
-		var event domain.Event
-		var occurredAt string
-		var turnID, operationID, attemptID sql.NullString
-		var payload []byte
-		if err := rows.Scan(&event.SchemaVersion, &event.EventID, &event.RunID, &event.WorkspaceHash, &event.Seq, &occurredAt, &event.Type, &turnID, &operationID, &attemptID, &payload, &event.PrevHash, &event.EventHash); err != nil {
-			return nil, fmt.Errorf("%w: scan journal event: %v", ErrPersistedContent, err)
-		}
-		var err error
-		event.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		event, err := scanJournalEvent(rows)
 		if err != nil {
-			return nil, fmt.Errorf("%w: parse journal event time: %v", ErrPersistedContent, err)
+			return nil, err
 		}
-		event.Payload = append(event.Payload[:0], payload...)
-		event.TurnID = optionalTurnID(turnID)
-		event.OperationID = optionalOperationID(operationID)
-		event.AttemptID = optionalAttemptID(attemptID)
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate journal events: %w", err)
 	}
 	return events, nil
+}
+
+// loadRunEventsSQL 固定事件读取字段和顺序，历史解码与运行读取共用同一选择。
+const loadRunEventsSQL = `SELECT schema_version, event_id, run_id, workspace_hash, seq, occurred_at, event_type,
+		turn_id, operation_id, attempt_id, payload_json, prev_hash, event_hash
+		FROM events WHERE run_id = ? ORDER BY seq ASC`
+
+// scanJournalEvent 从当前 SQLite 行解码事件；本函数不推进游标或重放事件。
+func scanJournalEvent(rows *sql.Rows) (domain.Event, error) {
+	var event domain.Event
+	var occurredAt string
+	var turnID, operationID, attemptID sql.NullString
+	var payload []byte
+	if err := rows.Scan(&event.SchemaVersion, &event.EventID, &event.RunID, &event.WorkspaceHash, &event.Seq, &occurredAt, &event.Type, &turnID, &operationID, &attemptID, &payload, &event.PrevHash, &event.EventHash); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return domain.Event{}, fmt.Errorf("scan journal event: %w", err)
+		}
+		return domain.Event{}, fmt.Errorf("%w: scan journal event: %v", ErrPersistedContent, err)
+	}
+	var err error
+	event.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+	if err != nil {
+		return domain.Event{}, fmt.Errorf("%w: parse journal event time: %v", ErrPersistedContent, err)
+	}
+	event.Payload = append(event.Payload[:0], payload...)
+	event.TurnID = optionalTurnID(turnID)
+	event.OperationID = optionalOperationID(operationID)
+	event.AttemptID = optionalAttemptID(attemptID)
+	return event, nil
 }
 
 // NonTerminalRuns 重放工作区对应的运行，并筛出可恢复的非终态投影。

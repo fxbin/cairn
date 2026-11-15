@@ -96,6 +96,7 @@ go test ./test/e2e -tags=e2e -count=1
 
 ## 分层文档入口
 
+- [事件持久化](internal/adapters/journal/sqlite/AGENTS.md)。
 - [共享合同](internal/contract/AGENTS.md)、[Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
 - [工具基础设施](internal/runtime/tools/AGENTS.md)、[基础授权](internal/runtime/policy/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
 - [MCP 能力](internal/capabilities/mcp/AGENTS.md) 与 [技能能力](internal/capabilities/skills/AGENTS.md)。
