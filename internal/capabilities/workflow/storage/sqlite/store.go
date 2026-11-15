@@ -1,7 +1,7 @@
 /*
  * [INPUT]: 依赖父能力的事件合同与 SQLite 驱动。
  * [OUTPUT]: 提供Store、只读打开、CAS 追加与完整性检查。
- * [POS]: 能力的持久化叶子；App 显式创建并关闭连接。
+ * [POS]: 能力的持久化叶子；取消保留原因，字段损坏失败关闭。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
 // Package sqlite 持久化 Cairn 工作流执行链的追加式事件存储。
@@ -201,32 +201,48 @@ func (store *Store) Append(ctx context.Context, expectedSeq uint64, draft workfl
 
 // Load 按序号升序读取指定工作流的全部持久化事件。
 func (store *Store) Load(ctx context.Context, id workflow.ID) ([]workflow.Event, error) {
-	rows, err := store.db.QueryContext(ctx, `SELECT schema_version, event_id, workflow_id, workspace_hash, seq, occurred_at, event_type,
-		payload_json, prev_hash, event_hash
-		FROM workflow_events WHERE workflow_id = ? ORDER BY seq ASC`, id)
+	rows, err := store.db.QueryContext(ctx, loadWorkflowEventsSQL, id)
 	if err != nil {
 		return nil, fmt.Errorf("load workflow events: %w", err)
 	}
 	defer rows.Close()
 	var events []workflow.Event
 	for rows.Next() {
-		var event workflow.Event
-		var occurredAt string
-		var payload []byte
-		if err := rows.Scan(&event.SchemaVersion, &event.EventID, &event.WorkflowID, &event.WorkspaceHash, &event.Seq, &occurredAt, &event.Type, &payload, &event.PrevHash, &event.EventHash); err != nil {
-			return nil, fmt.Errorf("%w: scan workflow event: %v", ErrPersistedContent, err)
-		}
-		event.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+		event, err := scanWorkflowEvent(rows)
 		if err != nil {
-			return nil, fmt.Errorf("%w: parse workflow event time: %v", ErrPersistedContent, err)
+			return nil, err
 		}
-		event.Payload = append(event.Payload[:0], payload...)
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate workflow events: %w", err)
 	}
 	return events, nil
+}
+
+// loadWorkflowEventsSQL 保持工作流行解码的固定字段顺序。
+const loadWorkflowEventsSQL = `SELECT schema_version, event_id, workflow_id, workspace_hash, seq, occurred_at, event_type,
+		payload_json, prev_hash, event_hash
+		FROM workflow_events WHERE workflow_id = ? ORDER BY seq ASC`
+
+// scanWorkflowEvent 解码当前行；仅字段转换与时间解码失败代表内容损坏。
+func scanWorkflowEvent(rows *sql.Rows) (workflow.Event, error) {
+	var event workflow.Event
+	var occurredAt string
+	var payload []byte
+	if err := rows.Scan(&event.SchemaVersion, &event.EventID, &event.WorkflowID, &event.WorkspaceHash, &event.Seq, &occurredAt, &event.Type, &payload, &event.PrevHash, &event.EventHash); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return workflow.Event{}, fmt.Errorf("scan workflow event: %w", err)
+		}
+		return workflow.Event{}, fmt.Errorf("%w: scan workflow event: %v", ErrPersistedContent, err)
+	}
+	var err error
+	event.OccurredAt, err = time.Parse(time.RFC3339Nano, occurredAt)
+	if err != nil {
+		return workflow.Event{}, fmt.Errorf("%w: parse workflow event time: %v", ErrPersistedContent, err)
+	}
+	event.Payload = append(event.Payload[:0], payload...)
+	return event, nil
 }
 
 // WorkflowIDs 返回工作区内全部工作流标识，按创建顺序（首事件序号）排列。
