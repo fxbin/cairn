@@ -1,7 +1,12 @@
+// [INPUT]: 显式草稿正文和相对资源路径。
+// [OUTPUT]: 校验编辑输入并计算可比较的内容版本。
+// [POS]: 技能编辑合同，与运行历史来源摘要分离。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // skill_edit.go 实现 SKL-05 技能编辑、校验与版本比较：仅在合法原生路径
 // 编辑，校验结构与相对资源引用，内容摘要可比较；旧运行继续使用历史正文。
 // Author: fxbin
-package tools
+package skills
 
 import (
 	"crypto/sha256"
@@ -24,6 +29,12 @@ type SkillVersion struct {
 	Name      string `json:"name"`
 	BodySHA   string `json:"body_sha256"`
 	SourceSHA string `json:"source_sha256"`
+}
+
+// ContentDigest 为技能草稿计算稳定正文摘要，不依赖运行时工具实现。
+func ContentDigest(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ValidateSkillDraft 校验名称、结构与相对资源引用；拒绝越界路径。

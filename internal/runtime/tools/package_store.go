@@ -1,3 +1,8 @@
+// [INPUT]: 受限文件读取、清单与本域同步原语。
+// [OUTPUT]: 校验并发布声明式内容包。
+// [POS]: Runtime 内容发布，不依赖技能实现。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package tools 提供声明式内容包安装：清单只声明资源，安装不执行脚本或钩子。
 // Author: fxbin
 package tools
@@ -232,7 +237,7 @@ func (store PackageStore) InstallPackage(source string) (entry PackageEntry, err
 	if err := writePackageResource(target, PackageManifestFile, manifestRaw); err != nil {
 		return PackageEntry{}, err
 	}
-	if err := syncSkillTree(target); err != nil {
+	if err := syncPackageTree(target); err != nil {
 		return PackageEntry{}, errors.New("sync package failed")
 	}
 	if _, statErr := root.Lstat(manifest.Name); !errors.Is(statErr, os.ErrNotExist) {
@@ -241,7 +246,7 @@ func (store PackageStore) InstallPackage(source string) (entry PackageEntry, err
 	if err := root.Rename(temporaryName, manifest.Name); err != nil {
 		return PackageEntry{}, errors.New("publish package failed")
 	}
-	if err := syncSkillStore(root); err != nil {
+	if err := syncPackageDirectory(root, "."); err != nil {
 		return PackageEntry{}, err
 	}
 	return PackageEntry{Name: manifest.Name, Version: manifest.Package, SHA256: packageDigest(manifestRaw), Files: len(manifest.Resources)}, nil

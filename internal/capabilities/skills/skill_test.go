@@ -1,4 +1,9 @@
-package tools
+// [INPUT]: 隔离目录、受限视图与技能工具。
+// [OUTPUT]: 验证包遍历、来源、资源和激活边界。
+// [POS]: 技能完整运行与原生管理回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+package skills
 
 import (
 	"context"
@@ -10,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/fxbin/cairn/internal/runtime/lock"
+	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
 // skillDirectoryReadRecorder 记录真实遍历发给目录句柄的读取额度，防止回调上限掩盖无限读取。
@@ -126,7 +134,7 @@ func TestSkillCatalogPrecedenceAndDisabledShadow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, skillDisabledFile), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := DiscoverSkills([]SkillRoot{{Path: project, Scope: "workspace"}, {Path: user, Scope: "user"}})
+	catalog, err := discoverTestSkills([]SkillRoot{{Path: project, Scope: "workspace"}, {Path: user, Scope: "user"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +165,10 @@ func TestSkillInstallLifecycleAndNeverExecute(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "scripts", "danger.sh"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	store := SkillStore{Root: targetRoot}
+	store, err := NewSkillStore(targetRoot, testPackageView, testStoreLock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if name, err := store.Install(source); err != nil || name != "review-code" {
 		t.Fatalf("%s %v", name, err)
 	}
@@ -180,7 +191,7 @@ func TestSkillInstallLifecycleAndNeverExecute(t *testing.T) {
 		if err := store.SetEnabled("review-code", enabled); err != nil {
 			t.Fatal(err)
 		}
-		catalog, err := DiscoverSkills([]SkillRoot{{Path: targetRoot, Scope: "workspace"}})
+		catalog, err := discoverTestSkills([]SkillRoot{{Path: targetRoot, Scope: "workspace"}})
 		if err != nil || catalog.Entries()[0].Disabled == enabled {
 			t.Fatalf("enabled=%t err=%v", enabled, err)
 		}
@@ -231,12 +242,12 @@ func TestSkillActivationReceiptsManualVisibilityAndDrift(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "guide.txt"), []byte("original guide"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := DiscoverSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
+	catalog, err := discoverTestSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	skill := &Skill{Catalog: catalog}
-	registry, err := NewRegistry(skill)
+	registry, err := tools.NewRegistry(skill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,23 +255,23 @@ func TestSkillActivationReceiptsManualVisibilityAndDrift(t *testing.T) {
 	if strings.Contains(skill.Spec().Description, "review-code") || skill.Execute(context.Background(), load).OK {
 		t.Fatal("manual skill automatically visible")
 	}
-	registry.PrepareSkills("检查以下引用资料： $review-code")
+	skill.PrepareSkills("检查以下引用资料： $review-code")
 	if skill.Execute(context.Background(), load).OK {
 		t.Fatal("incidental mention in task material unlocked manual skill")
 	}
-	registry.PrepareSkills("/skill:review-code inspect this change")
+	skill.PrepareSkills("/skill:review-code inspect this change")
 	if strings.Contains(skill.Spec().Description, "ORIGINAL_SKILL_BODY") {
 		t.Fatal("skill body leaked into discovery")
 	}
 	resource := json.RawMessage(`{"name":"review-code","file":"guide.txt"}`)
 	result := skill.Execute(context.Background(), load)
-	if !result.OK || len(registry.ActiveSkills()) != 0 {
+	if !result.OK || len(skill.ActiveSkills()) != 0 {
 		t.Fatalf("execution activated without receipt: %#v", result)
 	}
 	if skill.Execute(context.Background(), resource).Code != "skill_not_loaded" {
 		t.Fatal("unactivated resource readable")
 	}
-	if err := registry.AcceptSkillResult("skill", result); err != nil {
+	if err := skill.AcceptSkillResult("skill", result); err != nil {
 		t.Fatal(err)
 	}
 	if !skill.Execute(context.Background(), resource).OK {
@@ -298,7 +309,7 @@ func TestSkillMetadataRedactedBeforeModelDeclaration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "SKILL.md"), []byte("---\nname: review-code\ndescription: key "+secret+"\n---\nbody"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := DiscoverSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
+	catalog, err := discoverTestSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +318,7 @@ func TestSkillMetadataRedactedBeforeModelDeclaration(t *testing.T) {
 		t.Fatal("tool declaration leaked secret")
 	}
 	writeTestSkill(t, root, secret, "", "body")
-	catalog, err = DiscoverSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
+	catalog, err = discoverTestSkills([]SkillRoot{{Path: root, Scope: "workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,11 +335,11 @@ func TestSkillSharedUserLinksStayInsideCanonicalPackage(t *testing.T) {
 	if err := os.Symlink(directory, filepath.Join(shared, "review-code")); err != nil {
 		t.Skip(err)
 	}
-	strict, err := DiscoverSkills([]SkillRoot{{Path: shared, Scope: "workspace-shared"}})
+	strict, err := discoverTestSkills([]SkillRoot{{Path: shared, Scope: "workspace-shared"}})
 	if err != nil || len(strict.Entries()) != 0 {
 		t.Fatal("workspace link escaped its declared root")
 	}
-	catalog, err := DiscoverSkills([]SkillRoot{{Path: shared, Scope: "user-shared", AllowLinkedPackages: true}})
+	catalog, err := discoverTestSkills([]SkillRoot{{Path: shared, Scope: "user-shared", AllowLinkedPackages: true}})
 	if err != nil || len(catalog.Entries()) != 1 {
 		t.Fatalf("user linked package unavailable: %v", err)
 	}
@@ -345,4 +356,19 @@ func TestSkillSharedUserLinksStayInsideCanonicalPackage(t *testing.T) {
 	if _, err := catalog.Load("review-code"); err == nil {
 		t.Fatal("package root link granted access to external resource")
 	}
+}
+
+// testPackageView 将真实工作区路径与读取边界用于能力包回归，不替代安全校验。
+func testPackageView(root string) (PackageView, error) {
+	return tools.NewWorkspace(root, nil, SkillMaxResourceBytes, SkillMaxFiles, SkillMaxPackageBytes)
+}
+
+// testStoreLock 复用真实原生锁，保持安装并发与释放语义。
+func testStoreLock(path string) (StoreLock, error) {
+	return lock.Acquire(path)
+}
+
+// discoverTestSkills 仅补充显式基础设施接线，保留原有发现测试的输入和断言。
+func discoverTestSkills(roots []SkillRoot) (*SkillCatalog, error) {
+	return DiscoverSkills(roots, testPackageView)
 }

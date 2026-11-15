@@ -1,6 +1,6 @@
-// [INPUT]: 显式 MCPCatalog 与固定工具注册表。
-// [OUTPUT]: 提供目录、身份和请求作用域需求投影。
-// [POS]: Runtime 的 MCP 桥接，不隐式创建客户端。
+// [INPUT]: MCP 显式目录及固定工具的模型视图端口。
+// [OUTPUT]: 投影外部目录，并优先分派已注册工具视图。
+// [POS]: Runtime 目录桥接，不识别技能具体类型。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package tools 为显式 MCP 客户端提供目录与持久化结果的窄边界。
@@ -85,8 +85,10 @@ func (registry *Registry) AcceptMCPResult(name string, result contract.ToolResul
 
 // ModelResult 从目录证据生成精简的模型视图，Journal 仍保留完整发现快照。
 func (registry *Registry) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
-	if name == "skill" {
-		return skillModelResult(result)
+	if tool, exists := registry.tools[name]; exists {
+		if projection, ok := tool.(ModelResultTool); ok {
+			return projection.ModelResult(result)
+		}
 	}
 	if registry.mcp == nil {
 		return result

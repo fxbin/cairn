@@ -22,7 +22,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退 |
 | `internal/core/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |
 | `internal/capabilities/mcp/` | MCP 成功目录回放与请求声明约束；协议传输仍由显式适配器提供 |
-| `internal/capabilities/skills/` | 技能成功回执回放与历史正文投影；内容不授予权限 |
+| `internal/capabilities/skills/` | 技能发现、运行、资源、编辑与原生目录发布；历史投影共用同一能力实例，内容不授予权限 |
 | `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果和失败分类的只读合同投影 |
 | `internal/config/`、`internal/runtime/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
 | `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
@@ -98,5 +98,5 @@ go test ./test/e2e -tags=e2e -count=1
 
 - [Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
 - [工具基础设施](internal/runtime/tools/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
-- [MCP 能力](internal/capabilities/mcp/AGENTS.md) 与 [技能历史投影](internal/capabilities/skills/AGENTS.md)。
+- [MCP 能力](internal/capabilities/mcp/AGENTS.md) 与 [技能能力](internal/capabilities/skills/AGENTS.md)。
 - 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。
