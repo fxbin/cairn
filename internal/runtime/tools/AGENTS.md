@@ -1,7 +1,7 @@
 # internal/runtime/tools/
 > L2 | Parent: ../../../AGENTS.md
 
-工具执行与工作区基础设施。固定注册表接纳显式目录。
+工具执行与工作区基础设施。固定注册表只保存显式工具。
 路径、进程、沙箱和原子发布保留基础边界。能力正文不能改变权限。
 
 ## 成员
@@ -30,7 +30,6 @@ git_read.go: GitStatus 与 GitDiff 只执行只读子命令。路径通过工作
 git_read_test.go: 回归 GitStatus 与 GitDiff 只执行只读子命令。路径通过工作区解析。
 git_write.go: GitCommit 只暂存明确路径并创建提交。不接受任意 Git 命令。
 lsp_diagnostics.go: LspDiagnostics 选择已有语言诊断器。缺少诊断器时失败关闭。
-mcp_catalog.go: MCPCatalog 桥接显式目录。声明授权执行及释放参与者的必需端口。
 mcp_process_unix.go: MCPProcess 复用受控双向 stdio 和沙箱。关闭须确认进程与容器退出。
 memory_recall.go: MemoryRecall 只读召回宿主工作区证据。不开放写入或自由文本检索。
 memory_recall_bind.go: MemoryExplainFunc 由 Boot 按实例注入。不保存进程级默认回调。
@@ -55,7 +54,7 @@ project_instructions_test.go: 回归 ProjectInstructions 从受限来源读取�
 read_only.go: ListFiles、ReadFile 和 SearchText 共享工作区边界。输出保持有界。
 read_only_test.go: 回归 ListFiles、ReadFile 和 SearchText 共享工作区边界。输出保持有界。
 registry.go: Registry 静态注册工具并消费通用模型视图。能力投影由工具元数据声明。
-registry_model_result_test.go: 验证注册工具的通用模型视图与 MCP fallback。
+registry_model_result_test.go: 验证注册工具的模型视图认领与原始回执。
 registry_test.go: 回归 Registry 静态注册工具并消费通用模型视图。能力投影由工具元数据声明。
 review_regression_test.go: 验证内容发布、模板读取和禁用标记的路径边界。
 run_tests.go: RunTests 通过受控执行器运行测试 argv。结果汇总保持结构化。

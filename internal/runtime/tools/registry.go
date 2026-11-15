@@ -1,16 +1,15 @@
 // [INPUT]: 固定工具与通用投影元数据端口。
-// [OUTPUT]: 提供静态注册、指纹和模型视图分派。
-// [POS]: Runtime 工具入口，不绑定技能名称。
+// [OUTPUT]: 提供静态规格、指纹和显式认领的模型视图。
+// [POS]: Runtime 基础注册表，不识别高级协议名称。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
-// Package tools 管理 Cairn 的内置工具与显式装配的 MCP 客户端目录。
+// Package tools 保存 Cairn 的固定工具与通用结果投影元数据。
 package tools
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	"github.com/fxbin/cairn/internal/contract"
@@ -42,7 +41,6 @@ type ModelResultTool interface {
 type Registry struct {
 	tools map[string]Tool
 	order []string
-	mcp   MCPCatalog
 }
 
 // NewRegistry 校验工具名称唯一性后创建不可动态扩展的注册表。
@@ -71,9 +69,6 @@ func (registry *Registry) Specs() []ports.ToolSpec {
 	for _, name := range registry.order {
 		specs = append(specs, registry.tools[name].Spec())
 	}
-	if registry.mcp != nil {
-		specs = append(specs, registry.mcp.Specs()...)
-	}
 	return specs
 }
 
@@ -89,15 +84,10 @@ func (registry *Registry) Fingerprint() (string, error) {
 	}{Tools: registry.Specs()})
 }
 
-// Names 按注册顺序返回模型可见工具名（含 MCP 目录），供子代理收窄与诊断投影使用。
+// Names 按注册顺序返回模型可见固定工具名，供子代理收窄与诊断投影使用。
 func (registry *Registry) Names() []string {
 	names := make([]string, 0, len(registry.order))
 	names = append(names, registry.order...)
-	if registry.mcp != nil {
-		for _, spec := range registry.mcp.Specs() {
-			names = append(names, spec.Name)
-		}
-	}
 	return names
 }
 
@@ -105,9 +95,6 @@ func (registry *Registry) Names() []string {
 func (registry *Registry) Execute(ctx context.Context, name string, arguments json.RawMessage) contract.ToolResult {
 	tool, exists := registry.tools[name]
 	if !exists {
-		if registry.mcp != nil {
-			return registry.mcp.Execute(ctx, name, arguments)
-		}
 		return contract.ToolFailure("unknown_tool", "unknown tool: "+name)
 	}
 	return tool.Execute(ctx, arguments)
@@ -117,9 +104,6 @@ func (registry *Registry) Execute(ctx context.Context, name string, arguments js
 func (registry *Registry) SideEffect(name string) contract.SideEffectClass {
 	tool, exists := registry.tools[name]
 	if !exists {
-		if registry.mcp != nil {
-			return registry.mcp.SideEffect(name)
-		}
 		return contract.SideEffectNone
 	}
 	if classified, ok := tool.(SideEffectTool); ok {
@@ -134,12 +118,30 @@ func (registry *Registry) ReadonlyToolNames() map[string]bool {
 }
 
 // RequiresResultObserver 为内核提供安全元数据，不暴露具体能力类型。
-// 固定工具通过元数据要求观察器；MCP 保留命名空间保持失败关闭。
+// 只有已注册工具能声明投影要求，未知成功结果由 Core 拒绝。
 func (registry *Registry) RequiresResultObserver(name string) bool {
 	if tool, exists := registry.tools[name]; exists {
 		projection, ok := tool.(ResultProjectionTool)
 		return ok && projection.RequiresResultObserver()
 	}
-	return name == "mcp_discover" || name == "tool_search" ||
-		name == contract.MCPQuiesceTool || strings.HasPrefix(name, "mcp__")
+	return false
 }
+
+// ProjectModelResult 只认领已注册且提供模型视图的工具，不用结果差异猜测投影所有权。
+func (registry *Registry) ProjectModelResult(name string, result contract.ToolResult) (contract.ToolResult, bool) {
+	if tool, exists := registry.tools[name]; exists {
+		if projection, ok := tool.(ModelResultTool); ok {
+			return projection.ModelResult(result), true
+		}
+	}
+	return result, false
+}
+
+// ModelResult 将已注册工具回执投影给模型，未认领结果保持原样。
+func (registry *Registry) ModelResult(name string, result contract.ToolResult) contract.ToolResult {
+	projected, _ := registry.ProjectModelResult(name, result)
+	return projected
+}
+
+// RequiresRequestScope 表明固定工具注册表不需要外部声明作用域。
+func (registry *Registry) RequiresRequestScope() bool { return false }

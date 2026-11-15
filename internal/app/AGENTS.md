@@ -7,7 +7,7 @@ Boot 统一资源所有权。能力按有效配置显式装配。
 ## 成员
 
 AGENTS.md: 模块职责地图与文件成员入口。
-boot.go: Boot 统一资源所有权。显式装配工具、技能与 MCP 授权规则。
+boot.go: Boot 统一资源所有权。显式组合固定工具、技能与 MCP 包装。
 boot_test.go: 回归 Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
 boot_tool_callbacks.go: Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
 boot_tool_callbacks_test.go: 回归 Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
@@ -24,7 +24,7 @@ diagnostics_test.go: 回归 Doctor 只读投影配置、Provider 和沙箱就绪
 frozen_registry.go: FrozenToolRegistryFingerprint 与 Boot 共用工具选择。冻结身份不创建运行。
 latest_subagent_regression_test.go: 验证子运行恢复、取消及身份与预算准入。
 mcp.go: MCPStatus 只读配置与凭据存在性。登录和退出由显式用例触发。
-mcp_test.go: 验证 MCP 惰性装配与请求作用域配对。
+mcp_test.go: 验证 MCP 惰性装配、请求作用域及缺失来源拒绝。
 memory.go: Memory 用例捕获结构化结果并生成召回证据。记忆不决定运行终态。
 memory_consolidate.go: MemoryConsolidation 校验来源后写入派生记忆。撤销关系保留审计证据。
 memory_consolidate_test.go: 回归 MemoryConsolidation 校验来源后写入派生记忆。撤销关系保留审计证据。

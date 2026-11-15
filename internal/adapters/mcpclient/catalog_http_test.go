@@ -1,6 +1,6 @@
-// [INPUT]: 本地 HTTP MCP 夹具、真实 Loop 与内存 Journal。
-// [OUTPUT]: 验证 schema、身份漂移与成功回执冷恢复。
-// [POS]: MCP 适配器的协议与持久化联检入口。
+// [INPUT]: 本地 HTTP 服务、能力组合与真实 Journal。
+// [OUTPUT]: 验证协议、声明漂移及冷恢复安全合同。
+// [POS]: MCP 适配器端到端回归，保留原安全断言。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package mcpclient
@@ -292,7 +292,11 @@ func TestSchemaSurvivesRealLoopJournalPersistenceReplayAndMCPCall(t *testing.T) 
 	server := contractHTTPServer(fixture)
 	server.Exposure, server.ConnectPolicy, server.CallPolicy = config.MCPExposureDirect, "allow", "allow"
 	manager := contractManager(t, server, 0)
-	registry, err := tools.NewRegistryWithMCP(manager)
+	static, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := capabilitymcp.NewRegistry(static, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +667,7 @@ func TestBearerProposalBindsRealTokenValueWithoutConnectingOrExposingIt(t *testi
 	if err != nil || !found || after.EnvironmentDigest == before.EnvironmentDigest || after.Identity != before.Identity {
 		t.Fatalf("同名环境变量的真实 Bearer 变化未影响审批摘要：found=%v err=%v", found, err)
 	}
-	for _, proposal := range []tools.MCPProposal{before, after} {
+	for _, proposal := range []contract.MCPProposal{before, after} {
 		encoded, err := json.Marshal(proposal)
 		if err != nil || strings.Contains(string(encoded), original) || strings.Contains(string(encoded), replacement) {
 			t.Fatal("认证审批提议泄漏实际 Bearer 值")
