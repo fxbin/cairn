@@ -1,3 +1,8 @@
+// [INPUT]: PolicySource、声明指纹和模型可见规格。
+// [OUTPUT]: 提供只收紧声明的授权器及请求快照。
+// [POS]: MCP 能力层。由同一 Gate 实例接入 Core。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件把 MCP 模型请求声明约束装饰到既有 Policy，不执行工具或连接外部服务。
 // Author: fxbin
 package mcp

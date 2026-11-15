@@ -1,3 +1,8 @@
+// [INPUT]: 有效配置、Provider、工具和存储构造器。
+// [OUTPUT]: 提供统一 Boot 装配和资源关闭。
+// [POS]: 应用层唯一组合根。运行与恢复共用。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
 package app
 

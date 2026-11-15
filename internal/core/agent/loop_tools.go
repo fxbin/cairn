@@ -1,3 +1,8 @@
+// [INPUT]: Authorizer、工具、Journal 和制品端口。
+// [OUTPUT]: 执行受审计工具链与确定性补丁计划。
+// [POS]: Loop 工具边界。双落盘后更新能力投影。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (

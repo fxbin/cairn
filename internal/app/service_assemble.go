@@ -1,3 +1,8 @@
+// [INPUT]: 配置、基础设施端口与显式能力来源。
+// [OUTPUT]: 构造工作区、存储与同一授权实例的 Loop。
+// [POS]: Boot 的装配函数，不创建第二套运行时。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 装配 helper：工作区、执行工具、Journal、制品库与 Loop。
 // Author: fxbin
 package app

@@ -1,3 +1,8 @@
+// [INPUT]: 同一 Gate 的 RequestScope 与工具安全元数据。
+// [OUTPUT]: 在实时和回放安全点重置、捕获作用域。
+// [POS]: Core 通用授权扩展边界，不识别协议名称。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package agent 在模型请求及历史回放安全点冻结宿主授权作用域。
 // Author: fxbin
 package agent

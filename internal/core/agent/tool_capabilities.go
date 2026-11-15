@@ -1,3 +1,8 @@
+// [INPUT]: 工具注册表的可选授权执行与资源端口。
+// [OUTPUT]: 传递外部授权身份并查询会话占用。
+// [POS]: Core 的 MCP 执行过渡适配，投影已独立。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // tool_capabilities.go 将可选工具能力与最小工具端口分离。
 // Author: fxbin
 package agent

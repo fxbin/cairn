@@ -1,3 +1,8 @@
+// [INPUT]: Journal、Provider、工具与授权窄端口。
+// [OUTPUT]: 推进单写入者 Loop 的运行事实。
+// [POS]: Core 主循环。可选能力由组合根注入。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package agent 包含串行、单写入者的 Agent 执行循环。
 package agent
 

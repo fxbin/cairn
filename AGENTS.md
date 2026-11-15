@@ -21,6 +21,8 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `studio/` | Wails 桌面端：`main.go` 壳与 `frontend/` 前端；`studio/backend/` 承载桌面桥接 API、事件出口与偏好存储 |
 | `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退 |
 | `internal/core/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |
+| `internal/capabilities/mcp/` | MCP 成功目录回放与请求声明约束；协议传输仍由显式适配器提供 |
+| `internal/capabilities/skills/` | 技能成功回执回放与历史正文投影；内容不授予权限 |
 | `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果和失败分类的只读合同投影 |
 | `internal/config/`、`internal/runtime/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
 | `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
@@ -30,7 +32,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/runtime/memory/`、`internal/runtime/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
 | `internal/runtime/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
-| `internal/runtime/workflow/` | 工作流步骤/调度**合同脚手架**；当前无运行时消费方，不得宣称已可调度 |
+| `internal/runtime/workflow/` | 持久化步骤与状态合同；应用层已有执行、验证和人工验收入口，Scheduler 尚未接线 |
 
 ## 不可绕过的边界
 
@@ -91,3 +93,10 @@ go test ./test/e2e -tags=e2e -count=1
 
 - 每次读取、运行、修改或影响仓库/环境前，取得系统时间并写入忽略的 `.vidt/operation-log.jsonl`；时间格式 `yyyy-MM-dd HH:mm:ss.SSS`，记录类别、非敏感范围、是否改变状态及结果。日志自身不递归记录，不写 prompt、源码、路径细节或密钥。
 - 运行时副作用的时间按 Event Journal 合同记录，不为展示格式改变 schema。时间来自系统时钟或可注入 Clock；测试使用冻结时钟，禁止伪造或回填操作时间。
+
+## 分层文档入口
+
+- [Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
+- [工具基础设施](internal/runtime/tools/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
+- [MCP 能力](internal/capabilities/mcp/AGENTS.md) 与 [技能历史投影](internal/capabilities/skills/AGENTS.md)。
+- 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。

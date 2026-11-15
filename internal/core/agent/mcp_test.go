@@ -1,3 +1,8 @@
+// [INPUT]: 真实策略、Journal 与无外部传输目录替身。
+// [OUTPUT]: 验证声明、审批、脚本与冷恢复边界。
+// [POS]: Core 对 MCP 装配合同的兼容回归。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (

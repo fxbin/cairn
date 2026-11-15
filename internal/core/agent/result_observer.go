@@ -1,3 +1,8 @@
+// [INPUT]: 持久化事件、工具元数据和显式观察器。
+// [OUTPUT]: 恢复能力投影并通知唯一结果所有者。
+// [POS]: Core 事实消费边界，不执行能力回放副作用。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package agent 按持久化事实调度显式装配的能力投影，不执行扩展回放中的外部动作。
 // Author: fxbin
 package agent

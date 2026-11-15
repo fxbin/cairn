@@ -1,3 +1,8 @@
+// [INPUT]: 本地 HTTP MCP 夹具、真实 Loop 与内存 Journal。
+// [OUTPUT]: 验证 schema、身份漂移与成功回执冷恢复。
+// [POS]: MCP 适配器的协议与持久化联检入口。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package mcpclient
 
 import (
