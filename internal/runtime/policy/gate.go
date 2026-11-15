@@ -1,3 +1,8 @@
+// [INPUT]: 基础工具提议、补丁规划与显式能力规则。
+// [OUTPUT]: 提供统一策略求值及独立验证审批。
+// [POS]: Runtime 基础门禁不依赖 MCP 合同，hooks 始终最后收紧。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package policy 决定提议的副作用是允许、拒绝还是需要一次人工审批。
 package policy
 
@@ -37,13 +42,19 @@ type PatchAuthority interface {
 	WorkspaceObservation() (string, error)
 }
 
+// ToolRule 只判定显式能力的本地提议；不得执行工具或扩大固定工具权限。
+// claimed 为 false 时继续后续规则，最终候选仍经 Gate 的统一 hooks 收紧。
+type ToolRule interface {
+	DecideTool(string, json.RawMessage) (contract.AuthorizationDecision, bool, error)
+}
+
 // Gate 保存副作用策略、受保护路径和 patch 规划器。
 type Gate struct {
 	WriteMode      Effect
 	ExecMode       Effect
 	ProtectedPaths []string
 	Patch          PatchAuthority
-	MCPRegistry    contract.MCPProposalSource
+	ToolRules      []ToolRule
 	// Hooks 是可选工作区钩子；只能收紧决策，不能放宽 Policy。
 	Hooks []hooks.Rule
 }
@@ -104,6 +115,7 @@ func (gate *Gate) applyToolHooks(toolName string, decision Decision) Decision {
 	return decision
 }
 
+// firstNonEmptyHook 选择首个非空钩子说明，保留统一拒绝文案。
 func firstNonEmptyHook(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -307,43 +319,20 @@ func (gate *Gate) decideBase(toolName string, raw json.RawMessage) (Decision, er
 			return Decision{Effect: Deny, RuleID: "invalid_session", Fingerprint: fingerprint("exec_session", raw), Summary: "unknown session action"}, nil
 		}
 	default:
-		if gate.MCPRegistry != nil {
-			proposal, found, err := gate.MCPRegistry.Proposal(toolName, raw)
-			if err != nil {
-				return Decision{Effect: Deny, RuleID: "invalid_mcp_call", Fingerprint: fingerprint(toolName, raw), Summary: "invalid or unavailable MCP tool"}, nil
+		for _, rule := range gate.ToolRules {
+			if rule == nil {
+				return Decision{}, errors.New("tool authorization rule is nil")
 			}
-			if found {
-				return gate.decideMCP(proposal)
+			decision, claimed, err := rule.DecideTool(toolName, raw)
+			if err != nil {
+				return Decision{}, err
+			}
+			if claimed {
+				return decision, nil
 			}
 		}
 		return Decision{Effect: Deny, RuleID: "unknown_tool", Fingerprint: fingerprint(toolName, raw), Summary: "tool is not allowed"}, nil
 	}
-}
-
-// decideMCP 将本地服务器权限、目录摘要和实参绑定到现有审批链；注解不授予权限。
-func (gate *Gate) decideMCP(proposal contract.MCPProposal) (Decision, error) {
-	effect, err := parseEffect(proposal.Effect, Ask)
-	if err != nil {
-		return Decision{}, err
-	}
-	if proposal.Stdio {
-		if gate.ExecMode == Deny {
-			effect = Deny
-		} else if gate.ExecMode == Ask && effect == Allow {
-			effect = Ask
-		}
-	}
-	observation := ""
-	if proposal.Stdio {
-		observation, err = gate.Patch.WorkspaceObservation()
-		if err != nil {
-			return Decision{}, errors.New("observe workspace for MCP approval failed")
-		}
-	}
-	return Decision{MCPIdentity: proposal.EnvironmentDigest, Effect: effect, RuleID: "mcp_tool", Summary: proposal.Summary, WorkspaceObservation: observation, Fingerprint: fingerprint("mcp_call", struct {
-		Proposal             contract.MCPProposal `json:"proposal"`
-		WorkspaceObservation string               `json:"workspace_observation,omitempty"`
-	}{Proposal: proposal, WorkspaceObservation: observation})}, nil
 }
 
 // invalidPatchDecision 保持规划失败的拒绝和操作指纹，同时把参数、精确匹配及
