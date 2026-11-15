@@ -7,10 +7,11 @@ Boot 统一资源所有权。能力按有效配置显式装配。
 ## 成员
 
 AGENTS.md: 模块职责地图与文件成员入口。
-boot.go: Boot 统一资源所有权。显式组合固定工具、技能与 MCP 包装。
+boot.go: Boot 统一资源所有权。钩子先校验，冻结规则分别注入约束与Core动作。
 boot_test.go: 回归 Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
 boot_tool_callbacks.go: Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
 boot_tool_callbacks_test.go: 回归 Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
+hooks_test.go: 非法钩子在资源创建前拒绝。冻结授权与动作共用同一投影。
 context_provider_test.go: 验证显式技能配置与历史正文投影装配。
 contract.go: FrozenRunConfig 绑定运行清单与历史配置。恢复沿用同一序列化合同。
 delegate_async.go: AsyncDelegateRuntime 跟踪子运行生命周期。父运行返回前回收进程内任务。

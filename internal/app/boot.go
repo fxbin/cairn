@@ -1,6 +1,6 @@
 // [INPUT]: 有效配置、固定注册表与显式能力包装。
 // [OUTPUT]: 提供统一 Boot 和同实例的授权、历史及资源所有权。
-// [POS]: 唯一组合根；基础工具不持有高级目录。
+// [POS]: 唯一组合根；钩子校验先于运行资源创建。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
@@ -12,6 +12,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
 	"github.com/fxbin/cairn/internal/adapters/mcpclient"
+	"github.com/fxbin/cairn/internal/capabilities/hooks"
 	mcpcapability "github.com/fxbin/cairn/internal/capabilities/mcp"
 	"github.com/fxbin/cairn/internal/capabilities/skills"
 	"github.com/fxbin/cairn/internal/config"
@@ -19,7 +20,6 @@ import (
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/runtime/artifact"
-	"github.com/fxbin/cairn/internal/runtime/hooks"
 	"github.com/fxbin/cairn/internal/runtime/lock"
 	"github.com/fxbin/cairn/internal/runtime/policy"
 	"github.com/fxbin/cairn/internal/runtime/tools"
@@ -99,6 +99,11 @@ func (service Service) assembleBoot(workspacePath, stateDir string, cfg config.C
 func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg config.Config, onEvent EventSink, allowSharedLock bool) (*Boot, error) {
 	if err := config.Validate(cfg); err != nil {
 		return nil, err
+	}
+	hookRules := hooksFromConfig(cfg.Hooks)
+	hookConstraint, err := hooks.NewConstraint(hookRules)
+	if err != nil {
+		return nil, fmt.Errorf("hooks: %w", err)
 	}
 	boot := &Boot{Config: cfg}
 	// 能力卡解析先于任何资源创建：未知能力失败关闭，不留孤儿 Journal 或锁。
@@ -198,7 +203,9 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		}
 		gate.ToolRules = []policy.ToolRule{operationPolicy}
 	}
-	gate.SetHooks(hooksFromConfig(cfg.Hooks))
+	if hookConstraint != nil {
+		gate.ToolConstraints = []policy.ToolConstraint{hookConstraint}
+	}
 	verification, err := verificationCommands(cfg.Verification)
 	if err != nil {
 		return nil, bootAssemblyFailure(boot, err)
@@ -213,6 +220,7 @@ func (service Service) assembleBootWithLock(workspacePath, stateDir string, cfg 
 		authorizer = scopedAuthorizer
 	}
 	boot.Loop = configuredLoop(journal, provider, registry, authorizer, verification, artifacts, cfg, onEvent, workspace, skillTool)
+	boot.Loop.Hooks = agentHookRules(hookRules)
 	boot.Loop.RequireProviderUsage = card.StreamingUsage
 	boot.Loop.AllowedProviderStopReasons = append([]string(nil), card.StopReasons...)
 	return boot, nil
@@ -406,7 +414,7 @@ func agentHookRules(rules []hooks.Rule) []agent.HookRule {
 	return converted
 }
 
-// hooksFromConfig 将 YAML 钩子配置转换为运行时规则；非法规则跳过（失败关闭装配）。
+// hooksFromConfig 只转换 YAML 钩子形状；能力构造器统一校验，不丢弃规则。
 func hooksFromConfig(configured []config.HookConfig) []hooks.Rule {
 	if len(configured) == 0 {
 		return nil
@@ -426,9 +434,6 @@ func hooksFromConfig(configured []config.HookConfig) []hooks.Rule {
 				Kind:    hooks.ActionKind(action.Kind),
 				Content: action.Content,
 			})
-		}
-		if err := hooks.ValidateRule(rule); err != nil {
-			continue
 		}
 		rules = append(rules, rule)
 	}

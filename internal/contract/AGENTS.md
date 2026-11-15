@@ -9,6 +9,7 @@
 AGENTS.md: 合同职责地图与成员入口。
 artifact_ref.go: Ref 定义内容寻址制品引用。字段顺序绑定历史事件。
 artifact_ref_test.go: 回归 Ref 定义内容寻址制品引用。字段顺序绑定历史事件。
+authorization_constraint.go: AuthorizationConstraint只表达效果与说明。不携带审批或执行身份。
 authorization.go: AuthorizationDecision 定义纯授权结果。不透明执行绑定不授予权限。
 authorization_ports.go: PatchPlanner 定义基础策略只读规划端口。不携带执行能力。
 classify.go: Classify 从运行结果投影闭合失败分类。不替代 Journal。

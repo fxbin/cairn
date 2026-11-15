@@ -1,5 +1,10 @@
+// [INPUT]: 依赖标准路径匹配与受限动作词表。
+// [OUTPUT]: 提供Core观察点消费的HookRule与动作投影。
+// [POS]: 内核只消费规则数据；可选能力校验与宿主授权保持外部。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // hook_contract.go 定义 Agent Loop 消费的最小钩子数据合同。
-// 钩子只在观察点产生受限动作；效果收紧由 Policy 侧规则求值，不在本合同内。
+// 钩子只在观察点产生受限动作；可选能力生成收紧候选，基础 Policy 校验效果；本合同不授予权限。
 // Author: fxbin
 package agent
 
@@ -40,7 +45,7 @@ type HookAction struct {
 }
 
 // HookRule 是 Loop 分发动作所需的最小规则视图：只包含事件、工具匹配、动作与启用位。
-// pre_tool 效果与规则形状校验仍由 Policy 侧持有，避免 Core 扩权。
+// pre_tool 效果与规则形状由能力校验；宿主策略强制只收紧。
 type HookRule struct {
 	Event     HookEvent
 	ToolMatch string
