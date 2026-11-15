@@ -1,3 +1,8 @@
+// [INPUT]: 依赖合成事实、证据替身与本能力投影。
+// [OUTPUT]: 提供固定对照实验下的信息与引用完整性回归。
+// [POS]: 合同实验不代表真实Provider或模型质量评测。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package decision
 
 import (

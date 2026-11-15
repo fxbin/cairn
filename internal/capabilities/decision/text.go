@@ -1,3 +1,10 @@
+// [INPUT]: 依赖contract脱敏探测与标准库文本校验。
+// [OUTPUT]: 提供受限文本、标识与摘要形状拒绝规则。
+// [POS]: 录入前拒绝凭据和私有路径，不静默改写正文。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的文本边界校验：正文必须长度有界，且不得携带凭据式

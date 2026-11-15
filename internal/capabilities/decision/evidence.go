@@ -1,3 +1,10 @@
+// [INPUT]: 依赖外部只读解析端口与本能力记录。
+// [OUTPUT]: 提供证据定位校验及脱敏核查报告。
+// [POS]: 证据存在性由外部事实源判断，记录不能自证。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的证据模型：证据定位只引用既有事实源的稳定标识与摘要，

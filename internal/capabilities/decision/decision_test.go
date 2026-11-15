@@ -1,3 +1,8 @@
+// [INPUT]: 依赖冻结提案与本能力记录合同。
+// [OUTPUT]: 回归正文隐私、范围指纹、TTL与状态校验。
+// [POS]: 保留原拒绝及有效输入断言，不接入外部存储。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package decision
 
 import (

@@ -1,3 +1,10 @@
+// [INPUT]: 依赖本能力记录、人工确认凭据与标准库同步。
+// [OUTPUT]: 提供候选录入、人工状态迁移、独立快照与审计。
+// [POS]: 进程内账本保持项目与主体隔离，不写Journal。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的进程内实现：受控录入、状态迁移与只读查询都在此完成。
@@ -85,7 +92,7 @@ func (ledger *Ledger) Propose(proposal Proposal) (DecisionRecord, error) {
 		existing := ledger.records[index]
 		switch existing.EffectiveStatus(proposal.Now) {
 		case StatusProposed:
-			return existing, nil
+			return cloneDecisionRecord(existing), nil
 		case StatusActive:
 			return DecisionRecord{}, fmt.Errorf("%w: %s", ErrDuplicateDecision, existing.ID)
 		}
@@ -112,7 +119,7 @@ func (ledger *Ledger) Propose(proposal Proposal) (DecisionRecord, error) {
 		Actor:      record.Owner,
 		OccurredAt: record.CreatedAt,
 	})
-	return record, nil
+	return cloneDecisionRecord(record), nil
 }
 
 // Confirm 把候选确认为现行决策。确认必须携带人工来源；若记录声明了替代
@@ -179,7 +186,7 @@ func (ledger *Ledger) Confirm(id string, approval HumanApproval) (DecisionRecord
 			OccurredAt: reviewedAt,
 		})
 	}
-	return record, nil
+	return cloneDecisionRecord(record), nil
 }
 
 // Review 复核一条现行决策：刷新复核时间并按新保留期延长有效期。被替代、
@@ -218,7 +225,7 @@ func (ledger *Ledger) Review(id string, approval HumanApproval, ttl time.Duratio
 		Actor:      approval.Approver,
 		OccurredAt: reviewedAt,
 	})
-	return record, nil
+	return cloneDecisionRecord(record), nil
 }
 
 // Revoke 撤销一条记录。撤销理由只接受封闭词表；记录本身保留在账本中，
@@ -253,7 +260,7 @@ func (ledger *Ledger) Revoke(id, reason, actor string, at time.Time) (DecisionRe
 		Actor:      actor,
 		OccurredAt: at.UTC(),
 	})
-	return record, nil
+	return cloneDecisionRecord(record), nil
 }
 
 // Reject 拒绝一条候选。拒绝理由只接受封闭词表；被拒绝的候选不可再确认。
@@ -287,7 +294,7 @@ func (ledger *Ledger) Reject(id, reason, actor string, at time.Time) (DecisionRe
 		Actor:      actor,
 		OccurredAt: at.UTC(),
 	})
-	return record, nil
+	return cloneDecisionRecord(record), nil
 }
 
 // authorizeRecordWrite 判断主体是否可以改写目标记录。个人偏好只允许其
@@ -304,7 +311,7 @@ func authorizeRecordWrite(target DecisionRecord, actor string) error {
 	return nil
 }
 
-// Get 返回指定记录；不存在时返回 ErrNotFound。
+// Get 返回指定记录的独立快照；不存在时返回 ErrNotFound。
 func (ledger *Ledger) Get(id string) (DecisionRecord, error) {
 	ledger.mutex.RLock()
 	defer ledger.mutex.RUnlock()
@@ -312,11 +319,11 @@ func (ledger *Ledger) Get(id string) (DecisionRecord, error) {
 	if !found {
 		return DecisionRecord{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	return ledger.records[index], nil
+	return cloneDecisionRecord(ledger.records[index]), nil
 }
 
 // Query 只读检索当前作用域内的决策。跨项目与跨主体的记录一律不可见；
-// 已过期记录默认不返回，避免过期结论冒充现行事实。
+// 已过期记录默认不返回。返回快照不共享账本的可变引用。
 func (ledger *Ledger) Query(query Query) ([]DecisionRecord, error) {
 	if !validIdentifier(query.Project) {
 		return nil, errors.New("decision query requires a valid project identifier")
@@ -370,7 +377,11 @@ func (ledger *Ledger) Query(query Query) ([]DecisionRecord, error) {
 	if len(matched) > limit {
 		matched = matched[:limit]
 	}
-	return matched, nil
+	snapshots := make([]DecisionRecord, len(matched))
+	for index, record := range matched {
+		snapshots[index] = cloneDecisionRecord(record)
+	}
+	return snapshots, nil
 }
 
 // Audits 返回指定记录的脱敏审计历史，按发生顺序排列。

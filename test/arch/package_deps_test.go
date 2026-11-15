@@ -7,7 +7,7 @@
 // 阻止 Core、合同层、Runtime、配置层与 Studio 之间新增越层引用。
 //
 // 守卫规则（Issue #40 P0）：
-//  1. 合同层（domain/canonicaljson/buildinfo/contract/ports/decision）只能依赖合同层。
+//  1. 合同层（domain/canonicaljson/buildinfo/contract/ports）只能依赖合同层。
 //  2. Core（internal/core/agent）只能依赖合同层，不得直接持有 Runtime 具体实现。
 //  3. Runtime 不得依赖 Core、Application、Studio 与带外工具链；Runtime 内部除
 //     adapters 外不得直接 import internal/runtime/tools（授权门禁依赖工具注册表属于反转）。
@@ -67,7 +67,6 @@ var packageLayers = map[string]packageLayer{
 	"internal/buildinfo":     layerContract,
 	"internal/contract":      layerContract,
 	"internal/ports":         layerContract,
-	"internal/decision":      layerContract,
 	// Runtime 基础能力与适配器（已归位 internal/runtime）。
 	"internal/runtime/userdir":      layerRuntime,
 	"internal/runtime/lock":         layerRuntime,
@@ -84,6 +83,7 @@ var packageLayers = map[string]packageLayer{
 	// Core。
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
+	"internal/capabilities/decision":                layerCapability,
 	"internal/capabilities/telemetry":               layerCapability,
 	"internal/capabilities/skills":                  layerCapability,
 	"internal/capabilities/memory":                  layerCapability,

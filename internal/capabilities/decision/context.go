@@ -1,3 +1,10 @@
+// [INPUT]: 依赖本能力有效状态、独立快照与标准库编码。
+// [OUTPUT]: 提供固定预算下的独立决策上下文投影。
+// [POS]: 纯投影尚无运行时消费方，不自动注入模型。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// Package decision 提供项目决策的受限记录与纯投影。
+// Author: fxbin
 package decision
 
 // 本文件补充决策账本的上下文投影：注入上下文的只有决策陈述与证据定位，
@@ -100,13 +107,14 @@ func ProjectContext(project, principal string, records []DecisionRecord, budget 
 		return candidates[left].ID < candidates[right].ID
 	})
 	for _, record := range candidates {
+		record = cloneDecisionRecord(record)
 		entry := ContextEntry{
 			ID:         record.ID,
 			Kind:       record.Kind,
 			Context:    record.Context,
 			Decision:   record.Decision,
 			Rationale:  record.Rationale,
-			Evidence:   append([]EvidenceRef(nil), record.Evidence...),
+			Evidence:   record.Evidence,
 			ReviewedAt: record.ReviewedAt,
 			ExpiresAt:  record.ExpiresAt,
 		}
