@@ -93,9 +93,12 @@ telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出�
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 trial_activation_test.go: 回归 TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 user_directory_test.go: 验证用户根 OAuth 存储、权限与按身份退出。
-workflow_exec.go: WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
+workflow_exec.go: WorkflowExecution 连接执行、恢复与人工验收。能力事件与 Run 事实分别持久化。
 workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
-workflow_query.go: WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
+workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
+
+workflow_store.go: 连接能力 SQLite 叶子与制品。路径、只读打开和链头 CAS 保持。
+workflow_verify.go: 连接冻结验证 Run。复用 Core 脚本执行、审批和可信证据。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md

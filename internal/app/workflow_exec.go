@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖workflow 能力、配置与 Service 运行用例。
+ * [OUTPUT]: 提供显式 WorkflowRun、WorkflowResume 与 WorkflowAccept。
+ * [POS]: 应用执行用例；步骤事实与普通 Run 事实分别持久化。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // workflow_exec.go 提供工作流执行链的显式执行、恢复与人工门用例（ADR-0021
 // 片 2）：固定顺序计划 [execute, verify, accept]，执行与验证步骤分别经普通
 // run 与零调用脚本化 run 驱动并在步骤事件中绑定 run_id，恢复唯一性来自链重
@@ -18,15 +24,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
-	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/artifact"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // 工作流固定计划的步骤标识：执行、冻结验证与人工审批门。
@@ -631,96 +634,6 @@ func (execution workflowExecution) reconcileUncertainStep(ctx context.Context, i
 	return true, nil
 }
 
-// startWorkflowVerifyRun 装配 Boot、手工创建验证步骤 run（task_ref 绑定验
-// 证计划制品）并以零调用脚本化计划强制执行冻结验证；Boot 生命周期由本函数
-// 持有，等待审批时如实返回供步骤保持运行中。
-func (service Service) startWorkflowVerifyRun(ctx context.Context, execution workflowExecution, runID domain.RunID, id workflow.ID, stepID string) (outcome RunResult, err error) {
-	boot, err := service.assembleBoot(execution.workspacePath, execution.stateDir, execution.configuration, execution.onEvent)
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	defer func() { err = errors.Join(err, boot.Close()) }()
-	active, err := boot.Journal.NonTerminalRuns(ctx, boot.WorkspaceHash)
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	if len(active) != 0 {
-		return RunResult{ID: runID}, activeRunError(active[0])
-	}
-	if err := enforceAdmissionGate(execution.stateDir, boot.WorkspaceHash, execution.configuration); err != nil {
-		return RunResult{ID: runID}, err
-	}
-	build, err := currentBuildIdentity()
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	frozenConfig, err := marshalFrozenRunConfig(execution.configuration, execution.configuration.Fingerprint())
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	configRef, err := boot.Artifacts.Put(frozenConfig, "application/json")
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	planRef, err := boot.Artifacts.Put(contract.MustEncodeRedactedJSON(workflowVerifyPlanArtifact{
-		Version: workflowVerifyPlanVersion, Kind: workflowVerifyPlanKind, WorkflowID: string(id), StepID: stepID,
-	}), "application/json")
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	task := fmt.Sprintf("工作流验证门：%s 步骤 %s", id, stepID)
-	createdPayload := struct {
-		domain.RunCreatedPayload
-		ConfigRef contract.Ref `json:"config_ref"`
-		TaskRef   contract.Ref `json:"task_ref"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{
-		Task: task, Workspace: boot.Workspace.Root, ConfigFingerprint: execution.configuration.Fingerprint(), Build: build,
-	}, ConfigRef: configRef, TaskRef: planRef}
-	if _, err := boot.Journal.Append(ctx, 0, domain.EventDraft{
-		RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated,
-		Payload: contract.MustEncodeRedactedJSON(createdPayload),
-	}); err != nil {
-		return RunResult{ID: runID}, err
-	}
-	if _, err := boot.Journal.Append(ctx, 1, domain.EventDraft{
-		RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunStarted,
-		Payload: contract.MustEncodeRedactedJSON(struct {
-			Invocation string `json:"invocation"`
-		}{Invocation: domain.NewID("invoke")}),
-	}); err != nil {
-		return RunResult{ID: runID}, err
-	}
-	return service.driveWorkflowVerifyRun(ctx, boot, runID, ResumeOptions{
-		Workspace: execution.workspacePath, StateDir: execution.stateDir,
-		Config: execution.configuration, OnEvent: execution.onEvent,
-	})
-}
-
-// driveWorkflowVerifyRun 以零调用脚本化计划驱动既有验证 run 收束冻结验证；
-// 它不触碰模型，审批与对账暂停原样上抛，由 run 级 Resume/Reconcile 续跑。
-func (service Service) driveWorkflowVerifyRun(ctx context.Context, boot *Boot, runID domain.RunID, options ResumeOptions) (RunResult, error) {
-	events, err := boot.Journal.Load(ctx, runID)
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	if len(events) == 0 {
-		return RunResult{ID: runID}, fmt.Errorf("workflow verify run %s not found", runID)
-	}
-	runContext, cancelRun, err := runBudgetContext(ctx, events[0].OccurredAt, options.Config)
-	if err != nil {
-		return RunResult{ID: runID}, err
-	}
-	defer cancelRun()
-	input := agent.RunInput{RunID: runID, WorkspaceHash: boot.WorkspaceHash}
-	result, err := boot.Loop.RunScriptedToolPlan(runContext, input, options.Approval, nil)
-	if errors.Is(err, context.DeadlineExceeded) {
-		expiredContext, cancelExpired := expiredWallBudgetContext(ctx)
-		defer cancelExpired()
-		result, err = boot.Loop.RunScriptedToolPlan(expiredContext, input, ports.Approval{}, nil)
-	}
-	return projectedRunOutcome(boot.Journal, options.StateDir, boot.WorkspaceHash, runID, result.Response, err)
-}
-
 // requireIdleWorkspace 在启动新步骤 run 前确认工作区没有非终态运行；日志尚
 // 不存在视为空闲，活跃运行返回与其恢复指引一致的错误。
 func (execution workflowExecution) requireIdleWorkspace(ctx context.Context) error {
@@ -753,125 +666,7 @@ func missingBoundRunError(stepID, runID string) error {
 	return fmt.Errorf("%w: workflow step %q references missing run %s; the step never started and cannot be resumed, create a new workflow", ErrStateCorrupt, stepID, runID)
 }
 
-// reload 重放工作流链并返回唯一权威投影；存储缺失与链损坏分别失败关闭。
-func (execution workflowExecution) reload(ctx context.Context, id workflow.ID) (*workflow.Snapshot, error) {
-	events, err := execution.store.Load(ctx, id)
-	if err != nil {
-		if workflowsqlite.IsStateCorruptError(err) {
-			return nil, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-		}
-		return nil, err
-	}
-	if len(events) == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrWorkflowNotFound, id)
-	}
-	snapshot, err := workflow.Project(events)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	return snapshot, nil
-}
-
-// appendDraft 以链头 CAS 追加一个工作流事件；本执行器是链的唯一写入方，
-// 冲突即失败关闭，不重试以免掩盖并发写入。
-func (execution workflowExecution) appendDraft(ctx context.Context, id workflow.ID, eventType workflow.EventType, payload any) (workflow.Event, error) {
-	events, err := execution.store.Load(ctx, id)
-	if err != nil {
-		return workflow.Event{}, err
-	}
-	if len(events) == 0 {
-		return workflow.Event{}, fmt.Errorf("%w: %s", ErrWorkflowNotFound, id)
-	}
-	draft := workflow.EventDraft{
-		WorkflowID:    id,
-		WorkspaceHash: execution.workspaceHash,
-		Type:          eventType,
-		Payload:       contract.MustEncodeRedactedJSON(payload),
-		OccurredAt:    time.Now().UTC(),
-	}
-	return execution.store.Append(ctx, events[len(events)-1].Seq, draft)
-}
-
-// appendRunFinished 收束工作流终态；resumeIndex 记录首个未成功步骤下标，
-// 全部成功时为 -1。
-func (execution workflowExecution) appendRunFinished(ctx context.Context, id workflow.ID, state string, resumeIndex int) error {
-	_, err := execution.appendDraft(ctx, id, workflow.EventRunFinished, workflow.RunFinishedPayload{State: state, ResumeIndex: resumeIndex})
-	return err
-}
-
-// stateRoot 解析状态目录的统一根；空值回退平台默认，与装配路径一致。
-func (execution workflowExecution) stateRoot() string {
-	if execution.stateDir == "" {
-		return DefaultStateDir()
-	}
-	return execution.stateDir
-}
-
-// openWorkflowStoreExisting 打开既有工作流存储供追加；库文件不存在时以未
-// 找到失败关闭，不隐式建库。
-func openWorkflowStoreExisting(stateDir, workspaceHash string) (*workflowsqlite.Store, error) {
-	path := workflowDBPath(stateDir, workspaceHash)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: no workflow store in this workspace", ErrWorkflowNotFound)
-		}
-		return nil, err
-	}
-	return workflowsqlite.Open(path)
-}
-
-// readWorkflowTask 从制品库读回创建事件绑定的任务文本；缺少绑定或制品不
-// 可读时失败关闭，不猜测任务正文。
-func readWorkflowTask(artifacts *artifact.Store, binding workflow.StepIO) (string, error) {
-	if binding.Ref == "" {
-		return "", errors.New("workflow created event has no task artifact binding; chains created before the execution slice cannot be resumed")
-	}
-	content, err := artifacts.Open(contract.Ref{SHA256: binding.Ref})
-	if err != nil {
-		return "", fmt.Errorf("open workflow task artifact: %w", err)
-	}
-	return string(content), nil
-}
-
 // workflowOutcomeFor 由投影构造统一返回；hint 仅是人工下一步指引。
 func workflowOutcomeFor(snapshot *workflow.Snapshot, hint string) WorkflowOutcome {
 	return WorkflowOutcome{View: workflowViewFromSnapshot(snapshot), NextAction: hint}
-}
-
-// workflowVerifyRunOfRun 判定 run 是否为工作流验证步骤的脚本化 run：以
-// task_ref 制品的 kind 标记识别，已识别制品损坏时失败关闭。
-func workflowVerifyRunOfRun(ctx context.Context, journal *sqlite.Journal, artifacts *artifact.Store, runID domain.RunID) (bool, error) {
-	events, err := journal.Load(ctx, runID)
-	if err != nil {
-		return false, err
-	}
-	if len(events) == 0 || events[0].Type != domain.EventRunCreated {
-		return false, fmt.Errorf("run %s is missing run_created event", runID)
-	}
-	var payload struct {
-		TaskRef *contract.Ref `json:"task_ref"`
-	}
-	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
-		return false, err
-	}
-	if payload.TaskRef == nil {
-		return false, nil
-	}
-	content, err := artifacts.Open(*payload.TaskRef)
-	if err != nil {
-		var previewMarker struct {
-			Kind string `json:"kind"`
-		}
-		if json.Unmarshal([]byte(payload.TaskRef.TruncatedPreview), &previewMarker) == nil && previewMarker.Kind == workflowVerifyPlanKind {
-			return false, fmt.Errorf("open workflow verify plan artifact: %w", err)
-		}
-		return false, nil
-	}
-	var marker struct {
-		Kind string `json:"kind"`
-	}
-	if json.Unmarshal(content, &marker) != nil || marker.Kind != workflowVerifyPlanKind {
-		return false, nil
-	}
-	return true, nil
 }

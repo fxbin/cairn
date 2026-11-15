@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖标准时间与显式运行能力标记。
+ * [OUTPUT]: 提供Scheduler、触发配置与内存记录。
+ * [POS]: 能力的未接线调度合同；不启动 Run 或宿主 cron。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // schedule.go 实现 WFL-06 定时触发与错过执行管理：明确唤醒/休眠/错过/并发/
 // 权限/预算/取消合同；可配置、暂停、查看下次触发与真实记录；不借用未授权
 // 宿主 cron；无运行支持时显式阻塞。
@@ -52,8 +58,9 @@ type ScheduleSpec struct {
 type TriggerRecord struct {
 	ScheduleID string    `json:"schedule_id"`
 	At         time.Time `json:"at"`
-	Kind       string    `json:"kind"` // fired | missed | skipped | blocked
-	Note       string    `json:"note,omitempty"`
+	// Kind 区分 fired、missed、skipped 与 blocked。
+	Kind string `json:"kind"`
+	Note string `json:"note,omitempty"`
 }
 
 // Scheduler 管理定时任务与真实记录；不调用宿主 cron。
@@ -206,6 +213,7 @@ func (scheduler *Scheduler) Records() []TriggerRecord {
 	return out
 }
 
+// record 以系统时钟记录当前调度决定，不触发外部任务。
 func (scheduler *Scheduler) record(id, kind, note string) {
 	scheduler.records = append(scheduler.records, TriggerRecord{
 		ScheduleID: id,

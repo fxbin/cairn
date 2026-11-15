@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖用户根、凭据、受控评测与 workflow 标识合同。
+ * [OUTPUT]: 提供进程启动桥接与 WorkflowID 转换。
+ * [POS]: 应用门面；入口层不直接装配底层能力。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // studio_bootstrap.go 为进程入口提供启动期桥接：本机凭据装载与正式评测
 // 可信子进程重启。Studio 层不得直接依赖 credential 与 sandboxeval，入口
 // 只调用这里的门面。
@@ -10,10 +16,10 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/runtime/credential"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 	"github.com/fxbin/cairn/internal/runtime/userdir"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // UserConfigRoot 返回用户配置根；桌面端不得直接依赖 userdir。

@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖显式运行标记与固定调度时刻。
+ * [OUTPUT]: 提供触发、错过、并发及缺失运行支持回归。
+ * [POS]: 未接线 Scheduler 测试；不验证后台调度。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // schedule_test 锁定 WFL-06 定时触发、错过策略与运行支持阻塞。
 //
 // Author: fxbin

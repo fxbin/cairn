@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖domain 身份与冻结二进制哈希编码。
+ * [OUTPUT]: 提供工作流事件、链校验与 Snapshot 投影。
+ * [POS]: 能力的事实合同；SQLite 叶子和 App 共用同一重放。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // events.go 定义工作流执行链的事件、哈希链与重放投影：与运行事件 Journal
 // 分离的追加式事实源（ADR-0021），内存状态只是缓存，权威投影始终来自重放。
 // Author: fxbin

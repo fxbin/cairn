@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖步骤状态机与冻结时间。
+ * [OUTPUT]: 提供步骤迁移、取消、恢复与未决对账回归。
+ * [POS]: 工作流合同测试；不执行 Run 或访问存储。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // step_test 锁定 WFL-04 步骤进度、失败与恢复语义。
 //
 // Author: fxbin

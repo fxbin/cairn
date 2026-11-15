@@ -1,5 +1,12 @@
 //go:build faultinject
 
+/*
+ * [INPUT]: 依赖既有工作流夹具与实际消费端口。
+ * [OUTPUT]: 提供原断言的存储、步骤或入口回归。
+ * [POS]: 本模块测试；包归位保持权限、恢复与完整性断言。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
+
 // workflow_fault_test.go 锁定工作流执行链在故障窗口下的失败关闭语义：副作用已
 // started 但未收束时，恢复入口必须要求人工对账，不得自动重试，也不得推进后续
 // 步骤。
@@ -15,15 +22,15 @@ import (
 	"testing"
 
 	journalsqlite "github.com/fxbin/cairn/internal/adapters/journal/sqlite"
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/runtime/artifact"
 	"github.com/fxbin/cairn/internal/runtime/tools"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // faultWorkflowConfig 返回故障注入用例的固定配置：显式声明测试 Provider 能力，

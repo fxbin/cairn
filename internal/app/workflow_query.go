@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖workflow 历史投影与本模块只读存储入口。
+ * [OUTPUT]: 提供工作流状态视图与 WorkflowStatus。
+ * [POS]: 只读应用用例；不启动步骤或调度器。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流只读查询用例：从工作区专属 workflow 事件链重放唯一权威投影
 // （ADR-0021 片 1）。本文件不提供执行路径；执行、恢复与审批入口随片 2 接入。
 // Author: fxbin
@@ -7,13 +13,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	workflowsqlite "github.com/fxbin/cairn/internal/adapters/workflow/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/workflow"
 )
 
 // ErrWorkflowNotFound 表示目标工作流链在存储中不存在。
@@ -106,25 +109,4 @@ func workflowViewFromSnapshot(snapshot *workflow.Snapshot) WorkflowStatusView {
 		}
 	}
 	return view
-}
-
-// workflowDBPath 返回工作区专属工作流存储路径，与 runs.db、memory.db 同目录。
-func workflowDBPath(stateDir, workspaceHash string) string {
-	if stateDir == "" {
-		stateDir = DefaultStateDir()
-	}
-	return filepath.Join(stateDir, "workspaces", workspaceHash, "workflow.db")
-}
-
-// openWorkflowStoreReadOnly 打开既有的工作流存储；尚未创建任何工作流时
-// 以未找到错误失败关闭，不做隐式建库。
-func openWorkflowStoreReadOnly(stateDir, workspaceHash string) (*workflowsqlite.Store, error) {
-	path := workflowDBPath(stateDir, workspaceHash)
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: no workflow store in this workspace", ErrWorkflowNotFound)
-		}
-		return nil, err
-	}
-	return workflowsqlite.OpenReadOnly(path)
 }

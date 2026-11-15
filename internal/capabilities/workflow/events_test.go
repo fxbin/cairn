@@ -1,3 +1,9 @@
+/*
+ * [INPUT]: 依赖事件草稿、固定负载与链投影。
+ * [OUTPUT]: 提供顺序约束、哈希篡改和不确定步骤拒绝回归。
+ * [POS]: 工作流事实测试；原事件与恢复断言保持。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
+ */
 // 工作流事件链与重放投影的合同测试。
 package workflow
 
