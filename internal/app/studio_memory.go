@@ -1,9 +1,14 @@
+// [INPUT]: 依赖Memory能力的纯合同。
+// [OUTPUT]: 提供CLI与Studio消费的类型门面及只读辅助。
+// [POS]: 界面通过应用边界访问能力，不持有存储。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // studio_memory.go 为 CLI 提供记忆合同类型与辅助判定的 Application 门面；
 // Studio 层不得直接依赖 internal/memory。
 // Author: fxbin
 package app
 
-import "github.com/fxbin/cairn/internal/runtime/memory"
+import "github.com/fxbin/cairn/internal/capabilities/memory"
 
 // 记忆合同类型别名：CLI 仅作展示与状态判定，不持有存储实现。
 type (

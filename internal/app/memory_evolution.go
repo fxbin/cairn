@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory演化合同与能力SQLite叶子。
+// [OUTPUT]: 提供候选、评测与人工晋升应用用例。
+// [POS]: 评测、版本、沙箱激活与试运行保持隔离。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件补充 M4 的演化候选用例：创建前执行与 doctor 同等的全库验证和
 // 来源派生版本复核；变体参数由人工显式提供，绝不自动生成候选。
 //
@@ -17,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
+	memstoresqlite "github.com/fxbin/cairn/internal/capabilities/memory/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 

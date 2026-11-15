@@ -1,6 +1,6 @@
-// [INPUT]: 真实 Boot、记忆来源与组合工具视图。
-// [OUTPUT]: 验证并行及父子 Boot 的回调实例隔离。
-// [POS]: 应用回调回归，组合注册表迁移不改变原断言。
+// [INPUT]: 依赖真实工具注册、实例回调与隔离运行。
+// [OUTPUT]: 提供跨实例隔离、范围强制与恢复回调回归。
+// [POS]: 应用接线测试，原审批与历史安全断言保持。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package app
@@ -16,11 +16,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
@@ -138,7 +138,7 @@ func TestBootCallbacksIsolateConcurrentWorkspaces(t *testing.T) {
 			t.Fatalf("registry identity changed: %v", err)
 		}
 	}
-	if result := (tools.MemoryRecall{}).Execute(context.Background(), json.RawMessage(`{}`)); result.OK || result.Code != "memory_recall_unavailable" {
+	if result := (memory.MemoryRecall{}).Execute(context.Background(), json.RawMessage(`{}`)); result.OK || result.Code != "memory_recall_unavailable" {
 		t.Fatalf("bare recall inherited boot: %+v", result)
 	}
 	if result := (tools.SendMessage{}).Execute(context.Background(), json.RawMessage(`{"to_run_id":"x","content":"x"}`)); result.OK || result.Code != "not_wired" {

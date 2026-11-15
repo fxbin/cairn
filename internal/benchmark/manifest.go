@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供本地任务包与仓库基线合同。不推导私有资产目录。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package benchmark 读取本地任务合同，并为可复跑评测提供稳定的任务输入。
 package benchmark
 

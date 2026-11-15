@@ -26,10 +26,11 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果和失败分类的只读合同投影 |
 | `internal/config/`、`internal/runtime/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
 | `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
-| `internal/adapters/` | Journal、Memory 的 SQLite 存储及 OpenAI-compatible 协议适配 |
+| `internal/adapters/` | Journal的SQLite存储与Provider/MCP协议适配 |
 | `internal/runtime/tools/`、`internal/runtime/policy/`、`internal/runtime/artifact/`、`internal/runtime/lock/` | 工具和路径边界、授权、内容寻址与脱敏、工作区排他锁 |
 | `internal/capabilities/hooks/` | 工作区钩子校验、匹配与收紧候选；Runtime强制不得放宽，动作仅 `queue_followup` |
-| `internal/runtime/memory/`、`internal/runtime/sandboxeval/`、`internal/benchmark/` | 可信记忆、受控演化、冻结评测与隔离执行 |
+| `internal/capabilities/memory/` | 可信记忆合同、受限召回工具与能力内SQLite存储；应用显式连接运行来源和受控演化 |
+| `internal/runtime/sandboxeval/`、`internal/benchmark/` | 冻结评测合同与带外隔离执行，不改变生产默认 |
 | `internal/runtime/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
 | `internal/capabilities/workflow/` | 步骤、独立事件链及能力内 SQLite 存储；应用层连接显式执行、验证与人工验收，Scheduler 尚未接线 |
@@ -100,6 +101,7 @@ go test ./test/e2e -tags=e2e -count=1
 - [事件持久化](internal/adapters/journal/sqlite/AGENTS.md)。
 - [共享合同](internal/contract/AGENTS.md)、[Core 执行合同](internal/core/agent/AGENTS.md) 与 [应用装配](internal/app/AGENTS.md)。
 - [工具基础设施](internal/runtime/tools/AGENTS.md)、[基础授权](internal/runtime/policy/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
+- [记忆能力](internal/capabilities/memory/AGENTS.md) 与 [隔离评测](internal/benchmark/AGENTS.md)。
 - [钩子能力](internal/capabilities/hooks/AGENTS.md)。
 - [MCP 能力](internal/capabilities/mcp/AGENTS.md)、[技能能力](internal/capabilities/skills/AGENTS.md) 与 [工作流能力](internal/capabilities/workflow/AGENTS.md)。
 - [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md)。

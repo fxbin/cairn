@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供闭合变体展开与离线比较预筛。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件实现候选沙箱评测的变体展开与离线预筛。
 //
 // Author: fxbin
@@ -9,9 +14,9 @@ import (
 
 	"github.com/fxbin/cairn/internal/app"
 	"github.com/fxbin/cairn/internal/canonicaljson"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/core/agent"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 

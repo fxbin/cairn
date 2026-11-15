@@ -1,3 +1,8 @@
+// [INPUT]: 依赖已审晋升记录与冻结配置。
+// [OUTPUT]: 提供显式试运行版本装配。
+// [POS]: 试运行不改变生产默认，不自动激活候选。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件承载沙箱激活版本的试运行解析：把演化账本中当前激活的压缩参数
 // 变体应用到运行配置副本上。解析是显式选择加入的只读操作，无激活时配置
 // 原样返回；任何账本不一致都在运行开始前失败关闭。生产环境不存在激活入
@@ -12,8 +17,8 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // ApplyCompactionVariant 把压缩参数变体的四项可生效值应用到基线配置副本

@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory召回合同、当前工作区与本次Journal。
+// [OUTPUT]: 提供实例召回和消息回调。
+// [POS]: 应用强制工作区范围，最小组合不创建可选回调。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件装配仅属于当前 Boot 的记忆与消息工具回调。
 // Author: fxbin
 package app
@@ -7,9 +12,9 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/tools"
 )
 
@@ -20,7 +25,7 @@ func (service Service) bootTools(boot *Boot, stateDir string) []tools.Tool {
 	if boot.Config.Preset == config.PresetMinimal {
 		return presetTools(boot.Workspace, boot.ExecTool, boot.Config.Preset, boot.Config.Tools)
 	}
-	explain := tools.MemoryExplainFunc(func(ctx context.Context, request tools.MemoryRecallRequest) (json.RawMessage, error) {
+	explain := memory.MemoryExplainFunc(func(ctx context.Context, request memory.MemoryRecallRequest) (json.RawMessage, error) {
 		ledger, err := service.ExplainMemoryRecall(ctx, MemoryExplainOptions{
 			Query: memory.RecallQuery{
 				TaskPromptDigest:    request.TaskPromptDigest,

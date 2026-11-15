@@ -9,7 +9,7 @@ Boot 统一资源所有权。能力按有效配置显式装配。
 AGENTS.md: 模块职责地图与文件成员入口。
 boot.go: Boot 统一资源所有权。钩子先校验，冻结规则分别注入约束与Core动作。
 boot_test.go: 回归 Boot 唯一装配模型、工具、授权和存储。资源所有权覆盖运行与恢复。
-boot_tool_callbacks.go: Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
+boot_tool_callbacks.go: 显式绑定能力召回工具与本次Journal。服务端强制工作区范围。
 boot_tool_callbacks_test.go: 回归 Boot 回调绑定本次记忆与消息资源。最小组合不构造可选回调。
 hooks.go: 纯校验执行配置并转换冻结规则。工作流与运行入口共用。
 hooks_test.go: 真实运行与Workflow入口拒绝非法规则。冻结投影和Doctor口径回归。
@@ -27,7 +27,7 @@ frozen_registry.go: FrozenToolRegistryFingerprint 与 Boot 共用工具选择。
 latest_subagent_regression_test.go: 验证子运行恢复、取消及身份与预算准入。
 mcp.go: MCPStatus 只读配置与凭据存在性。登录和退出由显式用例触发。
 mcp_test.go: 验证 MCP 惰性装配、请求作用域及缺失来源拒绝。
-memory.go: Memory 用例捕获结构化结果并生成召回证据。记忆不决定运行终态。
+memory.go: 连接Memory能力与运行来源。捕获、召回不决定Run终态。
 memory_consolidate.go: MemoryConsolidation 校验来源后写入派生记忆。撤销关系保留审计证据。
 memory_consolidate_test.go: 回归 MemoryConsolidation 校验来源后写入派生记忆。撤销关系保留审计证据。
 memory_evolution.go: EvolutionCandidate 冻结评测引用与候选状态。试运行不改变生产默认。

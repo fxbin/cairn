@@ -31,8 +31,6 @@ git_read_test.go: 回归 GitStatus 与 GitDiff 只执行只读子命令。路径
 git_write.go: GitCommit 只暂存明确路径并创建提交。不接受任意 Git 命令。
 lsp_diagnostics.go: LspDiagnostics 选择已有语言诊断器。缺少诊断器时失败关闭。
 mcp_process_unix.go: MCPProcess 复用受控双向 stdio 和沙箱。关闭须确认进程与容器退出。
-memory_recall.go: MemoryRecall 只读召回宿主工作区证据。不开放写入或自由文本检索。
-memory_recall_bind.go: MemoryExplainFunc 由 Boot 按实例注入。不保存进程级默认回调。
 model_search.go: ModelSearch 本地筛选模型目录并限制结果数。不发网络请求。
 model_search_test.go: 回归 ModelSearch 本地筛选模型目录并限制结果数。不发网络请求。
 observation_parallel_test.go: 验证并行观察摘要稳定且覆盖工具忽略文件。
