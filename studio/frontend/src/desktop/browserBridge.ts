@@ -1,6 +1,7 @@
 /**
  * 浏览器验收桥：在无 Wails WebView 时提供可点击验证的后端替身。
  * 仅用于开发/验收；桌面正式包走真实 bindings。
+ * Author: fxbin
  */
 import type {
   ChangeSet,
@@ -8,11 +9,21 @@ import type {
   EvidenceView,
   FileNode,
   HealthResult,
+  ModelCatalogEntryView,
+  ModelCatalogProviderView,
+  ModelCatalogRequest,
+  ModelCatalogView,
   OKResult,
+  ProviderAdmissionRequest,
+  ProviderPresetView,
+  ProviderProbeView,
+  ProviderSetupRequest,
+  ProviderSetupView,
   QueueItem,
   RecentProject,
   RunDetail,
   RunHistoryView,
+  SaveProviderPresetRequest,
   SessionTreeView,
   StartRunAck,
   StreamEvent,
@@ -148,6 +159,242 @@ function emit(event: StreamEvent) {
 
 function ok(): OKResult {
   return { ok: true };
+}
+
+/** 演示桥离线 models.dev 供应商摘要；仅包含非敏感环境变量名建议。 */
+const DEMO_CATALOG_PROVIDERS: readonly ModelCatalogProviderView[] = [
+  {
+    id: "openai",
+    name: "OpenAI",
+    api_base_url: "https://api.openai.com/v1",
+    env_names: ["OPENAI_API_KEY"],
+    model_count: 3,
+  },
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    api_base_url: "https://api.anthropic.com",
+    env_names: ["ANTHROPIC_API_KEY"],
+    model_count: 2,
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    api_base_url: "https://api.deepseek.com/v1",
+    env_names: ["DEEPSEEK_API_KEY"],
+    model_count: 2,
+  },
+  {
+    id: "moonshotai",
+    name: "Moonshot AI",
+    api_base_url: "https://api.moonshot.cn/v1",
+    env_names: ["MOONSHOT_API_KEY"],
+    model_count: 2,
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    api_base_url: "https://openrouter.ai/api/v1",
+    env_names: ["OPENROUTER_API_KEY"],
+    model_count: 2,
+  },
+  {
+    id: "zhipuai",
+    name: "Zhipu AI",
+    api_base_url: "https://open.bigmodel.cn/api/paas/v4",
+    env_names: ["ZHIPU_API_KEY"],
+    model_count: 2,
+  },
+];
+
+/** 演示桥离线 models.dev 模型建议条目。 */
+const DEMO_CATALOG_MODELS: readonly ModelCatalogEntryView[] = [
+  {
+    provider: "anthropic",
+    id: "claude-opus-4-20250514",
+    name: "Claude Opus 4",
+    family: "claude-4",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 200000,
+    output_tokens: 32000,
+    input_usd_per_million: 15,
+    output_usd_per_million: 75,
+  },
+  {
+    provider: "anthropic",
+    id: "claude-sonnet-4-20250514",
+    name: "Claude Sonnet 4",
+    family: "claude-4",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 200000,
+    output_tokens: 64000,
+    input_usd_per_million: 3,
+    output_usd_per_million: 15,
+  },
+  {
+    provider: "deepseek",
+    id: "deepseek-chat",
+    name: "DeepSeek V3",
+    family: "deepseek-v3",
+    tool_call: true,
+    reasoning: false,
+    temperature: true,
+    context_tokens: 65536,
+    output_tokens: 8192,
+    input_usd_per_million: 0.27,
+    output_usd_per_million: 1.1,
+  },
+  {
+    provider: "deepseek",
+    id: "deepseek-reasoner",
+    name: "DeepSeek R1",
+    family: "deepseek-r1",
+    tool_call: true,
+    reasoning: true,
+    temperature: false,
+    context_tokens: 65536,
+    output_tokens: 32768,
+    input_usd_per_million: 0.55,
+    output_usd_per_million: 2.19,
+  },
+  {
+    provider: "moonshotai",
+    id: "kimi-k2-0711-preview",
+    name: "Kimi K2",
+    family: "kimi-k2",
+    tool_call: true,
+    reasoning: false,
+    temperature: true,
+    context_tokens: 131072,
+    output_tokens: 16384,
+    input_usd_per_million: 0.6,
+    output_usd_per_million: 2.5,
+  },
+  {
+    provider: "moonshotai",
+    id: "moonshot-v1-128k",
+    name: "Moonshot v1 128K",
+    family: "moonshot-v1",
+    tool_call: true,
+    reasoning: false,
+    temperature: true,
+    context_tokens: 131072,
+    output_tokens: 8192,
+    input_usd_per_million: 0.8,
+    output_usd_per_million: 0.8,
+  },
+  {
+    provider: "openai",
+    id: "gpt-4.1",
+    name: "GPT-4.1",
+    family: "gpt-4.1",
+    tool_call: true,
+    reasoning: false,
+    temperature: true,
+    context_tokens: 1047576,
+    output_tokens: 32768,
+    input_usd_per_million: 2,
+    output_usd_per_million: 8,
+  },
+  {
+    provider: "openai",
+    id: "gpt-4.1-mini",
+    name: "GPT-4.1 mini",
+    family: "gpt-4.1",
+    tool_call: true,
+    reasoning: false,
+    temperature: true,
+    context_tokens: 1047576,
+    output_tokens: 32768,
+    input_usd_per_million: 0.4,
+    output_usd_per_million: 1.6,
+  },
+  {
+    provider: "openai",
+    id: "o4-mini",
+    name: "o4-mini",
+    family: "o4",
+    tool_call: true,
+    reasoning: true,
+    temperature: false,
+    context_tokens: 200000,
+    output_tokens: 100000,
+    input_usd_per_million: 1.1,
+    output_usd_per_million: 4.4,
+  },
+  {
+    provider: "openrouter",
+    id: "anthropic/claude-sonnet-4",
+    name: "Anthropic: Claude Sonnet 4",
+    family: "claude-4",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 200000,
+    output_tokens: 64000,
+    input_usd_per_million: 3,
+    output_usd_per_million: 15,
+  },
+  {
+    provider: "openrouter",
+    id: "deepseek/deepseek-r1",
+    name: "DeepSeek: R1",
+    family: "deepseek-r1",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 163840,
+    output_tokens: 32768,
+    input_usd_per_million: 0.55,
+    output_usd_per_million: 2.19,
+  },
+  {
+    provider: "zhipuai",
+    id: "glm-4.5",
+    name: "GLM-4.5",
+    family: "glm-4.5",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 131072,
+    output_tokens: 16384,
+    input_usd_per_million: 0.6,
+    output_usd_per_million: 2.2,
+  },
+  {
+    provider: "zhipuai",
+    id: "glm-4.5-air",
+    name: "GLM-4.5-Air",
+    family: "glm-4.5",
+    tool_call: true,
+    reasoning: true,
+    temperature: true,
+    context_tokens: 131072,
+    output_tokens: 16384,
+    input_usd_per_million: 0.2,
+    output_usd_per_million: 1.1,
+  },
+];
+
+let demoPresets: ProviderPresetView[] = [
+  {
+    name: "deepseek-main",
+    protocol: "openai-chat-completions",
+    model: "deepseek-chat",
+    base_url: "https://api.deepseek.com/v1",
+    api_key_env: "DEEPSEEK_API_KEY",
+    admission: "required",
+    active: true,
+  },
+];
+
+/** 校验演示桥输入的大写环境变量名格式，拒绝疑似明文密钥。 */
+function isValidDemoEnvName(value: string): boolean {
+  return /^[A-Z_][A-Z0-9_]*$/.test(value);
 }
 
 export function createBrowserBridge() {
@@ -513,6 +760,161 @@ export function createBrowserBridge() {
     },
     OpenPathInEditor: async () => {
       record("OpenPathInEditor", []);
+      return ok();
+    },
+    ListModelCatalog: async (request: ModelCatalogRequest = {}): Promise<ModelCatalogView> => {
+      record("ListModelCatalog", [request]);
+      const rawLimit = request.limit ?? 200;
+      const limit = rawLimit <= 0 ? 200 : Math.min(rawLimit, 500);
+      const providerFilter = (request.provider || "").trim();
+      const query = (request.query || "").trim().toLowerCase();
+      const filtered = DEMO_CATALOG_MODELS.filter((entry) => {
+        if (providerFilter && entry.provider !== providerFilter) {
+          return false;
+        }
+        if (request.tool_call_only && !entry.tool_call) {
+          return false;
+        }
+        if (request.reasoning_only && !entry.reasoning) {
+          return false;
+        }
+        if (!query) {
+          return true;
+        }
+        return (
+          entry.id.toLowerCase().includes(query) ||
+          entry.name.toLowerCase().includes(query) ||
+          Boolean(entry.family && entry.family.toLowerCase().includes(query))
+        );
+      });
+      return {
+        providers: DEMO_CATALOG_PROVIDERS.map((item) => ({ ...item, env_names: item.env_names ? [...item.env_names] : undefined })),
+        models: filtered.slice(0, limit).map((item) => ({ ...item })),
+        fetched_at: "2026-11-15T12:00:00Z",
+        from_stale_cache: false,
+        total_providers: DEMO_CATALOG_PROVIDERS.length,
+        total_models: filtered.length,
+      };
+    },
+    ListProviderPresets: async (request: { workspace: string }): Promise<ProviderPresetView[]> => {
+      record("ListProviderPresets", [request]);
+      return [...demoPresets].sort((a, b) => a.name.localeCompare(b.name));
+    },
+    UseProviderPreset: async (ws: string, name: string): Promise<OKResult> => {
+      record("UseProviderPreset", [ws, name]);
+      const trimmed = name.trim();
+      if (!demoPresets.some((item) => item.name === trimmed)) {
+        throw new Error(`preset "${trimmed}" is not defined in provider.presets`);
+      }
+      demoPresets = demoPresets.map((item) => ({ ...item, active: item.name === trimmed }));
+      return ok();
+    },
+    SaveProviderPreset: async (request: SaveProviderPresetRequest): Promise<OKResult> => {
+      record("SaveProviderPreset", [request]);
+      const name = request.name.trim();
+      const baseURL = request.base_url.trim();
+      const model = request.model.trim();
+      const apiKeyEnv = request.api_key_env.trim();
+      if (!name || !baseURL || !model || !apiKeyEnv) {
+        throw new Error("name, base_url, model and api_key_env are required");
+      }
+      if (!isValidDemoEnvName(apiKeyEnv)) {
+        throw new Error("invalid api_key_env reference");
+      }
+      const existingIndex = demoPresets.findIndex((item) => item.name === name);
+      if (existingIndex >= 0 && !request.overwrite) {
+        throw new Error(`preset "${name}" already exists`);
+      }
+      const next: ProviderPresetView = {
+        name,
+        protocol: (request.protocol || "").trim() || "openai-chat-completions",
+        base_url: baseURL,
+        model,
+        api_key_env: apiKeyEnv,
+        admission: (request.admission || "").trim() || "required",
+        active: existingIndex >= 0 ? demoPresets[existingIndex].active : false,
+      };
+      if (existingIndex >= 0) {
+        demoPresets = demoPresets.map((item, idx) => (idx === existingIndex ? next : item));
+      } else {
+        demoPresets = [...demoPresets, next];
+      }
+      return ok();
+    },
+    RemoveProviderPreset: async (ws: string, name: string): Promise<OKResult> => {
+      record("RemoveProviderPreset", [ws, name]);
+      const trimmed = name.trim();
+      const target = demoPresets.find((item) => item.name === trimmed);
+      if (!target) {
+        throw new Error(`preset "${trimmed}" is not defined in provider.presets`);
+      }
+      if (target.active) {
+        throw new Error(`preset "${trimmed}" is active (switch first)`);
+      }
+      demoPresets = demoPresets.filter((item) => item.name !== trimmed);
+      return ok();
+    },
+    RunProviderSetup: async (request: ProviderSetupRequest): Promise<ProviderSetupView> => {
+      record("RunProviderSetup", [request]);
+      const baseURL = request.base_url.trim();
+      const model = request.model.trim();
+      const apiKeyEnv = request.api_key_env.trim();
+      if (!baseURL || !model || !apiKeyEnv || !isValidDemoEnvName(apiKeyEnv)) {
+        throw new Error("base_url, model and valid api_key_env are required");
+      }
+      const matched = DEMO_CATALOG_MODELS.find(
+        (entry) => entry.id.toLowerCase() === model.toLowerCase() || entry.name.toLowerCase() === model.toLowerCase(),
+      );
+      const notes: string[] = matched
+        ? [`目录命中: ${matched.name}（context ${matched.context_tokens} / output ${matched.output_tokens}）`]
+        : ["目录未命中该模型，写入 Cairn 生产所需能力声明"];
+      const presetName = (request.save_preset || "").trim();
+      if (presetName) {
+        const existingIndex = demoPresets.findIndex((item) => item.name === presetName);
+        if (existingIndex >= 0 && !request.overwrite_preset) {
+          throw new Error(`preset "${presetName}" already exists`);
+        }
+        const saved: ProviderPresetView = {
+          name: presetName,
+          protocol: "openai-chat-completions",
+          base_url: baseURL,
+          model,
+          api_key_env: apiKeyEnv,
+          admission: (request.admission || "").trim() || "required",
+          active: existingIndex >= 0 ? demoPresets[existingIndex].active : false,
+        };
+        if (existingIndex >= 0) {
+          demoPresets = demoPresets.map((item, idx) => (idx === existingIndex ? saved : item));
+        } else {
+          demoPresets = [...demoPresets, saved];
+        }
+        notes.push(`saved preset ${presetName}`);
+      }
+      const configPath = request.user_scope ? "~/.cairn/config.yaml" : `${request.workspace || workspace.path}/.agent/config.yaml`;
+      return {
+        config_path: configPath,
+        api_key_env: apiKeyEnv,
+        catalog_matched: Boolean(matched),
+        probe_ran: false,
+        notes,
+      };
+    },
+    ProbeProvider: async (request: { workspace: string }): Promise<ProviderProbeView> => {
+      record("ProbeProvider", [request]);
+      const active = demoPresets.find((item) => item.active);
+      return {
+        result: "pass",
+        provider_kind: "openai-compatible",
+        model: active?.model || "deepseek-chat",
+        tool_roundtrip: "ok",
+        usage_streamed: true,
+        evidence_fingerprint: "demo-ev-sha256",
+        config_fingerprint: "demo-cfg-sha256",
+        request_profile_fingerprint: "demo-profile-sha256",
+      };
+    },
+    ConfirmProviderAdmission: async (request: ProviderAdmissionRequest): Promise<OKResult> => {
+      record("ConfirmProviderAdmission", [request]);
       return ok();
     },
   };

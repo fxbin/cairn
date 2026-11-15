@@ -1,3 +1,5 @@
+// Service 桌面端 Wails 前端桥接门面。
+// Author: fxbin
 package desktop
 
 import (
@@ -283,6 +285,11 @@ func (service *Service) InspectMemory(ctx context.Context, workspace, candidateI
 	return service.api.InspectMemory(ctx, workspace, candidateID)
 }
 
+// ListModelCatalog 加载或刷新 models.dev 模型目录并返回过滤后的建议列表。
+func (service *Service) ListModelCatalog(ctx context.Context, request ModelCatalogRequest) (ModelCatalogView, error) {
+	return service.api.ListModelCatalog(ctx, request)
+}
+
 // ListProviderPresets 列出命名连接预设。
 func (service *Service) ListProviderPresets(ctx context.Context, request WorkspaceRequest) ([]ProviderPresetView, error) {
 	return service.api.ListProviderPresets(ctx, request)
@@ -291,6 +298,16 @@ func (service *Service) ListProviderPresets(ctx context.Context, request Workspa
 // UseProviderPreset 切换激活的命名连接预设。
 func (service *Service) UseProviderPreset(ctx context.Context, workspace, name string) (OKResult, error) {
 	return service.api.UseProviderPreset(ctx, workspace, name)
+}
+
+// SaveProviderPreset 保存命名连接预设。
+func (service *Service) SaveProviderPreset(ctx context.Context, request SaveProviderPresetRequest) (OKResult, error) {
+	return service.api.SaveProviderPreset(ctx, request)
+}
+
+// RemoveProviderPreset 删除未激活的命名连接预设。
+func (service *Service) RemoveProviderPreset(ctx context.Context, workspace, name string) (OKResult, error) {
+	return service.api.RemoveProviderPreset(ctx, workspace, name)
 }
 
 // RunProviderSetup 执行配置向导。

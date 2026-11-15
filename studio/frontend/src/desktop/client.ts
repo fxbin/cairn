@@ -1,10 +1,17 @@
 /**
  * 统一 desktop 桥接。所有后端调用经此模块；组件不得直接 import bindings。
+ * Author: fxbin
  */
 import { Bindings as DesktopAPI } from "./wails-api";
 import type {
+  ModelCatalogRequest,
+  ModelCatalogView,
+  ProviderPresetView,
   ProviderProbeView,
   ProviderAdmissionRequest,
+  ProviderSetupRequest,
+  ProviderSetupView,
+  SaveProviderPresetRequest,
   AbortRequest,
   SteeringRequest,
   CancelRequest,
@@ -144,11 +151,24 @@ export const desktop = {
     call(() => DesktopAPI.RunWorkflow(workspace, workflowID, dryRun)),
   listMemories: (request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>> =>
     call(() => DesktopAPI.ListMemories(request)),
-  listProviderPresets: (request: WorkspaceRequest): Promise<Array<{ name: string; protocol: string; model: string; base_url: string; api_key_env: string; admission: string; active: boolean }>> =>
-    call(() => DesktopAPI.ListProviderPresets(request)),
+  listModelCatalog: (request: ModelCatalogRequest = {}): Promise<ModelCatalogView> =>
+    call(async () => {
+      const view = await DesktopAPI.ListModelCatalog(request);
+      return {
+        ...view,
+        providers: view.providers ?? [],
+        models: view.models ?? [],
+      };
+    }),
+  listProviderPresets: (request: WorkspaceRequest): Promise<ProviderPresetView[]> =>
+    call(async () => (await DesktopAPI.ListProviderPresets(request)) ?? []),
   useProviderPreset: (workspace: string, name: string): Promise<OKResult> =>
     call(() => DesktopAPI.UseProviderPreset(workspace, name)),
-  runProviderSetup: (request: { base_url: string; model: string; api_key_env: string; workspace: string; admission?: string; overwrite?: boolean; user_scope?: boolean }): Promise<{ config_path: string; api_key_env: string; catalog_matched: boolean; probe_ran: boolean; notes?: string[] }> =>
+  saveProviderPreset: (request: SaveProviderPresetRequest): Promise<OKResult> =>
+    call(() => DesktopAPI.SaveProviderPreset(request)),
+  removeProviderPreset: (workspace: string, name: string): Promise<OKResult> =>
+    call(() => DesktopAPI.RemoveProviderPreset(workspace, name)),
+  runProviderSetup: (request: ProviderSetupRequest): Promise<ProviderSetupView> =>
     call(() => DesktopAPI.RunProviderSetup(request)),
   revokeMemory: (request: { workspace: string; candidate_id: string; reason: string }): Promise<unknown> =>
     call(() => DesktopAPI.RevokeMemory(request)),

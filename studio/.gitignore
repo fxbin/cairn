@@ -1,6 +1,7 @@
 # Wails / GUI 构建产物与本机依赖
 bin/
 .task/
+frontend/bindings/
 frontend/dist/
 frontend/node_modules/
 build/linux/appimage/build/
