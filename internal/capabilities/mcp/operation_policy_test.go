@@ -1,6 +1,6 @@
-// [INPUT]: 本地提议替身、冻结审批值与工作区观察替身。
-// [OUTPUT]: 验证策略叠加、失败关闭及原审批编码。
-// [POS]: MCP 操作授权单元回归，不执行外部调用。
+// [INPUT]: 共享合同、显式授权来源与原审批回归。
+// [OUTPUT]: 提供 MCP 授权约束或其最小合同回归。
+// [POS]: 能力层保留协议身份，Core 只传递不透明绑定。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package mcp
@@ -57,7 +57,7 @@ func TestOperationPolicyPreservesApprovalBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, claimed, err := rule.DecideTool(proposal.ToolName, proposal.Arguments)
-		if err != nil || !claimed || got.Effect != tc.effect || got.Fingerprint != tc.fingerprint || got.MCPIdentity != proposal.EnvironmentDigest || got.Summary != proposal.Summary {
+		if err != nil || !claimed || got.Effect != tc.effect || got.Fingerprint != tc.fingerprint || got.ExecutionBinding != proposal.EnvironmentDigest || got.Summary != proposal.Summary {
 			t.Fatalf("decision=%+v claimed=%v err=%v", got, claimed, err)
 		}
 		if tc.stdio && (got.WorkspaceObservation != "sha256:workspace" || workspace.calls != 1) {

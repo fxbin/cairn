@@ -1,3 +1,8 @@
+// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
+// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
+// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -30,8 +35,8 @@ func TestDecisionCheckpointFiresOnceWhenReadOnlyEvidenceAndNoPatch(t *testing.T)
 	if decisionCheckpointAlreadyFired(events) {
 		t.Fatal("must not already be fired")
 	}
-	if openedTurnCount(events) < 4 {
-		t.Fatalf("turns=%d", openedTurnCount(events))
+	if (&Loop{}).openedTurnCount(events) < 4 {
+		t.Fatalf("turns=%d", (&Loop{}).openedTurnCount(events))
 	}
 }
 

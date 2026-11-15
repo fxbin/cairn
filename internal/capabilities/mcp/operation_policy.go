@@ -1,6 +1,6 @@
-// [INPUT]: 本地 MCP 提议来源、工作区观察与执行模式。
-// [OUTPUT]: 提供只读 OperationPolicy 规则及原审批指纹。
-// [POS]: MCP 操作授权能力，由 App 注入基础 Gate。
+// [INPUT]: 共享合同、显式授权来源与原审批回归。
+// [OUTPUT]: 提供 MCP 授权约束或其最小合同回归。
+// [POS]: 能力层保留协议身份，Core 只传递不透明绑定。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 本文件将 MCP 本地授权投影转换为既有审批判定，不执行工具或发起网络请求。
@@ -99,7 +99,7 @@ func (policy *OperationPolicy) DecideTool(name string, raw json.RawMessage) (con
 			return contract.AuthorizationDecision{}, true, errors.New("observe workspace for MCP approval failed")
 		}
 	}
-	return contract.AuthorizationDecision{MCPIdentity: proposal.EnvironmentDigest, Effect: effect, RuleID: "mcp_tool", Summary: proposal.Summary, WorkspaceObservation: observation, Fingerprint: operationApprovalFingerprint(proposal, observation)}, true, nil
+	return contract.AuthorizationDecision{ExecutionBinding: proposal.EnvironmentDigest, Effect: effect, RuleID: "mcp_tool", Summary: proposal.Summary, WorkspaceObservation: observation, Fingerprint: operationApprovalFingerprint(proposal, observation)}, true, nil
 }
 
 // operationPolicyEffect 保留原模式解析词表与错误；未显式指定时必须要求审批。

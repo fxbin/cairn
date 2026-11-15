@@ -1,6 +1,6 @@
-// [INPUT]: Journal、Provider、工具与授权窄端口。
-// [OUTPUT]: 推进单写入者 Loop 的运行事实。
-// [POS]: Core 主循环。可选能力由组合根注入。
+// [INPUT]: Provider、Journal、工具和显式上下文及生命周期端口。
+// [OUTPUT]: 串行驱动运行、恢复及安全点资源释放。
+// [POS]: 单 Agent 主循环，不创建协议客户端。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package agent 包含串行、单写入者的 Agent 执行循环。
@@ -48,6 +48,8 @@ type Loop struct {
 	ContextProviders []ContextProvider
 	// ResultObservers 由组合根显式注入，按固定顺序恢复并接纳持久化结果。
 	ResultObservers []ToolResultObserver
+	// LifecycleParticipants 以固定顺序提供本次资源的只读释放提议。
+	LifecycleParticipants []LifecycleParticipant
 	// contextBlocks 冻结安全点的纯文本投影，供消息重建、预算与压缩共用。
 	contextBlocks                  []string
 	ContextAutoCompact             bool
@@ -312,7 +314,7 @@ func (loop *Loop) run(ctx context.Context, input RunInput) (Result, error) {
 	}
 	usage := budgetUsageFromEvents(events)
 	malformedToolArgumentFailures := malformedToolArgumentsFailureCount(events)
-	usedTurns := openedTurnCount(events)
+	usedTurns := loop.openedTurnCount(events)
 	// 恢复可能停在已关闭轮次和反馈写入之间；安全边界补齐检查点，不能多等一次模型请求。
 	if usedTurns < loop.MaxTurns {
 		messages, err = loop.maybeDecisionCheckpoint(ctx, &projection, input, messages)

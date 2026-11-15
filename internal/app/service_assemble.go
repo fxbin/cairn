@@ -245,6 +245,7 @@ func configuredLoop(journal ports.Journal, provider ports.Provider, registry *to
 	}
 	if configuration.Preset != config.PresetMinimal && configuration.MCP != nil && hasEnabledMCP(configuration.MCP) {
 		loop.ResultObservers = append(loop.ResultObservers, mcp.NewHistory(registry))
+		loop.LifecycleParticipants = []agent.LifecycleParticipant{mcp.NewLifecycle(registry)}
 	}
 	if guard := configuration.Guard; guard != nil {
 		loop.GuardConsecutiveFailures = guard.ConsecutiveOperationFailures

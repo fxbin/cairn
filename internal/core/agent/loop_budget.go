@@ -1,3 +1,8 @@
+// [INPUT]: 冻结预算与成功持久化事件。
+// [OUTPUT]: 重建模型用量和业务工具计数。
+// [POS]: 资源释放依显式分类排除，不占用业务预算。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -100,7 +105,7 @@ func (loop *Loop) ensureToolBudget(ctx context.Context, runID domain.RunID) erro
 		}
 		started := 0
 		for _, event := range events {
-			if event.Type == domain.EventOperationStarted && !isMCPLifecyclePayload(event.Payload) {
+			if event.Type == domain.EventOperationStarted && !loop.isLifecyclePayload(event.Payload) {
 				started++
 			}
 		}

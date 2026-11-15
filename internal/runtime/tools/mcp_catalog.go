@@ -1,6 +1,6 @@
-// [INPUT]: MCP 显式目录及固定工具的模型视图端口。
-// [OUTPUT]: 投影外部目录，并优先分派已注册工具视图。
-// [POS]: Runtime 目录桥接，不识别技能具体类型。
+// [INPUT]: 显式本地目录与基础工具注册表。
+// [OUTPUT]: 提供请求、授权执行与释放参与者需求元数据。
+// [POS]: Runtime 过渡桥接不隐式创建客户端。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package tools 为显式 MCP 客户端提供目录与持久化结果的窄边界。
@@ -67,7 +67,7 @@ func (registry *Registry) MCPProposal(name string, arguments json.RawMessage) (M
 	return registry.Proposal(name, arguments)
 }
 
-// Proposal 实现 contract.MCPProposalSource 端口；语义与 MCPProposal 相同。
+// Proposal 提供能力侧的本地授权投影；语义与 MCPProposal 相同。
 func (registry *Registry) Proposal(name string, arguments json.RawMessage) (MCPProposal, bool, error) {
 	if registry == nil || registry.mcp == nil {
 		return MCPProposal{}, false, nil
@@ -103,13 +103,16 @@ func (registry *Registry) ResetMCPProjection() {
 	}
 }
 
-// MCPNeedsQuiescence 只查询本次 Boot 是否仍持有外部会话，不产生副作用。
-func (registry *Registry) MCPNeedsQuiescence() bool {
+// NeedsQuiescence 只查询本次 Boot 是否仍持有外部会话，不产生副作用。
+func (registry *Registry) NeedsQuiescence() bool {
 	return registry.mcp != nil && registry.mcp.NeedsQuiescence()
 }
 
-// ExecuteWithMCPIdentity 将策略已授权的认证摘要传到传输，普通内置工具保持原有执行入口。
-func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name string, raw json.RawMessage, identity string) contract.ToolResult {
+// ExecuteWithBinding 将策略已授权的认证摘要传到传输，普通内置工具保持原有执行入口。
+func (registry *Registry) ExecuteWithBinding(ctx context.Context, name string, raw json.RawMessage, identity string) contract.ToolResult {
+	if identity != "" && registry.mcp == nil {
+		return contract.ToolFailure("authorized_execution_unavailable", "authorized tool execution is not configured")
+	}
 	if identity != "" && registry.mcp != nil {
 		return registry.mcp.ExecuteWithIdentity(ctx, name, raw, identity)
 	}
@@ -118,3 +121,14 @@ func (registry *Registry) ExecuteWithMCPIdentity(ctx context.Context, name strin
 
 // RequiresRequestScope 要求存在外部目录时使用绑定模型请求作用域的完整授权端口，避免遗漏声明约束。
 func (registry *Registry) RequiresRequestScope() bool { return registry.mcp != nil }
+
+// RequiresAuthorizedExecution 声明外部目录必须保留不透明授权绑定的执行端口。
+func (registry *Registry) RequiresAuthorizedExecution() bool { return registry.mcp != nil }
+
+// RequiredLifecycleTools 声明外部资源必须具备同名释放参与者；查询不建立连接。
+func (registry *Registry) RequiredLifecycleTools() []string {
+	if registry.mcp == nil {
+		return nil
+	}
+	return []string{contract.MCPQuiesceTool}
+}

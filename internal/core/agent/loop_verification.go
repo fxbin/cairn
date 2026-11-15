@@ -1,3 +1,8 @@
+// [INPUT]: 冻结验证计划、工作区观察与资源释放端口。
+// [OUTPUT]: 执行独立验证并记录可信证据。
+// [POS]: 验证前先确认资源释放，执行成功与可信分开。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -57,7 +62,7 @@ func (err *verificationPersistenceError) Unwrap() error {
 
 // runVerification 创建并执行冻结验证计划，任何失败都会反馈给后续模型轮次。
 func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID) error {
-	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+	if err := loop.quiesceResources(ctx, projection, input); err != nil {
 		return err
 	}
 	events, err := loop.Journal.Load(context.WithoutCancel(ctx), input.RunID)

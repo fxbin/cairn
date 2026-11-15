@@ -1,6 +1,6 @@
-// [INPUT]: 真实策略、Journal 与无外部传输目录替身。
-// [OUTPUT]: 验证声明、审批、脚本与冷恢复边界。
-// [POS]: Core 对 MCP 装配合同的兼容回归。
+// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
+// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
+// [POS]: Core 的接口迁移回归，保留原安全断言。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package agent
@@ -97,7 +97,7 @@ func newMCPLoopTest(t *testing.T, catalog tools.MCPCatalog, provider ports.Provi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []ToolResultObserver{mcp.NewHistory(registry)}, Gate: scopedAuthorizer, Model: "fake", MaxTurns: 4}
+	return &Loop{Journal: journal, Provider: provider, Tools: registry, ResultObservers: []ToolResultObserver{mcp.NewHistory(registry)}, LifecycleParticipants: []LifecycleParticipant{mcp.NewLifecycle(registry)}, Gate: scopedAuthorizer, Model: "fake", MaxTurns: 4}
 }
 
 // TestMCPLoadInSameResponseCannotInvokeUndeclaredTool 发现可为下一轮加载工具，不能改变当前响应的授权声明。

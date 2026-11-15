@@ -1,47 +1,41 @@
-// [INPUT]: 工具注册表的可选授权执行与资源端口。
-// [OUTPUT]: 传递外部授权身份并查询会话占用。
-// [POS]: Core 的 MCP 执行过渡适配，投影已独立。
+// [INPUT]: 可选授权执行端口与不透明执行绑定。
+// [OUTPUT]: 传递绑定并拒绝向普通执行降级。
+// [POS]: Core 不识别协议名称，缺必需端口时失败关闭。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
-// tool_capabilities.go 将可选工具能力与最小工具端口分离。
+// tool_capabilities.go 定义可选授权执行边界，不识别协议名称。
 // Author: fxbin
 package agent
 
 import (
 	"context"
 	"encoding/json"
-	"strings"
-
+	"errors"
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// mcpToolCapability 是外部工具授权身份与资源生命周期的过渡端口。
-// 实现方须提供完整契约，避免出现仅支持执行而不支持结果核验的半接线状态。
-type mcpToolCapability interface {
-	ExecuteWithMCPIdentity(context.Context, string, json.RawMessage, string) contract.ToolResult
-	MCPNeedsQuiescence() bool
+// authorizedToolExecutor 将策略的不透明执行绑定原样交给实际传输。
+type authorizedToolExecutor interface {
+	ExecuteWithBinding(context.Context, string, json.RawMessage, string) contract.ToolResult
 }
 
-// mcpCapability 仅在注册表实现完整扩展契约时返回有效端口。
-func (loop *Loop) mcpCapability() mcpToolCapability {
-	capability, _ := loop.Tools.(mcpToolCapability)
-	return capability
-}
-
-// executeToolWithIdentity 在存在外部工具能力时保留授权身份；缺少扩展时
-// 仅允许执行普通工具，禁止把外部调用降级成未经身份约束的基础执行。
-func (loop *Loop) executeToolWithIdentity(ctx context.Context, name string, arguments json.RawMessage, identity string) contract.ToolResult {
-	if capability := loop.mcpCapability(); capability != nil {
-		return capability.ExecuteWithMCPIdentity(ctx, name, arguments, identity)
+// validateToolExecution 拒绝要求授权执行却缺少完整执行端口的装配。
+func (loop *Loop) validateToolExecution() error {
+	if required, ok := loop.Tools.(interface{ RequiresAuthorizedExecution() bool }); ok && required.RequiresAuthorizedExecution() {
+		if _, ok := loop.Tools.(authorizedToolExecutor); !ok {
+			return errors.New("tool registry requires an authorized execution port")
+		}
 	}
-	if identity != "" || strings.HasPrefix(name, "mcp__") || name == contract.MCPQuiesceTool {
-		return contract.ToolFailure("mcp_unavailable", "MCP capability is not configured")
+	return nil
+}
+
+// executeToolWithBinding 非空绑定不得降级普通执行；普通工具保留原最小端口。
+func (loop *Loop) executeToolWithBinding(ctx context.Context, name string, arguments json.RawMessage, binding string) contract.ToolResult {
+	if executor, ok := loop.Tools.(authorizedToolExecutor); ok {
+		return executor.ExecuteWithBinding(ctx, name, arguments, binding)
+	}
+	if binding != "" {
+		return contract.ToolFailure("authorized_execution_unavailable", "authorized tool execution is not configured")
 	}
 	return loop.Tools.Execute(ctx, name, arguments)
-}
-
-// mcpNeedsQuiescence 仅在外部工具能力实际装配时检查资源占用。
-func (loop *Loop) mcpNeedsQuiescence() bool {
-	capability := loop.mcpCapability()
-	return capability != nil && capability.MCPNeedsQuiescence()
 }

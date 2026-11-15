@@ -1,3 +1,8 @@
+// [INPUT]: Journal 事件、内容制品与固定释放提议。
+// [OUTPUT]: 广播已持久化事实并重建模型消息。
+// [POS]: 内部释放保持审计可见，模型消息不包含其回执。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -48,7 +53,7 @@ func (loop *Loop) appendOnce(ctx context.Context, projection *domain.RunProjecti
 	if err := projection.Apply(event); err != nil {
 		return fmt.Errorf("apply prevalidated %s after sequence %d: %w", event.Type, projection.LastSeq, err)
 	}
-	if event.Type == domain.EventOperationStarted && !isMCPLifecyclePayload(event.Payload) {
+	if event.Type == domain.EventOperationStarted && !loop.isLifecyclePayload(event.Payload) {
 		loop.startedOperations++
 	}
 	if loop.OnEvent != nil {
@@ -116,7 +121,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != contract.MCPQuiesceTool {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && !loop.isLifecycleTool(payload.ToolName) {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:
@@ -183,7 +188,7 @@ func (loop *Loop) rebuildMessagesFromEvents(events []domain.Event, fallbackTask 
 				continue
 			}
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && payload.ToolName != contract.MCPQuiesceTool {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && !loop.isLifecycleTool(payload.ToolName) {
 				proposals[*event.OperationID] = ports.ToolCall{ID: payload.CallID, Name: payload.ToolName, Arguments: payload.Arguments}
 			}
 		case domain.EventToolResultAppended:

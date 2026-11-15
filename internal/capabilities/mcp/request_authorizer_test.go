@@ -1,6 +1,6 @@
-// [INPUT]: 无网络 Policy 与声明来源替身。
-// [OUTPUT]: 验证旧判定字段、请求边界和委托参数。
-// [POS]: MCP 请求授权器的独立回归。
+// [INPUT]: 共享合同、显式授权来源与原审批回归。
+// [OUTPUT]: 提供 MCP 授权约束或其最小合同回归。
+// [POS]: 能力层保留协议身份，Core 只传递不透明绑定。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package mcp
@@ -86,7 +86,7 @@ var _ PolicySource = (*RequestAuthorizer)(nil)
 func newTestRequestAuthorizer(t *testing.T) (*RequestAuthorizer, *requestPolicy, *requestDeclarations) {
 	t.Helper()
 	policy := &requestPolicy{decision: contract.AuthorizationDecision{
-		MCPIdentity: "identity-original", Effect: contract.AuthorizationAllow, RuleID: "base-policy", Fingerprint: "sha256:approval-original", Summary: "base summary", WorkspaceObservation: "sha256:workspace", FailureCode: "base-code", FailureData: json.RawMessage(`{"base":true}`),
+		ExecutionBinding: "identity-original", Effect: contract.AuthorizationAllow, RuleID: "base-policy", Fingerprint: "sha256:approval-original", Summary: "base summary", WorkspaceObservation: "sha256:workspace", FailureCode: "base-code", FailureData: json.RawMessage(`{"base":true}`),
 	}}
 	source := &requestDeclarations{fingerprints: make(map[string]string)}
 	authorizer, err := NewRequestAuthorizer(policy, source)

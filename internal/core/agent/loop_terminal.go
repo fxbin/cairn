@@ -1,3 +1,8 @@
+// [INPUT]: 运行投影、资源释放提议与提交窗口。
+// [OUTPUT]: 记录取消、失败和预算终态。
+// [POS]: 释放未确认时保留待对账，不先写运行终态。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -33,7 +38,7 @@ func (loop *Loop) persistCancellation(ctx context.Context, projection *domain.Ru
 	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
-	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+	if err := loop.quiesceResources(ctx, projection, input); err != nil {
 		return Result{RunID: input.RunID}, err
 	}
 	commitContext, cancel := loop.commitContext(ctx)
@@ -71,7 +76,7 @@ func (loop *Loop) persistBudgetExceeded(ctx context.Context, projection *domain.
 	if projection.Cancelling() {
 		return Result{RunID: input.RunID}, cause
 	}
-	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+	if err := loop.quiesceResources(ctx, projection, input); err != nil {
 		return Result{RunID: input.RunID}, err
 	}
 	commitContext, cancel := loop.commitContext(ctx)
@@ -313,7 +318,7 @@ func (loop *Loop) persistRunFailure(ctx context.Context, projection *domain.RunP
 	if cause == nil {
 		cause = errors.New(failure.Error)
 	}
-	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+	if err := loop.quiesceResources(ctx, projection, input); err != nil {
 		return Result{RunID: input.RunID}, err
 	}
 	commitContext, cancel := loop.commitContext(ctx)
@@ -337,7 +342,7 @@ func (loop *Loop) failCurrentTurn(ctx context.Context, projection *domain.RunPro
 // persistLoopGuardExceeded 关闭当前轮次并以独立 loop_guard 分类持久化提前终止原因。
 func (loop *Loop) persistLoopGuardExceeded(ctx context.Context, projection *domain.RunProjection, input RunInput, reason string) error {
 	guardErr := &ports.LoopGuardExceededError{Reason: reason}
-	if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+	if err := loop.quiesceResources(ctx, projection, input); err != nil {
 		return err
 	}
 	commitContext, cancel := loop.commitContext(ctx)

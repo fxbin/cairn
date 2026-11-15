@@ -1,3 +1,8 @@
+// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
+// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
+// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -77,7 +82,7 @@ func TestMCPQuiescesBeforeVerificationAndPreservesReconciliation(t *testing.T) {
 				}
 				closed := false
 				for _, event := range events {
-					if event.Type == domain.EventOperationSucceeded && isMCPLifecyclePayload(event.Payload) {
+					if event.Type == domain.EventOperationSucceeded && loop.isLifecyclePayload(event.Payload) {
 						closed = true
 					}
 					if event.Type == domain.EventVerificationStarted && !closed {
@@ -181,7 +186,7 @@ func TestMCPLifecycleSuccessCannotResetBusinessFailureGuard(t *testing.T) {
 			domain.Event{Type: domain.EventOperationSucceeded, OperationID: &cleanup},
 		)
 	}
-	if repeatedOperationFailureGuard(events) != loopGuardRepeatedOperationFailure {
+	if newMCPLoopTest(t, &loopMCPCatalog{}, &scriptedProvider{}, memory.New()).repeatedOperationFailureGuard(events) != loopGuardRepeatedOperationFailure {
 		t.Fatal("lifecycle cleanup reset business failure guard")
 	}
 }
@@ -205,7 +210,7 @@ func TestMCPLifecycleIsInvisibleToModelAndProgress(t *testing.T) {
 			t.Fatal("internal cleanup created an unpaired model result")
 		}
 	}
-	if openedTurnCount(events) != 0 || operationSignatureForTurn(events, turnID) != "" || progressFingerprint("workspace", events) != progressFingerprint("workspace", nil) {
+	if loop.openedTurnCount(events) != 0 || loop.operationSignatureForTurn(events, turnID) != "" || loop.progressFingerprint("workspace", events) != loop.progressFingerprint("workspace", nil) {
 		t.Fatal("lifecycle cleanup created business progress or consumed model turns")
 	}
 }

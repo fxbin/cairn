@@ -22,7 +22,7 @@ type toolRuleProbe struct {
 
 func (rule *toolRuleProbe) DecideTool(string, json.RawMessage) (contract.AuthorizationDecision, bool, error) {
 	rule.calls++
-	return Decision{Effect: rule.effect, RuleID: "capability", Fingerprint: "bound", MCPIdentity: "identity"}, rule.claimed, rule.err
+	return Decision{Effect: rule.effect, RuleID: "capability", Fingerprint: "bound", ExecutionBinding: "identity"}, rule.claimed, rule.err
 }
 
 // TestToolRulesKeepBuiltinPriorityAndHooks 能力不能覆盖固定工具，候选必须接受 hooks 收紧。
@@ -37,7 +37,7 @@ func TestToolRulesKeepBuiltinPriorityAndHooks(t *testing.T) {
 	for _, hook := range []hooks.Effect{hooks.EffectAsk, hooks.EffectDeny, hooks.EffectAllow} {
 		gate.SetHooks([]hooks.Rule{{ID: "restrict", Event: hooks.EventPreTool, ToolMatch: "*", Effect: hook, Enabled: true}})
 		decision, err = gate.Decide("extension", json.RawMessage(`{}`))
-		if err != nil || string(decision.Effect) != string(hook) || decision.Fingerprint != "bound" || decision.MCPIdentity != "identity" {
+		if err != nil || string(decision.Effect) != string(hook) || decision.Fingerprint != "bound" || decision.ExecutionBinding != "identity" {
 			t.Fatalf("candidate=%+v err=%v", decision, err)
 		}
 	}

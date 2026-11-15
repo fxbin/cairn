@@ -1,3 +1,8 @@
+// [INPUT]: 历史 Journal、授权端口与工具执行绑定。
+// [OUTPUT]: 恢复已知状态并拒绝未对账副作用重发。
+// [POS]: Core 恢复入口，不解释传输身份。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -318,7 +323,7 @@ func (loop *Loop) resume(ctx context.Context, input RunInput, approval ports.App
 	if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err
 	}
-	result := loop.executeToolWithIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+	result := loop.executeToolWithBinding(ctx, call.Name, call.Arguments, decision.ExecutionBinding)
 	result = redactToolResult(result)
 	if result.Code == contract.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}

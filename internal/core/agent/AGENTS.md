@@ -56,7 +56,8 @@ loop_test.go: 回归 Loop 串行推进模型、工具和 Journal。终态与可�
 loop_tools.go: ToolOperation 保持提议、策略、审批与 started 顺序。结果双落盘后通知观察器。
 loop_verification.go: Verification 执行冻结命令并校验工作区观察。成功执行不自动等于可信验收。
 loop_verification_recovery_test.go: 验证验证命令各中断点的恢复与工作区漂移拒绝。
-mcp_lifecycle.go: MCP 清理复用受审计操作链。释放未确认时保留待对账操作。
+lifecycle_contract_test.go: 验证通用资源释放及缺失参与者和授权执行端口的阻断。
+lifecycle.go: LifecycleParticipant 提供固定释放提议。Core 保留审计与待对账链。
 mcp_lifecycle_test.go: 回归 MCP 清理复用受审计操作链。释放未确认时保留待对账操作。
 mcp_test.go: 验证 MCP 声明、审批与不确定结果的恢复边界。
 message_inbox.go: MessageInbox 在安全点交付跨运行消息。消息不扩大当前权限。
@@ -73,7 +74,7 @@ skill_context_test.go: 验证历史正文、冷恢复、压缩及观察器前置
 steering_test.go: 验证安全点消费、输入幂等与冷恢复去重。
 telemetry.go: SemanticTelemetry 只消费已持久化事件。导出失败不改变运行事实。
 telemetry_test.go: 回归 SemanticTelemetry 只消费已持久化事件。导出失败不改变运行事实。
-tool_capabilities.go: MCP 过渡端口传递授权身份并查询会话占用。不承担目录与技能投影。
+tool_capabilities.go: AuthorizedExecutor 原样传递不透明绑定。缺失必需端口时失败关闭。
 tool_registry.go: ToolRegistry 提供 Loop 必需的工具端口。能力状态由显式观察器接纳。
 ui_prompt_telemetry.go: UIPhaseTracker 统计执行和等待区间。不参与策略或终态判定。
 ui_prompt_telemetry_test.go: 回归 UIPhaseTracker 统计执行和等待区间。不参与策略或终态判定。

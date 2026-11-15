@@ -1,3 +1,8 @@
+// [INPUT]: 真实 Boot、最小预设与隔离工作区。
+// [OUTPUT]: 验证基础工具面隐藏全部可选资源端口。
+// [POS]: 应用层最小装配验收，保留失败关闭断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -50,7 +55,7 @@ func TestMinimalBootExposesOnlyBasicPorts(t *testing.T) {
 	}); exposed {
 		t.Fatal("minimal registry exposed skill methods")
 	}
-	if _, exposed := boot.Loop.Tools.(interface{ MCPNeedsQuiescence() bool }); exposed {
+	if _, exposed := boot.Loop.Tools.(interface{ RequiredLifecycleTools() []string }); exposed {
 		t.Fatal("minimal registry exposed MCP methods")
 	}
 	if boot.Manifest().ConfigFingerprint != configuration.Fingerprint() {
