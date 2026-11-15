@@ -1,9 +1,10 @@
-// [INPUT]: SQLite 行、领域事件和调用方取消上下文。
+// [INPUT]: 当前行扫描端口、领域事件与已观察取消。
 // [OUTPUT]: 提供追加、读取及完整性检查的 Journal 实现。
-// [POS]: 持久化适配器，取消错误与损坏证据保持分离。
+// [POS]: 持久化适配器，已观察取消先于行解码。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
-// Package sqlite persists Cairn's append-only event journal in SQLite.
+// Package sqlite 用SQLite持久化Cairn追加式事件Journal。
+// Author: fxbin
 package sqlite
 
 import (
@@ -298,8 +299,17 @@ const loadRunEventsSQL = `SELECT schema_version, event_id, run_id, workspace_has
 		turn_id, operation_id, attempt_id, payload_json, prev_hash, event_hash
 		FROM events WHERE run_id = ? ORDER BY seq ASC`
 
+// journalEventRow 限定读取当前行所需的观察错误与扫描端口。
+type journalEventRow interface {
+	Err() error
+	Scan(dest ...any) error
+}
+
 // scanJournalEvent 从当前 SQLite 行解码事件；本函数不推进游标或重放事件。
-func scanJournalEvent(rows *sql.Rows) (domain.Event, error) {
+func scanJournalEvent(rows journalEventRow) (domain.Event, error) {
+	if err := rows.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return domain.Event{}, fmt.Errorf("scan journal event: %w", err)
+	}
 	var event domain.Event
 	var occurredAt string
 	var turnID, operationID, attemptID sql.NullString

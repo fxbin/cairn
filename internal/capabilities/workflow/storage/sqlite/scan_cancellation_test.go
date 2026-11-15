@@ -1,4 +1,4 @@
-// [INPUT]: 真实 SQLite 行、可取消查询与字段损坏负例。
+// [INPUT]: 真实SQLite行、观察取消替身与损坏负例。
 // [OUTPUT]: 验证扫描取消保留错误身份，损坏内容仍失败关闭。
 // [POS]: 工作流存储的读取取消与完整性边界回归。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
@@ -29,7 +29,7 @@ func workflowScanFixture(t *testing.T) (*Store, workflow.ID) {
 	return store, id
 }
 
-// TestScanWorkflowEventPreservesCancellation 固定 Next 后、Scan 前的真实取消窗口。
+// TestScanWorkflowEventPreservesCancellation 在 Next 后观察真实取消与截止时间。
 func TestScanWorkflowEventPreservesCancellation(t *testing.T) {
 	const (
 		queryDeadline    = 100 * time.Millisecond
@@ -95,6 +95,40 @@ func TestLoadStillRejectsMalformedWorkflowRow(t *testing.T) {
 			events, err := store.Load(context.Background(), id)
 			if !errors.Is(err, ErrPersistedContent) || !IsStateCorruptError(err) || len(events) != 0 {
 				t.Fatalf("malformed row accepted: events=%v err=%v", events, err)
+			}
+		})
+	}
+}
+
+// observedCancellationRow 固定 Err 已可见、Scan 仍能读取缓冲行的标准库窗口。
+type observedCancellationRow struct {
+	cancellation error
+	scanned      bool
+}
+
+// Err 返回已经观察到的取消身份。
+func (row *observedCancellationRow) Err() error {
+	return row.cancellation
+}
+
+// Scan 保留关闭发生前仍可成功解码的时间字段，并记录是否触碰当前行。
+func (row *observedCancellationRow) Scan(dest ...any) error {
+	row.scanned = true
+	*dest[5].(*string) = time.Unix(1_700_000_000, 0).UTC().Format(time.RFC3339Nano)
+	return nil
+}
+
+// TestScanWorkflowEventHonorsObservedCancellation 锁定观察取消后不再扫描缓冲行。
+func TestScanWorkflowEventHonorsObservedCancellation(t *testing.T) {
+	for _, want := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(want.Error(), func(t *testing.T) {
+			row := &observedCancellationRow{cancellation: errors.Join(errors.New("observed cancellation"), want)}
+			_, err := scanWorkflowEvent(row)
+			if !errors.Is(err, want) || errors.Is(err, ErrPersistedContent) {
+				t.Fatalf("observed cancellation lost identity: %v", err)
+			}
+			if row.scanned {
+				t.Fatal("observed cancellation still scanned a buffered row")
 			}
 		})
 	}
