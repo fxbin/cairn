@@ -1,3 +1,8 @@
+// [INPUT]: 依赖domain已持久化事件与标准库同步及摘要。
+// [OUTPUT]: 提供受限维度、聚合快照与稳定关联跨度。
+// [POS]: 能力内纯投影，不决定运行终态或权限。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package telemetry 把已成功持久化的领域事件投影为可选的语义观测信号。
 //
 // 观测面只消费已经 append 成功的事件：实时采集通过事件 sink 接入，离线重建

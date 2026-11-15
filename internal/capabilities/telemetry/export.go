@@ -1,3 +1,8 @@
+// [INPUT]: 依赖本能力快照与标准库HTTP、环境及队列。
+// [OUTPUT]: 提供唯一接线判定、OTLP编码与异步导出。
+// [POS]: 显式装配导出面，保留稳定scope外部身份。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件实现语义观测的导出面：只把受限的聚合结果与关联跨度送到接收器。
 //
 // Author: fxbin

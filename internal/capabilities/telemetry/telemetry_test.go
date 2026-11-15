@@ -1,3 +1,8 @@
+// [INPUT]: 依赖合成领域事件与本能力实时及离线投影。
+// [OUTPUT]: 回归聚合一致性、采样、维度与敏感正文过滤。
+// [POS]: 能力合同回归，保留原运行与失败断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package telemetry
 
 import (

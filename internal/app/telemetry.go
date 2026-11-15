@@ -1,3 +1,8 @@
+// [INPUT]: 依赖遥测能力、配置与成功持久化事件。
+// [OUTPUT]: 提供可选装配、运行收束与工作区统计投影。
+// [POS]: 应用保有资源所有权，Doctor共用能力接线判定。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件装配可选的语义观测导出面：配置门、事件接线、导出统计与运行边界收束。
 //
 // Author: fxbin
@@ -11,9 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fxbin/cairn/internal/capabilities/telemetry"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/runtime/telemetry"
 )
 
 // 语义观测导出面的状态取值直接来自 telemetry 包的接线判定；doctor 只报告

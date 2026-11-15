@@ -1,3 +1,8 @@
+// [INPUT]: 依赖本地HTTP接收器与本能力导出及配置判定。
+// [OUTPUT]: 回归报文、零导出、协议拒绝与队列失败隔离。
+// [POS]: 本地接收器证据不代表外部服务验收。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package telemetry
 
 import (
