@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供持久化事件指标与规范JSON提交。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 指标观测与 JSON 提交。
 // Author: fxbin
 package benchmark

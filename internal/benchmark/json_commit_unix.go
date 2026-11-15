@@ -1,5 +1,10 @@
 //go:build !windows
 
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供非Windows的同步与JSON原子提交。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package benchmark 提供隔离评测、冻结合同与可恢复结果留档。
 // Author: fxbin
 package benchmark

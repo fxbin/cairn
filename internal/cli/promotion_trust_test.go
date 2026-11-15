@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同与冻结收益证据。
+// [OUTPUT]: 提供旧成功记录不得晋升的回归。
+// [POS]: CLI信任边界，原失败关闭断言不变。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package cli
 
 import (
@@ -10,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/fxbin/cairn/internal/benchmark"
-	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 )
 
 // TestLoadSuiteResultForPromotionRejectsLegacySuccess 锁定摘要正确的旧套件

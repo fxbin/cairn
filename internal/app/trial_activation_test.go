@@ -1,3 +1,8 @@
+// [INPUT]: 依赖冻结版本、晋升与配置夹具。
+// [OUTPUT]: 提供显式激活、漂移和无凭据拒绝回归。
+// [POS]: 应用试运行测试，不执行真实Provider。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -11,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 

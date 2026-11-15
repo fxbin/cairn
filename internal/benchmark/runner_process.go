@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供受限进程、代理环境和构建身份。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 受限进程与代理环境。
 // Author: fxbin
 package benchmark

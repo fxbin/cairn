@@ -1,9 +1,8 @@
-/*
- * [INPUT]: 依赖go list 真实生产导入边与明确包分层。
- * [OUTPUT]: 提供包依赖守卫与能力单元边界回归。
- * [POS]: 架构测试；同能力子包可组合，反向和跨能力依赖仍拒绝。
- * [PROTOCOL]: Update this header on change, then check AGENTS.md
- */
+// [INPUT]: 依赖go list真实生产导入与精确层级登记。
+// [OUTPUT]: 提供生产依赖与能力单元守卫。
+// [POS]: 存储叶子仅依赖本能力，反向和跨能力依赖仍拒绝。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package arch_test 提供 Cairn 的包依赖守卫：以 `go list` 的真实 import 边为准，
 // 阻止 Core、合同层、Runtime、配置层与 Studio 之间新增越层引用。
 //
@@ -74,7 +73,6 @@ var packageLayers = map[string]packageLayer{
 	"internal/runtime/lock":         layerRuntime,
 	"internal/runtime/credential":   layerRuntime,
 	"internal/runtime/artifact":     layerRuntime,
-	"internal/runtime/memory":       layerRuntime,
 	"internal/runtime/provider":     layerRuntime,
 	"internal/runtime/modelcatalog": layerRuntime,
 	"internal/runtime/telemetry":    layerRuntime,
@@ -88,6 +86,8 @@ var packageLayers = map[string]packageLayer{
 	"internal/core/agent": layerCore,
 	// 显式可选能力。
 	"internal/capabilities/skills":                  layerCapability,
+	"internal/capabilities/memory":                  layerCapability,
+	"internal/capabilities/memory/storage/sqlite":   layerCapability,
 	"internal/capabilities/hooks":                   layerCapability,
 	"internal/capabilities/mcp":                     layerCapability,
 	"internal/capabilities/workflow":                layerCapability,

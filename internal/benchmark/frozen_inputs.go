@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供执行计划摘要的唯一公式。冻结器和执行器共用。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件承载评测冻结合同的输入摘要计算：解析计划从这里取得唯一事实源，冻
 // 结工具与执行器不得各自另写公式。
 //

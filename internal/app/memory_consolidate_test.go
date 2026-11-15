@@ -1,3 +1,8 @@
+// [INPUT]: 依赖真实记忆存储与运行来源夹具。
+// [OUTPUT]: 提供巩固应用入口、来源和事务回归。
+// [POS]: 既有应用回归，不增加自动归纳入口。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -8,9 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/memory"
-	_ "modernc.org/sqlite"
 
 	"github.com/fxbin/cairn/internal/ports"
 )

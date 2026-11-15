@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供重算冻结评测身份与整数收益证据。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Package benchmark 提供本地评测任务编排与可验证结果投影。
 //
 // Author: fxbin
@@ -13,7 +18,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/fxbin/cairn/internal/runtime/memory"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 

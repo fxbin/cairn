@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory归纳合同与能力SQLite叶子。
+// [OUTPUT]: 提供显式巩固和来源校验用例。
+// [POS]: 应用验证来源，能力存储原子提交整批计划。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件补充 M3 的巩固、派生拒绝与派生解释用例：巩固先做跨库验证再进入
 // Memory Store 单写入者事务；派生候选永不进入运行时召回。
 //
@@ -12,9 +17,9 @@ import (
 	"os"
 	"time"
 
-	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
+	memstoresqlite "github.com/fxbin/cairn/internal/capabilities/memory/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // MemoryConsolidateOptions 描述一次事务化巩固的输入边界：工作区、保留期、

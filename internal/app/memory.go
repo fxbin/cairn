@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory能力、Journal与制品证据。
+// [OUTPUT]: 提供结构化捕获、召回和跨库来源校验。
+// [POS]: 应用仅连接事实源，不以记忆代替运行事实。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件实现可信记忆应用用例。
 //
 // Author: fxbin
@@ -13,11 +18,11 @@ import (
 	"path/filepath"
 	"time"
 
-	memstoresqlite "github.com/fxbin/cairn/internal/adapters/memstore/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
+	memstoresqlite "github.com/fxbin/cairn/internal/capabilities/memory/storage/sqlite"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // MemoryCaptureOptions 描述从一个已校验终态 Run 生成固定 run_outcome 候选的输入。

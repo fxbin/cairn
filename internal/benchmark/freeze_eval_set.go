@@ -1,3 +1,8 @@
+// [INPUT]: 依赖Memory评测合同、冻结资产与受控执行入口。
+// [OUTPUT]: 提供冻结任务、变体、镜像与私有验证资产。启动前自检绑定同一指纹。。
+// [POS]: 带外评测工具链，不进入最小Agent内核。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 本文件承载评测冻结合同的装配编排：从本地忽略资产推导十五字段评测集与凭
 // 据策略文件，装配面与执行器逐一同源（任务包、变体展开、bootstrap 合同、镜
 // 像自省、verifier 文件摘要），并在落盘前以执行器的启动前检查做一次完整自
@@ -19,10 +24,10 @@ import (
 	"time"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 	"github.com/fxbin/cairn/internal/runtime/sandboxeval"
 )
 

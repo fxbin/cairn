@@ -1,3 +1,8 @@
+// [INPUT]: 依赖真实候选存储、Journal与来源制品。
+// [OUTPUT]: 提供捕获、精确召回和损坏拒绝回归。
+// [POS]: 跨库来源测试，记忆不决定Run可信状态。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -13,10 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/ports"
 	"github.com/fxbin/cairn/internal/runtime/lock"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // TestMemoryCaptureRecallRevokeAndDoctor 锁定从终态 Journal 派生的 M0/M1

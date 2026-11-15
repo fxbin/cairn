@@ -1,3 +1,8 @@
+// [INPUT]: 依赖真实评测与候选存储夹具。
+// [OUTPUT]: 提供演化入口和冻结来源边界回归。
+// [POS]: 应用流程测试，原拒绝与不变性断言保持。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package app
 
 import (
@@ -7,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/memory"
 )
 
 // evolutionAppFixture 在同一工作区完成两次同任务运行、捕获并巩固，

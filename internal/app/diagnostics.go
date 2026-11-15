@@ -1,6 +1,6 @@
-// [INPUT]: 依赖配置、能力纯校验与只读环境探测。
-// [OUTPUT]: 提供Doctor报告与分面的就绪事实。
-// [POS]: 只读诊断共用钩子准入口径，不创建执行资源。
+// [INPUT]: 依赖配置、Memory召回工具与只读环境探测。
+// [OUTPUT]: 提供Doctor报告与显式预设工具组合。
+// [POS]: 应用装配门面，保持工具规格顺序和只读诊断。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fxbin/cairn/internal/capabilities/memory"
 	"io/fs"
 	"os/exec"
 	"runtime/debug"
@@ -367,7 +368,7 @@ func presetToolsWithWeb(workspace tools.Workspace, execTool tools.ExecCommand, p
 }
 
 // presetToolsWithCallbacks 显式装配实例回调并保持工具规格与注册顺序；最小组合不引用回调。
-func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig, explain tools.MemoryExplainFunc, deliver tools.MessageDeliverFunc) []tools.Tool {
+func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecCommand, preset string, options config.ToolsConfig, explain memory.MemoryExplainFunc, deliver tools.MessageDeliverFunc) []tools.Tool {
 	if preset == config.PresetMinimal {
 		return minimalTools(workspace, execTool)
 	}
@@ -403,7 +404,7 @@ func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecComm
 	}
 	if preset == config.PresetReadOnly {
 		readOnly := append([]tools.Tool(nil), available[:7]...)
-		readOnly = append(readOnly, tools.MemoryRecall{Explain: explain})
+		readOnly = append(readOnly, memory.MemoryRecall{Explain: explain})
 		if options.LspDiagnostics {
 			readOnly = append(readOnly, tools.LspDiagnostics{Workspace: workspace})
 		}
@@ -412,7 +413,7 @@ func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecComm
 	if options.LspDiagnostics {
 		available = append(available, tools.LspDiagnostics{Workspace: workspace})
 	}
-	available = append(available, tools.MemoryRecall{Explain: explain})
+	available = append(available, memory.MemoryRecall{Explain: explain})
 	return available
 }
 
