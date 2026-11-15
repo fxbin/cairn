@@ -98,6 +98,7 @@ tasks:
           SCRIPT: '{{if eq .DEV "true"}}build:dev{{else}}build{{end}}'
     env:
       PRODUCTION: '{{if eq .DEV "true"}}false{{else}}true{{end}}'
+      WAILS_BINDINGS_SKIP: "1"
 
   frontend:run:
     summary: Run a frontend script with selected runner
@@ -188,7 +189,12 @@ tasks:
     generates:
       - frontend/bindings/**/*
     cmds:
-      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+      - |
+        if command -v wails3 >/dev/null 2>&1; then
+          wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+        else
+          go run "github.com/wailsapp/wails/v3/cmd/wails3@$(go list -m -f '{{"{{.Version}}"}}' github.com/wailsapp/wails/v3)" generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+        fi
 
   generate:icons:
     summary: Generates the Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).

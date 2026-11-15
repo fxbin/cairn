@@ -32,9 +32,9 @@ const mock = vi.hoisted(() => ({
   onStream: vi.fn((_handler?: (event: unknown) => void) => () => {}),
 }));
 vi.mock("../desktop/client", () => ({ desktop: mock }));
-import AppV2 from "../v2/AppV2";
-import { ReconciliationV2 } from "../v2/RecoveryV2";
-import { QueuePanelV2 } from "../v2/QueuePanelV2";
+import App from "../App";
+import { ReconciliationPanel } from "../workbench/RecoveryPanel";
+import { QueuePanel } from "../workbench/QueuePanel";
 
 const sampleRun = (state = "completed", reconcile = false) => ({
   run_id: "r1",
@@ -65,12 +65,12 @@ function setup() {
   mock.onStream.mockReturnValue(() => {});
 }
 
-describe("Cairn Desktop 2.0 — real bridge contracts", () => {
+describe("Cairn Studio GUI — real bridge contracts", () => {
   beforeEach(() => { vi.clearAllMocks(); setup(); });
 
   it("displays composer-first home with real workspace and no fake runs", async () => {
-    render(<AppV2 />);
-    expect(screen.getByTestId("cairn-v2-shell")).toBeInTheDocument();
+    render(<App />);
+    expect(screen.getByTestId("cairn-workbench-shell")).toBeInTheDocument();
     await waitFor(() => expect(mock.listRuns).toHaveBeenCalledWith({ workspace: "/tmp/cairn-a", include_archived: true }));
     expect(screen.getByRole("heading", { name: "今天想让 Cairn 做什么？" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "描述任务" })).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe("Cairn Desktop 2.0 — real bridge contracts", () => {
 
   it("preserves linked session ID when continuing a completed Run", async () => {
     mock.startRun.mockResolvedValue({ run_id: "r2", state: "starting" });
-    render(<AppV2 />);
+    render(<App />);
     await screen.findByRole("button", { name: /修复登陆/ });
     fireEvent.click(screen.getByRole("button", { name: /修复登陆/ }));
     fireEvent.change(screen.getByRole("textbox", { name: "描述任务" }), { target: { value: "写测试" } });
@@ -89,7 +89,7 @@ describe("Cairn Desktop 2.0 — real bridge contracts", () => {
   });
 
   it("opens right-hand diff and saves a review note without executing it", async () => {
-    render(<AppV2 />);
+    render(<App />);
     await screen.findByRole("button", { name: /修复登陆/ });
     fireEvent.click(screen.getByRole("button", { name: /修复登陆/ }));
     fireEvent.click(screen.getByRole("button", { name: "检查变更" }));
@@ -107,21 +107,21 @@ describe("Cairn Desktop 2.0 — real bridge contracts", () => {
   it("does not offer normal retry for a reconcile-required run", async () => {
     mock.listRuns.mockResolvedValue([sampleRun("waiting_reconcile", true)]);
     mock.inspectRun.mockResolvedValue({ run_id: "r1", state: "waiting_reconcile", events: [], summary: {} });
-    render(<AppV2 />);
+    render(<App />);
     await screen.findByRole("button", { name: /修复登陆/ });
     fireEvent.click(screen.getByRole("button", { name: /修复登陆/ }));
-    expect(await screen.findByTestId("v2-reconcile")).toBeInTheDocument();
+    expect(await screen.findByTestId("reconcile-panel")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "提交人工对账" })).toBeDisabled();
     expect(mock.resumeRun).not.toHaveBeenCalled();
   });
 });
 
-describe("V2 safety-first action panels", () => {
+describe("Workbench safety-first action panels", () => {
   beforeEach(() => { vi.clearAllMocks(); setup(); });
 
   it("requires operation, reason and evidence before recording a reconciliation", async () => {
     mock.resolveReconcile.mockResolvedValue({ state: "completed" });
-    render(<ReconciliationV2 workspace="/tmp/cairn-a" runId="r1" events={[]} onDone={vi.fn()} onError={vi.fn()} />);
+    render(<ReconciliationPanel workspace="/tmp/cairn-a" runId="r1" events={[]} onDone={vi.fn()} onError={vi.fn()} />);
     const submit = screen.getByRole("button", { name: "提交人工对账" });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText("操作 ID"), { target: { value: "op1" } });
@@ -140,7 +140,7 @@ describe("V2 safety-first action panels", () => {
     mock.listQueue.mockResolvedValue([{ input_id: "q1", state: "pending", content_preview: "补测试" }]);
     mock.confirmQueue.mockResolvedValue({ run_id: "r3", state: "running" });
     const onRun = vi.fn();
-    render(<QueuePanelV2 workspace="/tmp/cairn-a" revision={0} onRun={onRun} onError={vi.fn()} />);
+    render(<QueuePanel workspace="/tmp/cairn-a" revision={0} onRun={onRun} onError={vi.fn()} />);
     await screen.findByText("补测试");
     expect(mock.confirmQueue).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确认启动" }));
@@ -150,7 +150,7 @@ describe("V2 safety-first action panels", () => {
 });
 
 
-describe("V2 interaction parity — no legacy App imports", () => {
+describe("Workbench interaction parity — single App entry", () => {
   beforeEach(() => {vi.clearAllMocks();setup();});
   const event=(runId:string,seq:number,type:string,payload:Record<string,unknown>={},operation_id?:string)=>({
     schema_version:1,event_id:runId+":"+seq,run_id:runId,workspace_hash:"w",seq,
@@ -158,7 +158,7 @@ describe("V2 interaction parity — no legacy App imports", () => {
   });
   it("Ctrl+Enter queues exactly once and never invokes startRun",async()=>{
     mock.submitQueue.mockResolvedValue({input_id:"q",state:"pending"});
-    render(<AppV2/>);
+    render(<App/>);
     await screen.findByRole("heading",{name:"今天想让 Cairn 做什么？"});
     await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
     const draft=screen.getByRole("textbox",{name:"描述任务"});
@@ -170,7 +170,7 @@ describe("V2 interaction parity — no legacy App imports", () => {
   it("queue error restores submitted text and preserves new user input",async()=>{
     let reject!:(e:Error)=>void;
     mock.submitQueue.mockImplementation(()=>new Promise((_,r)=>{reject=r;}));
-    render(<AppV2/>);
+    render(<App/>);
     await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
     const draft=screen.getByRole("textbox",{name:"描述任务"});
     fireEvent.change(draft,{target:{value:"original"}});
@@ -188,7 +188,7 @@ describe("V2 interaction parity — no legacy App imports", () => {
       event("r1",2,"approval_requested",{fingerprint:"fp-x",summary:"编辑文件"},"op-1")
     ]});
     mock.resumeRun.mockRejectedValueOnce(new Error("transport failed")).mockResolvedValue({run_id:"r1",state:"resuming"});
-    render(<AppV2/>);
+    render(<App/>);
     fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
     const allow=await screen.findByRole("button",{name:"允许并继续"});
     fireEvent.click(allow);
@@ -203,15 +203,15 @@ describe("V2 interaction parity — no legacy App imports", () => {
     mock.listRuns.mockResolvedValue([sampleRun(),run2]);
     mock.inspectRun.mockImplementation(({run_id}:{run_id:string})=>
       run_id==="r1" ? Promise.resolve({run_id,state:"completed",summary:{},events:[event("r1",1,"run_created",{task:"OLD_RUN_SECRET"})]}) : new Promise(()=>{}));
-    render(<AppV2/>);
+    render(<App/>);
     fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
     await screen.findByText("OLD_RUN_SECRET");
     fireEvent.click(screen.getByRole("button",{name:/打开会话 第二个任务/}));
-    expect(document.querySelector(".v2-transcript")?.textContent||"").not.toContain("OLD_RUN_SECRET");
+    expect(document.querySelector(".wb-transcript")?.textContent||"").not.toContain("OLD_RUN_SECRET");
   });
   it("opens explicit fork from a run without silently continuing its original session",async()=>{
     mock.startRun.mockResolvedValue({run_id:"fork-r2",state:"starting"});
-    render(<AppV2/>);
+    render(<App/>);
     await screen.findByRole("button",{name:/打开会话 修复登陆/});
     fireEvent.click(screen.getByRole("button",{name:"管理会话 r1"}));
     fireEvent.click(screen.getByRole("button",{name:"从此 Run 创建分支"}));
@@ -226,18 +226,18 @@ describe("V2 interaction parity — no legacy App imports", () => {
   it("shows real dirty state, bridge health and server-supplied Git counts",async()=>{
     mock.observeWorkspace.mockResolvedValue({path:"/tmp/cairn-a",exists:true,has_config:true,dirty:true,config_loaded:true});
     mock.listChanges.mockResolvedValue({root:"/tmp/cairn-a",entries:[],added:7,modified:3,deleted:2,untracked:4});
-    render(<AppV2/>);
+    render(<App/>);
     await waitFor(()=>expect(screen.getByText("● 未提交")).toBeInTheDocument());
     expect(screen.getByText(/桥接已连接/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button",{name:/打开会话 修复登陆/}));
     fireEvent.click(screen.getByRole("button",{name:"工作台"}));
-    expect(await screen.findByTestId("v2-change-summary")).toHaveTextContent("新增 7");
-    expect(screen.getByTestId("v2-change-summary")).toHaveTextContent("未跟踪 4");
+    expect(await screen.findByTestId("change-summary")).toHaveTextContent("新增 7");
+    expect(screen.getByTestId("change-summary")).toHaveTextContent("未跟踪 4");
   });
 });
 
 
-describe("V2 Journal and workspace isolation",()=>{
+describe("Workbench Journal and workspace isolation",()=>{
  beforeEach(()=>{vi.clearAllMocks();setup();});
  it("polls selected Journal run again so a late approval stop becomes visible",async()=>{
   let reads=0;
@@ -249,7 +249,7 @@ describe("V2 Journal and workspace isolation",()=>{
     }];
     return {run_id:"r1",state:"waiting_approval",summary:{},events};
   });
-  render(<AppV2/>);
+  render(<App/>);
   fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
   await waitFor(()=>expect(mock.inspectRun).toHaveBeenCalled());
   await new Promise(resolve=>setTimeout(resolve,2120));
@@ -270,12 +270,12 @@ describe("V2 Journal and workspace isolation",()=>{
   mock.observeWorkspace.mockImplementation(async(path:string)=>({path,has_config:true,exists:true,dirty:false,config_loaded:true}));
   let handler:((evt:unknown)=>void)|null=null;
   mock.onStream.mockImplementation((cb?: (evt:unknown)=>void)=>{handler=cb || null;return ()=>{};});
-  render(<AppV2/>);
+  render(<App/>);
   await waitFor(()=>expect(mock.listRuns).toHaveBeenCalledWith({workspace:a, include_archived: true}));
   fireEvent.click(screen.getByRole("button",{name:/cairn-b/}));
   await screen.findByRole("button",{name:/打开会话 CURRENT_B/});
   if(handler)await act(async()=>{handler!({kind:"run.event",workspace:a,run_id:"foreign",event:{run_id:"foreign",seq:1,event_id:"for",type:"assistant_message_appended",payload:{text:"FOREIGN_BODY"}}});});
-  expect(document.querySelector(".v2-transcript")?.textContent||"").not.toContain("FOREIGN_BODY");
+  expect(document.querySelector(".wb-transcript")?.textContent||"").not.toContain("FOREIGN_BODY");
   fireEvent.click(screen.getByRole("button",{name:/cairn-a/}));
   await screen.findByRole("button",{name:/打开会话 CURRENT_A/});
   await act(async()=>oldA([{...sampleRun(),title:"STALE_A",task:"STALE_A"}]));
@@ -283,11 +283,11 @@ describe("V2 Journal and workspace isolation",()=>{
  });
 });
 
-describe("V2 read-only run boundary",()=>{
+describe("Workbench read-only run boundary",()=>{
  beforeEach(()=>{vi.clearAllMocks();setup();});
  it("sends an explicit read-only mode with the new run rather than mutating a frozen run",async()=>{
   mock.startRun.mockResolvedValue({run_id:"readonly-r",state:"starting"});
-  render(<AppV2/>);
+  render(<App/>);
   await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
   fireEvent.click(screen.getByRole("checkbox",{name:"只读"}));
   fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"只分析，不写文件"}});
@@ -297,14 +297,14 @@ describe("V2 read-only run boundary",()=>{
 });
 
 
-describe("V2 narrow window accessibility",()=>{
+describe("Workbench narrow window accessibility",()=>{
  beforeEach(()=>{vi.clearAllMocks();setup();});
  it("720px exposes projects and session list via a real drawer and keeps dirty status",async()=>{
    const previous=window.innerWidth;
    Object.defineProperty(window,"innerWidth",{configurable:true,value:720,writable:true});
    try {
      mock.observeWorkspace.mockResolvedValue({path:"/tmp/cairn-a",exists:true,has_config:true,config_loaded:true,dirty:true});
-     const {unmount}=render(<AppV2/>);
+     const {unmount}=render(<App/>);
      await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
      expect(screen.getByRole("button",{name:"显示或隐藏侧栏"})).toHaveAttribute("aria-expanded","false");
      expect(screen.queryByRole("button",{name:"关闭导航抽屉"})).not.toBeInTheDocument();
@@ -322,7 +322,7 @@ describe("V2 narrow window accessibility",()=>{
  });
 });
 
-describe("V2 live refresh after same-project reselection (R1 regression)",()=>{
+describe("Workbench live refresh after same-project reselection (R1 regression)",()=>{
  const liveRow=(state:string,waitingApproval:boolean)=>({...sampleRun(state),run_id:"r-live",session_id:"session-live",task:"创建 result.txt",title:"创建 result.txt",waiting_approval:waitingApproval});
  const liveEvent=(seq:number,type:string,payload:Record<string,unknown>={})=>({schema_version:1,event_id:`live-e${seq}`,run_id:"r-live",workspace_hash:"w",seq,type,occurred_at:`2026-11-03T00:00:${String(seq).padStart(2,"0")}Z`,payload,prev_hash:"",event_hash:""});
  const approvalEvents=[
@@ -338,10 +338,10 @@ describe("V2 live refresh after same-project reselection (R1 regression)",()=>{
  it("keeps polling alive after reselecting the current project: approval card appears after submit and timeline updates after decision",async()=>{
    mock.startRun.mockResolvedValue({run_id:"r-live",state:"starting"});
    mock.resumeRun.mockResolvedValue({run_id:"r-live",state:"resuming"});
-   render(<AppV2/>);
+   render(<App/>);
    await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
    // 自动恢复已选中当前项目；再次点击同一项目只递增世代而不改变路径（R1 触发条件）。
-   fireEvent.click(document.querySelector(".v2-project-list button") as HTMLElement);
+   fireEvent.click(document.querySelector(".wb-project-list button") as HTMLElement);
    await act(async()=>{await vi.advanceTimersByTimeAsync(100);});
    mock.listRuns.mockResolvedValue([liveRow("active",false)]);
    fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"创建 result.txt"}});
@@ -367,7 +367,7 @@ describe("V2 live refresh after same-project reselection (R1 regression)",()=>{
  });
 });
 
-describe("V2 workspace-switch submit state (issue #33 A)",()=>{
+describe("Workbench workspace-switch submit state (issue #33 A)",()=>{
  beforeEach(()=>{vi.useRealTimers();vi.clearAllMocks();setup();});
  it("resets sending when switching workspace mid-submit so the new workspace can submit",async()=>{
   const a="/tmp/cairn-a",b="/tmp/cairn-b";
@@ -377,7 +377,7 @@ describe("V2 workspace-switch submit state (issue #33 A)",()=>{
   ]);
   let resolveStart!:(value:{run_id:string;state:string})=>void;
   mock.startRun.mockReturnValue(new Promise(resolve=>{resolveStart=resolve;}));
-  render(<AppV2/>);
+  render(<App/>);
   await waitFor(()=>expect(mock.listRuns).toHaveBeenCalled());
   fireEvent.change(screen.getByRole("textbox",{name:"描述任务"}),{target:{value:"A 的任务"}});
   fireEvent.click(screen.getByRole("button",{name:"提交任务"}));
@@ -391,7 +391,7 @@ describe("V2 workspace-switch submit state (issue #33 A)",()=>{
  });
 });
 
-describe("V2 archived selected run state (issue #33 B)",()=>{
+describe("Workbench archived selected run state (issue #33 B)",()=>{
  beforeEach(()=>{vi.useRealTimers();vi.clearAllMocks();setup();});
  it("keeps an archived selected run idle via Journal state and lists it in the archive view",async()=>{
   let runs=[{...sampleRun("completed"),run_id:"r1",session_id:"session1",archived:false}];
@@ -400,7 +400,7 @@ describe("V2 archived selected run state (issue #33 B)",()=>{
   mock.setSessionFlags.mockImplementation(async(sid:string,_pinned:boolean,archived:boolean)=>{
    runs=runs.map(r=>r.session_id===sid?{...r,archived}:r);return{ok:true};
   });
-  render(<AppV2/>);
+  render(<App/>);
   fireEvent.click(await screen.findByRole("button",{name:/打开会话 修复登陆/}));
   await waitFor(()=>expect(mock.inspectRun).toHaveBeenCalled());
   fireEvent.click(screen.getByRole("button",{name:/管理会话 r1/}));

@@ -1,6 +1,7 @@
 /**
  * 桥接层共享类型。与 studio/backend DTO 字段名保持一致；
  * 运行事实来自 Go/Journal，此处仅描述传输结构。
+ * Author: fxbin
  */
 
 export interface ErrorBody {
@@ -330,4 +331,112 @@ export interface ProviderAdmissionRequest {
  request_profile_fingerprint: string;
  reason: string;
  supersedes?: string;
+}
+
+/**
+ * models.dev 模型目录查询与过滤条件。
+ */
+export interface ModelCatalogRequest {
+  provider?: string;
+  query?: string;
+  tool_call_only?: boolean;
+  reasoning_only?: boolean;
+  refresh?: boolean;
+  limit?: number;
+}
+
+/**
+ * models.dev 目录中单个供应商的非敏感摘要投影；仅供预填参考。
+ */
+export interface ModelCatalogProviderView {
+  id: string;
+  name: string;
+  api_base_url?: string;
+  env_names?: string[];
+  model_count: number;
+}
+
+/**
+ * models.dev 目录中单个模型的元数据建议投影；目录建议不构成已验证能力。
+ */
+export interface ModelCatalogEntryView {
+  provider: string;
+  id: string;
+  name: string;
+  family?: string;
+  tool_call: boolean;
+  reasoning: boolean;
+  temperature: boolean;
+  context_tokens: number;
+  output_tokens: number;
+  input_usd_per_million: number;
+  output_usd_per_million: number;
+}
+
+/**
+ * models.dev 模型目录查询的完整返回结果。
+ */
+export interface ModelCatalogView {
+  providers: ModelCatalogProviderView[];
+  models: ModelCatalogEntryView[];
+  fetched_at?: string;
+  from_stale_cache: boolean;
+  total_providers: number;
+  total_models: number;
+}
+
+/**
+ * 已保存命名 Provider 连接预设的非敏感投影。
+ */
+export interface ProviderPresetView {
+  name: string;
+  protocol: string;
+  model: string;
+  base_url: string;
+  api_key_env: string;
+  admission: string;
+  active: boolean;
+}
+
+/**
+ * 保存命名 Provider 连接预设的显式请求；仅携带环境变量标识符。
+ */
+export interface SaveProviderPresetRequest {
+  workspace: string;
+  name: string;
+  base_url: string;
+  model: string;
+  api_key_env: string;
+  protocol?: string;
+  admission?: string;
+  overwrite?: boolean;
+  user_scope?: boolean;
+}
+
+/**
+ * Provider 连接配置向导的显式输入；可选同步保存为命名预设。
+ */
+export interface ProviderSetupRequest {
+  base_url: string;
+  model: string;
+  api_key_env: string;
+  workspace: string;
+  admission?: string;
+  overwrite?: boolean;
+  user_scope?: boolean;
+  catalog_url?: string;
+  catalog_cache?: string;
+  save_preset?: string;
+  overwrite_preset?: boolean;
+}
+
+/**
+ * Provider 连接配置向导生成结果的非敏感投影。
+ */
+export interface ProviderSetupView {
+  config_path: string;
+  api_key_env: string;
+  catalog_matched: boolean;
+  probe_ran: boolean;
+  notes?: string[];
 }
