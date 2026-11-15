@@ -30,7 +30,7 @@ git_read.go: GitStatus 与 GitDiff 只执行只读子命令。路径通过工作
 git_read_test.go: 回归 GitStatus 与 GitDiff 只执行只读子命令。路径通过工作区解析。
 git_write.go: GitCommit 只暂存明确路径并创建提交。不接受任意 Git 命令。
 lsp_diagnostics.go: LspDiagnostics 选择已有语言诊断器。缺少诊断器时失败关闭。
-mcp_catalog.go: MCPCatalog 桥接显式 MCP 目录与固定工具。成功历史回执才激活目录。
+mcp_catalog.go: MCPCatalog 桥接显式目录。声明授权执行及释放参与者的必需端口。
 mcp_process_unix.go: MCPProcess 复用受控双向 stdio 和沙箱。关闭须确认进程与容器退出。
 memory_recall.go: MemoryRecall 只读召回宿主工作区证据。不开放写入或自由文本检索。
 memory_recall_bind.go: MemoryExplainFunc 由 Boot 按实例注入。不保存进程级默认回调。

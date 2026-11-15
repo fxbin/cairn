@@ -47,7 +47,7 @@ rewind_test.go: 回归 Rewind 从无损 before 制品生成回退计划。每次
 service.go: Service.Run 校验冻结身份并驱动 Boot。运行事实来自 Journal。
 service_admission.go: AdmissionGate 统一运行和诊断的准入检查。过期证据失败关闭。
 service_artifacts.go: ArtifactIntegrity 校验历史引用和摘要。损坏制品阻止恢复。
-service_assemble.go: ConfiguredLoop 注入基础设施与能力投影。授权实例保留请求作用域。
+service_assemble.go: ConfiguredLoop 注入同实例投影与释放参与者。授权保留请求作用域。
 service_control.go: Resume、Reconcile 和 Abort 复用装配边界。对账不重发不确定操作。
 service_query.go: RunQuery 只读投影运行与证据。缺失账本不生成虚构记录。
 service_session.go: SessionAncestry 校验会话来源和工作区身份。循环与损坏链失败关闭。

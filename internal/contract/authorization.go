@@ -1,3 +1,8 @@
+// [INPUT]: 纯授权判定与结构化失败数据。
+// [OUTPUT]: 提供不透明执行绑定及原诊断 JSON 字段。
+// [POS]: 共享授权数据，不执行策略或外部动作。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // authorization.go 定义 Core 与 Runtime 共用的纯授权数据合同。
 // 本合同不执行策略、不访问工作区，也不授予权限。
 // Author: fxbin
@@ -20,7 +25,7 @@ const (
 // AuthorizationDecision 携带策略结论、审批绑定与结构化拒绝信息。
 // 事件写入方显式选择持久化字段，本合同不改变既有事件载荷。
 type AuthorizationDecision struct {
-	MCPIdentity          string
+	ExecutionBinding     string `json:"MCPIdentity"`
 	Effect               AuthorizationEffect
 	RuleID               string
 	Fingerprint          string

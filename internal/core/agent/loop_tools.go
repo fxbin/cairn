@@ -1,6 +1,6 @@
-// [INPUT]: Authorizer、工具、Journal 和制品端口。
-// [OUTPUT]: 执行受审计工具链与确定性补丁计划。
-// [POS]: Loop 工具边界。双落盘后更新能力投影。
+// [INPUT]: 工具提议、策略判定与不透明执行绑定。
+// [OUTPUT]: 按审批和 started 顺序执行并双落盘回执。
+// [POS]: 模型不能调用内部释放工具，必要审批前先释放。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package agent
@@ -110,7 +110,7 @@ func proposedToolCall(events []domain.Event, operationID domain.OperationID) (po
 
 // executeTool 在策略、审批和日志授权后执行一次模型提议的固定工具调用。
 func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, call ports.ToolCall) (contract.ToolResult, error) {
-	if call.ID == "" || call.Name == "" || call.Name == contract.MCPQuiesceTool || !json.Valid(call.Arguments) {
+	if call.ID == "" || call.Name == "" || loop.isLifecycleTool(call.Name) || !json.Valid(call.Arguments) {
 		return contract.ToolResult{}, errors.New("model returned invalid tool call")
 	}
 	if loop.Gate == nil {
@@ -119,14 +119,14 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if containsSensitiveToolCall(call) {
 		return contract.ToolResult{}, errors.New("model tool arguments contain a secret-like value")
 	}
-	if loop.mcpNeedsQuiescence() {
+	if loop.resourcesNeedQuiescence() {
 		decision, err := loop.Gate.Decide(call.Name, call.Arguments)
 		if err != nil {
 			return contract.ToolResult{}, err
 		}
 		decision = freshApprovalDecision(*projection, decision)
 		if decision.Effect == AuthorizationAsk {
-			if err := loop.quiesceMCP(ctx, projection, input); err != nil {
+			if err := loop.quiesceResources(ctx, projection, input); err != nil {
 				return contract.ToolResult{}, err
 			}
 		}
@@ -197,7 +197,7 @@ func (loop *Loop) executeTool(ctx context.Context, projection *domain.RunProject
 	if call.Name == contract.DelegateTaskName {
 		result = loop.executeDelegateTask(ctx, projection, input, call)
 	} else {
-		result = loop.executeToolWithIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+		result = loop.executeToolWithBinding(ctx, call.Name, call.Arguments, decision.ExecutionBinding)
 		result = redactToolResult(result)
 	}
 	if result.Code == contract.CodeTerminationUnconfirmed {

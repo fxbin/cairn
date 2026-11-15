@@ -1,3 +1,8 @@
+// [INPUT]: 业务事件、工作区观察与内部操作分类。
+// [OUTPUT]: 生成业务失败、周期和进展熔断判定。
+// [POS]: 释放成功不伪造业务进展，也不重置连续失败。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -58,8 +63,8 @@ func resolveGuardThresholds(consecutive, window, noProgress int) guardThresholds
 }
 
 // openedTurnCount 从事件日志重建已经消耗的模型轮次，保证暂停或恢复不会重置硬上限。
-func openedTurnCount(events []domain.Event) int {
-	lifecycleOnly := mcpLifecycleOnlyTurns(events)
+func (loop *Loop) openedTurnCount(events []domain.Event) int {
+	lifecycleOnly := loop.lifecycleOnlyTurns(events)
 	count := 0
 	for _, event := range events {
 		if event.Type == domain.EventTurnOpened && (event.TurnID == nil || !lifecycleOnly[*event.TurnID]) {
@@ -71,16 +76,16 @@ func openedTurnCount(events []domain.Event) int {
 
 // repeatedOperationFailureGuard 返回连续相同操作指纹失败达到默认阈值时的
 // 熔断原因；测试与无配置路径使用。生产路径见 repeatedOperationFailureGuardWithLimit。
-func repeatedOperationFailureGuard(events []domain.Event) string {
-	return repeatedOperationFailureGuardWithLimit(events, defaultConsecutiveOperationFailureLimit)
+func (loop *Loop) repeatedOperationFailureGuard(events []domain.Event) string {
+	return loop.repeatedOperationFailureGuardWithLimit(events, defaultConsecutiveOperationFailureLimit)
 }
 
 // repeatedOperationFailureGuardWithLimit 按显式阈值判断连续同指纹失败熔断。
-func repeatedOperationFailureGuardWithLimit(events []domain.Event, limit int) string {
+func (loop *Loop) repeatedOperationFailureGuardWithLimit(events []domain.Event, limit int) string {
 	if limit <= 0 {
 		limit = defaultConsecutiveOperationFailureLimit
 	}
-	lifecycle := mcpLifecycleOperations(events)
+	lifecycle := loop.lifecycleOperations(events)
 	fingerprints := make(map[domain.OperationID]string)
 	lastFingerprint := ""
 	consecutive := 0
@@ -120,8 +125,8 @@ func repeatedOperationFailureGuardWithLimit(events []domain.Event, limit int) st
 }
 
 // operationSignatureForTurn 摘要指定轮次内有序的操作指纹，供跨轮周期检测使用。
-func operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) string {
-	lifecycle := mcpLifecycleOperations(events)
+func (loop *Loop) operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) string {
+	lifecycle := loop.lifecycleOperations(events)
 	fingerprints := make([]string, 0)
 	for _, event := range events {
 		if event.OperationID != nil && lifecycle[*event.OperationID] {
@@ -150,7 +155,7 @@ func operationSignatureForTurn(events []domain.Event, turnID domain.TurnID) stri
 // 探索 4 次走 exec）。一轮中出现任何首次调用的工具组合即视为新证据（指纹变化、
 // 熔断窗口重置），重复完全相同的调用不产生新证据。工作区变异由观察值独立重置
 // 窗口，因此计入 exec 不会掩盖真正的无进展；原地重复徘徊仍会被终止。
-func progressFingerprint(workspaceObservation string, events []domain.Event) string {
+func (loop *Loop) progressFingerprint(workspaceObservation string, events []domain.Event) string {
 	verificationResult := ""
 	verificationOK := false
 	for index := len(events) - 1; index >= 0; index-- {
@@ -171,7 +176,7 @@ func progressFingerprint(workspaceObservation string, events []domain.Event) str
 			continue
 		}
 		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.ToolName == contract.MCPQuiesceTool {
+		if json.Unmarshal(event.Payload, &payload) != nil || loop.isLifecycleTool(payload.ToolName) {
 			continue
 		}
 		candidate := payload.ToolName + "\x00" + string(payload.Arguments)
@@ -260,7 +265,7 @@ func (loop *Loop) currentOperationFailureGuard(ctx context.Context, runID domain
 	if limit <= 0 {
 		limit = defaultConsecutiveOperationFailureLimit
 	}
-	if reason := repeatedOperationFailureGuardWithLimit(events, limit); reason != "" {
+	if reason := loop.repeatedOperationFailureGuardWithLimit(events, limit); reason != "" {
 		return &ports.LoopGuardExceededError{Reason: reason}
 	}
 	return nil
@@ -353,8 +358,8 @@ func (loop *Loop) continuationPayload(events []domain.Event, turnID domain.TurnI
 	}
 	return domain.TurnClosedPayload{
 		Outcome:             "continue",
-		OperationSignature:  operationSignatureForTurn(events, turnID),
-		ProgressFingerprint: progressFingerprint(observation, events),
+		OperationSignature:  loop.operationSignatureForTurn(events, turnID),
+		ProgressFingerprint: loop.progressFingerprint(observation, events),
 	}, nil
 }
 
@@ -370,7 +375,7 @@ func (loop *Loop) closeContinuationTurn(ctx context.Context, projection *domain.
 	if failureLimit <= 0 {
 		failureLimit = defaultConsecutiveOperationFailureLimit
 	}
-	if reason := repeatedOperationFailureGuardWithLimit(events, failureLimit); reason != "" {
+	if reason := loop.repeatedOperationFailureGuardWithLimit(events, failureLimit); reason != "" {
 		return loop.persistLoopGuardExceeded(ctx, projection, input, reason)
 	}
 	payload, err := loop.continuationPayload(events, turnID)

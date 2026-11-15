@@ -1,3 +1,8 @@
+// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
+// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
+// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -58,7 +63,7 @@ func TestLoopRunsWithBasicToolRegistry(t *testing.T) {
 		{{Kind: ports.TextDelta, Text: "done"}, {Kind: ports.Done}},
 	}}
 	loop := Loop{Journal: journal, Provider: provider, Tools: registry, Gate: gate, Model: "test", MaxTurns: 3, MaxToolCalls: 5}
-	if loop.mcpCapability() != nil || len(loop.ResultObservers) != 0 {
+	if len(loop.LifecycleParticipants) != 0 || len(loop.ResultObservers) != 0 {
 		t.Fatal("basic registry unexpectedly exposes an advanced capability")
 	}
 	result, err := loop.Run(context.Background(), RunInput{RunID: runID, Task: "read input", WorkspaceHash: "workspace"})

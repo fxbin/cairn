@@ -1,3 +1,8 @@
+// [INPUT]: 固定工具计划与同一授权、释放和执行端口。
+// [OUTPUT]: 提供无模型请求的受审计执行。
+// [POS]: 脚本计划保留恢复与独立验证边界。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -128,7 +133,7 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 		turnID := domain.NewTurnID()
 		if err := loop.append(ctx, &projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventTurnOpened, TurnID: &turnID, Payload: mustJSON(struct {
 			Turn int `json:"turn"`
-		}{Turn: openedTurnCount(events) + 1})}); err != nil {
+		}{Turn: loop.openedTurnCount(events) + 1})}); err != nil {
 			return Result{}, err
 		}
 	}
@@ -301,7 +306,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventOperationStarted, TurnID: &turnID, OperationID: &pending.OperationID, Payload: mustJSON(startedPayload)}); err != nil {
 		return Result{}, err
 	}
-	result := loop.executeToolWithIdentity(ctx, call.Name, call.Arguments, decision.MCPIdentity)
+	result := loop.executeToolWithBinding(ctx, call.Name, call.Arguments, decision.ExecutionBinding)
 	result = redactToolResult(result)
 	if result.Code == contract.CodeTerminationUnconfirmed {
 		return Result{RunID: input.RunID}, &ports.WaitingReconcileError{RunID: input.RunID, OperationID: pending.OperationID, Reason: result.Preview}

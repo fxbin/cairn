@@ -1,6 +1,6 @@
-// [INPUT]: 只读分组、授权判定与工具执行端口。
-// [OUTPUT]: 并发执行工具，按序持久化结果。
-// [POS]: Loop 只读批次执行。写入仍串行。
+// [INPUT]: 只读分组、授权绑定与显式资源占用。
+// [OUTPUT]: 按固定顺序记录并行结果并原样传递绑定。
+// [POS]: 资源需释放时退回串行路径，审批前先清理。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // loop_parallel.go 实现只读工具组的分阶段并行：授权事件仍按单写入者顺序
@@ -70,7 +70,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 	prepared := make([]preparedReadonlyCall, 0, len(indexes))
 	for _, index := range indexes {
 		call := calls[index]
-		if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) || containsSensitiveToolCall(call) || loop.mcpNeedsQuiescence() {
+		if call.ID == "" || call.Name == "" || !json.Valid(call.Arguments) || containsSensitiveToolCall(call) || loop.resourcesNeedQuiescence() {
 			result, err := loop.executeTool(ctx, projection, input, turnID, call)
 			outcomes[index] = toolCallOutcome{result: result, err: err}
 			if err != nil {
@@ -135,7 +135,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 				return
 			}
 			item := prepared[slot]
-			result := loop.executeToolWithIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
+			result := loop.executeToolWithBinding(ctx, item.call.Name, item.call.Arguments, item.decision.ExecutionBinding)
 			execResults[slot] = execOutcome{result: redactToolResult(result)}
 		}(i)
 	}
@@ -195,7 +195,7 @@ func (loop *Loop) executeReadonlyParallelGroup(ctx context.Context, projection *
 func (loop *Loop) finishPreparedReadonly(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, prepared []preparedReadonlyCall, outcomes []toolCallOutcome) error {
 	var finishErr error
 	for _, item := range prepared {
-		result := loop.executeToolWithIdentity(ctx, item.call.Name, item.call.Arguments, item.decision.MCPIdentity)
+		result := loop.executeToolWithBinding(ctx, item.call.Name, item.call.Arguments, item.decision.ExecutionBinding)
 		result = redactToolResult(result)
 		eventType := domain.EventOperationSucceeded
 		if !result.OK {

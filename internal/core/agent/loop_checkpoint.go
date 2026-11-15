@@ -1,3 +1,8 @@
+// [INPUT]: 历史探索证据与显式内部工具分类。
+// [OUTPUT]: 提供软决策检查点及预算轮次统计。
+// [POS]: Core 解释提示，不授予写入权限。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // loop_checkpoint.go 实现软决策检查点：在仍无补丁提议且已有读取证据时，
 // 向模型插入一次说明性反馈（事件可回放），要求交代路径/假设/缺口/下一步。
 // 它绝不强制写入，也绝不携带私有 verifier 或参考解。
@@ -77,7 +82,7 @@ func (loop *Loop) maybeDecisionCheckpoint(ctx context.Context, projection *domai
 	if minTurns <= 0 {
 		minTurns = 4
 	}
-	turns := openedTurnCount(events)
+	turns := loop.openedTurnCount(events)
 	if turns < minTurns || loop.MaxTurns > 0 && turns >= loop.MaxTurns {
 		return messages, nil
 	}

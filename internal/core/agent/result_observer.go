@@ -1,6 +1,6 @@
-// [INPUT]: 持久化事件、工具元数据和显式观察器。
-// [OUTPUT]: 恢复能力投影并通知唯一结果所有者。
-// [POS]: Core 事实消费边界，不执行能力回放副作用。
+// [INPUT]: 持久化双回执、固定生命周期和授权执行需求。
+// [OUTPUT]: 拒绝缺失接线并按 Journal 顺序恢复能力投影。
+// [POS]: 观察器只接纳事实，回放不执行外部操作。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package agent 按持久化事实调度显式装配的能力投影，不执行扩展回放中的外部动作。
@@ -81,6 +81,12 @@ func (loop *Loop) observeToolResult(name string, result contract.ToolResult) err
 // restoreResultProjections 按装配顺序清空并逐事件回放；未知成功工具同样必须证明投影归属。
 // 模型声明仍在对应历史安全点冻结，不能使用最终目录反推更早的模型请求。
 func (loop *Loop) restoreResultProjections(events []domain.Event) error {
+	if err := loop.validateToolExecution(); err != nil {
+		return err
+	}
+	if err := loop.validateLifecycleParticipants(); err != nil {
+		return err
+	}
 	if err := loop.resetRequestScope(); err != nil {
 		return err
 	}

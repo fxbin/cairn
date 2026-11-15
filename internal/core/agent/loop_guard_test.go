@@ -1,3 +1,8 @@
+// [INPUT]: Journal、基础端口与显式能力的固定生命周期提议。
+// [OUTPUT]: 验证既有执行、恢复与最小装配合同。
+// [POS]: Core 的接口迁移回归，保留原安全断言。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package agent
 
 import (
@@ -17,15 +22,15 @@ import (
 
 func TestRepeatedOperationFailureGuardRequiresThreeConsecutiveMatchingFailures(t *testing.T) {
 	events := operationOutcomeEvents("same", domain.EventOperationFailed, "same", domain.EventOperationFailed)
-	if reason := repeatedOperationFailureGuard(events); reason != "" {
+	if reason := (&Loop{}).repeatedOperationFailureGuard(events); reason != "" {
 		t.Fatalf("guard fired after two failures: %s", reason)
 	}
 	events = append(events, operationOutcomeEvents("same", domain.EventOperationFailed)...)
-	if reason := repeatedOperationFailureGuard(events); reason != loopGuardRepeatedOperationFailure {
+	if reason := (&Loop{}).repeatedOperationFailureGuard(events); reason != loopGuardRepeatedOperationFailure {
 		t.Fatalf("guard reason = %q", reason)
 	}
 	events = append(events, operationOutcomeEvents("different", domain.EventOperationSucceeded)...)
-	if reason := repeatedOperationFailureGuard(events); reason != "" {
+	if reason := (&Loop{}).repeatedOperationFailureGuard(events); reason != "" {
 		t.Fatalf("successful operation did not reset guard: %s", reason)
 	}
 }
@@ -208,21 +213,21 @@ func TestProgressFingerprintTracksDistinctToolEvidence(t *testing.T) {
 		}
 		return events
 	}
-	first := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}))
-	repeat := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"read_file", `{"path":"a.rs"}`}))
+	first := (&Loop{}).progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}))
+	repeat := (&Loop{}).progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"read_file", `{"path":"a.rs"}`}))
 	if first != repeat {
 		t.Fatal("identical read calls must not change the fingerprint")
 	}
-	grown := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"search_text", `{"query":"retry"}`}))
+	grown := (&Loop{}).progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"search_text", `{"query":"retry"}`}))
 	if first == grown {
 		t.Fatal("a first-time read/search call must change the fingerprint")
 	}
-	withExec := progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}))
+	withExec := (&Loop{}).progressFingerprint("ws", build([2]string{"read_file", `{"path":"a.rs"}`}, [2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}))
 	if first == withExec {
 		t.Fatal("a first-time exec exploration call must change the fingerprint (exec evidence parity)")
 	}
-	repeatExec := progressFingerprint("ws", build([2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}, [2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}))
-	if progressFingerprint("ws", build([2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`})) != repeatExec {
+	repeatExec := (&Loop{}).progressFingerprint("ws", build([2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}, [2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`}))
+	if (&Loop{}).progressFingerprint("ws", build([2]string{"exec_command", `{"argv":["grep","-n","retry","src/"]}`})) != repeatExec {
 		t.Fatal("identical exec calls must not change the fingerprint")
 	}
 }
