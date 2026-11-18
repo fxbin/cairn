@@ -90,6 +90,8 @@ var packageLayers = map[string]packageLayer{
 	"internal/capabilities/memory/storage/sqlite":   layerCapability,
 	"internal/capabilities/hooks":                   layerCapability,
 	"internal/capabilities/mcp":                     layerCapability,
+	"internal/capabilities/task":                    layerCapability,
+	"internal/capabilities/task/sqlite":             layerCapability,
 	"internal/capabilities/workflow":                layerCapability,
 	"internal/capabilities/workflow/storage/sqlite": layerCapability,
 	// Application。

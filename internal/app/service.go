@@ -1,6 +1,6 @@
 // [INPUT]: 依赖运行输入、冻结配置与Boot。
 // [OUTPUT]: 提供新运行、前情与Journal驱动结果。
-// [POS]: 公共执行入口在观测和运行资源前校验钩子。
+// [POS]: 公共执行入口校验钩子；任务入口在同一工作区锁下绑定创建事件。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
@@ -189,7 +189,12 @@ type SessionTree struct {
 
 // Run 初始化事件日志、锁、工具和策略后启动一次新的 Agent Loop，返回前关闭 Boot。
 // 最小组合先校验能力冲突，不绑定可选工具回调或创建委派运行时。
-func (service Service) Run(ctx context.Context, options RunOptions) (outcome RunResult, err error) {
+func (service Service) Run(ctx context.Context, options RunOptions) (RunResult, error) {
+	return service.run(ctx, options, nil)
+}
+
+// run 复用正常运行入口，在持有工作区锁且全部创建前置校验通过后允许应用能力绑定创建事件。
+func (service Service) run(ctx context.Context, options RunOptions, bind func(*Boot, *domain.EventDraft) error) (outcome RunResult, err error) {
 	if err := validateMinimalRunConfiguration(options.Config); err != nil {
 		return RunResult{}, err
 	}
@@ -319,12 +324,18 @@ func (service Service) Run(ctx context.Context, options RunOptions) (outcome Run
 	if err != nil {
 		return RunResult{}, err
 	}
-	first, err := boot.Journal.Append(ctx, 0, domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
+	created := domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef              contract.Ref  `json:"config_ref"`
 		PriorContextRef        *contract.Ref `json:"prior_context_ref,omitempty"`
 		ProjectInstructionsRef *contract.Ref `json:"project_instructions_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})})
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})}
+	if bind != nil {
+		if err := bind(boot, &created); err != nil {
+			return RunResult{}, err
+		}
+	}
+	first, err := boot.Journal.Append(ctx, 0, created)
 	if err != nil {
 		return RunResult{}, err
 	}

@@ -33,6 +33,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/runtime/sandboxeval/`、`internal/benchmark/` | 冻结评测合同与带外隔离执行，不改变生产默认 |
 | `internal/capabilities/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/capabilities/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
+| `internal/capabilities/task/` | 跨会话任务生命周期、版本比较与分配；应用层连接 Run Journal 的运行和验收证据 |
 | `internal/capabilities/workflow/` | 步骤、独立事件链及能力内 SQLite 存储；应用层连接显式执行、验证与人工验收，Scheduler 尚未接线 |
 
 ## 不可绕过的边界
@@ -44,6 +45,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 用户全局 `AGENTS.md` 仅读取 `~/.cairn/AGENTS.md`，项目来源仅从显式工作区内有界发现；适用优先级为当前用户明确要求、就近项目规约、用户全局规约。正文是用户级指导，不能授予权限或自动执行命令；受控评测显式排除宿主用户规约。新运行将脱敏快照绑定到创建事件，压缩与冷恢复只读历史快照；旧运行缺少引用时不补读当前文件，引用损坏必须失败关闭。
 - 语义观测是可选旁路：只消费已成功持久化的 Journal 事件，导出失败不改变 Run 终态、Replay、Resume 或对账语义；默认关闭，关闭时零网络导出，并尊重 `OTEL_SDK_DISABLED` 全局关闭开关与 `OTEL_TRACES_EXPORTER`/`OTEL_METRICS_EXPORTER` 的 none 语义。指标维度只允许受限枚举，run 标识只作关联属性；Prompt、密钥、原始工具结果、验证证据与绝对路径不得进入观测内容。接线判定只有一处，运行路径与 doctor 共用；doctor 分面报告记忆侧、语义面与 SDK 面，如实区分 disabled、sdk_disabled、no_signal、instrumented 与 config_error，不宣称采集成功。
 - Hooks 在执行及工作流入口先做纯校验，配置错误不得先创建运行状态。应急终止不激活 Hooks，保留既有收尾路径。
+- 持久任务的分配先绑定同一工作区 Run 的创建事件；缺失创建事实时停止分配。任务状态与进度由应用门面写入。运行阶段与验证证据只从 Journal 投影；显式验收引用最新分配的可信验证事件。minimal 不装配持久任务。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - 沙箱写范围有界：host 后端默认拒绝，只放行临时目录根与工作区本身，写入工作区父目录在真实目录下因此被拒。临时写范围不得被任何拒绝规则覆盖——那会连带拒绝编译器缓存与验证子进程的临时写；粗粒度地拒绝工作区父目录子树曾打断端到端流程，不采用。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。
@@ -103,6 +105,7 @@ go test ./test/e2e -tags=e2e -count=1
 - [工具基础设施](internal/runtime/tools/AGENTS.md)、[基础授权](internal/runtime/policy/AGENTS.md) 与 [MCP 协议适配](internal/adapters/mcpclient/AGENTS.md)。
 - [记忆能力](internal/capabilities/memory/AGENTS.md)、[决策能力](internal/capabilities/decision/AGENTS.md) 与 [隔离评测](internal/benchmark/AGENTS.md)。
 - [钩子能力](internal/capabilities/hooks/AGENTS.md) 与 [遥测能力](internal/capabilities/telemetry/AGENTS.md)。
+- [持久任务能力](internal/capabilities/task/AGENTS.md)。
 - [MCP 能力](internal/capabilities/mcp/AGENTS.md)、[技能能力](internal/capabilities/skills/AGENTS.md) 与 [工作流能力](internal/capabilities/workflow/AGENTS.md)。
 - [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md)。
 - 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。
