@@ -3,19 +3,34 @@
  * 只消费现有 desktop 桥接与 Journal 投影，不复制任何 Agent 运行逻辑。
  * Author: fxbin
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { desktop } from "./desktop/client";
+import { bridgeMode, demoBridgeActive } from "./desktop/wails-api";
 import { ReconciliationPanel, AbortRunPanel } from "./workbench/RecoveryPanel";
 import CapabilitySettings, {
   type CapabilityCounts,
   type CapabilitySection,
 } from "./workbench/CapabilitySettings";
+import CommandPalette from "./workbench/CommandPalette";
 import ProviderSettings from "./workbench/ProviderSettings";
 import UsageView from "./workbench/UsageView";
 import OpenLocationIcon from "./workbench/OpenLocationIcon";
 import SessionRow from "./workbench/SessionRow";
+import SessionRecallRail, {
+  buildSessionRecallStops,
+  makeHeadingRecallId,
+} from "./workbench/SessionRecallRail";
 import SidecarWorkbench, {
   buildBuiltinSidecarTab,
   buildFileSidecarTab,
@@ -23,6 +38,34 @@ import SidecarWorkbench, {
   type SidecarTabKind,
 } from "./workbench/SidecarWorkbench";
 import WorkflowsView from "./workbench/WorkflowsView";
+import {
+  WorkflowBlueprintCard,
+  WorkflowExecutionCard,
+} from "./workbench/WorkflowChatCards";
+import {
+  expandTaskWithWorkflowProtocol,
+  loadWorkflowBindings,
+  parseCairnWorkflowBlock,
+  resolveWorkflowExecution,
+  saveWorkflowBindings,
+  stripWorkflowProtocolSuffix,
+  type WorkflowBlueprintSpec,
+  type WorkflowComposeContext,
+  type WorkflowDefinitionItem,
+  type WorkflowSessionBinding,
+} from "./workbench/workflowConversation";
+import {
+  applyMentionSelection,
+  detectComposerTrigger,
+  expandComposerTaskWithContext,
+  filterSlashCommands,
+  flattenWorkspaceFiles,
+  matchWorkspaceFiles,
+  parseUserMessageAttachments,
+  type AttachedFileChip,
+  type ComposerActiveTrigger,
+  type ComposerSlashCommand,
+} from "./workbench/composerContext";
 import {
   filterTimelineByKind,
   toContextCompactions,
@@ -33,6 +76,7 @@ import {
 import type { TimelineKind } from "./desktop/timeline";
 import {
   buildChatBlocks,
+  deriveLiveRunVital,
   isReadOnlyTool,
   isWritePatchTool,
 } from "./desktop/chatBlocks";
@@ -610,17 +654,74 @@ function SettingsCopyButton({
   );
 }
 
-/** 渲染对话时间线，包含探索聚合组、结构化补丁卡与指纹绑定审批门禁。 */
+/** 从 ReactMarkdown 代码块子节点递归提取纯文本源码供一键复制使用。 */
+function extractMarkdownCodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(extractMarkdownCodeText).join("");
+  }
+  if (isValidElement<{ children?: ReactNode }>(node)) {
+    return extractMarkdownCodeText(node.props.children);
+  }
+  return "";
+}
+
+/** 从 ReactMarkdown pre 子节点提取围栏代码块语言标识与源码文本。 */
+function inspectMarkdownPreBlock(children: ReactNode): { lang: string; code: string } {
+  const firstChild = Array.isArray(children) ? children[0] : children;
+  if (isValidElement<{ className?: string; children?: ReactNode }>(firstChild)) {
+    const className = typeof firstChild.props.className === "string" ? firstChild.props.className : "";
+    const langMatch = /language-([A-Za-z0-9_+-]+)/.exec(className);
+    return {
+      lang: langMatch?.[1] || "",
+      code: extractMarkdownCodeText(firstChild.props.children).replace(/\n$/, ""),
+    };
+  }
+  return {
+    lang: "",
+    code: extractMarkdownCodeText(children).replace(/\n$/, ""),
+  };
+}
+
+/** 渲染对话时间线，包含引用文件胶囊、代码块复制栏、工作流草案卡、探索聚合组、补丁卡、知情审批门禁与召回锚点。 */
 function Transcript({
   blocks,
+  flashedAnchorId,
+  workflows,
   onApproval,
   onInspectFile,
+  onSaveWorkflow,
+  onSaveAndRunWorkflow,
+  onRefineWorkflow,
+  onOpenWorkflowPortal,
 }: {
   blocks: ChatBlock[];
+  flashedAnchorId?: string | null;
+  workflows: readonly WorkflowDefinitionItem[];
   onApproval: (approve: boolean, fingerprint: string, runId: string) => void;
   onInspectFile: (targetPath: string) => void;
+  onSaveWorkflow: (spec: WorkflowBlueprintSpec) => Promise<void>;
+  onSaveAndRunWorkflow: (spec: WorkflowBlueprintSpec) => Promise<void>;
+  onRefineWorkflow: (spec: WorkflowBlueprintSpec) => void;
+  onOpenWorkflowPortal: (workflowId?: string) => void;
 }) {
   const grouped = useMemo(() => groupTranscriptBlocks(blocks), [blocks]);
+  const renderRecallHeading =
+    (Tag: "h1" | "h2" | "h3", blockId: string) =>
+    ({ children }: { children?: ReactNode }) => {
+      const text = extractMarkdownCodeText(children).trim();
+      const anchor = text ? makeHeadingRecallId(blockId, text) : undefined;
+      return (
+        <Tag
+          data-recall-anchor={anchor}
+          className={anchor && flashedAnchorId === anchor ? "is-recall-flash" : undefined}
+        >
+          {children}
+        </Tag>
+      );
+    };
 
   return (
     <div className="wb-transcript" aria-live="polite">
@@ -647,17 +748,90 @@ function Transcript({
         }
 
         const { block } = entry;
+        const flashCls = flashedAnchorId === block.id ? " is-recall-flash" : "";
         if (block.kind === "user") {
+          const strippedWorkflow = stripWorkflowProtocolSuffix(block.text);
+          const parsedUser = parseUserMessageAttachments(strippedWorkflow.body);
           return (
-            <div className="wb-message-user" key={block.id}>
-              {block.text}
+            <div
+              className={"wb-message-user" + flashCls}
+              data-recall-anchor={block.id}
+              key={block.id}
+            >
+              {strippedWorkflow.hasWorkflowProtocol && (
+                <div className="wb-user-wf-pill">
+                  <span aria-hidden="true">☍</span> 工作流编排
+                </div>
+              )}
+              {parsedUser.refs.length > 0 && (
+                <div className="wb-user-refs">
+                  {parsedUser.refs.map((ref) => (
+                    <details className="wb-user-ref-chip" key={ref.path}>
+                      <summary>
+                        <span aria-hidden="true">@</span>
+                        <span>{ref.path}</span>
+                      </summary>
+                      <pre>{ref.snippet}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+              <div className="wb-message-user-body">{parsedUser.body}</div>
             </div>
           );
         }
         if (block.kind === "agent") {
           return (
-            <article className="wb-message-agent" key={block.id}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+            <article
+              className={"wb-message-agent" + flashCls}
+              data-testid="assistant-body"
+              data-recall-anchor={block.id}
+              key={block.id}
+            >
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                skipHtml
+                components={{
+                  h1: renderRecallHeading("h1", block.id),
+                  h2: renderRecallHeading("h2", block.id),
+                  h3: renderRecallHeading("h3", block.id),
+                  pre({ children }) {
+                    const { lang, code } = inspectMarkdownPreBlock(children);
+                    const normalizedLang = lang.toLowerCase();
+                    if (normalizedLang === "cairn-workflow" || normalizedLang === "workflow") {
+                      const wfSpec = parseCairnWorkflowBlock(code);
+                      if (wfSpec) {
+                        const matched =
+                          workflows.find((w) => wfSpec.id && w.id === wfSpec.id) ||
+                          workflows.find((w) => w.name === wfSpec.name);
+                        return (
+                          <WorkflowBlueprintCard
+                            spec={wfSpec}
+                            rawJson={code}
+                            matchedExistingId={matched?.id}
+                            onSave={onSaveWorkflow}
+                            onSaveAndRun={onSaveAndRunWorkflow}
+                            onRefine={onRefineWorkflow}
+                            onOpenPortal={onOpenWorkflowPortal}
+                          />
+                        );
+                      }
+                    }
+                    return (
+                      <div className="wb-md-codeblock">
+                        <div className="wb-md-codehead">
+                          <span className="wb-md-codelang">{lang || "code"}</span>
+                          <SettingsCopyButton
+                            value={code}
+                            ariaLabel={`复制 ${lang || "代码"} 代码块`}
+                          />
+                        </div>
+                        <pre>{children}</pre>
+                      </div>
+                    );
+                  },
+                }}
+              >
                 {block.text}
               </ReactMarkdown>
             </article>
@@ -670,7 +844,11 @@ function Transcript({
             const statusText =
               block.status === "ok" ? "完成" : block.status === "failed" ? "失败" : "执行中";
             return (
-              <div className="wb-patch-card" key={block.id}>
+              <div
+                className={"wb-patch-card" + flashCls}
+                data-recall-anchor={block.id}
+                key={block.id}
+              >
                 <div>
                   <span className={"wb-badge " + statusTone}>{statusText}</span>
                   <strong>{block.name}</strong>
@@ -718,9 +896,15 @@ function Transcript({
           );
         }
         if (block.kind === "approval") {
+          const proposal = block.proposal;
           return (
-            <section className="wb-approval" key={block.id}>
-              <div>
+            <section
+              className={"wb-approval" + flashCls}
+              data-testid="approval-card"
+              data-recall-anchor={block.id}
+              key={block.id}
+            >
+              <div className="wb-approval-top">
                 <div className="wb-label">等待你的授权</div>
                 {block.operationId && (
                   <span className="wb-badge is-warn">#{block.operationId}</span>
@@ -728,17 +912,68 @@ function Transcript({
               </div>
               <strong>{block.summary}</strong>
               <p>此操作具有副作用。仅批准当前指纹对应的操作，不会扩大后续运行权限。</p>
+              {proposal && (
+                <div className="wb-approval-proposal" data-testid="approval-proposal">
+                  <div className="wb-approval-proposal-head">
+                    <span className="wb-badge is-muted">{proposal.toolName}</span>
+                    {proposal.mode && <span className="wb-badge is-accent">{proposal.mode}</span>}
+                    {proposal.targetPath && (
+                      <code className="wb-approval-path">{proposal.targetPath}</code>
+                    )}
+                    {proposal.expectedSha && (
+                      <span className="wb-hash-pill" title="基线文件 SHA-256 摘要">
+                        基线 {proposal.expectedSha}
+                      </span>
+                    )}
+                    {proposal.targetPath && (
+                      <button
+                        type="button"
+                        className="wb-approval-inspect-btn"
+                        onClick={() => onInspectFile(proposal.targetPath!)}
+                      >
+                        审查 Diff →
+                      </button>
+                    )}
+                  </div>
+                  {proposal.commandArgv && (
+                    <div className="wb-approval-argv">
+                      <span className="wb-approval-argv-tag">argv（无 Shell 直传）</span>
+                      <code>{proposal.commandArgv}</code>
+                    </div>
+                  )}
+                  {proposal.patchLines && proposal.patchLines.length > 0 && (
+                    <div className="wb-approval-patch" aria-label="提议变更预览">
+                      {proposal.patchLines.map((line, lineIdx) => (
+                        <div
+                          key={lineIdx}
+                          className={"wb-approval-patch-line is-" + line.kind}
+                        >
+                          {line.text}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <details>
                 <summary>查看操作指纹</summary>
                 <code className="wb-approval-code">{block.fingerprint}</code>
               </details>
               {block.resolved ? (
-                <div className="wb-label">{block.resolved === "approved" ? "已授权" : "已拒绝"}</div>
+                <div className="wb-approval-resolved-row">
+                  <div className="wb-label">
+                    {block.resolved === "approved" ? "已授权" : "已拒绝"}
+                  </div>
+                  <span className="wb-approval-resolved-note">
+                    {block.resolved === "approved" ? "已允许并继续" : "已拒绝执行"}
+                  </span>
+                </div>
               ) : (
                 <div className="wb-actions">
                   <button
                     type="button"
                     className="wb-primary"
+                    data-testid="approval-allow"
                     onClick={() => onApproval(true, block.fingerprint, block.runId)}
                   >
                     允许并继续
@@ -816,7 +1051,8 @@ export default function App() {
   const [filter, setFilter] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [projectCollapsed, setProjectCollapsed] = useState(false);
   const [heroPopover, setHeroPopover] = useState<HeroPopover>("none");
   const [editorMenuOpen, setEditorMenuOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<ActivityTab>("heatmap");
@@ -825,6 +1061,20 @@ export default function App() {
   const [forkSource, setForkSource] = useState<string | null>(null);
   const [parentRun, setParentRun] = useState<string | null>(null);
   const [sessionTree, setSessionTree] = useState<SessionTreeView | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<AttachedFileChip[]>([]);
+  const [workspaceFiles, setWorkspaceFiles] = useState<AttachedFileChip[] | null>(null);
+  const [loadingWorkspaceFiles, setLoadingWorkspaceFiles] = useState(false);
+  const [composerTrigger, setComposerTrigger] = useState<ComposerActiveTrigger | null>(null);
+  const [composerMenuIndex, setComposerMenuIndex] = useState(0);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [ancestorDetails, setAncestorDetails] = useState<RunDetail[]>([]);
+  const [activeRecallId, setActiveRecallId] = useState<string | null>(null);
+  const [flashedRecallId, setFlashedRecallId] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowDefinitionItem[]>([]);
+  const [workflowComposeCtx, setWorkflowComposeCtx] = useState<WorkflowComposeContext | null>(null);
+  const [focusedWorkflowId, setFocusedWorkflowId] = useState<string | null>(null);
+  const [workflowBindings, setWorkflowBindings] = useState<WorkflowSessionBinding[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window === "undefined" || window.innerWidth > 760,
   );
@@ -833,7 +1083,13 @@ export default function App() {
   const projectRef = useRef("");
   const generationRef = useRef(0);
   const runRef = useRef<string | null>(null);
+  const ancestorCacheRef = useRef<Map<string, RunDetail>>(new Map());
+  const autoFollowWorkflowRunRef = useRef<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionScrollRef = useRef<HTMLDivElement>(null);
+  const autoFollowRef = useRef(true);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionSearchRef = useRef<HTMLInputElement>(null);
   const heroSentenceRef = useRef<HTMLDivElement>(null);
   const editorActionRef = useRef<HTMLDivElement>(null);
@@ -850,6 +1106,9 @@ export default function App() {
     return () => {
       if (stepperBumpTimerRef.current !== null) {
         window.clearTimeout(stepperBumpTimerRef.current);
+      }
+      if (flashTimerRef.current !== null) {
+        window.clearTimeout(flashTimerRef.current);
       }
     };
   }, []);
@@ -1006,6 +1265,28 @@ export default function App() {
       });
   }, []);
 
+  const refreshWorkflows = useCallback(async (path: string, generation: number) => {
+    if (!path || typeof desktop.listWorkflows !== "function") {
+      setWorkflows([]);
+      return [];
+    }
+    try {
+      const items = await desktop.listWorkflows(path);
+      const normalized = Array.isArray(items)
+        ? items.map((w) => ({ ...w, steps: w.steps ?? [] }))
+        : [];
+      if (generation === generationRef.current && projectRef.current === path) {
+        setWorkflows(normalized);
+      }
+      return normalized;
+    } catch {
+      if (generation === generationRef.current && projectRef.current === path) {
+        setWorkflows([]);
+      }
+      return [];
+    }
+  }, []);
+
   const refreshOpenLocations = useCallback((path: string, generation: number) => {
     if (!path || typeof desktop.listOpenLocations !== "function") {
       setOpenLocations([]);
@@ -1067,6 +1348,23 @@ export default function App() {
       setForkSource(null);
       setParentRun(null);
       setSessionTree(null);
+      setAttachedFiles([]);
+      setWorkspaceFiles(null);
+      setLoadingWorkspaceFiles(false);
+      setComposerTrigger(null);
+      setComposerMenuIndex(0);
+      setShowScrollBottom(false);
+      setAncestorDetails([]);
+      ancestorCacheRef.current.clear();
+      setActiveRecallId(null);
+      setFlashedRecallId(null);
+      setWorkflowComposeCtx(null);
+      setFocusedWorkflowId(null);
+      setProjectCollapsed(false);
+      setWorkflows([]);
+      setWorkflowBindings(loadWorkflowBindings(path));
+      autoFollowWorkflowRunRef.current = null;
+      autoFollowRef.current = true;
       setChanges(null);
       setSelectedFile("");
       setDiff("");
@@ -1115,6 +1413,7 @@ export default function App() {
         refreshPresets(path, generation);
         refreshOpenLocations(path, generation);
         refreshChanges(path, generation);
+        void refreshWorkflows(path, generation);
         if (typeof desktop.rememberProject === "function") {
           void desktop.rememberProject(path);
         }
@@ -1122,7 +1421,7 @@ export default function App() {
         if (generation === generationRef.current) setNotice(textError(err));
       }
     },
-    [refreshQueueCount, refreshPresets, refreshOpenLocations, refreshChanges],
+    [refreshQueueCount, refreshPresets, refreshOpenLocations, refreshChanges, refreshWorkflows],
   );
 
   useEffect(() => {
@@ -1159,6 +1458,12 @@ export default function App() {
   const selectRun = useCallback((id: string | null) => {
     setForkSource(null);
     setParentRun(null);
+    autoFollowRef.current = true;
+    setShowScrollBottom(false);
+    setAncestorDetails([]);
+    setActiveRecallId(null);
+    setFlashedRecallId(null);
+    setComposerTrigger(null);
     runRef.current = id;
     setRunId(id);
     setDetail(null);
@@ -1257,6 +1562,66 @@ export default function App() {
   }, [workspace, detail?.state, refreshChanges]);
 
   const selected = runs.find((run) => run.run_id === runId);
+
+  const activeWorkflowExecution = useMemo(() => {
+    if (!runId || workflowBindings.length === 0) return null;
+    for (const binding of workflowBindings) {
+      const exec = resolveWorkflowExecution(binding, runs);
+      const matchesRun =
+        binding.firstRunId === runId ||
+        (Boolean(binding.sessionId) && selected?.session_id === binding.sessionId) ||
+        exec.stages.some((stage) => stage.run?.run_id === runId);
+      if (matchesRun) {
+        return exec;
+      }
+    }
+    return null;
+  }, [runId, runs, selected?.session_id, workflowBindings]);
+
+  useEffect(() => {
+    if (!workspace || !activeWorkflowExecution) return;
+    const discoveredSession = activeWorkflowExecution.sessionId;
+    if (
+      discoveredSession &&
+      activeWorkflowExecution.binding.sessionId !== discoveredSession
+    ) {
+      setWorkflowBindings((prev) => {
+        const next = prev.map((item) =>
+          item.firstRunId === activeWorkflowExecution.binding.firstRunId
+            ? { ...item, sessionId: discoveredSession }
+            : item,
+        );
+        saveWorkflowBindings(workspace, next);
+        return next;
+      });
+    }
+    if (
+      runId &&
+      autoFollowWorkflowRunRef.current === runId &&
+      activeWorkflowExecution.latestRunId !== runId
+    ) {
+      autoFollowWorkflowRunRef.current = activeWorkflowExecution.latestRunId;
+      selectRun(activeWorkflowExecution.latestRunId);
+    }
+  }, [workspace, runId, activeWorkflowExecution, selectRun]);
+
+  // 当选中运行已进入 completed 终态时后台静默读取一次 Verifier 证据，支撑对话末尾结案路标卡真实渲染。
+  useEffect(() => {
+    if (panel === "evidence" || !workspace || !runId || selected?.state !== "completed") return;
+    if (typeof desktop.evidence !== "function") return;
+    const currentWorkspace = workspace;
+    const currentRunId = runId;
+    void Promise.resolve(desktop.evidence({ workspace: currentWorkspace, run_id: currentRunId }))
+      .then((result) => {
+        if (projectRef.current === currentWorkspace && runRef.current === currentRunId) {
+          setEvidence(result);
+        }
+      })
+      .catch(() => {
+        // 结案路标卡后台静默读取失败不污染告警横幅；显式打开证据标签页时仍正常提示。
+      });
+  }, [panel, workspace, runId, selected?.state]);
+
   const running = selected
     ? !finished.has(selected.state) && !selected.waiting_approval && !selected.waiting_reconcile
     : sending || Boolean(runId);
@@ -1293,19 +1658,228 @@ export default function App() {
     }
   }, []);
 
+  const ancestorRunIds = useMemo(() => {
+    if (!runId) return [] as string[];
+    const prevMap = new Map<string, string>();
+    for (const r of runs) {
+      if (r.run_id && r.prev_run_id) {
+        prevMap.set(r.run_id, r.prev_run_id);
+      }
+    }
+    if (sessionTree?.nodes) {
+      for (const [id, node] of Object.entries(sessionTree.nodes)) {
+        if (node.prev_run_id && !prevMap.has(id)) {
+          prevMap.set(id, node.prev_run_id);
+        }
+      }
+    }
+    const chain: string[] = [];
+    const seen = new Set<string>([runId]);
+    let cursor = prevMap.get(runId);
+    let hops = 0;
+    while (cursor && !seen.has(cursor) && hops < 40) {
+      seen.add(cursor);
+      chain.push(cursor);
+      cursor = prevMap.get(cursor);
+      hops += 1;
+    }
+    chain.reverse();
+    return chain;
+  }, [runId, runs, sessionTree]);
+
+  useEffect(() => {
+    if (!workspace || !runId || ancestorRunIds.length === 0) {
+      setAncestorDetails([]);
+      return;
+    }
+    let alive = true;
+    const targetWorkspace = workspace;
+    const targetRunId = runId;
+    const generation = generationRef.current;
+
+    const loadAncestors = async () => {
+      const resolved = await Promise.all(
+        ancestorRunIds.map(async (ancId) => {
+          const cached = ancestorCacheRef.current.get(ancId);
+          if (cached) return cached;
+          try {
+            const loaded = await desktop.inspectRun({
+              workspace: targetWorkspace,
+              run_id: ancId,
+              include_events: true,
+            });
+            if (loaded && finished.has(loaded.state)) {
+              ancestorCacheRef.current.set(ancId, loaded);
+            }
+            return loaded;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (!alive || generation !== generationRef.current || runRef.current !== targetRunId) {
+        return;
+      }
+      setAncestorDetails(resolved.filter((item): item is RunDetail => item !== null));
+    };
+
+    void loadAncestors();
+    return () => {
+      alive = false;
+    };
+  }, [workspace, runId, ancestorRunIds]);
+
   const blocks = useMemo(() => {
+    const historyBlocks = ancestorDetails.flatMap((anc) =>
+      buildChatBlocks(anc.events || []).map((item) => ({ ...item, id: `${anc.run_id}:${item.id}` })),
+    );
     const projected = buildChatBlocks(detail?.events || [], liveEvents);
     if (sendingText && !projected.some((block) => block.kind === "user" && block.text === sendingText)) {
       projected.unshift({ kind: "user", id: "pending-user", text: sendingText, at: "" });
     }
-    return projected;
-  }, [detail, liveEvents, sendingText]);
+    return historyBlocks.length > 0 ? [...historyBlocks, ...projected] : projected;
+  }, [ancestorDetails, detail, liveEvents, sendingText]);
+
+  const recallStops = useMemo(() => buildSessionRecallStops(blocks), [blocks]);
+
+  const liveVital = useMemo(
+    () => deriveLiveRunVital(detail?.events || [], liveEvents),
+    [detail?.events, liveEvents],
+  );
+
+  const syncActiveRecallFromScroll = useCallback(() => {
+    const el = sessionScrollRef.current;
+    if (!el || recallStops.length < 2) {
+      return;
+    }
+    const anchors = el.querySelectorAll<HTMLElement>("[data-recall-anchor]");
+    if (anchors.length === 0) return;
+
+    const anchorMap = new Map<string, HTMLElement>();
+    anchors.forEach((node) => {
+      const key = node.getAttribute("data-recall-anchor");
+      if (key) anchorMap.set(key, node);
+    });
+
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom <= 24) {
+      setActiveRecallId(recallStops[recallStops.length - 1].id);
+      return;
+    }
+
+    const containerTop = el.getBoundingClientRect().top;
+    const threshold = containerTop + Math.min(180, Math.max(72, el.clientHeight * 0.32));
+    let candidate = recallStops[0].id;
+    for (const stop of recallStops) {
+      const node = anchorMap.get(stop.id);
+      if (!node) continue;
+      if (node.getBoundingClientRect().top <= threshold) {
+        candidate = stop.id;
+      }
+    }
+    setActiveRecallId(candidate);
+  }, [recallStops]);
 
   useEffect(() => {
-    if (typeof bottomRef.current?.scrollIntoView === "function") {
+    if (autoFollowRef.current && typeof bottomRef.current?.scrollIntoView === "function") {
       bottomRef.current.scrollIntoView({ block: "end", behavior: "auto" });
     }
-  }, [blocks.length, runId]);
+    syncActiveRecallFromScroll();
+  }, [blocks.length, runId, syncActiveRecallFromScroll]);
+
+  const handleSessionScroll = () => {
+    const el = sessionScrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distance <= 72;
+    autoFollowRef.current = nearBottom;
+    setShowScrollBottom(!nearBottom);
+    syncActiveRecallFromScroll();
+  };
+
+  const jumpToRecallStop = (anchorId: string) => {
+    const container = sessionScrollRef.current;
+    if (!container) return;
+    let target: HTMLElement | null = null;
+    const nodes = container.querySelectorAll<HTMLElement>("[data-recall-anchor]");
+    nodes.forEach((node) => {
+      if (!target && node.getAttribute("data-recall-anchor") === anchorId) {
+        target = node;
+      }
+    });
+    if (!target) return;
+
+    const isLastStop =
+      recallStops.length > 0 && recallStops[recallStops.length - 1].id === anchorId;
+    autoFollowRef.current = isLastStop;
+    setShowScrollBottom(!isLastStop);
+    setActiveRecallId(anchorId);
+    setFlashedRecallId(anchorId);
+    if (flashTimerRef.current !== null) {
+      window.clearTimeout(flashTimerRef.current);
+    }
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashedRecallId((curr) => (curr === anchorId ? null : curr));
+      flashTimerRef.current = null;
+    }, 1400);
+
+    if (typeof (target as HTMLElement).scrollIntoView === "function") {
+      (target as HTMLElement).scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const scrollToSessionBottom = () => {
+    autoFollowRef.current = true;
+    setShowScrollBottom(false);
+    if (typeof bottomRef.current?.scrollIntoView === "function") {
+      bottomRef.current.scrollIntoView({ block: "end", behavior: "smooth" });
+    }
+  };
+
+  const ensureWorkspaceFilesLoaded = useCallback(() => {
+    if (
+      !workspace ||
+      workspaceFiles !== null ||
+      loadingWorkspaceFiles ||
+      typeof desktop.listFileTree !== "function"
+    ) {
+      return;
+    }
+    const targetWorkspace = workspace;
+    const generation = generationRef.current;
+    setLoadingWorkspaceFiles(true);
+    void Promise.resolve(desktop.listFileTree(targetWorkspace))
+      .then((tree) => {
+        if (generation === generationRef.current && projectRef.current === targetWorkspace) {
+          setWorkspaceFiles(flattenWorkspaceFiles(tree));
+        }
+      })
+      .catch(() => {
+        if (generation === generationRef.current && projectRef.current === targetWorkspace) {
+          setWorkspaceFiles([]);
+        }
+      })
+      .finally(() => {
+        if (generation === generationRef.current && projectRef.current === targetWorkspace) {
+          setLoadingWorkspaceFiles(false);
+        }
+      });
+  }, [workspace, workspaceFiles, loadingWorkspaceFiles]);
+
+  useEffect(() => {
+    if (composerTrigger?.kind === "mention") {
+      ensureWorkspaceFilesLoaded();
+    }
+  }, [composerTrigger?.kind, ensureWorkspaceFilesLoaded]);
+
+  useLayoutEffect(() => {
+    const ta = composerTextareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const minHeight = runId ? 58 : 76;
+    const nextHeight = Math.min(240, Math.max(minHeight, ta.scrollHeight || minHeight));
+    ta.style.height = `${nextHeight}px`;
+  }, [draft, runId, page]);
 
   const startTask = async () => {
     const content = draft.trim();
@@ -1321,13 +1895,32 @@ export default function App() {
     }
     const generation = generationRef.current;
     const previous = !forkSource && selected && finished.has(selected.state) ? selected : null;
+    const pendingChips = attachedFiles;
+    const pendingWorkflowCtx = workflowComposeCtx;
+    let clearedDraft = false;
     setSending(true);
-    setSendingText(content);
-    setDraft("");
     try {
+      const expandedRefsTask = await expandComposerTaskWithContext({
+        workspace,
+        rawTask: content,
+        attachedFiles: pendingChips,
+        previewFile: typeof desktop.previewFile === "function" ? desktop.previewFile : undefined,
+      });
+      const expandedTask = expandTaskWithWorkflowProtocol(
+        expandedRefsTask,
+        pendingWorkflowCtx,
+        workflows,
+      );
+      if (generation !== generationRef.current) return;
+      clearedDraft = true;
+      setSendingText(expandedTask);
+      setDraft("");
+      setAttachedFiles([]);
+      setWorkflowComposeCtx(null);
+      setComposerTrigger(null);
       const ack = await desktop.startRun({
         workspace,
-        task: content,
+        task: expandedTask,
         model: model.trim() || undefined,
         mode: readOnly ? "read-only" : "default",
         session_id: previous?.session_id,
@@ -1347,7 +1940,17 @@ export default function App() {
       await refreshRuns(workspace, generation);
     } catch (err) {
       if (generation === generationRef.current) {
-        setDraft((value) => (value ? content + "\n" + value : content));
+        if (clearedDraft) {
+          setDraft((value) => (value ? content + "\n" + value : content));
+          setAttachedFiles((prev) => {
+            const seen = new Set(prev.map((item) => item.relative));
+            const restored = pendingChips.filter((item) => !seen.has(item.relative));
+            return restored.length > 0 ? [...restored, ...prev] : prev;
+          });
+          if (pendingWorkflowCtx) {
+            setWorkflowComposeCtx(pendingWorkflowCtx);
+          }
+        }
         setNotice(textError(err));
         setSendingText("");
       }
@@ -1746,6 +2349,119 @@ export default function App() {
     closeSmallNav();
   };
 
+  const focusComposerSoon = () => {
+    window.setTimeout(() => {
+      composerTextareaRef.current?.focus();
+    }, 0);
+  };
+
+  const startConversationalWorkflowCreate = (initialPrompt?: string) => {
+    setNeedsAttentionOnly(false);
+    selectRun(null);
+    setPage("home");
+    setWorkflowComposeCtx({ mode: "create" });
+    if (initialPrompt !== undefined) {
+      setDraft(initialPrompt);
+    }
+    focusComposerSoon();
+  };
+
+  const startConversationalWorkflowEdit = (wf: WorkflowDefinitionItem, note?: string) => {
+    setNeedsAttentionOnly(false);
+    selectRun(null);
+    setPage("home");
+    setWorkflowComposeCtx({ mode: "edit", workflow: wf, note });
+    setDraft((prev) =>
+      prev.trim()
+        ? prev
+        : note
+          ? `请帮我结合运行反馈调试并优化工作流「${wf.name}」：`
+          : `我想调整工作流「${wf.name}」：`,
+    );
+    focusComposerSoon();
+  };
+
+  const handleSaveWorkflowSpec = async (
+    spec: WorkflowBlueprintSpec,
+  ): Promise<WorkflowDefinitionItem | undefined> => {
+    if (!workspace || typeof desktop.saveWorkflow !== "function") return undefined;
+    const generation = generationRef.current;
+    try {
+      await desktop.saveWorkflow({
+        id: spec.id || undefined,
+        workspace,
+        name: spec.name,
+        steps: spec.steps,
+      });
+      const updatedList = await refreshWorkflows(workspace, generation);
+      const matched =
+        (spec.id && updatedList.find((w) => w.id === spec.id)) ||
+        updatedList.find((w) => w.name === spec.name) ||
+        updatedList[0];
+      if (matched) setFocusedWorkflowId(matched.id);
+      setNotice(`已保存工作流「${spec.name}」；可随时在「工作流」目录只读检视或一键运行。`);
+      return matched;
+    } catch (err) {
+      setNotice(textError(err));
+      return undefined;
+    }
+  };
+
+  const launchWorkflowInSession = async (wf: WorkflowDefinitionItem) => {
+    if (!workspace || typeof desktop.runWorkflow !== "function") return;
+    const generation = generationRef.current;
+    try {
+      const ack = await desktop.runWorkflow(workspace, wf.id, false);
+      const firstRunId = ack.run_ids?.[0] || "";
+      if (firstRunId) {
+        const nextBinding: WorkflowSessionBinding = {
+          workflowId: wf.id,
+          workflowName: wf.name,
+          workspace,
+          firstRunId,
+          steps: wf.steps,
+          startedAt: new Date().toISOString(),
+        };
+        setWorkflowBindings((prev) => {
+          const updated = [nextBinding, ...prev.filter((b) => b.firstRunId !== firstRunId)];
+          saveWorkflowBindings(workspace, updated);
+          return updated;
+        });
+        autoFollowWorkflowRunRef.current = firstRunId;
+        selectRun(firstRunId);
+        setPage("home");
+      }
+      await refreshRuns(workspace, generation);
+    } catch (err) {
+      setNotice(textError(err));
+    }
+  };
+
+  const handleSaveAndRunWorkflowSpec = async (spec: WorkflowBlueprintSpec) => {
+    const saved = await handleSaveWorkflowSpec(spec);
+    if (!saved) return;
+    await launchWorkflowInSession(saved);
+  };
+
+  const handleRefineWorkflowSpec = (spec: WorkflowBlueprintSpec) => {
+    setWorkflowComposeCtx({
+      mode: "edit",
+      workflow: {
+        id: spec.id || "",
+        name: spec.name,
+        steps: spec.steps,
+      },
+    });
+    setDraft((prev) => (prev.trim() ? prev : `调整「${spec.name}」的步骤或规则：`));
+    focusComposerSoon();
+  };
+
+  const stopWorkflowStageRun = (targetRunId: string) => {
+    void desktop
+      .cancelRun({ run_id: targetRunId, reason: "user stop" })
+      .catch((err) => setNotice(textError(err)));
+  };
+
   const updateSession = async (
     run: RunHistoryView,
     title?: string,
@@ -1780,8 +2496,14 @@ export default function App() {
   shortcutHandlerRef.current = (event: KeyboardEvent) => {
     if (event.isComposing || event.keyCode === 229) return;
     const keyLower = event.key.toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && keyLower === "k") {
+      event.preventDefault();
+      setCommandPaletteOpen((open) => !open);
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key === ",") {
       event.preventDefault();
+      setCommandPaletteOpen(false);
       setPage((current) => {
         if (current === "settings") {
           return "home";
@@ -1792,7 +2514,7 @@ export default function App() {
       });
       return;
     }
-    if (page === "home" && workspace) {
+    if (page === "home" && workspace && !commandPaletteOpen) {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && (keyLower === "b" || event.key === "\\")) {
         event.preventDefault();
         toggleSidecar();
@@ -1820,9 +2542,20 @@ export default function App() {
       }
     }
     if (event.key === "Escape") {
+      if (commandPaletteOpen) {
+        setCommandPaletteOpen(false);
+        return;
+      }
+      if (composerTrigger !== null) {
+        setComposerTrigger(null);
+        return;
+      }
+      if (heroPopover !== "none" || editorMenuOpen) {
+        setHeroPopover("none");
+        setEditorMenuOpen(false);
+        return;
+      }
       setSidebarOpen(false);
-      setHeroPopover("none");
-      setEditorMenuOpen(false);
       setPage((current) => (current === "settings" ? "home" : current));
     }
   };
@@ -1935,6 +2668,116 @@ export default function App() {
     }
   };
 
+  const slashMatches = useMemo(
+    () => (composerTrigger?.kind === "slash" ? filterSlashCommands(composerTrigger.query) : []),
+    [composerTrigger],
+  );
+  const mentionMatches = useMemo(
+    () =>
+      composerTrigger?.kind === "mention" && workspaceFiles
+        ? matchWorkspaceFiles(workspaceFiles, composerTrigger.query, 8)
+        : [],
+    [composerTrigger, workspaceFiles],
+  );
+  const activePopoverCount =
+    composerTrigger?.kind === "slash"
+      ? slashMatches.length
+      : composerTrigger?.kind === "mention"
+        ? mentionMatches.length
+        : 0;
+
+  const executeComposerSlashCommand = (cmd: ComposerSlashCommand) => {
+    setDraft("");
+    setComposerTrigger(null);
+    switch (cmd.id) {
+      case "review":
+        setDraft("帮我审查当前 Git 变更，指出潜在风险和测试缺口。");
+        break;
+      case "plan":
+        setReadOnly(true);
+        setDraft("为这个功能制定实现计划，先不要修改文件。");
+        break;
+      case "changes":
+        void activateBuiltinTab("changes");
+        break;
+      case "evidence":
+        if (runId) {
+          void activateBuiltinTab("evidence");
+        } else {
+          setNotice("请先在左侧选择一个已有会话，或发起运行后查看验证证据。");
+        }
+        break;
+      case "files":
+        void activateBuiltinTab("files");
+        break;
+      case "readonly":
+        setReadOnly((prev) => !prev);
+        break;
+      case "fork":
+        if (runId) {
+          forkRun(runId);
+        } else {
+          setNotice("请先选择一个已有 Run 后再创建分支。");
+        }
+        break;
+      case "workflow":
+        openWorkflow();
+        break;
+      case "doctor":
+        setSettingsTab("about");
+        openSettings();
+        void runWorkspaceDoctor();
+        break;
+      case "clear":
+        setNeedsAttentionOnly(false);
+        setAttachedFiles([]);
+        selectRun(null);
+        setPage("home");
+        break;
+    }
+  };
+
+  const selectMentionChip = (chip: AttachedFileChip) => {
+    setAttachedFiles((prev) =>
+      prev.some((item) => item.relative === chip.relative) ? prev : [...prev, chip],
+    );
+    if (composerTrigger?.kind === "mention") {
+      const applied = applyMentionSelection(draft, composerTrigger, chip.relative);
+      setDraft(applied.text);
+      setComposerTrigger(null);
+      window.setTimeout(() => {
+        const ta = composerTextareaRef.current;
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(applied.caret, applied.caret);
+        }
+      }, 0);
+      return;
+    }
+    setComposerTrigger(null);
+  };
+
+  const openMentionPicker = () => {
+    if (!workspace) return;
+    ensureWorkspaceFilesLoaded();
+    const ta = composerTextareaRef.current;
+    const caret = ta?.selectionStart ?? draft.length;
+    const needsSpace = caret > 0 && !/\s$/.test(draft.slice(0, caret));
+    const prefix = needsSpace ? " @" : "@";
+    const nextText = draft.slice(0, caret) + prefix + draft.slice(caret);
+    const nextCaret = caret + prefix.length;
+    setDraft(nextText);
+    setComposerTrigger(detectComposerTrigger(nextText, nextCaret));
+    setComposerMenuIndex(0);
+    window.setTimeout(() => {
+      const target = composerTextareaRef.current;
+      if (target) {
+        target.focus();
+        target.setSelectionRange(nextCaret, nextCaret);
+      }
+    }, 0);
+  };
+
   const compose = (
     <div style={{ width: "100%", maxWidth: 780, margin: "0 auto" }}>
       {changes && changes.entries.length > 0 && (
@@ -1992,7 +2835,93 @@ export default function App() {
         </div>
       )}
       <div className="wb-composer">
+        {composerTrigger && (
+          <div
+            className="wb-composer-popover"
+            role="listbox"
+            aria-label={composerTrigger.kind === "slash" ? "快捷指令菜单" : "引用工作区文件"}
+          >
+            <div className="wb-composer-popover-head">
+              <span>
+                {composerTrigger.kind === "slash" ? "/ 快捷指令" : "@ 引用工作区文件"}
+              </span>
+              <small>↑↓ 选择 · Enter / Tab 插入 · Esc 关闭</small>
+            </div>
+            {composerTrigger.kind === "slash" ? (
+              slashMatches.length > 0 ? (
+                slashMatches.map((cmd, idx) => (
+                  <button
+                    key={cmd.id}
+                    type="button"
+                    role="option"
+                    aria-selected={idx === composerMenuIndex}
+                    className={
+                      "wb-composer-popover-item" + (idx === composerMenuIndex ? " is-active" : "")
+                    }
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setComposerMenuIndex(idx)}
+                    onClick={() => executeComposerSlashCommand(cmd)}
+                  >
+                    <code className="wb-composer-pop-cmd">{cmd.name}</code>
+                    <span className="wb-composer-pop-desc">{cmd.description}</span>
+                    {cmd.hint && <kbd className="wb-launcher-kbd">{cmd.hint}</kbd>}
+                  </button>
+                ))
+              ) : (
+                <div className="wb-composer-popover-empty">
+                  未找到匹配的快捷指令，可继续输入普通任务或按 Esc 关闭
+                </div>
+              )
+            ) : loadingWorkspaceFiles ? (
+              <div className="wb-composer-popover-empty">正在读取工作区文件索引…</div>
+            ) : mentionMatches.length > 0 ? (
+              mentionMatches.map((item, idx) => (
+                <button
+                  key={item.relative}
+                  type="button"
+                  role="option"
+                  aria-selected={idx === composerMenuIndex}
+                  className={
+                    "wb-composer-popover-item" + (idx === composerMenuIndex ? " is-active" : "")
+                  }
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setComposerMenuIndex(idx)}
+                  onClick={() => selectMentionChip(item)}
+                >
+                  <span className="wb-composer-pop-at" aria-hidden="true">@</span>
+                  <span className="wb-composer-pop-file">{item.name}</span>
+                  <span className="wb-composer-pop-dir">{item.dir || "根目录"}</span>
+                </button>
+              ))
+            ) : (
+              <div className="wb-composer-popover-empty">
+                {workspaceFiles === null
+                  ? "未检测到文件索引能力"
+                  : `未找到匹配「${composerTrigger.query}」的工作区文件`}
+              </div>
+            )}
+          </div>
+        )}
         {stickyGate}
+        {workflowComposeCtx && (
+          <div className="wb-workflow-compose-banner" role="status">
+            <span className="wb-wf-icon" aria-hidden="true">
+              ☍
+            </span>
+            <span className="wb-workflow-compose-label">
+              {workflowComposeCtx.mode === "edit" && workflowComposeCtx.workflow
+                ? `正在对话调整工作流：${workflowComposeCtx.workflow.name}`
+                : "正在对话创建受控工作流（描述需求即可生成可保存草案）"}
+            </span>
+            <button
+              type="button"
+              aria-label="退出工作流编排上下文"
+              onClick={() => setWorkflowComposeCtx(null)}
+            >
+              ×
+            </button>
+          </div>
+        )}
         {forkSource && (
           <div className="wb-fork-source">
             从 Run {forkSource} 创建新分支{" "}
@@ -2001,20 +2930,90 @@ export default function App() {
             </button>
           </div>
         )}
+        {attachedFiles.length > 0 && (
+          <div className="wb-composer-chips" aria-label="已挂载文件上下文">
+            {attachedFiles.map((chip) => (
+              <span className="wb-context-chip" key={chip.relative}>
+                <span aria-hidden="true">@</span>
+                <span title={chip.relative}>{chip.relative}</span>
+                <button
+                  type="button"
+                  aria-label={`移除引用 ${chip.relative}`}
+                  onClick={() =>
+                    setAttachedFiles((prev) =>
+                      prev.filter((item) => item.relative !== chip.relative),
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <textarea
+          ref={composerTextareaRef}
           aria-label="描述任务"
+          data-testid="composer-input"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            const nextVal = event.target.value;
+            const caret = event.target.selectionStart ?? nextVal.length;
+            setDraft(nextVal);
+            setComposerTrigger(detectComposerTrigger(nextVal, caret));
+            setComposerMenuIndex(0);
+          }}
+          onClick={(event) => {
+            const ta = event.currentTarget;
+            setComposerTrigger(detectComposerTrigger(ta.value, ta.selectionStart ?? ta.value.length));
+          }}
           placeholder={
             running && runId
               ? runInputMode === "steering"
                 ? "输入补充指导，Agent 将在下一安全点消费…（Ctrl/Cmd+Enter 加入候选队列）"
                 : "输入后续任务候选，提交后需人工确认启动…"
-              : "描述一个任务、问题或你希望实现的功能…"
+              : "描述一个任务、输入 @ 引用文件，或输入 / 唤醒快捷指令…"
           }
           onKeyDown={(event) => {
             const ime = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
             if (ime) return;
+            if (composerTrigger && activePopoverCount > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setComposerMenuIndex((idx) => (idx + 1) % activePopoverCount);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setComposerMenuIndex((idx) => (idx - 1 + activePopoverCount) % activePopoverCount);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                setComposerTrigger(null);
+                return;
+              }
+              if (
+                event.key === "Tab" ||
+                (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey)
+              ) {
+                event.preventDefault();
+                if (composerTrigger.kind === "slash") {
+                  const chosen = slashMatches[composerMenuIndex] ?? slashMatches[0];
+                  if (chosen) executeComposerSlashCommand(chosen);
+                } else {
+                  const chosen = mentionMatches[composerMenuIndex] ?? mentionMatches[0];
+                  if (chosen) selectMentionChip(chosen);
+                }
+                return;
+              }
+            } else if (composerTrigger && event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setComposerTrigger(null);
+              return;
+            }
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
               void submitQueued();
@@ -2043,6 +3042,15 @@ export default function App() {
               onClick={() => void pickProject()}
             >
               ＋
+            </button>
+            <button
+              type="button"
+              title="引用工作区文件 (@)"
+              aria-label="引用文件"
+              disabled={!workspace || typeof desktop.listFileTree !== "function"}
+              onClick={openMentionPicker}
+            >
+              @ 引用
             </button>
             <label className={"wb-perm-pill" + (readOnly ? " is-readonly" : "")}>
               <input
@@ -2109,6 +3117,7 @@ export default function App() {
               <button
                 type="button"
                 className="wb-stop"
+                data-testid="composer-stop"
                 onClick={() =>
                   void desktop
                     .cancelRun({ run_id: runId, reason: "user stop" })
@@ -2123,6 +3132,7 @@ export default function App() {
                 className="wb-send"
                 title="提交任务"
                 aria-label="提交任务"
+                data-testid="composer-send"
                 disabled={
                   !workspace ||
                   !draft.trim() ||
@@ -2180,6 +3190,12 @@ export default function App() {
         : "桥接未连接";
   const bridgeDotTone =
     bridgeStatus === "healthy" ? "is-ok" : bridgeStatus === "connecting" ? "is-muted" : "is-warn";
+  const isDemoMode = demoBridgeActive();
+  const currentBridgeMode = bridgeMode();
+  const showBridgeUnavailable =
+    !isDemoMode &&
+    (currentBridgeMode === "unavailable" ||
+      (currentBridgeMode === "http" && bridgeStatus === "disconnected"));
 
   const settingsShell = (
     <div className="wb-settings-shell">
@@ -2608,6 +3624,56 @@ export default function App() {
                 <div className="wb-settings-card">
                   <div className="wb-setting-row">
                     <div className="wb-setting-meta">
+                      <strong>打开全局命令面板</strong>
+                      <p>在任意页面呼出命令面板，快速切换动作、最近会话、模型预设与工作区文件。</p>
+                    </div>
+                    <span className="wb-kbd-group">
+                      <kbd className="wb-kbd">⌘</kbd>
+                      <kbd className="wb-kbd">K</kbd>
+                    </span>
+                  </div>
+                  <div className="wb-setting-row">
+                    <div className="wb-setting-meta">
+                      <strong>展开或收起右侧审查工作台</strong>
+                      <p>在聊天主画布与右侧工作台之间切换焦点。</p>
+                    </div>
+                    <span className="wb-kbd-group">
+                      <kbd className="wb-kbd">⌘</kbd>
+                      <kbd className="wb-kbd">B</kbd>
+                    </span>
+                  </div>
+                  <div className="wb-setting-row">
+                    <div className="wb-setting-meta">
+                      <strong>打开工作台文件定位框</strong>
+                      <p>在右侧审查工作台中快速跳转到任意源码文件或面板。</p>
+                    </div>
+                    <span className="wb-kbd-group">
+                      <kbd className="wb-kbd">⌘</kbd>
+                      <kbd className="wb-kbd">P</kbd>
+                    </span>
+                  </div>
+                  <div className="wb-setting-row">
+                    <div className="wb-setting-meta">
+                      <strong>打开变更审查 / 验证证据</strong>
+                      <p>直达 Git 变更审阅或 Verifier 可信证据裁决面板。</p>
+                    </div>
+                    <span className="wb-kbd-group">
+                      <kbd className="wb-kbd">⌃⇧G</kbd>
+                      <kbd className="wb-kbd">⌘E</kbd>
+                    </span>
+                  </div>
+                  <div className="wb-setting-row">
+                    <div className="wb-setting-meta">
+                      <strong>输入框引用文件或斜杠命令</strong>
+                      <p>输入 @ 搜索并附加工作区文件，输入 / 触发常用操作与模式指令。</p>
+                    </div>
+                    <span className="wb-kbd-group">
+                      <kbd className="wb-kbd">@</kbd>
+                      <kbd className="wb-kbd">/</kbd>
+                    </span>
+                  </div>
+                  <div className="wb-setting-row">
+                    <div className="wb-setting-meta">
                       <strong>打开或关闭设置中心</strong>
                       <p>在当前工作区会话与全幅设置中心之间切换（Windows / Linux 为 Ctrl + ,）。</p>
                     </div>
@@ -2619,7 +3685,7 @@ export default function App() {
                   <div className="wb-setting-row">
                     <div className="wb-setting-meta">
                       <strong>返回工作区或收起抽屉</strong>
-                      <p>在设置中心按下时返回工作区；在窄屏工作台按下时收起侧栏导航抽屉。</p>
+                      <p>在命令面板、设置中心或窄屏工作台按下 Esc 逐级退回。</p>
                     </div>
                     <span className="wb-kbd-group">
                       <kbd className="wb-kbd">Esc</kbd>
@@ -2895,6 +3961,85 @@ export default function App() {
     </div>
   );
 
+  const renderProjectBranch = (project: { path: string; name: string }, isCurrent: boolean) => {
+    const expanded = isCurrent && !projectCollapsed;
+    return (
+      <div
+        key={project.path}
+        className={"wb-project-node" + (isCurrent ? " is-current" : "")}
+      >
+        <button
+          type="button"
+          className={"wb-project-header" + (isCurrent ? " current" : "")}
+          aria-expanded={isCurrent ? expanded : undefined}
+          onClick={() => {
+            if (isCurrent) {
+              setProjectCollapsed((prev) => !prev);
+            } else {
+              void switchProject(project.path);
+            }
+          }}
+        >
+          <svg
+            className={"wb-project-chevron" + (expanded ? " is-expanded" : "")}
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m6 4 4 4-4 4" />
+          </svg>
+          <svg
+            className="wb-project-folder"
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3H6l1.4 1.5h5.1A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
+          </svg>
+          <span className="wb-project-name">{project.name || project.path.split("/").pop()}</span>
+          {isCurrent && visibleRuns.length > 0 && (
+            <span className="wb-project-count">{visibleRuns.length}</span>
+          )}
+        </button>
+        {expanded && (
+          <div className="wb-project-runs">
+            {visibleRuns.length > 0 ? (
+              visibleRuns.map((run) => (
+                <SessionRow
+                  key={run.run_id}
+                  run={run}
+                  selected={runId === run.run_id}
+                  indent={treeMeta.depthMap.get(run.run_id) ?? 0}
+                  childCount={treeMeta.childCountMap.get(run.run_id) ?? 0}
+                  onSelect={() => selectRun(run.run_id)}
+                  onRename={(title) => updateSession(run, title)}
+                  onFlags={(pinned, archived) =>
+                    updateSession(run, undefined, { pinned, archived })
+                  }
+                  onFork={() => forkRun(run.run_id)}
+                />
+              ))
+            ) : (
+              <div className="wb-empty-runs">{filter ? "无匹配会话" : "暂无任务"}</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       className={
@@ -2926,7 +4071,7 @@ export default function App() {
           <div className="wb-sidebar-top-actions">
             <button
               type="button"
-              title="搜索会话"
+              title={searchOpen ? "收起会话搜索" : "搜索会话"}
               aria-label="切换会话搜索"
               aria-pressed={searchOpen}
               onClick={() => {
@@ -2934,18 +4079,33 @@ export default function App() {
                   const next = !open;
                   if (next) {
                     window.setTimeout(() => sessionSearchRef.current?.focus(), 0);
+                  } else {
+                    setFilter("");
                   }
                   return next;
                 });
               }}
             >
-              ⌕
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="7.2" cy="7.2" r="4.4" />
+                <path d="m10.5 10.5 3 3" />
+              </svg>
             </button>
           </div>
         </div>
         <nav className="wb-nav">
           <button
             type="button"
+            data-testid="new-session"
             className={page === "home" && !runId && !needsAttentionOnly ? "active" : ""}
             onClick={() => {
               setNeedsAttentionOnly(false);
@@ -2953,7 +4113,22 @@ export default function App() {
               setPage("home");
             }}
           >
-            ＋ <span>新建任务</span>
+            <svg
+              className="wb-nav-icon"
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8.5 3H4.5A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5V7.5" />
+              <path d="M12.6 2.4a1.2 1.2 0 0 1 1.7 1.7L8.2 10.2l-2.3.6.6-2.3z" />
+            </svg>
+            <span>新建任务</span>
           </button>
           <button
             type="button"
@@ -2964,7 +4139,22 @@ export default function App() {
               setPage("home");
             }}
           >
-            ⚑ <span>需要我</span>
+            <svg
+              className="wb-nav-icon"
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3.5 2.5v11" />
+              <path d="M3.5 3h8l-1.5 2.8L11.5 8.5h-8" />
+            </svg>
+            <span>需要我</span>
             {attentionCount > 0 && <span className="wb-nav-badge is-warn">{attentionCount}</span>}
           </button>
           <button
@@ -2972,21 +4162,54 @@ export default function App() {
             className={page === "workflow" ? "active" : ""}
             onClick={() => void openWorkflow()}
           >
-            ◇ <span>工作流</span>
+            <svg
+              className="wb-nav-icon"
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="2.2" y="2.4" width="4.4" height="4.4" rx="1.1" />
+              <rect x="9.4" y="2.4" width="4.4" height="4.4" rx="1.1" />
+              <rect x="5.8" y="9.2" width="4.4" height="4.4" rx="1.1" />
+              <path d="M6.6 4.6h2.8M8 6.8v2.4" />
+            </svg>
+            <span>工作流</span>
           </button>
         </nav>
         <div className="wb-sidebar-title">
-          <span>工作区</span>
-          <div>
+          <span>{showArchived ? "工作区 · 归档" : "工作区"}</span>
+          <div className="wb-sidebar-head-tools">
             <button
               type="button"
               aria-label="切换已归档会话"
+              aria-pressed={showArchived}
+              title={showArchived ? "返回活跃会话" : "查看已归档会话"}
               onClick={() => {
                 setNeedsAttentionOnly(false);
                 setShowArchived((v) => !v);
               }}
             >
-              {showArchived ? "显示活跃" : "查看归档"}
+              <svg
+                width="13.5"
+                height="13.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="2" y="2.8" width="12" height="3" rx="0.8" />
+                <path d="M3 5.8v6.7A1.2 1.2 0 0 0 4.2 13.7h7.6a1.2 1.2 0 0 0 1.2-1.2V5.8" />
+                <path d="M6.3 8.8h3.4" />
+              </svg>
             </button>
             <button
               type="button"
@@ -2994,141 +4217,90 @@ export default function App() {
               aria-label="添加项目"
               onClick={() => void pickProject()}
             >
-              ＋
+              <svg
+                width="13.5"
+                height="13.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.65"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M8 3.2v9.6M3.2 8h9.6" />
+              </svg>
             </button>
           </div>
         </div>
-        <div className="wb-project-list">
-          {recent.map((project) => {
-            const isCurrent = workspace === project.path;
-            return (
-              <div
-                key={project.path}
-                className={"wb-project-node" + (isCurrent ? " is-current" : "")}
+        {(searchOpen || Boolean(filter)) && (
+          <div className="wb-sidebar-search">
+            <div className="wb-sidebar-search-box">
+              <svg
+                width="12.5"
+                height="12.5"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                aria-hidden="true"
               >
+                <circle cx="7.2" cy="7.2" r="4.3" />
+                <path d="m10.5 10.5 3 3" />
+              </svg>
+              <input
+                ref={sessionSearchRef}
+                aria-label="搜索会话"
+                placeholder="筛选会话…"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setFilter("");
+                    setSearchOpen(false);
+                  }
+                }}
+              />
+              {filter && (
                 <button
                   type="button"
-                  className={isCurrent ? "current" : ""}
-                  onClick={() => void switchProject(project.path)}
+                  aria-label="清空搜索"
+                  onClick={() => setFilter("")}
                 >
-                  <span aria-hidden="true">{isCurrent ? "▾" : "▸"}</span>
-                  <span>{project.name || project.path.split("/").pop()}</span>
+                  ×
                 </button>
-                {isCurrent && (
-                  <div className="wb-project-runs">
-                    {searchOpen && (
-                      <div className="wb-sidebar-search" style={{ padding: "2px 0 4px" }}>
-                        <input
-                          ref={sessionSearchRef}
-                          aria-label="搜索会话"
-                          placeholder="搜索会话…"
-                          value={filter}
-                          onChange={(event) => setFilter(event.target.value)}
-                        />
-                      </div>
-                    )}
-                    {visibleRuns.length > 0 ? (
-                      visibleRuns.map((run) => (
-                        <SessionRow
-                          key={run.run_id}
-                          run={run}
-                          selected={runId === run.run_id}
-                          indent={treeMeta.depthMap.get(run.run_id) ?? 0}
-                          childCount={treeMeta.childCountMap.get(run.run_id) ?? 0}
-                          onSelect={() => selectRun(run.run_id)}
-                          onRename={(title) => updateSession(run, title)}
-                          onFlags={(pinned, archived) =>
-                            updateSession(run, undefined, { pinned, archived })
-                          }
-                          onFork={() => forkRun(run.run_id)}
-                        />
-                      ))
-                    ) : (
-                      <div className="wb-empty-runs">暂无任务</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {workspace && !recent.some((project) => project.path === workspace) && (
-            <div className="wb-project-node is-current">
-              <button
-                type="button"
-                className="current"
-                onClick={() => void switchProject(workspace)}
-              >
-                <span aria-hidden="true">▾</span>
-                <span>{workspaceName}</span>
-              </button>
-              <div className="wb-project-runs">
-                {searchOpen && (
-                  <div className="wb-sidebar-search" style={{ padding: "2px 0 4px" }}>
-                    <input
-                      ref={sessionSearchRef}
-                      aria-label="搜索会话"
-                      placeholder="搜索会话…"
-                      value={filter}
-                      onChange={(event) => setFilter(event.target.value)}
-                    />
-                  </div>
-                )}
-                {visibleRuns.length > 0 ? (
-                  visibleRuns.map((run) => (
-                    <SessionRow
-                      key={run.run_id}
-                      run={run}
-                      selected={runId === run.run_id}
-                      indent={treeMeta.depthMap.get(run.run_id) ?? 0}
-                      childCount={treeMeta.childCountMap.get(run.run_id) ?? 0}
-                      onSelect={() => selectRun(run.run_id)}
-                      onRename={(title) => updateSession(run, title)}
-                      onFlags={(pinned, archived) =>
-                        updateSession(run, undefined, { pinned, archived })
-                      }
-                      onFork={() => forkRun(run.run_id)}
-                    />
-                  ))
-                ) : (
-                  <div className="wb-empty-runs">暂无任务</div>
-                )}
-              </div>
+              )}
             </div>
-          )}
+          </div>
+        )}
+        <div className="wb-project-list">
+          {recent.map((project) => renderProjectBranch(project, workspace === project.path))}
+          {workspace &&
+            !recent.some((project) => project.path === workspace) &&
+            renderProjectBranch({ path: workspace, name: workspaceName }, true)}
           {!recent.length && !workspace && <div className="wb-hint">尚未添加工作区</div>}
         </div>
-        <div
-          className="wb-sidebar-bottom"
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-          }}
-        >
-          <span className="wb-sidebar-version" style={{ padding: "0 6px" }}>
-            <i
-              className={"wb-status-dot " + bridgeDotTone}
-              aria-hidden="true"
-              style={{
-                display: "inline-block",
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                marginRight: 6,
-                verticalAlign: "middle",
-                background:
-                  bridgeStatus === "healthy"
-                    ? "var(--wb-moss)"
-                    : bridgeStatus === "connecting"
-                      ? "var(--wb-subtle)"
-                      : "var(--wb-amber)",
-              }}
-            />
+        <div className="wb-sidebar-bottom">
+          <span className="wb-sidebar-version">
+            <i className={"wb-status-dot " + bridgeDotTone} aria-hidden="true" />
             Cairn · {bridgeStatusText}
           </span>
           <button type="button" onClick={() => void openSettings()}>
-            ⚙ <span>设置</span>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="2.2" />
+              <path d="M8 2v1.4M8 12.6V14M3.8 3.8l1 1M11.2 11.2l1 1M2 8h1.4M12.6 8H14M3.8 12.2l1-1M11.2 4.8l1-1" />
+            </svg>
+            <span>设置</span>
           </button>
         </div>
       </aside>
@@ -3146,7 +4318,7 @@ export default function App() {
               >
                 ☷
               </button>
-              <span className="wb-crumb">
+              <span className="wb-crumb" data-testid="workspace-chip">
                 {workspace.split("/").pop() || "Cairn"}
                 {workspaceStatus?.dirty && (
                   <span className="wb-dirty" title="工作区存在未提交修改">
@@ -3218,6 +4390,36 @@ export default function App() {
                   )}
                 </div>
               )}
+              {page === "home" && activeWorkflowExecution && (
+                <button
+                  type="button"
+                  className="wb-toolbar-wf-pill"
+                  title="查看当前关联工作流"
+                  onClick={() => {
+                    setFocusedWorkflowId(activeWorkflowExecution.workflowId);
+                    openWorkflow();
+                  }}
+                >
+                  <span aria-hidden="true">☍</span>
+                  <span className="wb-toolbar-wf-name">
+                    {activeWorkflowExecution.workflowName}
+                  </span>
+                  <span className="wb-toolbar-wf-stage">
+                    {activeWorkflowExecution.stages[activeWorkflowExecution.activeStepIndex]
+                      ?.step.task || ""}
+                  </span>
+                </button>
+              )}
+              <button
+                type="button"
+                className="wb-cmdk-trigger"
+                title="打开全局命令面板 (⌘K)"
+                aria-label="打开全局命令面板"
+                onClick={() => setCommandPaletteOpen(true)}
+              >
+                <span>命令面板</span>
+                <kbd className="wb-kbd">⌘K</kbd>
+              </button>
               <button
                 type="button"
                 className="wb-icon-btn"
@@ -3259,6 +4461,26 @@ export default function App() {
               )}
             </div>
           </header>
+          {isDemoMode && (
+            <div className="wb-demo-banner" data-testid="demo-banner" role="status">
+              <span className="wb-badge is-warn">离线演示模式</span>
+              <span>
+                当前通过显式 ?cairn-demo=1 运行浏览器内存演示桥接，数据不会写入真实 SQLite Event Journal。
+              </span>
+            </div>
+          )}
+          {showBridgeUnavailable && (
+            <div
+              className="wb-bridge-banner"
+              data-testid="bridge-unavailable-banner"
+              role="alert"
+            >
+              <span className="wb-badge is-warn">桌面桥接不可用</span>
+              <span>
+                未检测到 Wails 宿主或本地桥接服务；请通过 Cairn Studio 桌面端启动，或追加 ?cairn-demo=1 进入离线演示。
+              </span>
+            </div>
+          )}
           {notice && (
             <div className="wb-notice" role="alert">
               <span>{notice}</span>
@@ -3482,8 +4704,17 @@ export default function App() {
                 </section>
               </div>
             ) : (
-              <div className="wb-session">
-                <div className="wb-session-scroll">
+              <div className={"wb-session" + (recallStops.length >= 2 ? " has-recall-rail" : "")}>
+                <SessionRecallRail
+                  stops={recallStops}
+                  activeId={activeRecallId}
+                  onSelect={jumpToRecallStop}
+                />
+                <div
+                  ref={sessionScrollRef}
+                  className="wb-session-scroll"
+                  onScroll={handleSessionScroll}
+                >
                   <div className="wb-session-content">
                     {parentRun && (
                       <button
@@ -3522,15 +4753,147 @@ export default function App() {
                     {blocks.length ? (
                       <Transcript
                         blocks={blocks}
+                        flashedAnchorId={flashedRecallId}
+                        workflows={workflows}
                         onApproval={decide}
                         onInspectFile={(targetPath) => void inspectChangedFile(targetPath)}
+                        onSaveWorkflow={(spec) => handleSaveWorkflowSpec(spec).then(() => {})}
+                        onSaveAndRunWorkflow={handleSaveAndRunWorkflowSpec}
+                        onRefineWorkflow={handleRefineWorkflowSpec}
+                        onOpenWorkflowPortal={(wfId) => {
+                          if (wfId) setFocusedWorkflowId(wfId);
+                          openWorkflow();
+                        }}
                       />
                     ) : (
                       <p className="wb-hint">正在等待 Journal 中的运行记录…</p>
                     )}
+                    {activeWorkflowExecution && (
+                      <WorkflowExecutionCard
+                        execution={activeWorkflowExecution}
+                        activeRunId={runId}
+                        onSelectStageRun={(stageRunId) => {
+                          autoFollowWorkflowRunRef.current = null;
+                          selectRun(stageRunId);
+                        }}
+                        onOpenPortal={(wfId) => {
+                          setFocusedWorkflowId(wfId);
+                          openWorkflow();
+                        }}
+                        onDebugInChat={() => {
+                          const targetWf =
+                            workflows.find(
+                              (w) => w.id === activeWorkflowExecution.workflowId,
+                            ) || {
+                              id: activeWorkflowExecution.workflowId,
+                              name: activeWorkflowExecution.workflowName,
+                              steps: activeWorkflowExecution.binding.steps,
+                            };
+                          setWorkflowComposeCtx({
+                            mode: "edit",
+                            workflow: targetWf,
+                            note: `关联运行 ${activeWorkflowExecution.latestRunId}（当前阶段 ${
+                              activeWorkflowExecution.activeStepIndex + 1
+                            }/${activeWorkflowExecution.stages.length}）`,
+                          });
+                          setDraft((prev) =>
+                            prev.trim()
+                              ? prev
+                              : `帮我分析或调整工作流「${activeWorkflowExecution.workflowName}」：`,
+                          );
+                          focusComposerSoon();
+                        }}
+                        onStopRun={stopWorkflowStageRun}
+                      />
+                    )}
+                    {running &&
+                      !selected?.waiting_approval &&
+                      !selected?.waiting_reconcile && (
+                        <div className="wb-live-vital" role="status" aria-live="polite">
+                          <span className="wb-live-vital-dot" aria-hidden="true" />
+                          <strong className="wb-live-vital-stage">{liveVital.stageLabel}</strong>
+                          {liveVital.detail && (
+                            <span className="wb-live-vital-detail">{liveVital.detail}</span>
+                          )}
+                          <span className="wb-live-vital-metrics">
+                            {liveVital.turn > 0 ? `第 ${liveVital.turn} 轮 · ` : ""}
+                            {liveVital.toolCount} 次工具
+                          </span>
+                        </div>
+                      )}
+                    {runId && selected?.state === "completed" && (
+                      <section className="wb-stone-milestone" aria-label="运行完成里程碑">
+                        <div className="wb-stone-milestone-head">
+                          <div className="wb-stone-milestone-title">
+                            <span className="wb-stone-mark" aria-hidden="true">
+                              ◆
+                            </span>
+                            <strong>运行已完成收尾</strong>
+                            <span className="wb-hash-pill">{runId}</span>
+                          </div>
+                          {evidence ? (
+                            <span className={"wb-badge " + (evidence.trusted ? "is-ok" : "is-warn")}>
+                              {evidence.trusted
+                                ? "✓ Verifier 可信"
+                                : "未确认验证 · 完成 ≠ 已验证"}
+                            </span>
+                          ) : (
+                            <span className="wb-badge">验证证据待核查</span>
+                          )}
+                        </div>
+                        <p className="wb-stone-milestone-note">
+                          {evidence
+                            ? evidence.trusted
+                              ? `已绑定 Verifier 证据${
+                                  evidence.verification?.verification_seq
+                                    ? `（#seq ${evidence.verification.verification_seq}）`
+                                    : ""
+                                }，共执行 ${evidence.metrics?.turns ?? 0} 轮、${
+                                  evidence.metrics?.tool_calls ?? 0
+                                } 次工具调用。`
+                              : "运行循环已结束，但当前没有通过的 Verifier 验证证据，不能将运行完成等同于修改正确。"
+                            : "运行循环已结束；可打开验证证据面板核查 Verifier 退出码与运行指标。"}
+                          {changes?.entries?.length
+                            ? ` 当前工作区检测到 ${changes.entries.length} 项文件变更。`
+                            : ""}
+                        </p>
+                        <div className="wb-stone-milestone-actions">
+                          <button
+                            type="button"
+                            className="wb-ghost"
+                            onClick={() => void activateBuiltinTab("changes")}
+                          >
+                            打开变更审查
+                          </button>
+                          <button
+                            type="button"
+                            className="wb-ghost"
+                            onClick={() => void activateBuiltinTab("evidence")}
+                          >
+                            核查验证证据 (⌘E)
+                          </button>
+                          <button
+                            type="button"
+                            className="wb-ghost"
+                            onClick={() => forkRun(runId)}
+                          >
+                            派生分支 (⌘⇧S)
+                          </button>
+                        </div>
+                      </section>
+                    )}
                     <div ref={bottomRef} />
                   </div>
                 </div>
+                {showScrollBottom && (
+                  <button
+                    type="button"
+                    className="wb-scroll-bottom-pill"
+                    onClick={scrollToSessionBottom}
+                  >
+                    ↓ 回到底部
+                  </button>
+                )}
                 <div className="wb-session-composer">{compose}</div>
               </div>
             ))}
@@ -3539,10 +4902,25 @@ export default function App() {
               <div className="wb-page-head">
                 <span>WORKFLOWS</span>
                 <h1>工作流</h1>
-                <p>创建可重复执行的有序步骤；预演不是成功验证。</p>
+                <p>通过对话创建、调试与演进工作流；此处用于只读检视流程定义、运行历史与直接触发。</p>
               </div>
               {workspace ? (
-                <WorkflowsView key={workspace} workspace={workspace} notify={onQueueError} />
+                <WorkflowsView
+                  key={workspace}
+                  workspace={workspace}
+                  notify={onQueueError}
+                  runs={runs}
+                  bindings={workflowBindings}
+                  focusedWorkflowId={focusedWorkflowId}
+                  onConverseCreate={startConversationalWorkflowCreate}
+                  onConverseEdit={startConversationalWorkflowEdit}
+                  onLaunchWorkflow={launchWorkflowInSession}
+                  onOpenRun={(targetRunId) => {
+                    autoFollowWorkflowRunRef.current = null;
+                    selectRun(targetRunId);
+                    setPage("home");
+                  }}
+                />
               ) : (
                 <p>请先选择工作区。</p>
               )}
@@ -3781,6 +5159,59 @@ export default function App() {
       </div>
         </>
       )}
+      <CommandPalette
+        open={commandPaletteOpen}
+        workspace={workspace}
+        runId={runId}
+        runs={runs}
+        providerPresets={providerPresets}
+        changesCount={changes?.entries?.length ?? 0}
+        pendingQueueCount={pendingQueueCount}
+        readOnly={readOnly}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNewTask={() => {
+          setNeedsAttentionOnly(false);
+          setAttachedFiles([]);
+          selectRun(null);
+          setPage("home");
+        }}
+        onSelectRun={(id) => {
+          setPage("home");
+          selectRun(id);
+        }}
+        onToggleSidecar={() => {
+          setPage("home");
+          toggleSidecar();
+        }}
+        onOpenSidecarTab={(kind) => {
+          setPage("home");
+          void activateBuiltinTab(kind);
+        }}
+        onOpenFileTab={(rel) => {
+          setPage("home");
+          openFileTab(rel);
+        }}
+        onForkCurrentRun={() => {
+          if (runId) {
+            setPage("home");
+            forkRun(runId);
+          }
+        }}
+        onToggleReadOnly={() => setReadOnly((prev) => !prev)}
+        onToggleTheme={toggleQuickColorScheme}
+        onOpenWorkflow={openWorkflow}
+        onConverseWorkflow={() => startConversationalWorkflowCreate()}
+        onOpenSettingsTab={(tab) => {
+          setSettingsTab(tab);
+          openSettings();
+        }}
+        onRunDoctor={() => {
+          setSettingsTab("about");
+          openSettings();
+          void runWorkspaceDoctor();
+        }}
+        onActivatePreset={(preset) => void handleActivatePresetFromHero(preset)}
+      />
     </div>
   );
 }

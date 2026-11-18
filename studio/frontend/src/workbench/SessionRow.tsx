@@ -1,6 +1,8 @@
 /**
- * 侧边栏会话树节点组件：以紧凑树形行呈现运行状态微标、层级缩进与显式会话元数据操作。
- * 分叉操作始终显式创建新会话，绝不静默续接原会话。
+ * INPUT: 单条运行视图 RunHistoryView、选中状态、树形缩进/子运行数量与管理回调。
+ * OUTPUT: 紧凑克制的侧栏会话树节点组件（弱化终态徽标，悬浮切换操作菜单，最大化标题可读宽度）。
+ * POS: studio/frontend/src/workbench 左侧项目与会话树叶子行组件。
+ *
  * Author: fxbin
  */
 import { useEffect, useRef, useState } from "react";
@@ -12,36 +14,42 @@ interface SessionBadgeMeta {
   tone: "is-ok" | "is-warn" | "is-accent" | "is-muted";
   label: string;
   pulse: boolean;
-  prominent: boolean;
+  isActionable: boolean;
 }
 
 /**
- * 根据服务端下发的运行状态投影生成会话状态徽标元数据，不在前端猜测终态。
+ * 根据服务端下发的运行状态投影分级生成会话状态元数据：运行中/待决策使用动作徽标，
+ * 已结束运行退居静默色点与微弱尾标，避免大面积边框胶囊视觉噪点。
  */
 function resolveSessionBadge(run: RunHistoryView): SessionBadgeMeta {
   if (run.waiting_reconcile) {
-    return { tone: "is-warn", label: "待对账", pulse: true, prominent: true };
+    return { tone: "is-warn", label: "待对账", pulse: true, isActionable: true };
   }
   if (run.waiting_approval) {
-    return { tone: "is-warn", label: "待授权", pulse: true, prominent: true };
+    return { tone: "is-warn", label: "待授权", pulse: true, isActionable: true };
   }
   if (!TERMINAL_RUN_STATES.has(run.state)) {
-    return { tone: "is-accent", label: run.phase_label || "运行中", pulse: true, prominent: true };
+    return {
+      tone: "is-accent",
+      label: run.phase_label || "运行中",
+      pulse: true,
+      isActionable: true,
+    };
   }
   if (run.state === "failed") {
-    return { tone: "is-warn", label: "失败", pulse: false, prominent: true };
+    return { tone: "is-warn", label: "失败", pulse: false, isActionable: false };
   }
   if (run.archived) {
-    return { tone: "is-muted", label: "归档", pulse: false, prominent: true };
+    return { tone: "is-muted", label: "归档", pulse: false, isActionable: false };
   }
   if (run.state === "completed") {
-    return { tone: "is-ok", label: "完成", pulse: false, prominent: false };
+    return { tone: "is-ok", label: "完成", pulse: false, isActionable: false };
   }
-  return { tone: "is-muted", label: "已取消", pulse: false, prominent: false };
+  return { tone: "is-muted", label: "已取消", pulse: false, isActionable: false };
 }
 
 /**
- * 将本地运行时间戳格式化为紧凑月/日简写，无效时间戳返回空字符串以保持树节点干净。
+ * 将本地运行时间戳格式化为紧凑月/日简写，无效时间戳返回空字符串以保持行尾整洁。
  */
 function formatCompactRunDate(raw: string | undefined): string {
   if (!raw) return "";
@@ -54,7 +62,7 @@ function formatCompactRunDate(raw: string | undefined): string {
 }
 
 /**
- * 渲染单条紧凑会话树节点与显式管理菜单。
+ * 渲染单条紧凑会话树节点与按需浮现的会话管理菜单。
  */
 export default function SessionRow({
   run,
@@ -82,6 +90,7 @@ export default function SessionRow({
   const rowRef = useRef<HTMLDivElement>(null);
   const badge = resolveSessionBadge(run);
   const compactDate = formatCompactRunDate(run.updated_at || run.created_at);
+  const displayTitle = run.title || run.task || run.run_id;
 
   useEffect(() => {
     if (!menu) return;
@@ -120,16 +129,23 @@ export default function SessionRow({
       ? "var(--wb-amber)"
       : badge.tone === "is-accent"
         ? "var(--wb-action)"
-        : badge.tone === "is-ok"
-          ? "var(--wb-moss)"
-          : "var(--wb-subtle)";
+        : "var(--wb-moss)";
+
+  const staticDotClass =
+    run.state === "failed"
+      ? "wb-session-dot is-failed"
+      : selected
+        ? "wb-session-dot is-active"
+        : run.state === "completed"
+          ? "wb-session-dot is-ok"
+          : "wb-session-dot is-muted";
 
   return (
     <div
       ref={rowRef}
-      className={"wb-session-row" + (selected ? " current" : "")}
+      className={"wb-session-row" + (selected ? " current" : "") + (menu ? " has-menu" : "")}
       data-testid="session-row"
-      style={indent > 0 ? { paddingLeft: `${Math.min(indent, 3) * 12}px` } : undefined}
+      style={indent > 0 ? { paddingLeft: `${Math.min(indent, 3) * 10}px` } : undefined}
     >
       {editing ? (
         <div className="wb-session-rename">
@@ -163,45 +179,43 @@ export default function SessionRow({
             type="button"
             className="wb-session-open"
             onClick={onSelect}
-            aria-label={"打开会话 " + (run.title || run.task || run.run_id)}
-            title={run.title || run.task || run.run_id}
+            aria-label={"打开会话 " + displayTitle}
+            title={displayTitle}
           >
             {indent > 0 && (
-              <span className="wb-session-sub" aria-hidden="true">
+              <span className="wb-session-branch-mark" aria-hidden="true">
                 ↳
               </span>
             )}
             {badge.pulse ? (
               <i className="wb-pulse-dot" aria-hidden="true" style={{ color: dotColor }} />
             ) : (
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 6,
-                  height: 6,
-                  flex: "0 0 6px",
-                  borderRadius: "50%",
-                  background: dotColor,
-                  opacity: badge.tone === "is-muted" ? 0.55 : 0.85,
-                }}
-              />
+              <span className={staticDotClass} aria-hidden="true" />
             )}
             {run.pinned && (
-              <span title="已固定" aria-hidden="true" style={{ fontSize: 10, color: "var(--wb-action)" }}>
+              <span className="wb-session-pin" title="已固定" aria-hidden="true">
                 ◆
               </span>
             )}
-            <span className="wb-session-name" style={{ flex: 1 }}>
-              {run.title || run.task || run.run_id}
+            <span className="wb-session-name">{displayTitle}</span>
+            <span className="wb-session-tail">
+              {childCount > 0 && (
+                <span className="wb-session-sub" title={`${childCount} 个子运行`}>
+                  +{childCount}
+                </span>
+              )}
+              {badge.isActionable ? (
+                <span className={"wb-session-pill " + badge.tone}>{badge.label}</span>
+              ) : run.state === "failed" ? (
+                <span className="wb-session-micro is-failed">失败</span>
+              ) : run.archived ? (
+                <span className="wb-session-micro is-muted">归档</span>
+              ) : compactDate ? (
+                <span className="wb-session-date" aria-hidden="true">
+                  {compactDate}
+                </span>
+              ) : null}
             </span>
-            {childCount > 0 && <span className="wb-session-sub">{childCount} 子运行</span>}
-            {badge.prominent ? (
-              <span className={"wb-badge " + badge.tone}>{badge.label}</span>
-            ) : compactDate ? (
-              <span className="wb-session-sub" aria-hidden="true">
-                {compactDate}
-              </span>
-            ) : null}
           </button>
           <button
             type="button"
@@ -210,7 +224,11 @@ export default function SessionRow({
             aria-expanded={menu}
             onClick={() => setMenu((x) => !x)}
           >
-            ···
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <circle cx="3.5" cy="8" r="1.25" />
+              <circle cx="8" cy="8" r="1.25" />
+              <circle cx="12.5" cy="8" r="1.25" />
+            </svg>
           </button>
           {menu && (
             <div className="wb-session-menu">
