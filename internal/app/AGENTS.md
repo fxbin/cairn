@@ -46,7 +46,7 @@ queue.go: Queue 将输入持久化为待处理、关联或取消状态。锁竞�
 queue_test.go: 回归 Queue 将输入持久化为待处理、关联或取消状态。锁竞争有界失败。
 rewind.go: Rewind 从无损 before 制品生成回退计划。每次文件写入走完整授权链。
 rewind_test.go: 回归 Rewind 从无损 before 制品生成回退计划。每次文件写入走完整授权链。
-service.go: Service.Run 在观测前校验钩子并驱动Boot。运行事实来自Journal。
+service.go: Service.Run 在观测前校验钩子并驱动 Boot；任务分配可在同一锁内锚定创建事件。
 service_admission.go: AdmissionGate 统一运行和诊断的准入检查。过期证据失败关闭。
 service_artifacts.go: ArtifactIntegrity 校验历史引用和摘要。损坏制品阻止恢复。
 service_assemble.go: ConfiguredLoop 注入同实例投影与释放参与者。授权保留请求作用域。
@@ -90,6 +90,8 @@ subagent_review_test.go: 回归 SubagentReview 区分产出与独立验收来源
 subagent_start.go: SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_start_test.go: 回归 SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_test.go: 回归 Subagent 合同绑定父子身份与预算。委派不能扩大父权限。
+task.go: 装配 Task SQLite。应用门面按版本推进工作区任务与用户验收。
+task_run.go: 在创建 Run 前持久化分配。执行阶段与证据从 Run Journal 读取。
 telemetry.go: 显式装配遥测能力并收束资源。Doctor共用接线判定，导出失败不改变运行事实。
 telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出失败不改变运行事实。
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
