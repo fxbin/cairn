@@ -1134,14 +1134,15 @@ func (wizard ConfigWizard) viewDone() string {
 	return strings.Join(lines, "\n")
 }
 
-// titleStyle、dimStyle、okStyle、warnStyle、errStyle、itemStyle 与
-// itemSelectedStyle 是向导的语义化文本样式集合。
+// titleStyle、dimStyle、okStyle、warnStyle、errStyle、itemStyle、
+// itemSelectedStyle 与 badgeStyle 是向导及运行台共享的语义化文本样式集合。
 var (
-	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	dimStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	okStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	warnStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	errStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	itemStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	titleStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#B55C35", Dark: "#D47952"})
+	dimStyle          = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#787268", Dark: "#968F84"})
+	okStyle           = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#3F6F4E", Dark: "#6BA37D"})
+	warnStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#9A6700", Dark: "#D49B38"})
+	errStyle          = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#E05A4E"})
+	itemStyle         = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1F1D1A", Dark: "#EAE5DC"})
+	itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#B55C35", Dark: "#F0A07C"})
+	badgeStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#5B554C", Dark: "#C9C2B6"})
 )
