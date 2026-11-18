@@ -15,11 +15,12 @@ type themeName struct {
 	label string
 }
 
-// builtinThemes 是内置主题清单（切换顺序即清单顺序）：default 是交付至今
-// 的默认色板；mono 去色保留强调，适配无色终端与抓屏管道；light 提高高亮
-// 色亮度，适配浅色终端背景。
+// builtinThemes 是内置主题清单（切换顺序即清单顺序）：default 采用与 Cairn
+// Studio 一致的 Paper Stone / Basalt Night 自适应色板；classic 保留基础 ANSI
+// 调色板；mono 去色保留排版强调，适配无色终端与抓屏管道；light 针对浅色终端提升对比度。
 var builtinThemes = []themeName{
-	{id: "default", label: "默认"},
+	{id: "default", label: "暖石默认"},
+	{id: "classic", label: "经典终端"},
 	{id: "mono", label: "无色"},
 	{id: "light", label: "浅色终端"},
 }
@@ -43,15 +44,17 @@ func applyTheme(index int) {
 		errStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
 		itemStyle = lipgloss.NewStyle()
 		itemSelectedStyle = lipgloss.NewStyle().Bold(true).Reverse(true)
+		badgeStyle = lipgloss.NewStyle().Bold(true)
 	case "light":
-		titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("27"))
-		dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-		okStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("28"))
-		warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("130"))
-		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("160"))
-		itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
-		itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("21"))
-	default:
+		titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#9A4420"))
+		dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B655C"))
+		okStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2D603D"))
+		warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8A5A00"))
+		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A61B1B"))
+		itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F1D1A"))
+		itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7E3314"))
+		badgeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5B554C"))
+	case "classic":
 		titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 		dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 		okStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
@@ -59,6 +62,16 @@ func applyTheme(index int) {
 		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 		itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 		itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+		badgeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	default:
+		titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#B55C35", Dark: "#D47952"})
+		dimStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#787268", Dark: "#968F84"})
+		okStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#3F6F4E", Dark: "#6BA37D"})
+		warnStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#9A6700", Dark: "#D49B38"})
+		errStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#E05A4E"})
+		itemStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1F1D1A", Dark: "#EAE5DC"})
+		itemSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#B55C35", Dark: "#F0A07C"})
+		badgeStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "#5B554C", Dark: "#C9C2B6"})
 	}
 }
 

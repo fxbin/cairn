@@ -243,11 +243,39 @@ func (console RunConsole) maxTurnsBudget() int {
 	return 0
 }
 
+// headerLine 构建主视图顶栏标题，展示 Cairn 标识、当前运行模式徽标与会话分支线索。
+func (console RunConsole) headerLine() string {
+	modeLabel := "单任务运行"
+	switch console.mode {
+	case consoleInput:
+		modeLabel = "输入就绪"
+	case consoleRunning:
+		modeLabel = "执行中"
+	case consoleApproval:
+		modeLabel = "待人工审批"
+	case consoleDone:
+		modeLabel = "运行已收尾"
+	case consoleTranscript:
+		modeLabel = "完整记录"
+	case consoleModelWizard:
+		modeLabel = "切换模型"
+	case consoleDiff:
+		modeLabel = "补丁差异"
+	}
+	chainHint := ""
+	if console.sessionForkSource != nil && console.sessionForkSource.RunID != "" {
+		chainHint = dimStyle.Render("  · 分支源自 " + shortRun(console.sessionForkSource.RunID))
+	} else if console.sessionPrev != "" {
+		chainHint = dimStyle.Render("  · 续链 " + shortRun(console.sessionPrev))
+	}
+	return titleStyle.Render("◆ Cairn") + "  " + badgeStyle.Render(modeLabel) + chainHint
+}
+
 // View 渲染主界面：输入态聚焦任务框，运行态滚动事件摘要与统计行，审批态
 // 展示决定入口，终态展示判定与后续动作。
 func (console RunConsole) View() string {
 	var sections []string
-	sections = append(sections, titleStyle.Render("Cairn")+dimStyle.Render("  单任务运行"))
+	sections = append(sections, console.headerLine())
 	sections = append(sections, strings.Join(console.lines, "\n"))
 	switch console.mode {
 	case consoleInput:
@@ -328,11 +356,11 @@ func (console RunConsole) welcomeBlock() string {
 		model = "未配置模型"
 	}
 	lines := []string{
-		itemStyle.Render(fmt.Sprintf("模型 %s · %s", model, hostOf(console.input.Config.Provider.BaseURL))),
-		dimStyle.Render(fmt.Sprintf("工作区 %s · 轮次预算 %s", console.statusWorkspace(), turns)),
+		badgeStyle.Render("会话基线") + "  " + itemStyle.Render(fmt.Sprintf("模型 %s · %s", model, hostOf(console.input.Config.Provider.BaseURL))),
+		dimStyle.Render(fmt.Sprintf("工作区 %s · 轮次预算 %s · 主题 %s", console.statusWorkspace(), turns, currentThemeLabel())),
 		dimStyle.Render("运行全程事件可审计（cairn inspect <run-id> 查证）· 密钥仅环境与本机凭据文件"),
 		"",
-		dimStyle.Render("输入任务开始 · /help 查看命令"),
+		dimStyle.Render("输入任务开始 · /help 查看命令 · /theme 切换主题"),
 		"",
 	}
 	return strings.Join(lines, "\n")

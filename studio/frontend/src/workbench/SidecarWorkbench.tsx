@@ -700,6 +700,7 @@ export default function SidecarWorkbench({
       }
       style={asideStyle}
       aria-label="会话右侧工作台"
+      data-testid="rail-body"
     >
       {!expanded && (
         <div
@@ -1282,7 +1283,7 @@ export default function SidecarWorkbench({
               {!evidence ? (
                 <p>暂无已读取的证据。</p>
               ) : (
-                <>
+                <div data-testid="result-layers">
                   <div
                     className={
                       "wb-trust-banner " +
@@ -1321,19 +1322,22 @@ export default function SidecarWorkbench({
                       <strong>
                         {evidence.metrics?.turns ?? 0} 回合 · {evidence.metrics?.tool_calls ?? 0} 次调用
                       </strong>
+                      <small className="wb-metric-sub">
+                        turns {evidence.metrics?.turns ?? 0}
+                      </small>
                     </div>
-                    <div>
-                      <span>上下文压缩</span>
-                      <strong>{evidence.metrics?.context_compactions ?? compactions.length} 次</strong>
+                      <div>
+                        <span>上下文压缩</span>
+                        <strong>{evidence.metrics?.context_compactions ?? compactions.length} 次</strong>
+                      </div>
                     </div>
-                  </div>
                   <p className="wb-hint">
                     {evidence.metrics?.usage_estimated
                       ? "以上用量包含估算数据。"
                       : "用量来自已记录的运行证据。"}
                     费用不可用时不做推断。
                   </p>
-                </>
+                </div>
               )}
               {compactions.length > 0 && (
                 <>
