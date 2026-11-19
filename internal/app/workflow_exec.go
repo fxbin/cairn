@@ -112,6 +112,7 @@ type workflowExecution struct {
 	workspaceHash string
 	stateDir      string
 	configuration config.Config
+	definition    *WorkflowDefinition
 	task          string
 	taskIO        workflow.StepIO
 	onEvent       EventSink
@@ -146,6 +147,9 @@ func workflowPlanDigest(steps []workflow.StepSpec, taskSHA256, configFingerprint
 // （审批、对账、accept 门）时如实返回对应错误，绝不自动授权或重试不确定副
 // 作用。计划含验证步骤而冻结验证命令为空时创建即失败关闭，不写任何状态。
 func (service Service) WorkflowRun(ctx context.Context, options WorkflowRunOptions) (WorkflowOutcome, error) {
+	if options.Config.Preset == config.PresetMinimal {
+		return WorkflowOutcome{}, ErrWorkflowDisabled
+	}
 	if strings.TrimSpace(options.Task) == "" {
 		return WorkflowOutcome{}, errors.New("workflow task is required")
 	}
@@ -187,6 +191,11 @@ func (service Service) WorkflowRun(ctx context.Context, options WorkflowRunOptio
 	}
 	defer store.Close()
 	id := workflow.NewID()
+	lease, err := lockWorkflowInstance(options.StateDir, hash, id)
+	if err != nil {
+		return WorkflowOutcome{}, err
+	}
+	defer lease.Release()
 	steps := workflowFixedPlanSteps()
 	if _, err := store.Append(ctx, 0, workflow.EventDraft{
 		WorkflowID:    id,
@@ -219,15 +228,21 @@ func (service Service) WorkflowResume(ctx context.Context, options WorkflowResum
 	if err := validateHookConfiguration(options.Config); err != nil {
 		return WorkflowOutcome{}, err
 	}
-	_, hash, err := workspaceFor(options.Workspace, options.Config)
+	scope, hash, err := (WorkflowScope{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config}).resolve()
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
+	options.Workspace, options.StateDir = scope.Workspace, scope.StateDir
 	store, err := openWorkflowStoreExisting(options.StateDir, hash)
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
 	defer store.Close()
+	lease, err := lockWorkflowInstance(options.StateDir, hash, options.WorkflowID)
+	if err != nil {
+		return WorkflowOutcome{}, err
+	}
+	defer lease.Release()
 	execution := workflowExecution{
 		service: service, store: store, workspacePath: options.Workspace, workspaceHash: hash,
 		stateDir: options.StateDir, configuration: options.Config, onEvent: options.OnEvent,
@@ -235,6 +250,12 @@ func (service Service) WorkflowResume(ctx context.Context, options WorkflowResum
 	snapshot, err := execution.reload(ctx, options.WorkflowID)
 	if err != nil {
 		return WorkflowOutcome{}, err
+	}
+	if snapshot.Definition != nil {
+		if err := execution.prepareVersionedWorkflow(ctx, snapshot); err != nil {
+			return WorkflowOutcome{}, err
+		}
+		return execution.advance(ctx, options.WorkflowID)
 	}
 	if snapshot.Finished {
 		return WorkflowOutcome{}, fmt.Errorf("%w: %s is %s", ErrWorkflowFinished, options.WorkflowID, snapshot.FinishState)
@@ -264,15 +285,21 @@ func (service Service) WorkflowAccept(ctx context.Context, options WorkflowAccep
 	if err := validateHookConfiguration(options.Config); err != nil {
 		return WorkflowOutcome{}, err
 	}
-	_, hash, err := workspaceFor(options.Workspace, options.Config)
+	scope, hash, err := (WorkflowScope{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config}).resolve()
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
+	options.Workspace, options.StateDir = scope.Workspace, scope.StateDir
 	store, err := openWorkflowStoreExisting(options.StateDir, hash)
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
 	defer store.Close()
+	lease, err := lockWorkflowInstance(options.StateDir, hash, options.WorkflowID)
+	if err != nil {
+		return WorkflowOutcome{}, err
+	}
+	defer lease.Release()
 	execution := workflowExecution{
 		service: service, store: store, workspacePath: options.Workspace, workspaceHash: hash,
 		stateDir: options.StateDir, configuration: options.Config, onEvent: options.OnEvent,
@@ -280,6 +307,9 @@ func (service Service) WorkflowAccept(ctx context.Context, options WorkflowAccep
 	snapshot, err := execution.reload(ctx, options.WorkflowID)
 	if err != nil {
 		return WorkflowOutcome{}, err
+	}
+	if snapshot.Definition != nil {
+		return WorkflowOutcome{}, errors.New("versioned workflow approval requires the step ID and sequence")
 	}
 	if snapshot.Finished {
 		return WorkflowOutcome{}, fmt.Errorf("%w: %s is %s", ErrWorkflowFinished, options.WorkflowID, snapshot.FinishState)
@@ -325,6 +355,13 @@ func (execution workflowExecution) advance(ctx context.Context, id workflow.ID) 
 		snapshot, err := execution.reload(ctx, id)
 		if err != nil {
 			return WorkflowOutcome{}, err
+		}
+		if snapshot.Definition != nil {
+			stop, hint, driveErr := execution.advanceVersionedStep(ctx, snapshot)
+			if stop || driveErr != nil {
+				return execution.versionedWorkflowOutcome(ctx, id, hint, driveErr)
+			}
+			continue
 		}
 		if snapshot.Finished {
 			hint := ""

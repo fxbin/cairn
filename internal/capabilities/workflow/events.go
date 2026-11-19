@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fxbin/cairn/internal/domain"
@@ -76,9 +77,12 @@ type EventDraft struct {
 
 // StepSpec 是创建事件中声明的单个步骤身份与种类。
 type StepSpec struct {
-	ID    string `json:"id"`
-	Index int    `json:"index"`
-	Kind  string `json:"kind"`
+	ID          string   `json:"id"`
+	Index       int      `json:"index"`
+	Kind        string   `json:"kind"`
+	MaxAttempts int      `json:"max_attempts,omitempty"`
+	RetryFrom   string   `json:"retry_from,omitempty"`
+	Inputs      []string `json:"inputs,omitempty"`
 }
 
 // 步骤种类约束：执行、验证与人工审批门；其他值失败关闭。
@@ -91,28 +95,36 @@ const (
 // RunCreatedPayload 是 workflow_run_created 的负载。Task 为可选的任务制品
 // 绑定：执行链写入方必须提供，缺失时恢复入口失败关闭而不是猜测任务正文。
 type RunCreatedPayload struct {
-	Steps               []StepSpec `json:"steps"`
-	PlanSHA256          string     `json:"plan_sha256"`
-	ConfigFingerprint   string     `json:"config_fingerprint"`
-	AuthorizationSource string     `json:"authorization_source"`
-	Task                StepIO     `json:"task,omitempty"`
+	Steps               []StepSpec     `json:"steps"`
+	PlanSHA256          string         `json:"plan_sha256"`
+	ConfigFingerprint   string         `json:"config_fingerprint"`
+	AuthorizationSource string         `json:"authorization_source"`
+	Task                StepIO         `json:"task,omitempty"`
+	Definition          *DefinitionRef `json:"definition,omitempty"`
+	SessionID           string         `json:"session_id,omitempty"`
 }
 
 // StepStartedPayload 是 workflow_step_started 的负载。RunID 可选绑定驱动该
 // 步骤的子运行；AuthorizationSource 可选记录显式授权来源（人工门步骤必填）。
 type StepStartedPayload struct {
-	StepID              string `json:"step_id"`
-	Input               StepIO `json:"input,omitempty"`
-	RunID               string `json:"run_id,omitempty"`
-	AuthorizationSource string `json:"authorization_source,omitempty"`
+	StepID              string       `json:"step_id"`
+	Input               StepIO       `json:"input,omitempty"`
+	RunID               string       `json:"run_id,omitempty"`
+	AuthorizationSource string       `json:"authorization_source,omitempty"`
+	Attempt             int          `json:"attempt,omitempty"`
+	CreationEventID     string       `json:"creation_event_id,omitempty"`
+	ConfigFingerprint   string       `json:"config_fingerprint,omitempty"`
+	Dependencies        []Dependency `json:"dependencies,omitempty"`
 }
 
 // StepFinishedPayload 是 workflow_step_finished 的负载。
 type StepFinishedPayload struct {
-	StepID     string    `json:"step_id"`
-	State      StepState `json:"state"`
-	Output     StepIO    `json:"output,omitempty"`
-	ErrorClass string    `json:"error_class,omitempty"`
+	StepID     string     `json:"step_id"`
+	State      StepState  `json:"state"`
+	Output     StepIO     `json:"output,omitempty"`
+	ErrorClass string     `json:"error_class,omitempty"`
+	Attempt    int        `json:"attempt,omitempty"`
+	Terminal   *RunAnchor `json:"terminal,omitempty"`
 }
 
 // RunFinishedPayload 是 workflow_run_finished 的负载。
@@ -245,9 +257,26 @@ func validatePayload(eventType EventType, payload json.RawMessage) error {
 			}
 			switch spec.Kind {
 			case StepKindExecute, StepKindVerify, StepKindAccept:
+			case StepKindScript:
+				if created.Definition == nil {
+					return errors.New("workflow script step requires a versioned definition")
+				}
 			default:
 				return fmt.Errorf("workflow step %q has unknown kind %q", spec.ID, spec.Kind)
 			}
+		}
+		if created.Definition != nil {
+			return validateInstanceSpecs(created)
+		}
+		return nil
+	case EventGateDecided:
+		var decided GateDecidedPayload
+		if err := json.Unmarshal(payload, &decided); err != nil {
+			return err
+		}
+		if decided.StepID == "" || decided.Attempt < 1 || strings.TrimSpace(decided.Reason) == "" ||
+			(decided.Decision != GateApproved && decided.Decision != GateRejected) {
+			return errors.New("workflow gate requires explicit decision, attempt and reason")
 		}
 		return nil
 	case EventStepStarted:
@@ -309,6 +338,10 @@ type Snapshot struct {
 	ResumeIndex       int
 	RequiresReconcile []string
 	LastSeq           uint64
+	Definition        *DefinitionRef
+	SessionID         string
+	Specs             []StepSpec
+	Attempts          map[string][]Attempt
 }
 
 // Project 校验并重放工作流事件链，返回唯一权威投影；顺序流程约束在重放中
@@ -348,12 +381,23 @@ func Project(events []Event) (*Snapshot, error) {
 		Kinds:               kinds,
 		StepRuns:            make(map[string]string, len(created.Steps)),
 		ResumeIndex:         -1,
+		Definition:          created.Definition, SessionID: created.SessionID, Specs: created.Steps,
+		Attempts: make(map[string][]Attempt, len(created.Steps)),
 	}
 	stepIndex := make(map[string]int, len(created.Steps))
 	for index, spec := range created.Steps {
 		stepIndex[spec.ID] = index
 	}
 	for _, event := range events[1:] {
+		if event.WorkflowID != snapshot.WorkflowID || event.WorkspaceHash != snapshot.WorkspaceHash {
+			return nil, errors.New("workflow event identity mismatch")
+		}
+		if snapshot.Definition != nil {
+			if err := applyInstanceEvent(snapshot, plan, stepIndex, event); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		switch event.Type {
 		case EventRunCreated:
 			return nil, errors.New("duplicate workflow_run_created event")
@@ -389,6 +433,8 @@ func Project(events []Event) (*Snapshot, error) {
 			}
 			snapshot.Finished = true
 			snapshot.FinishState = finished.State
+		default:
+			return nil, errors.New("versioned event in legacy workflow")
 		}
 	}
 	snapshot.Steps = plan.Steps

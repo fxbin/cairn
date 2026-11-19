@@ -100,6 +100,9 @@ user_directory_test.go: 验证用户根 OAuth 存储、权限与按身份退出�
 workflow_definition.go: 校验宿主草案并冻结制品。查询验证修订与工作区归属。
 workflow_exec.go: 工作流写入前校验钩子。执行、恢复与人工验收分别持久化。
 workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
+workflow_instance.go: 装配不可变定义实例。实例锁内校验版本、配置和人工门决定。
+workflow_instance_run.go: 在既有 Run 锁内绑定尝试。按 Journal 结算并输出有界制品。
+workflow_history.go: 从持久化实例与 Run Journal 核验历史、产物和审批阶段。
 workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
 
