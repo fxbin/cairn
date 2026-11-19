@@ -1,6 +1,6 @@
 /*
- * [INPUT]: 依赖父能力事件、行扫描端口与SQLite驱动。
- * [OUTPUT]: 提供Store、只读打开、CAS 追加与完整性检查。
+ * [INPUT]: 依赖父能力事件、定义迁移和 SQLite 驱动。
+ * [OUTPUT]: 提供连接、只读打开、CAS 追加与完整性检查。
  * [POS]: 能力存储叶子；已观察取消先于解码，损坏仍拒绝。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
@@ -39,10 +39,15 @@ func Open(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("workflow store path is required")
 	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create workflow store directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=rwc&_txlock=immediate&_pragma=busy_timeout(5000)"}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite workflow store: %w", err)
 	}
@@ -61,6 +66,10 @@ func OpenReadOnly(path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("workflow store path is required")
 	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat read-only SQLite workflow store: %w", err)
@@ -68,7 +77,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	if info.IsDir() {
 		return nil, errors.New("read-only SQLite workflow store path is a directory")
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(5000)"}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open read-only SQLite workflow store: %w", err)
@@ -85,31 +94,51 @@ func OpenReadOnly(path string) (*Store, error) {
 // Close 关闭 SQLite 连接并释放相关资源。
 func (store *Store) Close() error { return store.db.Close() }
 
-// migrate 配置 SQLite 耐久性选项并以校验和保护初始 schema 迁移。
+// migrate 配置 SQLite 耐久性选项，并在同一写事务中核对各次迁移。
 func (store *Store) migrate(ctx context.Context) error {
-	statements := []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = FULL",
-		"PRAGMA busy_timeout = 5000",
+	if err := setWorkflowWAL(ctx, store.db); err != nil {
+		return fmt.Errorf("configure SQLite workflow WAL: %w", err)
 	}
-	for _, statement := range statements {
-		if _, err := store.db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("configure SQLite workflow store: %w", err)
-		}
+	if _, err := store.db.ExecContext(ctx, "PRAGMA synchronous = FULL"); err != nil {
+		return fmt.Errorf("configure SQLite workflow durability: %w", err)
 	}
 	transaction, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("start workflow store migration: %w", err)
 	}
 	defer transaction.Rollback()
-	_, err = transaction.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
+	var currentVersion int
+	if err := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&currentVersion); err != nil {
+		return fmt.Errorf("read SQLite user_version: %w", err)
+	}
+	if currentVersion < 0 || currentVersion > definitionSchemaVersion {
+		return fmt.Errorf("unsupported workflow store schema version %d", currentVersion)
+	}
+	if err := migrateWorkflowEvents(ctx, transaction, currentVersion); err != nil {
+		return err
+	}
+	if err := migrateDefinitions(ctx, transaction, currentVersion); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit workflow store migration: %w", err)
+	}
+	return nil
+}
+
+// migrateWorkflowEvents 只为全新数据库创建初始事件表。已登记库缺表时停止打开。
+func migrateWorkflowEvents(ctx context.Context, transaction *sql.Tx, version int) error {
+	const migrationName = "001_workflow_events_v1"
+	const migrationHash = "cairn-schema-v1-workflow-events"
+	if version == 0 {
+		if _, err := transaction.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
 			version INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			sha256 TEXT NOT NULL,
 			applied_at TEXT NOT NULL
 		);
-		CREATE TABLE IF NOT EXISTS workflow_events (
+		CREATE TABLE workflow_events (
 			workflow_id TEXT NOT NULL,
 			workspace_hash TEXT NOT NULL,
 			seq INTEGER NOT NULL,
@@ -122,38 +151,65 @@ func (store *Store) migrate(ctx context.Context) error {
 			event_hash TEXT NOT NULL,
 			PRIMARY KEY (workflow_id, seq)
 		);
-		CREATE INDEX IF NOT EXISTS workflow_events_by_workspace ON workflow_events(workspace_hash, workflow_id, seq);`)
-	if err != nil {
-		return fmt.Errorf("create workflow store schema: %w", err)
-	}
-	const migrationName = "001_workflow_events_v1"
-	const migrationHash = "cairn-schema-v1-workflow-events"
-	var currentVersion int
-	if err := transaction.QueryRowContext(ctx, "PRAGMA user_version").Scan(&currentVersion); err != nil {
-		return fmt.Errorf("read SQLite user_version: %w", err)
-	}
-	if currentVersion > 1 {
-		return fmt.Errorf("workflow store schema version %d is newer than this Cairn binary", currentVersion)
+		CREATE INDEX workflow_events_by_workspace ON workflow_events(workspace_hash, workflow_id, seq);`); err != nil {
+			return fmt.Errorf("create workflow event schema: %w", err)
+		}
+		if _, err := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES(1, ?, ?, ?)",
+			migrationName, migrationHash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("record workflow event migration: %w", err)
+		}
+		return nil
 	}
 	var recordedHash string
-	err = transaction.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = 1").Scan(&recordedHash)
+	err := transaction.QueryRowContext(ctx, "SELECT sha256 FROM schema_migrations WHERE version = 1").Scan(&recordedHash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := transaction.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, sha256, applied_at) VALUES(1, ?, ?, ?)", migrationName, migrationHash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("record workflow store migration: %w", err)
-		}
-		if _, err := transaction.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
-			return fmt.Errorf("write SQLite user_version: %w", err)
-		}
+		return fmt.Errorf("%w: workflow event migration is missing", ErrPersistedContent)
 	case err != nil:
-		return fmt.Errorf("read workflow store migration: %w", err)
+		return fmt.Errorf("read workflow event migration: %w", err)
 	case recordedHash != migrationHash:
-		return errors.New("workflow store migration checksum mismatch")
+		return fmt.Errorf("%w: workflow event migration checksum mismatch", ErrPersistedContent)
 	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit workflow store migration: %w", err)
+	rows, err := transaction.QueryContext(ctx, loadWorkflowEventsSQL+" LIMIT 0", "")
+	if err != nil {
+		return fmt.Errorf("validate workflow event schema: %w", err)
 	}
-	return nil
+	return rows.Close()
+}
+
+const (
+	workflowWALSetupWait = time.Second
+	workflowWALSetupPoll = 10 * time.Millisecond
+)
+
+// setWorkflowWAL 在并发首次打开时等待模式切换。SQLite 的忙等待不覆盖该切换。
+func setWorkflowWAL(ctx context.Context, db *sql.DB) error {
+	setup, cancel := context.WithTimeout(ctx, workflowWALSetupWait)
+	defer cancel()
+	for {
+		var mode string
+		err := db.QueryRowContext(setup, "PRAGMA journal_mode = WAL").Scan(&mode)
+		if err == nil {
+			if mode != "wal" {
+				return errors.New("SQLite did not enable workflow WAL")
+			}
+			return nil
+		}
+		var sqliteError *modernsqlite.Error
+		if !errors.As(err, &sqliteError) || (sqliteError.Code()&0xff != sqlite3.SQLITE_BUSY && sqliteError.Code()&0xff != sqlite3.SQLITE_LOCKED) {
+			return err
+		}
+		timer := time.NewTimer(workflowWALSetupPoll)
+		select {
+		case <-setup.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		case <-timer.C:
+		}
+	}
 }
 
 // Append 在单个事务中校验链头并追加带哈希的工作流事件。
