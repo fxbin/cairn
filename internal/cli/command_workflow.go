@@ -1,5 +1,9 @@
-// 工作流域子命令：status 只读重放；run/resume/accept 是显式执行、恢复与人
-// 工门入口（ADR-0021 片 2）。所有命令不接受任意脚本，--json 仅输出 NDJSON。
+// [INPUT]: 依赖 App 工作流历史及显式执行入口。
+// [OUTPUT]: 保留固定计划命令，并分派版本化工作流命令。
+// [POS]: CLI 展示 App 投影。JSON 标准输出为 NDJSON。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// 本文件连接工作流命令分派、旧计划和实例结果。
 // Author: fxbin
 package cli
 
@@ -13,10 +17,10 @@ import (
 	"github.com/fxbin/cairn/internal/config"
 )
 
-// workflowCommand 分派工作流域的固定子命令，不接受任意脚本。
+// workflowCommand 分派固定计划与已声明定义的工作流命令。
 func (command Command) workflowCommand(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "workflow requires a subcommand: status, run, resume, accept")
+		fmt.Fprintln(command.Stderr, "workflow requires a subcommand: status, run, resume, accept, definitions, save-definition, start, history, pause, continue, cancel, approve, reject, retry, reconcile")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -28,6 +32,20 @@ func (command Command) workflowCommand(ctx context.Context, arguments []string) 
 		return command.workflowResume(ctx, arguments[1:])
 	case "accept":
 		return command.workflowAccept(ctx, arguments[1:])
+	case "definitions":
+		return command.workflowDefinitions(ctx, arguments[1:])
+	case "save-definition":
+		return command.workflowSaveDefinition(ctx, arguments[1:])
+	case "start":
+		return command.workflowStart(ctx, arguments[1:])
+	case "history":
+		return command.workflowHistory(ctx, arguments[1:])
+	case "pause", "continue", "cancel", "retry":
+		return command.workflowControl(ctx, arguments[0], arguments[1:])
+	case "approve", "reject":
+		return command.workflowDecide(ctx, arguments[0], arguments[1:])
+	case "reconcile":
+		return command.workflowReconcile(ctx, arguments[1:])
 	default:
 		fmt.Fprintf(command.Stderr, "unknown workflow subcommand %q\n", arguments[0])
 		return ExitUsage
@@ -100,16 +118,17 @@ func (command Command) workflowRun(ctx context.Context, arguments []string) int 
 }
 
 // workflowResume 恢复既有工作流：回填中断步骤、续跑遗留 run 并顺序推进；
-// 审批与对账一律先在 run 级 resume 入口解决。
+// 暂停的实例通过显式 continue 解除。
 func (command Command) workflowResume(ctx context.Context, arguments []string) int {
 	flags := flag.NewFlagSet("workflow resume", flag.ContinueOnError)
 	flags.SetOutput(command.Stderr)
 	workspace := flags.String("workspace", "", "workspace path (default: current directory)")
 	stateDir := flags.String("state-dir", "", "state directory")
 	configPath := flags.String("config", "", "configuration path")
+	seq := flags.Uint64("seq", 0, "observed workflow sequence")
 	jsonOutput := flags.Bool("json", false, "write the workflow outcome as NDJSON to stdout")
 	normalized := normalizeFlagsThenPositionals(arguments, map[string]struct{}{
-		"--workspace": {}, "--state-dir": {}, "--config": {},
+		"--workspace": {}, "--state-dir": {}, "--config": {}, "--seq": {},
 	})
 	if err := flags.Parse(normalized); err != nil {
 		return ExitUsage
@@ -124,7 +143,7 @@ func (command Command) workflowResume(ctx context.Context, arguments []string) i
 		return ExitUsage
 	}
 	outcome, err := command.Service.WorkflowResume(ctx, app.WorkflowResumeOptions{
-		WorkflowID: app.WorkflowID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration,
+		WorkflowID: app.WorkflowID(flags.Arg(0)), Workspace: *workspace, StateDir: *stateDir, Config: configuration, Sequence: *seq,
 	})
 	return command.reportWorkflowOutcome("workflow resume", outcome, err, *jsonOutput)
 }
@@ -158,19 +177,23 @@ func (command Command) workflowAccept(ctx context.Context, arguments []string) i
 	return command.reportWorkflowOutcome("workflow accept", outcome, err, *jsonOutput)
 }
 
-// reportWorkflowOutcome 统一渲染执行类工作流命令：错误映射稳定退出码，成
-// 功输出状态视图与下一步动作；--json 仅输出单行 NDJSON。
+// reportWorkflowOutcome 输出可继续的实例身份并保持稳定退出码。
 func (command Command) reportWorkflowOutcome(label string, outcome app.WorkflowOutcome, err error, jsonOutput bool) int {
+	if err == nil || (outcome.View.Definition != nil && outcome.View.WorkflowID != "") {
+		if jsonOutput {
+			if code := command.writeJSONOutput(label, outcome); code != ExitOK {
+				return code
+			}
+		} else {
+			command.printWorkflowView(outcome.View)
+			if outcome.NextAction != "" {
+				fmt.Fprintln(command.Stdout, "next action:", outcome.NextAction)
+			}
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(command.Stderr, label+" failed:", err)
 		return exitFor(err)
-	}
-	if jsonOutput {
-		return command.writeJSONOutput(label, outcome)
-	}
-	command.printWorkflowView(outcome.View)
-	if outcome.NextAction != "" {
-		fmt.Fprintln(command.Stdout, "next action:", outcome.NextAction)
 	}
 	return ExitOK
 }
@@ -178,6 +201,9 @@ func (command Command) reportWorkflowOutcome(label string, outcome app.WorkflowO
 // printWorkflowView 输出人类可读的工作流状态块；只读查询与执行类命令共用。
 func (command Command) printWorkflowView(view app.WorkflowStatusView) {
 	state := "running"
+	if view.Phase != "" {
+		state = view.Phase
+	}
 	if view.Finished {
 		state = "finished: " + view.FinishState
 	}
@@ -187,6 +213,23 @@ func (command Command) printWorkflowView(view app.WorkflowStatusView) {
 	fmt.Fprintf(command.Stdout, "config fingerprint: %s\n", view.ConfigFingerprint)
 	fmt.Fprintf(command.Stdout, "plan digest: %s\n", view.PlanSHA256)
 	fmt.Fprintf(command.Stdout, "authorization: %s\n", view.Authorization)
+	if view.Definition != nil {
+		fmt.Fprintf(command.Stdout, "definition: %s · revision %d · %s\n", view.Definition.ID, view.Definition.Revision, view.DefinitionName)
+		fmt.Fprintf(command.Stdout, "sequence: %d\n", view.Sequence)
+	}
+	if approval := view.PendingApproval; approval != nil {
+		fmt.Fprintf(command.Stdout, "pending approval: run %s · operation %s · fingerprint %s\n", approval.RunID, approval.OperationID, approval.Fingerprint)
+		if approval.Summary != "" {
+			fmt.Fprintln(command.Stdout, approval.Summary)
+		}
+	}
+	if pending := view.PendingReconcile; pending != nil {
+		fmt.Fprintf(command.Stdout, "pending reconciliation: run %s · operation %s · %s · %s\n",
+			pending.RunID, pending.OperationID, pending.ToolName, pending.SideEffectClass)
+	}
+	if len(view.RetryTargets) != 0 {
+		fmt.Fprintln(command.Stdout, "retry targets:", strings.Join(view.RetryTargets, ", "))
+	}
 	if view.Finished {
 		fmt.Fprintln(command.Stdout, "next step: none")
 	} else if len(view.RequiresReconcile) > 0 {
@@ -203,5 +246,15 @@ func (command Command) printWorkflowView(view app.WorkflowStatusView) {
 			line += fmt.Sprintf(" (%s)", step.ErrorClass)
 		}
 		fmt.Fprintln(command.Stdout, line)
+		for _, attempt := range step.Attempts {
+			fmt.Fprintf(command.Stdout, "     attempt %d · %s", attempt.Number, attempt.State)
+			if attempt.RunID != "" {
+				fmt.Fprintf(command.Stdout, " · run %s", attempt.RunID)
+			}
+			if attempt.Decision != "" {
+				fmt.Fprintf(command.Stdout, " · %s", attempt.Decision)
+			}
+			fmt.Fprintln(command.Stdout)
+		}
 	}
 }
