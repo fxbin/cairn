@@ -46,7 +46,7 @@ loop_resume_index.go: ToolEventIndex 配对历史调用与模型响应。索引�
 loop_resume_repair.go: OperationRepair 补齐未启动终态和缺失回执。已启动副作用不自动重试。
 loop_resume_terminal.go: TerminalRepair 根据持久化证据补齐运行终态。缺少事实时拒绝收尾。
 loop_resume_test.go: 回归 Resume 重放历史并恢复审批。悬挂副作用先对账，只读中断补写结果。
-loop_scripted.go: ScriptedPlan 不调用模型。固定工具计划复用授权、恢复和验证链。
+loop_scripted.go: 固定工具计划复用授权和验证链。恢复从操作终态核验成功，失败关闭运行。
 loop_scripted_test.go: 回归 ScriptedPlan 不调用模型。固定工具计划复用授权、恢复和验证链。
 loop_secret_compaction_test.go: 验证压缩与重放不把旧凭据写入模型上下文。
 loop_secret_regression_test.go: 验证工具提议在持久化前拒绝凭据材料。
