@@ -12,11 +12,11 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/domain"
 )
 
 // ErrWorkflowNotFound 表示目标工作流链在存储中不存在。
@@ -24,30 +24,47 @@ var ErrWorkflowNotFound = errors.New("workflow not found")
 
 // WorkflowStepView 是状态视图中单个步骤的只读投影。
 type WorkflowStepView struct {
-	ID         string          `json:"id"`
-	Index      int             `json:"index"`
-	Kind       string          `json:"kind"`
-	State      string          `json:"state"`
-	Input      workflow.StepIO `json:"input,omitempty"`
-	Output     workflow.StepIO `json:"output,omitempty"`
-	ErrorClass string          `json:"error_class,omitempty"`
-	StartedAt  time.Time       `json:"started_at,omitempty"`
-	EndedAt    time.Time       `json:"ended_at,omitempty"`
+	ID         string             `json:"id"`
+	Index      int                `json:"index"`
+	Kind       string             `json:"kind"`
+	State      string             `json:"state"`
+	Input      workflow.StepIO    `json:"input,omitempty"`
+	Output     workflow.StepIO    `json:"output,omitempty"`
+	ErrorClass string             `json:"error_class,omitempty"`
+	StartedAt  time.Time          `json:"started_at,omitempty"`
+	EndedAt    time.Time          `json:"ended_at,omitempty"`
+	RunID      domain.RunID       `json:"run_id,omitempty"`
+	RunPhase   string             `json:"run_phase,omitempty"`
+	Attempts   []workflow.Attempt `json:"attempts,omitempty"`
+}
+
+// WorkflowApprovalView 只显示已持久化的 Run 审批提议。
+type WorkflowApprovalView struct {
+	RunID       domain.RunID       `json:"run_id"`
+	OperationID domain.OperationID `json:"operation_id"`
+	Fingerprint string             `json:"fingerprint"`
+	Summary     string             `json:"summary,omitempty"`
 }
 
 // WorkflowStatusView 是工作流链重放后的对外只读状态视图。
 type WorkflowStatusView struct {
-	WorkflowID        string             `json:"workflow_id"`
-	WorkspaceHash     string             `json:"workspace_hash"`
-	ConfigFingerprint string             `json:"config_fingerprint"`
-	PlanSHA256        string             `json:"plan_sha256"`
-	Authorization     string             `json:"authorization_source"`
-	CreatedAt         time.Time          `json:"created_at"`
-	Finished          bool               `json:"finished"`
-	FinishState       string             `json:"finish_state,omitempty"`
-	ResumeIndex       int                `json:"resume_index"`
-	RequiresReconcile []string           `json:"requires_reconcile,omitempty"`
-	Steps             []WorkflowStepView `json:"steps"`
+	WorkflowID        string                 `json:"workflow_id"`
+	WorkspaceHash     string                 `json:"workspace_hash"`
+	ConfigFingerprint string                 `json:"config_fingerprint"`
+	PlanSHA256        string                 `json:"plan_sha256"`
+	Authorization     string                 `json:"authorization_source"`
+	CreatedAt         time.Time              `json:"created_at"`
+	Finished          bool                   `json:"finished"`
+	FinishState       string                 `json:"finish_state,omitempty"`
+	ResumeIndex       int                    `json:"resume_index"`
+	RequiresReconcile []string               `json:"requires_reconcile,omitempty"`
+	Steps             []WorkflowStepView     `json:"steps"`
+	Definition        *WorkflowDefinitionRef `json:"definition,omitempty"`
+	DefinitionName    string                 `json:"definition_name,omitempty"`
+	SessionID         string                 `json:"session_id,omitempty"`
+	Sequence          uint64                 `json:"sequence,omitempty"`
+	Phase             string                 `json:"phase,omitempty"`
+	PendingApproval   *WorkflowApprovalView  `json:"pending_approval,omitempty"`
 }
 
 // WorkflowStatus 只读重放指定工作流链并返回状态视图；存储缺失、链损坏
@@ -56,27 +73,21 @@ func (service Service) WorkflowStatus(ctx context.Context, workspacePath, stateD
 	if err := ctx.Err(); err != nil {
 		return WorkflowStatusView{}, err
 	}
-	_, hash, err := workspaceFor(workspacePath, configuration)
+	scope, hash, err := (WorkflowScope{Workspace: workspacePath, StateDir: stateDir, Config: configuration}).resolve()
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}
-	store, err := openWorkflowStoreReadOnly(stateDir, hash)
+	store, err := openWorkflowStoreReadOnly(scope.StateDir, hash)
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}
 	defer store.Close()
-	events, err := store.Load(ctx, id)
+	execution := workflowExecution{stateDir: scope.StateDir, workspaceHash: hash, store: store}
+	snapshot, err := execution.reload(ctx, id)
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}
-	if len(events) == 0 {
-		return WorkflowStatusView{}, fmt.Errorf("%w: %s", ErrWorkflowNotFound, id)
-	}
-	snapshot, err := workflow.Project(events)
-	if err != nil {
-		return WorkflowStatusView{}, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
-	}
-	return workflowViewFromSnapshot(snapshot), nil
+	return execution.workflowStatusView(ctx, snapshot)
 }
 
 // workflowViewFromSnapshot 把链重放投影转换为对外只读状态视图；本函数不做
@@ -91,6 +102,8 @@ func workflowViewFromSnapshot(snapshot *workflow.Snapshot) WorkflowStatusView {
 		CreatedAt:         snapshot.CreatedAt,
 		Finished:          snapshot.Finished,
 		FinishState:       snapshot.FinishState,
+		Definition:        snapshot.Definition,
+		SessionID:         snapshot.SessionID,
 		ResumeIndex:       snapshot.ResumeIndex,
 		RequiresReconcile: snapshot.RequiresReconcile,
 		Steps:             make([]WorkflowStepView, len(snapshot.Steps)),
@@ -106,6 +119,10 @@ func workflowViewFromSnapshot(snapshot *workflow.Snapshot) WorkflowStatusView {
 			ErrorClass: step.ErrorClass,
 			StartedAt:  step.StartedAt,
 			EndedAt:    step.EndedAt,
+		}
+		if snapshot.Definition != nil {
+			view.Steps[index].RunID = domain.RunID(snapshot.StepRuns[step.ID])
+			view.Steps[index].Attempts = snapshot.Attempts[step.ID]
 		}
 	}
 	return view

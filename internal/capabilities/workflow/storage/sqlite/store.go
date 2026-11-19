@@ -276,6 +276,27 @@ func (store *Store) Load(ctx context.Context, id workflow.ID) ([]workflow.Event,
 	return events, nil
 }
 
+// ListInstances 只读列出当前工作区持久化实例的创建身份。
+func (store *Store) ListInstances(ctx context.Context, workspaceHash string) ([]workflow.ID, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT workflow_id FROM workflow_events
+		WHERE workspace_hash = ? AND seq = 1
+		ORDER BY occurred_at DESC, workflow_id ASC`, workspaceHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]workflow.ID, 0)
+	for rows.Next() {
+		var id workflow.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // loadWorkflowEventsSQL 保持工作流行解码的固定字段顺序。
 const loadWorkflowEventsSQL = `SELECT schema_version, event_id, workflow_id, workspace_hash, seq, occurred_at, event_type,
 		payload_json, prev_hash, event_hash

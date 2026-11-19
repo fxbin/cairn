@@ -38,12 +38,20 @@ func (execution workflowExecution) reload(ctx context.Context, id workflow.ID) (
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStateCorrupt, err)
 	}
+	if snapshot.WorkflowID != id || snapshot.WorkspaceHash != execution.workspaceHash {
+		return nil, fmt.Errorf("%w: workflow instance identity mismatch", ErrStateCorrupt)
+	}
 	return snapshot, nil
 }
 
 // appendDraft 以链头 CAS 追加一个工作流事件；本执行器是链的唯一写入方，
 // 冲突即失败关闭，不重试以免掩盖并发写入。
 func (execution workflowExecution) appendDraft(ctx context.Context, id workflow.ID, eventType workflow.EventType, payload any) (workflow.Event, error) {
+	return execution.appendDraftAt(ctx, id, 0, eventType, payload)
+}
+
+// appendDraftAt 以已验证的链头和候选重放保护版本化实例的追加。
+func (execution workflowExecution) appendDraftAt(ctx context.Context, id workflow.ID, expectedSeq uint64, eventType workflow.EventType, payload any) (workflow.Event, error) {
 	events, err := execution.store.Load(ctx, id)
 	if err != nil {
 		return workflow.Event{}, err
@@ -58,7 +66,20 @@ func (execution workflowExecution) appendDraft(ctx context.Context, id workflow.
 		Payload:       contract.MustEncodeRedactedJSON(payload),
 		OccurredAt:    time.Now().UTC(),
 	}
-	return execution.store.Append(ctx, events[len(events)-1].Seq, draft)
+	last := events[len(events)-1]
+	if expectedSeq != 0 && expectedSeq != last.Seq {
+		return workflow.Event{}, workflow.ErrConflict
+	}
+	if execution.definition != nil {
+		candidate, err := workflow.NewEvent(draft, last.Seq+1, last.EventHash)
+		if err != nil {
+			return workflow.Event{}, err
+		}
+		if _, err := workflow.Project(append(events, candidate)); err != nil {
+			return workflow.Event{}, err
+		}
+	}
+	return execution.store.Append(ctx, last.Seq, draft)
 }
 
 // appendRunFinished 收束工作流终态；resumeIndex 记录首个未成功步骤下标，
