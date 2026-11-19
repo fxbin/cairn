@@ -97,6 +97,7 @@ telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出�
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 trial_activation_test.go: 回归 TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
 user_directory_test.go: 验证用户根 OAuth 存储、权限与按身份退出。
+workflow_definition.go: 校验宿主草案并冻结制品。查询验证修订与工作区归属。
 workflow_exec.go: 工作流写入前校验钩子。执行、恢复与人工验收分别持久化。
 workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
 workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
