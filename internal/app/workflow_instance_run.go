@@ -50,6 +50,18 @@ func validateWorkflowRuntime(definition WorkflowDefinition, configuration config
 			if _, err := workflowNodeConfig(configuration, node); err != nil {
 				return fmt.Errorf("workflow step %q: %w", node.ID, err)
 			}
+		case workflow.StepKindScript:
+			if configuration.Preset == config.PresetReadOnly || configuration.Policy.Exec == "deny" {
+				return fmt.Errorf("workflow script step %q requires command execution permission", node.ID)
+			}
+		case workflow.StepKindVerify:
+			commands, err := verificationCommands(configuration.Verification)
+			if err != nil {
+				return err
+			}
+			if len(commands) == 0 {
+				return fmt.Errorf("workflow verification step %q requires frozen verification commands", node.ID)
+			}
 		case workflow.StepKindAccept:
 		default:
 			return fmt.Errorf("workflow step %q requires a node executor that is not enabled", node.ID)
@@ -64,6 +76,8 @@ func workflowNodeConfig(base config.Config, node WorkflowNode) (config.Config, e
 		base.Provider.Model = strings.TrimSpace(node.Model)
 	}
 	if node.ReadOnly {
+		// 只读节点保留只读约束。独立 Verify 使用未修改的基底配置。
+		base.Verification.Commands = nil
 		if err := config.ApplyPreset(&base, config.PresetReadOnly); err != nil {
 			return config.Config{}, err
 		}
@@ -79,6 +93,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	if snapshot.Finished {
 		return true, "", nil
 	}
+	if snapshot.Paused {
+		return true, "waiting for explicit continuation", nil
+	}
 	if snapshot.ResumeIndex < 0 {
 		return false, "", execution.appendRunFinished(ctx, snapshot.WorkflowID, workflow.RunStateCompleted, -1)
 	}
@@ -87,6 +104,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	node := execution.definition.Nodes[index]
 	switch step.State {
 	case workflow.StepFailed:
+		if len(snapshot.RetryTargets()) != 0 {
+			return true, "waiting for authorized retry or rework", nil
+		}
 		return false, "", execution.appendRunFinished(ctx, snapshot.WorkflowID, workflow.RunStateFailed, index)
 	case workflow.StepCancelled:
 		return false, "", execution.appendRunFinished(ctx, snapshot.WorkflowID, workflow.RunStateCancelled, index)
@@ -141,7 +161,20 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 		bound = true
 		return nil
 	}
-	_, runErr := execution.service.run(ctx, input, bind)
+	var runErr error
+	switch node.Kind {
+	case workflow.StepKindScript, workflow.StepKindVerify:
+		kind := workflowScriptPlanKind
+		input.Task = "工作流固定命令：" + node.ID
+		if node.Kind == workflow.StepKindVerify {
+			kind, input.Task = workflowVerifyPlanKind, "工作流独立验证："+node.ID
+		}
+		_, runErr = execution.service.runWithWorkflowScript(ctx, input, bind, workflowScriptPlan{
+			Version: workflowScriptPlanVersion, Kind: kind, WorkflowID: string(snapshot.WorkflowID), StepID: node.ID, Argv: node.Argv,
+		})
+	default:
+		_, runErr = execution.service.run(ctx, input, bind)
+	}
 	if !bound {
 		if runErr == nil {
 			return errors.New("workflow run did not bind its attempt")
@@ -267,14 +300,21 @@ func (execution workflowExecution) settleVersionedAttempt(ctx context.Context, i
 	switch run.State {
 	case domain.RunCompleted:
 		state = workflow.StepSucceeded
+		if (node.Kind == workflow.StepKindVerify && !result.Evidence.Trusted) ||
+			(result.Manifest.Verification.Commands > 0 && result.Evidence.VerificationSeq > 0 && !result.Evidence.VerificationOK) {
+			state, classification = workflow.StepFailed, "verification_failed"
+		}
 	case domain.RunCancelled:
 		state, classification = workflow.StepCancelled, "cancelled"
 		if attempt.State == workflow.StepUncertain {
 			state = workflow.StepFailed
 		}
 	}
+	if workflowRunReconciliationAborted(events) {
+		state, classification = workflow.StepFailed, workflow.ReconciliationAborted
+	}
 	last := events[len(events)-1]
-	output, err := execution.storeWorkflowRunOutput(run)
+	output, err := execution.storeWorkflowRunOutput(run, node, events)
 	if err != nil {
 		return err
 	}
@@ -285,20 +325,78 @@ func (execution workflowExecution) settleVersionedAttempt(ctx context.Context, i
 	return err
 }
 
+// workflowRunReconciliationAborted 识别显式放弃未知副作用的事实，阻止重新派发。
+func workflowRunReconciliationAborted(events []domain.Event) bool {
+	for _, event := range events {
+		if event.Type != domain.EventOperationReconciled {
+			continue
+		}
+		var body struct {
+			Verdict string `json:"verdict"`
+		}
+		if json.Unmarshal(event.Payload, &body) == nil && body.Verdict == "abort_run" {
+			return true
+		}
+	}
+	return false
+}
+
 // storeWorkflowRunOutput 保存可供下游读取的脱敏正文。终态证据仍在 Journal。
-func (execution workflowExecution) storeWorkflowRunOutput(run domain.RunProjection) (workflow.StepIO, error) {
+func (execution workflowExecution) storeWorkflowRunOutput(run domain.RunProjection, node WorkflowNode, events []domain.Event) (workflow.StepIO, error) {
 	artifacts, err := openArtifactStore(execution.stateDir, execution.workspaceHash, execution.configuration.Output)
 	if err != nil {
 		return workflow.StepIO{}, err
 	}
-	response := boundWorkflowOutput(run.LastAssistantMessage, workflowOutputMaxBytes)
+	text := run.LastAssistantMessage
+	if node.Kind == workflow.StepKindScript {
+		if stdout, found := workflowScriptStdout(events); found {
+			text = stdout
+		}
+	}
+	response := boundWorkflowOutput(text, workflowOutputMaxBytes)
 	ref, err := artifacts.Put(contract.MustEncodeRedactedJSON(workflowRunOutput{
-		RunID: run.ID, Response: response, Truncated: response != run.LastAssistantMessage,
+		RunID: run.ID, Response: response, Truncated: response != text,
 	}), "application/json")
 	if err != nil {
 		return workflow.StepIO{}, err
 	}
 	return workflow.StepIO{Ref: ref.SHA256, SHA: ref.SHA256, Summary: "run " + string(run.ID)}, nil
+}
+
+// workflowScriptStdout 提取同一固定调用的已持久化 stdout。
+func workflowScriptStdout(events []domain.Event) (string, bool) {
+	var operationID domain.OperationID
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventToolCallProposed || event.OperationID == nil {
+			continue
+		}
+		var proposed struct {
+			CallID string `json:"call_id"`
+		}
+		if json.Unmarshal(event.Payload, &proposed) == nil && proposed.CallID == workflowScriptCallID {
+			operationID = *event.OperationID
+			break
+		}
+	}
+	if operationID == "" {
+		return "", false
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventToolResultAppended || event.OperationID == nil || *event.OperationID != operationID {
+			continue
+		}
+		var result contract.ToolResult
+		var body struct {
+			Stdout *string `json:"stdout"`
+		}
+		if json.Unmarshal(event.Payload, &result) == nil && result.OK && json.Unmarshal(result.Data, &body) == nil && body.Stdout != nil {
+			return *body.Stdout, true
+		}
+		break
+	}
+	return "", false
 }
 
 // readWorkflowDependencies 校验依赖制品内容及大小，拒绝悬空的产物引用。

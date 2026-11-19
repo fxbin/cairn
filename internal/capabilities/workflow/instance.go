@@ -118,6 +118,19 @@ func applyInstanceEvent(snapshot *Snapshot, plan *Plan, indexes map[string]int, 
 		return errors.New("workflow event follows a terminal instance")
 	}
 	switch event.Type {
+	case EventWorkflowPaused, EventWorkflowContinued:
+		wantPause := event.Type == EventWorkflowPaused
+		if snapshot.Paused == wantPause || plan.ResumeFrom() < 0 {
+			return errors.New("invalid workflow pause transition")
+		}
+		snapshot.Paused = wantPause
+		return nil
+	case EventRetryAuthorized:
+		var retry RetryPayload
+		if err := json.Unmarshal(event.Payload, &retry); err != nil {
+			return err
+		}
+		return applyRetry(snapshot, plan, indexes, retry)
 	case EventStepStarted:
 		var started StepStartedPayload
 		if err := json.Unmarshal(event.Payload, &started); err != nil {
@@ -149,6 +162,9 @@ func applyInstanceEvent(snapshot *Snapshot, plan *Plan, indexes map[string]int, 
 
 // validateNewAttempt 核对顺序、预算与当前依赖身份。
 func validateNewAttempt(snapshot *Snapshot, plan *Plan, indexes map[string]int, stepID string, number int, dependencies []Dependency) (int, error) {
+	if snapshot.Paused {
+		return -1, errors.New("workflow is paused")
+	}
 	if err := ensureSequentialStart(plan, indexes, stepID); err != nil {
 		return -1, err
 	}
@@ -266,6 +282,7 @@ func finishInstance(snapshot *Snapshot, plan *Plan, finished RunFinishedPayload)
 	if finished.State == RunStateFailed && plan.Steps[index].State != StepFailed {
 		return errors.New("workflow failure requires a failed step")
 	}
-	snapshot.Finished, snapshot.FinishState = true, finished.State
+	snapshot.Finished, snapshot.FinishState, snapshot.FinishReason = true, finished.State, finished.Reason
+	snapshot.Paused = false
 	return nil
 }

@@ -10,11 +10,10 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
@@ -39,34 +38,21 @@ type StartWorkflowOptions struct {
 
 // WorkflowDecisionOptions 将人工决定绑定到调用者实际看到的实例链头和步骤。
 type WorkflowDecisionOptions struct {
-	Scope      WorkflowScope
-	WorkflowID workflow.ID
-	StepID     string
-	Sequence   uint64
-	Reason     string
-	OnEvent    EventSink
+	Scope       WorkflowScope
+	WorkflowID  workflow.ID
+	StepID      string
+	Sequence    uint64
+	Reason      string
+	OnEvent     EventSink
+	RunID       domain.RunID
+	OperationID domain.OperationID
+	Fingerprint string
 }
 
 // CreateWorkflowInstance 保存不可变的实例快照，返回实例 ID 后才允许驱动。
 func (Service) CreateWorkflowInstance(ctx context.Context, options StartWorkflowOptions) (WorkflowStatusView, error) {
-	scope, hash, err := options.Scope.resolve()
+	scope, hash, definition, ref, err := prepareWorkflowStart(ctx, options)
 	if err != nil {
-		return WorkflowStatusView{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return WorkflowStatusView{}, err
-	}
-	if options.Revision == 0 {
-		return WorkflowStatusView{}, errors.New("workflow start requires an explicitly selected definition revision")
-	}
-	if err := validateHookConfiguration(scope.Config); err != nil {
-		return WorkflowStatusView{}, err
-	}
-	definition, ref, err := loadWorkflowDefinition(ctx, scope, hash, options.DefinitionID, options.Revision)
-	if err != nil {
-		return WorkflowStatusView{}, err
-	}
-	if err := validateWorkflowRuntime(definition, scope.Config); err != nil {
 		return WorkflowStatusView{}, err
 	}
 	store, err := workflowsqlite.Open(workflowDBPath(scope.StateDir, hash))
@@ -94,6 +80,85 @@ func (Service) CreateWorkflowInstance(ctx context.Context, options StartWorkflow
 	}
 	execution := workflowExecution{stateDir: scope.StateDir, workspaceHash: hash, definition: &definition}
 	return execution.workflowStatusView(ctx, snapshot)
+}
+
+// CheckWorkflowDefinition 对已明确选择的持久修订只读预演，不启动实例。
+func (Service) CheckWorkflowDefinition(ctx context.Context, options StartWorkflowOptions) error {
+	_, _, _, _, err := prepareWorkflowStart(ctx, options)
+	return err
+}
+
+// CheckWorkflowDraft 对尚未保存的宿主草案预演，且不创建任何状态。
+func (Service) CheckWorkflowDraft(ctx context.Context, scope WorkflowScope, draft WorkflowDefinitionDraft) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	scope, hash, err := scope.resolve()
+	if err != nil {
+		return err
+	}
+	if err := validateHookConfiguration(scope.Config); err != nil {
+		return err
+	}
+	definition, err := checkedWorkflowDraft(hash, draft)
+	if err != nil {
+		return err
+	}
+	return validateWorkflowRuntime(definition, scope.Config)
+}
+
+// CheckWorkflowDraftStructure 只验证旧预演入口展示的草案结构。
+func (Service) CheckWorkflowDraftStructure(ctx context.Context, workspace string, draft WorkflowDefinitionDraft) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, hash, err := workspaceFor(workspace, config.Defaults())
+	if err != nil {
+		return err
+	}
+	_, err = checkedWorkflowDraft(hash, draft)
+	return err
+}
+
+// checkedWorkflowDraft 复用定义规范化和制品大小限制。
+func checkedWorkflowDraft(hash string, draft WorkflowDefinitionDraft) (WorkflowDefinition, error) {
+	definition, err := workflow.NewDefinition(hash, draft, 1)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	content, err := json.Marshal(definition)
+	if err != nil {
+		return WorkflowDefinition{}, err
+	}
+	if len(content) > workflow.MaxDefinitionArtifactBytes {
+		return WorkflowDefinition{}, errors.New("workflow draft exceeds artifact limit")
+	}
+	return definition, nil
+}
+
+// prepareWorkflowStart 校验选中的修订、宿主运行配置和节点执行条件。
+func prepareWorkflowStart(ctx context.Context, options StartWorkflowOptions) (WorkflowScope, string, WorkflowDefinition, WorkflowDefinitionRef, error) {
+	scope, hash, err := options.Scope.resolve()
+	if err != nil {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+	}
+	if options.Revision == 0 {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, errors.New("workflow start requires an explicitly selected definition revision")
+	}
+	if err := validateHookConfiguration(scope.Config); err != nil {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+	}
+	definition, ref, err := loadWorkflowDefinition(ctx, scope, hash, options.DefinitionID, options.Revision)
+	if err != nil {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+	}
+	if err := validateWorkflowRuntime(definition, scope.Config); err != nil {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+	}
+	return scope, hash, definition, ref, nil
 }
 
 // StartWorkflow 创建实例后通过通用恢复入口推进，错误时也返回已创建实例身份。
@@ -124,9 +189,9 @@ func (service Service) RejectStep(ctx context.Context, options WorkflowDecisionO
 
 // decideWorkflowGate 重验期望链头、当前步骤及产物后，以一个事件绑定人工决定。
 func (service Service) decideWorkflowGate(ctx context.Context, options WorkflowDecisionOptions, decision string) (WorkflowOutcome, error) {
-	reason := strings.TrimSpace(options.Reason)
-	if reason == "" || len(reason) > workflowDecisionMaxBytes || !utf8.ValidString(reason) {
-		return WorkflowOutcome{}, errors.New("workflow decision requires a bounded reason")
+	reason, err := validWorkflowReason(options.Reason)
+	if err != nil {
+		return WorkflowOutcome{}, err
 	}
 	execution, snapshot, release, err := service.openWorkflowMutation(ctx, options.Scope, options.WorkflowID, options.OnEvent)
 	if err != nil {
@@ -136,9 +201,17 @@ func (service Service) decideWorkflowGate(ctx context.Context, options WorkflowD
 	if snapshot.LastSeq != options.Sequence {
 		return WorkflowOutcome{}, workflow.ErrConflict
 	}
+	if snapshot.Paused {
+		return WorkflowOutcome{}, errors.New("workflow is paused")
+	}
 	index := snapshot.ResumeIndex
-	if index < 0 || index >= len(snapshot.Steps) || snapshot.Specs[index].Kind != workflow.StepKindAccept ||
-		snapshot.Steps[index].State != workflow.StepPending || snapshot.Steps[index].ID != options.StepID {
+	if index < 0 || index >= len(snapshot.Steps) || snapshot.Steps[index].ID != options.StepID {
+		return WorkflowOutcome{}, errors.New("workflow decision requires the current step")
+	}
+	if snapshot.Specs[index].Kind != workflow.StepKindAccept {
+		return execution.decideWorkflowRunApproval(ctx, snapshot, options, decision == workflow.GateApproved, reason)
+	}
+	if snapshot.Steps[index].State != workflow.StepPending || options.RunID != "" || options.OperationID != "" || options.Fingerprint != "" {
 		return WorkflowOutcome{}, errors.New("workflow is not waiting for this human decision")
 	}
 	dependencies, err := snapshot.Dependencies(index)

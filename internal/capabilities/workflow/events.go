@@ -131,6 +131,7 @@ type StepFinishedPayload struct {
 type RunFinishedPayload struct {
 	State       string `json:"state"`
 	ResumeIndex int    `json:"resume_index"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // 工作流终态与步骤合法收束集合。
@@ -269,6 +270,21 @@ func validatePayload(eventType EventType, payload json.RawMessage) error {
 			return validateInstanceSpecs(created)
 		}
 		return nil
+	case EventWorkflowPaused, EventWorkflowContinued:
+		var control ControlPayload
+		if err := json.Unmarshal(payload, &control); err != nil {
+			return err
+		}
+		return validateControlReason(control.Reason)
+	case EventRetryAuthorized:
+		var retry RetryPayload
+		if err := json.Unmarshal(payload, &retry); err != nil {
+			return err
+		}
+		if retry.FailedStepID == "" || retry.FromStepID == "" || retry.FailedAttempt < 1 {
+			return errors.New("workflow retry requires failed attempt and target")
+		}
+		return validateControlReason(retry.Reason)
 	case EventGateDecided:
 		var decided GateDecidedPayload
 		if err := json.Unmarshal(payload, &decided); err != nil {
@@ -342,6 +358,9 @@ type Snapshot struct {
 	SessionID         string
 	Specs             []StepSpec
 	Attempts          map[string][]Attempt
+	Paused            bool
+	LastRetry         *RetryPayload
+	FinishReason      string
 }
 
 // Project 校验并重放工作流事件链，返回唯一权威投影；顺序流程约束在重放中

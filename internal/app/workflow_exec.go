@@ -85,6 +85,8 @@ type WorkflowResumeOptions struct {
 	StateDir   string
 	Config     config.Config
 	OnEvent    EventSink
+	// Sequence 可选地将版本化实例续跑绑定到界面链头。
+	Sequence uint64
 }
 
 // WorkflowAcceptOptions 描述通过人工审批门所需的输入。
@@ -252,6 +254,9 @@ func (service Service) WorkflowResume(ctx context.Context, options WorkflowResum
 		return WorkflowOutcome{}, err
 	}
 	if snapshot.Definition != nil {
+		if options.Sequence != 0 && snapshot.LastSeq != options.Sequence {
+			return WorkflowOutcome{}, workflow.ErrConflict
+		}
 		if err := execution.prepareVersionedWorkflow(ctx, snapshot); err != nil {
 			return WorkflowOutcome{}, err
 		}

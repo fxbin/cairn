@@ -1,6 +1,6 @@
 // [INPUT]: 依赖运行输入、冻结配置与Boot。
 // [OUTPUT]: 提供新运行、前情与Journal驱动结果。
-// [POS]: 公共执行入口校验钩子；任务入口在同一工作区锁下绑定创建事件。
+// [POS]: 普通运行与脚本步骤共用装配和创建锁。应用能力在锁内绑定创建事件。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package app 装配面向 CLI 的 Cairn 运行、恢复与诊断用例。
@@ -76,6 +76,8 @@ type RunOptions struct {
 	// 子工具面收窄（child ⊆ parent）。空值时回退为按父冻结 Preset 重建的
 	// 基础工具面（不含 opt-in 扩展），保持失败关闭。
 	ParentTools []string
+	// workflowScript 只由工作流应用入口指定，并随创建事件冻结。
+	workflowScript *workflowScriptPlan
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -99,6 +101,8 @@ type ResumeOptions struct {
 	OnEvent   EventSink
 	// Steering 在恢复执行时继续接受安全点补充输入，不继承历史未消费输入。
 	Steering *agent.SteeringBridge
+	// ExpectedApprovalOperationID 将上层明确决定绑定锁内的同一个挂起操作。
+	ExpectedApprovalOperationID domain.OperationID
 }
 
 // ReconcileOptions 描述人工记录悬而未决副作用判定的输入。
@@ -204,6 +208,14 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 	if options.Task == "" {
 		return RunResult{}, errors.New("task is required")
 	}
+	var workflowCalls []ports.ToolCall
+	if options.workflowScript != nil {
+		calls, err := options.workflowScript.calls()
+		if err != nil {
+			return RunResult{}, err
+		}
+		workflowCalls = calls
+	}
 	if options.ForkSource != nil && options.PrevRunID != "" {
 		return RunResult{}, fmt.Errorf("%w: fork_source is mutually exclusive with prev_run_id", ErrSessionContinuation)
 	}
@@ -291,7 +303,7 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 		if err := enforceSubagentToolNarrowing(ctx, boot.Journal, boot.Artifacts, boot.WorkspaceHash, boot.Registry, options); err != nil {
 			return RunResult{}, err
 		}
-	} else if options.Config.Preset != config.PresetMinimal {
+	} else if options.Config.Preset != config.PresetMinimal && options.workflowScript == nil {
 		// 模型侧委派仅绑定根运行（子运行不嵌套委派）；回调复用本次装配的
 		// Journal 与配置，父 Loop 在工具执行期间阻塞等待子终态或审批暂停。
 		// 异步委派显式启用时装配进程内运行时：子完成信号登记表接入父 Loop，
@@ -324,12 +336,21 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 	if err != nil {
 		return RunResult{}, err
 	}
+	var taskRef *contract.Ref
+	if options.workflowScript != nil {
+		reference, err := storeWorkflowScriptPlan(boot, *options.workflowScript)
+		if err != nil {
+			return RunResult{}, err
+		}
+		taskRef = &reference
+	}
 	created := domain.EventDraft{RunID: runID, WorkspaceHash: boot.WorkspaceHash, Type: domain.EventRunCreated, Payload: contract.MustEncodeRedactedJSON(struct {
 		domain.RunCreatedPayload
 		ConfigRef              contract.Ref  `json:"config_ref"`
+		TaskRef                *contract.Ref `json:"task_ref,omitempty"`
 		PriorContextRef        *contract.Ref `json:"prior_context_ref,omitempty"`
 		ProjectInstructionsRef *contract.Ref `json:"project_instructions_ref,omitempty"`
-	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})}
+	}{RunCreatedPayload: domain.RunCreatedPayload{Task: options.Task, Workspace: boot.Workspace.Root, ConfigFingerprint: configFingerprint, Build: build, SessionID: sessionID, PrevRunID: options.PrevRunID, ForkSource: options.ForkSource, ParentRunID: options.ParentRunID}, ConfigRef: configRef, TaskRef: taskRef, PriorContextRef: priorContextRef, ProjectInstructionsRef: projectInstructionsRef})}
 	if bind != nil {
 		if err := bind(boot, &created); err != nil {
 			return RunResult{}, err
@@ -360,6 +381,9 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 	}
 	if options.OnEvent != nil {
 		options.OnEvent(second)
+	}
+	if options.workflowScript != nil {
+		return service.driveWorkflowScriptRun(ctx, boot, first, ResumeOptions{StateDir: options.StateDir, Config: options.Config}, workflowCalls)
 	}
 	runContext, cancelRun, err := runBudgetContext(ctx, first.OccurredAt, options.Config)
 	if err != nil {

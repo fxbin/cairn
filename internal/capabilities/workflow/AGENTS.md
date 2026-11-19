@@ -9,6 +9,7 @@ App 仅通过显式命令连接运行；Scheduler 尚未接线。
 AGENTS.md: 模块职责地图与成员入口。
 definition.go: 定义线性节点、前序制品依赖与返工区间。宿主保存时冻结修订。
 events.go: 冻结事件编码、哈希链与顺序投影。独立于运行 Journal。
+control.go: 重放暂停、继续及冻结策略容许的重试。尝试耗尽或放弃对账后禁止重派。
 instance.go: 版本化步骤及尝试、运行锚点、原子人工门和依赖校验。
 events_test.go: 顺序执行、未决对账、非法事件与链损坏回归。
 schedule.go: 内存调度合同与触发记录。无运行接线，不执行宿主 cron。
