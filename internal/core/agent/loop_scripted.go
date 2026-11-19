@@ -1,16 +1,18 @@
 // [INPUT]: 固定工具计划与同一授权、释放和执行端口。
 // [OUTPUT]: 提供无模型请求的受审计执行。
-// [POS]: 脚本计划保留恢复与独立验证边界。
+// [POS]: 脚本计划从已记录的操作终态恢复。失败关闭运行。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
-	"encoding/json"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -102,6 +104,13 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 	if result, handled, cancellationErr := loop.repairMissingCancellationTerminal(ctx, &projection, input, events); handled {
 		return result, cancellationErr
 	}
+	proposed := loop.activeScriptedToolCallIDs(events)
+	if projection.CurrentTurn == nil && projection.State == domain.RunRunning &&
+		projection.PendingApproval == nil && projection.PendingOperation == nil && ctx.Err() == nil {
+		if err := loop.healScriptedProposals(ctx, &projection, input, events, proposed); err != nil {
+			return loop.persistRunFailure(ctx, &projection, input, nil, runFailurePayload{Error: err.Error()}, err)
+		}
+	}
 	if result, handled, terminalErr := loop.repairMissingRunTerminal(ctx, &projection, input, events); handled {
 		return result, terminalErr
 	}
@@ -118,15 +127,20 @@ func (loop *Loop) runScriptedToolPlan(ctx context.Context, input RunInput, appro
 		return Result{}, errors.New("dangling read operation has no scripted continuation")
 	}
 	if projection.PendingApproval != nil {
+		if approval.Approve && approval.Fingerprint != "" {
+			// 已挂起的当前提议尚未取得授权。此前失败的脚本调用不能被审批覆盖。
+			if pending, found := proposedToolCall(events, projection.PendingApproval.OperationID); found {
+				delete(proposed, pending.ID)
+			}
+			if err := loop.healScriptedProposals(ctx, &projection, input, events, proposed); err != nil {
+				return Result{RunID: input.RunID}, err
+			}
+		}
 		return loop.resumeScriptedApproval(ctx, &projection, input, events, approval, calls)
 	}
-	proposed := activeScriptedToolCallIDs(events)
-	for _, call := range calls {
-		if !proposed[call.ID] {
-			continue
-		}
-		if err := loop.healScriptedProposal(ctx, &projection, input, events, call); err != nil {
-			return loop.failCurrentTurn(ctx, &projection, input, currentTurnOf(&projection), err)
+	if projection.CurrentTurn != nil {
+		if err := loop.healScriptedProposals(ctx, &projection, input, events, proposed); err != nil {
+			return loop.persistRunFailure(ctx, &projection, input, projection.CurrentTurn, runFailurePayload{Error: err.Error()}, err)
 		}
 	}
 	if projection.CurrentTurn == nil {
@@ -347,7 +361,7 @@ func (loop *Loop) resumeScriptedApproval(ctx context.Context, projection *domain
 	if err != nil {
 		return Result{}, err
 	}
-	return loop.runScriptedToolPlan(ctx, input, ports.Approval{}, remainingScriptedCalls(reloaded, calls))
+	return loop.runScriptedToolPlan(ctx, input, ports.Approval{}, loop.remainingScriptedCalls(reloaded, calls))
 }
 
 // grantScriptedVerification 批准并执行挂起的验证命令，随后收束剩余验证并
@@ -470,17 +484,27 @@ func (loop *Loop) expireScriptedApproval(ctx context.Context, projection *domain
 	return loop.persistRunFailure(ctx, projection, input, &turnID, runFailurePayload{Error: reason, Reason: reason}, cause)
 }
 
+// healScriptedProposals 核验 Journal 中仍有效的调用，包含调用方已剔除的旧提议。
+func (loop *Loop) healScriptedProposals(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, proposed map[string]bool) error {
+	for _, callID := range slices.Sorted(maps.Keys(proposed)) {
+		if err := loop.healScriptedProposal(ctx, projection, input, events, callID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // healScriptedProposal 修复中断恢复窗口：从后向前选择同一 call ID 的最新有效
 // 提议，避免 not_applied 后重试时误用旧 operation；已终态但结果事件缺失时，
-// 从该 operation 的终态载荷确定性重建 tool_result。
-func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, call ports.ToolCall) error {
+// 从终态载荷重建 tool_result。已有结果回执也必须确认操作成功。
+func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.RunProjection, input RunInput, events []domain.Event, callID string) error {
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
 		if event.Type != domain.EventToolCallProposed || event.OperationID == nil {
 			continue
 		}
 		var payload toolCallPayload
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.CallID != call.ID {
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.CallID != callID || loop.isLifecycleTool(payload.ToolName) {
 			continue
 		}
 		operationID := *event.OperationID
@@ -498,24 +522,19 @@ func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.R
 			}
 		}
 		if terminal.Type == "" {
-			return fmt.Errorf("scripted call %s has an unresolved operation; abort the run before retrying", call.ID)
-		}
-		if appended {
-			return nil
+			return fmt.Errorf("scripted call %s has an unresolved operation; abort the run before retrying", callID)
 		}
 		result, err := toolResultFromOperationTerminal(terminal)
 		if err != nil {
-			return fmt.Errorf("rebuild terminal result for scripted call %s: %w", call.ID, err)
+			return fmt.Errorf("rebuild terminal result for scripted call %s: %w", callID, err)
 		}
-		turnID := domain.TurnID("")
-		if event.TurnID != nil {
-			turnID = *event.TurnID
-		}
-		if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: &turnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
-			return err
+		if !appended {
+			if err := loop.append(ctx, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventToolResultAppended, TurnID: event.TurnID, OperationID: &operationID, Payload: mustJSON(result)}); err != nil {
+				return err
+			}
 		}
 		if !result.OK {
-			return fmt.Errorf("scripted call %s did not take effect: %s", call.ID, result.Code)
+			return fmt.Errorf("scripted call %s did not take effect: %s", callID, result.Code)
 		}
 		return nil
 	}
@@ -523,8 +542,8 @@ func (loop *Loop) healScriptedProposal(ctx context.Context, projection *domain.R
 }
 
 // remainingScriptedCalls 返回计划中尚无有效提议的调用，供审批续跑后继续执行。
-func remainingScriptedCalls(events []domain.Event, calls []ports.ToolCall) []ports.ToolCall {
-	proposed := activeScriptedToolCallIDs(events)
+func (loop *Loop) remainingScriptedCalls(events []domain.Event, calls []ports.ToolCall) []ports.ToolCall {
+	proposed := loop.activeScriptedToolCallIDs(events)
 	remaining := make([]ports.ToolCall, 0, len(calls))
 	for _, call := range calls {
 		if !proposed[call.ID] {
@@ -553,13 +572,13 @@ func validateScriptedCalls(calls []ports.ToolCall) error {
 // activeScriptedToolCallIDs 返回仍应视为已提议的脚本调用；人工对账明确
 // not_applied 的旧 operation 不具备副作用，允许同一确定性调用在新 operation
 // 下重新提议和执行，其他提议保持防重语义。
-func activeScriptedToolCallIDs(events []domain.Event) map[string]bool {
+func (loop *Loop) activeScriptedToolCallIDs(events []domain.Event) map[string]bool {
 	operationCalls := make(map[domain.OperationID]string)
 	active := make(map[string]bool)
 	for _, event := range events {
 		if event.Type == domain.EventToolCallProposed && event.OperationID != nil {
 			var payload toolCallPayload
-			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" {
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.CallID != "" && !loop.isLifecycleTool(payload.ToolName) {
 				operationCalls[*event.OperationID] = payload.CallID
 				active[payload.CallID] = true
 			}
@@ -576,12 +595,4 @@ func activeScriptedToolCallIDs(events []domain.Event) map[string]bool {
 		}
 	}
 	return active
-}
-
-// currentTurnOf 返回投影当前轮次；无轮次时返回零值供错误路径使用。
-func currentTurnOf(projection *domain.RunProjection) domain.TurnID {
-	if projection.CurrentTurn == nil {
-		return domain.TurnID("")
-	}
-	return *projection.CurrentTurn
 }
