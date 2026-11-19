@@ -66,6 +66,10 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 		definition = &loaded
 	}
 	view.DefinitionName, view.Sequence = definition.Name, snapshot.LastSeq
+	view.Paused, view.LastRetry, view.FinishReason = snapshot.Paused, snapshot.LastRetry, snapshot.FinishReason
+	if !snapshot.Paused {
+		view.RetryTargets = snapshot.RetryTargets()
+	}
 	view.Phase = "ready"
 	if err := execution.projectWorkflowAttempts(ctx, snapshot, &view); err != nil {
 		return WorkflowStatusView{}, err
@@ -73,6 +77,10 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 	switch {
 	case view.Finished:
 		view.Phase = view.FinishState
+	case view.PendingReconcile != nil:
+		view.Phase = "waiting_reconcile"
+	case view.Paused:
+		view.Phase = "paused"
 	case view.ResumeIndex < 0:
 		view.Phase = "settling"
 	default:
@@ -110,7 +118,7 @@ func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, 
 				defer opened.Close()
 				journal = opened
 			}
-			run, _, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, snapshot.SessionID, attempt)
+			run, events, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, snapshot.SessionID, attempt)
 			if err != nil {
 				if current && errors.Is(err, ErrWorkflowAttemptUnconfirmed) {
 					view.Steps[index].RunPhase = "binding_unconfirmed"
@@ -118,11 +126,29 @@ func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, 
 				}
 				return fmt.Errorf("%w: workflow run history: %w", ErrStateCorrupt, err)
 			}
+			if step.Kind == workflow.StepKindVerify && attempt.State == workflow.StepSucceeded {
+				if err := checkRunArtifactReferences(events, execution.stateDir, execution.workspaceHash); err != nil {
+					return fmt.Errorf("%w: workflow verification artifacts: %w", ErrStateCorrupt, err)
+				}
+				result, err := runResultFromEvents(events, run, execution.stateDir, execution.workspaceHash)
+				if err != nil {
+					return fmt.Errorf("%w: invalid workflow verification result: %w", ErrStateCorrupt, err)
+				}
+				if !result.Evidence.Trusted {
+					return fmt.Errorf("%w: successful workflow verification has no trusted run evidence", ErrStateCorrupt)
+				}
+			}
 			if err := execution.checkWorkflowAttemptOutput(attempt); err != nil {
 				return err
 			}
 			if step.RunID == attempt.RunID {
 				view.Steps[index].RunPhase = run.Phase()
+				if index == view.ResumeIndex && run.Phase() == "waiting_reconcile" && run.PendingOperation != nil {
+					pending := run.PendingOperation
+					view.PendingReconcile = &WorkflowReconcileView{
+						RunID: run.ID, OperationID: pending.ID, ToolName: pending.ToolName, SideEffectClass: pending.SideEffectClass,
+					}
+				}
 				if index == view.ResumeIndex && run.PendingApproval != nil {
 					pending := run.PendingApproval
 					view.PendingApproval = &WorkflowApprovalView{

@@ -1,6 +1,6 @@
 // [INPUT]: 依赖历史Journal、人工判定与Boot。
 // [OUTPUT]: 提供恢复、对账与应急终止用例。
-// [POS]: 执行恢复先校验钩子；应急终止不激活钩子。
+// [POS]: 恢复前核验冻结计划。应急终止无需装配脚本。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 控制面用例：Resume / Reconcile / Abort。
@@ -57,6 +57,10 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if projection.State != domain.RunRunning {
 		return RunResult{ID: options.RunID}, errors.New("run is not resumable")
 	}
+	if expected := options.ExpectedApprovalOperationID; expected != "" &&
+		(projection.PendingApproval == nil || projection.PendingApproval.OperationID != expected) {
+		return RunResult{ID: options.RunID}, errors.New("pending run approval operation changed")
+	}
 	if err := requireMatchingConfig(events, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
@@ -77,6 +81,12 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
+	// 工作流脚本和验证只运行创建事件所绑定的计划。原审批决定继续绑定提议。
+	if calls, scripted, err := workflowScriptCallsOfRun(events[0], boot.Artifacts); err != nil {
+		return RunResult{ID: options.RunID}, err
+	} else if scripted {
+		return service.driveWorkflowScriptRun(ctx, boot, events[0], options, calls)
+	}
 	// 回退 run（task_ref 承载计划制品）不进入模型续跑：按同一计划重推导反放
 	// 调用后交给脚本化执行器收束；普通与回退 run 都必须先通过当前 required
 	// 准入门。
@@ -84,13 +94,6 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 		return RunResult{ID: options.RunID}, planErr
 	} else if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, plan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, Approval: options.Approval, OnEvent: options.OnEvent})
-	}
-	// 工作流验证 run 同样不进入模型续跑：以零调用脚本化计划收束冻结验证，
-	// 审批决定由本入口透传，避免产生计划外的模型操作。
-	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
-		return RunResult{ID: options.RunID}, verifyErr
-	} else if isWorkflowVerify {
-		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, options)
 	}
 	observation, err := boot.Workspace.ObservationView(options.Config.Verification.VolatilePaths).Observation()
 	if err != nil {
@@ -180,15 +183,22 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 		return RunResult{}, errors.New("process reconciliation requires evidence")
 	}
 	var rewindPlan rewindPlanArtifact
-	var isRewind bool
+	var isRewind, isWorkflowScript bool
+	var workflowCalls []ports.ToolCall
 	if options.Verdict != "abort_run" {
 		if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 			return RunResult{ID: options.RunID}, err
 		}
 		var planErr error
-		rewindPlan, isRewind, planErr = rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID)
+		workflowCalls, isWorkflowScript, planErr = workflowScriptCallsOfRun(events[0], boot.Artifacts)
 		if planErr != nil {
 			return RunResult{ID: options.RunID}, planErr
+		}
+		if !isWorkflowScript {
+			rewindPlan, isRewind, planErr = rewindPlanOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID)
+			if planErr != nil {
+				return RunResult{ID: options.RunID}, planErr
+			}
 		}
 	}
 	if projection.PendingOperation.ToolName == "apply_patch" && projection.PendingOperation.PlannedPath != "" {
@@ -288,11 +298,9 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 	if isRewind {
 		return service.driveRewindRun(ctx, boot, options.RunID, rewindPlan.Runs, RewindOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
 	}
-	// 工作流验证 run 对账后同样以零调用脚本化计划收束，不进入模型续跑。
-	if isWorkflowVerify, verifyErr := workflowVerifyRunOfRun(ctx, boot.Journal, boot.Artifacts, options.RunID); verifyErr != nil {
-		return RunResult{ID: options.RunID}, verifyErr
-	} else if isWorkflowVerify {
-		return service.driveWorkflowVerifyRun(ctx, boot, options.RunID, ResumeOptions{Workspace: options.Workspace, StateDir: options.StateDir, Config: options.Config, OnEvent: options.OnEvent})
+	// 对账前已核验计划制品。续跑交给原有脚本化执行器。
+	if isWorkflowScript {
+		return service.driveWorkflowScriptRun(ctx, boot, events[0], ResumeOptions{StateDir: options.StateDir, Config: options.Config}, workflowCalls)
 	}
 
 	// 对账后继续模型续跑同样受异步子门禁约束：非终态子未收束前不续跑父运行。

@@ -101,12 +101,14 @@ workflow_definition.go: 校验宿主草案并冻结制品。查询验证修订�
 workflow_exec.go: 工作流写入前校验钩子。执行、恢复与人工验收分别持久化。
 workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人工验收步骤。恢复遵循已有步骤事实。
 workflow_instance.go: 装配不可变定义实例。实例锁内校验版本、配置和人工门决定。
-workflow_instance_run.go: 在既有 Run 锁内绑定尝试。按 Journal 结算并输出有界制品。
+workflow_instance_run.go: 在既有 Run 锁内绑定 Agent、Script 和 Verify 尝试。按 Journal 核验并输出制品。
+workflow_control.go: 按实例链头追加暂停、继续、取消及有界返工授权。
+workflow_operation.go: 在已绑定 Run 上复用指纹审批和副作用对账，不授予额外权限。
 workflow_history.go: 从持久化实例与 Run Journal 核验历史、产物和审批阶段。
 workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
 
 workflow_store.go: 连接能力 SQLite 叶子与制品。路径、只读打开和链头 CAS 保持。
-workflow_verify.go: 连接冻结验证 Run。复用 Core 脚本执行、审批和可信证据。
+workflow_verify.go: 将旧验证和新固定脚本绑定到可恢复的脚本化 Run；现有策略、沙箱及验证不变。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md

@@ -46,6 +46,14 @@ type WorkflowApprovalView struct {
 	Summary     string             `json:"summary,omitempty"`
 }
 
+// WorkflowReconcileView 显示当前 Run 待对账操作的精确身份。
+type WorkflowReconcileView struct {
+	RunID           domain.RunID       `json:"run_id"`
+	OperationID     domain.OperationID `json:"operation_id"`
+	ToolName        string             `json:"tool_name"`
+	SideEffectClass string             `json:"side_effect_class"`
+}
+
 // WorkflowStatusView 是工作流链重放后的对外只读状态视图。
 type WorkflowStatusView struct {
 	WorkflowID        string                 `json:"workflow_id"`
@@ -65,6 +73,11 @@ type WorkflowStatusView struct {
 	Sequence          uint64                 `json:"sequence,omitempty"`
 	Phase             string                 `json:"phase,omitempty"`
 	PendingApproval   *WorkflowApprovalView  `json:"pending_approval,omitempty"`
+	Paused            bool                   `json:"paused,omitempty"`
+	RetryTargets      []string               `json:"retry_targets,omitempty"`
+	LastRetry         *workflow.RetryPayload `json:"last_retry,omitempty"`
+	FinishReason      string                 `json:"finish_reason,omitempty"`
+	PendingReconcile  *WorkflowReconcileView `json:"pending_reconcile,omitempty"`
 }
 
 // WorkflowStatus 只读重放指定工作流链并返回状态视图；存储缺失、链损坏
