@@ -1,3 +1,8 @@
+// [INPUT]: 依赖应用门面、命令参数与标准流。
+// [OUTPUT]: 提供 CLI 根分发、帮助与统一退出码。
+// [POS]: 装配命令边界，拦截输出失败。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // CLI 入口、分发与核心子命令。
 // Author: fxbin
 package cli
@@ -135,6 +140,8 @@ func (command Command) dispatch(ctx context.Context, args []string) int {
 		return command.packageCommand(ctx, args[1:])
 	case "session":
 		return command.sessionCommand(ctx, args[1:])
+	case "task":
+		return command.taskCommand(ctx, args[1:])
 	case "workflow":
 		return command.workflowCommand(ctx, args[1:])
 	case "init":
@@ -532,10 +539,24 @@ Usage:
   cairn session show <run-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn session fork --from <run-id> <task> [run flags] [--json]
   cairn session continue [--from <run-id>] <task> [run flags] [--json]
+  cairn task create <goal> --accept <condition> [--accept <condition> ...] [scope flags] [--json]
+  cairn task get <task-id> [scope flags] [--json]
+  cairn task progress <task-id> --revision <n> [--summary <text>] [--remaining <item> ...] [scope flags] [--json]
+  cairn task run <task-id> --revision <n> --assignment <id> --session <id> [--previous-run <run-id>] [scope flags] [--json]
+  cairn task pause|resume|cancel <task-id> --revision <n> [scope flags] [--json]
+  cairn task complete <task-id> --revision <n> --run <run-id> [scope flags] [--json]
   cairn workflow status <workflow-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn workflow run <task> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
-  cairn workflow resume <workflow-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn workflow resume <workflow-id> [--seq <n>] [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
   cairn workflow accept <workflow-id> [--workspace <path>] [--state-dir <path>] [--config <path>] [--json]
+  cairn workflow definitions|history [scope flags] [--json]
+  cairn workflow save-definition <draft.json> [--expected-revision <n>] [scope flags] [--json]
+  cairn workflow start <definition-id> --revision <n> [scope flags] [--json]
+  cairn workflow pause|continue|cancel <workflow-id> --seq <n> --reason <text> [scope flags] [--json]
+  cairn workflow approve|reject <workflow-id> <step-id> --seq <n> --reason <text> [--run <id> --operation <id> --fingerprint <digest>] [scope flags] [--json]
+  cairn workflow retry <workflow-id> <step-id> --seq <n> --reason <text> [scope flags] [--json]
+  cairn workflow reconcile <workflow-id> <step-id> --seq <n> --reason <text> --run <id> --operation <id> --verdict <value> [--evidence <ref>] [scope flags] [--json]
+
   cairn provider models [--query <name>] [--provider <id>] [--tool-call] [--reasoning] [--refresh] [--catalog-url <url>] [--catalog-cache <path>] [--limit <n>] [--json]
   cairn provider probe [--workspace <path>] [--config <path>] [--state-dir <path>] [--probe-tools] [--json]
   cairn provider configure --base-url <url> --model <name> --api-key-env <name> [--admission optional|required] [--save-preset <name>] [--overwrite-preset] [--user] [--overwrite] [--catalog-url <url>] [--catalog-cache <path>] [--workspace <path>] [--json]
@@ -543,6 +564,9 @@ Usage:
   cairn provider status [--workspace <path>] [--config <path>] [--state-dir <path>] [--json]
   cairn init [--base-url <url>] [--model <name>] [--api-key-env <name>] [--catalog-url <url>] [--workspace <path>]
   cairn tui [--workspace <path>] [--local] [--admission optional|required] [--catalog-url <url>] [--catalog-cache <path>]
+
+Scope flags:
+  --workspace <path> --state-dir <path> --config <path>
 
 Exit status:
   0 completed   2 usage/config   3 policy denied   4 failed

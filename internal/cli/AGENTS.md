@@ -12,7 +12,11 @@ command_memory_candidate.go: memory candidate 生命周期子命令。
 command_memory_promotion.go: 晋升、沙箱激活与遥测。
 command_memory_store.go: 记忆捕获、检索与派生检查。
 command_resume_run.go: resume / run 子命令与参数规范化。
-command_workflow.go: 工作流域子命令：status 只读重放；run/resume/accept 是显式执行、恢复与人工门入口。
+command_app_scope.go: 集中持久任务和工作流的作用域参数。
+command_task.go: 持久任务、进度与 Session 分配命令。验收引用可信 Run。
+command_workflow.go: 维护固定计划接口，分派版本化实例命令。
+command_workflow_control.go: 转交绑定链头的显式控制、审批与对账。
+command_workflow_definition.go: 严格解析定义草案并提交选定修订。
 command_workflow_exec_test.go: 工作流执行类子命令的 CLI 接线测试：run/resume/accept 的退出码、NDJSON 输出与人工门提示，不接受任意脚本。
 command_workflow_test.go: 工作流子命令的 CLI 接线测试：真实存储只读渲染、NDJSON 输出与用法约束。
 display_test.go: 人类视图复用合同词表。JSON 输出保持 NDJSON。
