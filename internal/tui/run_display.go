@@ -1,3 +1,8 @@
+// [INPUT]: 依赖运行事件、合同词表与显示主题。
+// [OUTPUT]: 提供事件摘要、命令清单与帮助视图。
+// [POS]: 控制台呈现层。命令表同时服务补全和帮助。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 事件摘要、状态文案与 View 渲染。
 // Author: fxbin
 package tui
@@ -388,6 +393,8 @@ var consoleCommands = []struct {
 	{"/new", "新任务清屏（会话累计保留）"},
 	{"/status", "模型、端点与预算"},
 	{"/sessions", "当前会话链与工作区历史"},
+	{"/task", "创建、查询和控制持久任务"},
+	{"/workflow", "查看、启动和控制工作流实例"},
 	{"/tree", "会话树（含跨会话分支）"},
 	{"/history", "从历史会话唯一链尾继续"},
 	{"/fork", "从终态 run 创建新会话分支"},
