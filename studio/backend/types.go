@@ -1,3 +1,8 @@
+// [INPUT]: 依赖 App 只读视图与 Journal 事件合同。
+// [OUTPUT]: 提供稳定桌面请求、回执和订阅事件。
+// [POS]: 桥接层把工作流状态和 Run 事件投送到同一通道。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package desktop
 
 import (
@@ -196,15 +201,18 @@ type RunDetail struct {
 // StreamEvent 是推送给前端的增量通知信封。
 // Kind 取值：run.event | run.status | run.waiting_approval | run.waiting_reconcile | run.finished | error。
 type StreamEvent struct {
-	Workspace  string         `json:"workspace,omitempty"`
-	Kind       string         `json:"kind"`
-	RunID      string         `json:"run_id,omitempty"`
-	SessionID  string         `json:"session_id,omitempty"`
-	Seq        uint64         `json:"seq,omitempty"`
-	OccurredAt time.Time      `json:"occurred_at,omitempty"`
-	Event      *domain.Event  `json:"event,omitempty"`
-	Status     *RunStatusView `json:"status,omitempty"`
-	Error      *ErrorBody     `json:"error,omitempty"`
+	WorkflowID string                  `json:"workflow_id,omitempty"`
+	Workflow   *app.WorkflowStatusView `json:"workflow,omitempty"`
+	NextAction string                  `json:"next_action,omitempty"`
+	Workspace  string                  `json:"workspace,omitempty"`
+	Kind       string                  `json:"kind"`
+	RunID      string                  `json:"run_id,omitempty"`
+	SessionID  string                  `json:"session_id,omitempty"`
+	Seq        uint64                  `json:"seq,omitempty"`
+	OccurredAt time.Time               `json:"occurred_at,omitempty"`
+	Event      *domain.Event           `json:"event,omitempty"`
+	Status     *RunStatusView          `json:"status,omitempty"`
+	Error      *ErrorBody              `json:"error,omitempty"`
 }
 
 // RunStatusView 是运行生命周期的精简状态。

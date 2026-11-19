@@ -1,4 +1,9 @@
-// 工作流与记忆扩展接口。
+// [INPUT]: 依赖 App 项目规约和记忆门面。
+// [OUTPUT]: 提供桌面规约发现、记忆列表及撤销。
+// [POS]: 只通过 App 读取规约和变更记忆。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
+// 项目规约与记忆扩展接口。
 // Author: fxbin
 package desktop
 
@@ -6,7 +11,6 @@ import (
 	"context"
 
 	"github.com/fxbin/cairn/internal/app"
-	"github.com/fxbin/cairn/internal/domain"
 )
 
 func (api *API) ListProjectInstructions(_ context.Context, workspace string) (ProjectInstructionsView, error) {
@@ -35,45 +39,6 @@ func (api *API) ListProjectInstructions(_ context.Context, workspace string) (Pr
 		})
 	}
 	return ProjectInstructionsView{Documents: out}, nil
-}
-
-// ListWorkflows 列出工作区工作流定义。
-func (api *API) ListWorkflows(_ context.Context, workspace string) ([]WorkflowDefinition, error) {
-	if api.prefs == nil {
-		return nil, errInvalid("preferences store unavailable")
-	}
-	abs, err := absWorkspace(workspace)
-	if err != nil {
-		return nil, err
-	}
-	return api.prefs.ListWorkflows(abs), nil
-}
-
-// SaveWorkflow 保存工作流定义。
-func (api *API) SaveWorkflow(_ context.Context, def WorkflowDefinition) (OKResult, error) {
-	if api.prefs == nil {
-		return OKResult{}, errInvalid("preferences store unavailable")
-	}
-	abs, err := absWorkspace(def.Workspace)
-	if err != nil {
-		return OKResult{}, err
-	}
-	def.Workspace = abs
-	if def.ID == "" {
-		def.ID = domain.NewID("wfl")
-	}
-	if def.MaxSteps == 0 {
-		def.MaxSteps = 8
-	}
-	if err := api.prefs.SaveWorkflow(def); err != nil {
-		return OKResult{}, err
-	}
-	return OKResult{OK: true}, nil
-}
-
-// RunWorkflow 预演或启动工作流。
-func (api *API) RunWorkflow(ctx context.Context, workspace, workflowID string, dryRun bool) (WorkflowRunAck, error) {
-	return api.controller.RunWorkflow(ctx, workspace, workflowID, dryRun)
 }
 
 // MemoryCandidateView 是记忆候选的只读投影。

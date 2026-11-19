@@ -1,3 +1,8 @@
+// [INPUT]: 依赖本机偏好文件、同步原语与 App 通道。
+// [OUTPUT]: 提供桌面偏好与进程内运行登记。
+// [POS]: 历史模板仅供显式导入。工作流事实由 App 所有。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package desktop
 
 import (

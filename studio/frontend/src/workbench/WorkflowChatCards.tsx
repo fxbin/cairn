@@ -1,11 +1,13 @@
 /**
- * INPUT: Agent 输出的 cairn-workflow 蓝图草案或当前会话关联的多阶段工作流执行状态。
- * OUTPUT: 对话内“工作流草案确认卡”（WorkflowBlueprintCard）与“多阶段实时流水线卡”（WorkflowExecutionCard）。
- * POS: studio/frontend/src/workbench 对话式工作流的核心内联视图组件，只读反映草案与真实 Run 状态。
+ * [INPUT]: Agent 输出的 cairn-workflow 蓝图草案或当前会话关联的多阶段工作流执行状态。
+ * [OUTPUT]: 对话内“工作流草案确认卡”（WorkflowBlueprintCard）与“多阶段实时流水线卡”（WorkflowExecutionCard）。
+ * [POS]: studio/frontend/src/workbench 对话式工作流的核心内联视图组件，只读反映草案与真实 Run 状态。
  *
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 import { useState } from "react";
+import { workflowPhaseLabel, workflowStepLabel } from "./workflowConversation";
 import type {
   ResolvedWorkflowExecution,
   WorkflowBlueprintSpec,
@@ -34,18 +36,22 @@ export function WorkflowBlueprintCard({
 }) {
   const [busy, setBusy] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
-  const effectiveId = spec.id || matchedExistingId;
+  const effectiveId = matchedExistingId;
   const isUpdate = Boolean(effectiveId);
 
   const handleAction = async (job: () => Promise<void>, markSaved: boolean) => {
     if (busy) return;
     setBusy(true);
+    setError("");
     try {
       await job();
       if (markSaved) {
         setSavedId(effectiveId || spec.name);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -89,11 +95,11 @@ export function WorkflowBlueprintCard({
                   "wb-badge " + (step.mode === "read-only" ? "is-ok" : "is-muted")
                 }
               >
-                {step.mode === "read-only" ? "只读探索" : "默认审批 ask"}
+                {step.mode === "read-only" ? "只读探索" : "按工作区权限"}
               </span>
               {step.model && <span className="wb-hash-pill">{step.model}</span>}
             </div>
-            <p>{step.task}</p>
+            <p>{workflowStepLabel(step)}</p>
           </li>
         ))}
       </ol>
@@ -103,11 +109,12 @@ export function WorkflowBlueprintCard({
         <pre>{rawJson}</pre>
       </details>
 
+      {error && <p role="alert">{error}</p>}
       <div className="wb-wf-blueprint-actions">
         <button
           type="button"
           className="wb-primary"
-          disabled={busy}
+          disabled={busy || Boolean(savedId)}
           onClick={() =>
             void handleAction(
               () =>
@@ -128,7 +135,7 @@ export function WorkflowBlueprintCard({
         <button
           type="button"
           className="wb-secondary"
-          disabled={busy}
+          disabled={busy || Boolean(savedId)}
           onClick={() =>
             void handleAction(
               () =>
@@ -174,6 +181,8 @@ function stageStatusMeta(status: WorkflowStageRuntimeStatus): {
       return { toneClass: "is-running", label: "执行中" };
     case "waiting_approval":
       return { toneClass: "is-warn", label: "待授权" };
+    case "waiting_reconcile":
+      return { toneClass: "is-warn", label: "待对账" };
     case "failed":
       return { toneClass: "is-failed", label: "已中断" };
     default:
@@ -199,19 +208,15 @@ export function WorkflowExecutionCard({
   onDebugInChat: () => void;
   onStopRun?: (runId: string) => void;
 }) {
-  const statusDisplay =
-    execution.status === "completed"
-      ? { badgeClass: "is-ok", text: "工作流已完成" }
-      : execution.status === "waiting_approval"
-        ? { badgeClass: "is-warn", text: "工作流待人工授权" }
-        : execution.status === "failed"
-          ? { badgeClass: "is-warn", text: "工作流已中断" }
-          : { badgeClass: "is-accent", text: "工作流运行中" };
+  const statusDisplay = {
+    badgeClass: execution.status === "completed" ? "is-ok" : execution.status === "running" ? "is-accent" : "is-warn",
+    text: workflowPhaseLabel(execution.status),
+  };
 
   const activeStage = execution.stages[execution.activeStepIndex];
   const canStop =
-    (execution.status === "running" || execution.status === "waiting_approval") &&
-    Boolean(activeStage?.run?.run_id) &&
+    execution.status === "running" &&
+    Boolean(activeStage?.runId) &&
     Boolean(onStopRun);
 
   return (
@@ -245,11 +250,11 @@ export function WorkflowExecutionCard({
           <button type="button" className="wb-ghost" onClick={onDebugInChat}>
             💬 对话调试
           </button>
-          {canStop && activeStage?.run?.run_id && (
+          {canStop && activeStage?.runId && (
             <button
               type="button"
               className="wb-danger"
-              onClick={() => onStopRun?.(activeStage.run!.run_id)}
+              onClick={() => onStopRun?.(activeStage.runId!)}
             >
               ■ 停止
             </button>
@@ -260,7 +265,7 @@ export function WorkflowExecutionCard({
       <div className="wb-wf-exec-track" role="list" aria-label="工作流阶段列表">
         {execution.stages.map((stage) => {
           const meta = stageStatusMeta(stage.status);
-          const stageRunId = stage.run?.run_id;
+          const stageRunId = stage.runId;
           const isViewed = Boolean(stageRunId && stageRunId === activeRunId);
           return (
             <div
@@ -280,7 +285,7 @@ export function WorkflowExecutionCard({
                 type="button"
                 className="wb-wf-stage-pill"
                 disabled={!stageRunId}
-                title={stage.step.task}
+                title={stage.label}
                 onClick={() => {
                   if (stageRunId) onSelectStageRun(stageRunId);
                 }}
@@ -288,7 +293,7 @@ export function WorkflowExecutionCard({
                 <span className="wb-wf-stage-idx">
                   {String(stage.index + 1).padStart(2, "0")}
                 </span>
-                <span className="wb-wf-stage-task">{stage.step.task}</span>
+                <span className="wb-wf-stage-task">{stage.label}</span>
                 <span className="wb-wf-stage-status">{meta.label}</span>
               </button>
             </div>

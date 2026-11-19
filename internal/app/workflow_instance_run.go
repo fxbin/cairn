@@ -139,11 +139,13 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	}
 
 	runID := domain.NewRunID()
+	// 版本化实例续接自己已结算的绑定。旧的旁支不能改变实例的前驱。
 	previous := lastWorkflowAttemptRun(snapshot)
 	input := RunOptions{
 		Task: workflowAgentPrompt(node.Prompt, dependencies, outputs), Workspace: execution.workspacePath,
 		StateDir: execution.stateDir, Config: configuration, SessionID: snapshot.SessionID, PrevRunID: previous,
-		RequireSessionTail: previous != "", PreassignedRunID: runID, OnEvent: execution.onEvent,
+		PreassignedRunID: runID, OnEvent: execution.onEvent,
+		workflowLink: &workflowRunLink{WorkflowID: string(snapshot.WorkflowID), StepID: node.ID},
 	}
 	attempt := workflow.StepStartedPayload{
 		StepID: node.ID, Attempt: len(snapshot.Attempts[node.ID]) + 1, RunID: string(runID), CreationEventID: domain.NewID("evt"),

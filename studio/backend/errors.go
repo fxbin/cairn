@@ -1,3 +1,8 @@
+// [INPUT]: 依赖 App 用例错误与端口审批错误。
+// [OUTPUT]: 提供稳定前端错误体，不附带内部状态。
+// [POS]: GUI 错误分类为展示与动作回执服务。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 package desktop
 
 import (
@@ -23,6 +28,8 @@ const (
 	CodeActiveRun           = "active_run"
 	CodePolicyDenied        = "policy_denied"
 	CodeCancelled           = "cancelled"
+	CodeConflict            = "conflict"
+	CodeWorkflowControl     = "workflow_control_required"
 	CodeNotFound            = "not_found"
 	CodeUnavailable         = "unavailable"
 	CodeProvider            = "provider"
@@ -77,7 +84,13 @@ func MapError(err error) ErrorBody {
 		return ErrorBody{Code: CodeActiveRun, Message: "该工作区已有进行中的运行"}
 	case errors.Is(err, context.Canceled):
 		return ErrorBody{Code: CodeCancelled, Message: "运行已取消"}
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, app.ErrWorkflowRunControlled):
+		return ErrorBody{Code: CodeWorkflowControl, Message: "请在对应工作流的实例历史中审批、对账或终止"}
+	case errors.Is(err, app.ErrWorkflowDefinitionConflict), errors.Is(err, app.ErrTaskConflict):
+		return ErrorBody{Code: CodeConflict, Message: "状态已更新，请重新加载后提交"}
+	case errors.Is(err, app.ErrWorkflowDisabled), errors.Is(err, app.ErrTaskDisabled):
+		return ErrorBody{Code: CodeUnavailable, Message: "当前配置未启用对应能力"}
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, app.ErrWorkflowNotFound), errors.Is(err, app.ErrWorkflowDefinitionNotFound):
 		return ErrorBody{Code: CodeNotFound, Message: "未找到请求的资源"}
 	}
 	return ErrorBody{Code: CodeInternal, Message: "内部错误，请通过诊断面板查看详细信息"}

@@ -1,5 +1,8 @@
 /**
- * 统一 desktop 桥接。所有后端调用经此模块；组件不得直接 import bindings。
+ * [INPUT]: 生成绑定与传输 DTO。
+ * [OUTPUT]: 统一调用工作台宿主方法。
+ * [POS]: 组件通过此处连接 App 和事件出口。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 import { Bindings as DesktopAPI } from "./wails-api";
@@ -35,6 +38,13 @@ import type {
   StartRunAck,
   StartRunRequest,
   StreamEvent,
+  WorkflowDefinitionItem,
+  WorkflowStepSpec,
+  WorkflowStartRequest,
+  WorkflowRunAck,
+  WorkflowInstanceView,
+  WorkflowControlRequest,
+  WorkflowControlResult,
   WorkspaceRequest,
   WorkspaceStatus,
 } from "./types";
@@ -143,12 +153,18 @@ export const desktop = {
     call(() => DesktopAPI.DisableHook(id)),
   listProjectInstructions: (workspace: string): Promise<{ documents: Array<{ source?: string; path: string; sha256?: string; bytes?: number; excerpt?: string }> }> =>
     call(() => DesktopAPI.ListProjectInstructions(workspace)),
-  listWorkflows: (workspace: string): Promise<Array<{ id: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }>> =>
+  listWorkflows: (workspace: string): Promise<WorkflowDefinitionItem[]> =>
     call(() => DesktopAPI.ListWorkflows(workspace)),
-  saveWorkflow: (def: { id?: string; workspace: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }): Promise<OKResult> =>
+  saveWorkflow: (def: { id?: string; workspace: string; name: string; revision?: number; steps: WorkflowStepSpec[] }): Promise<OKResult & { definition?: WorkflowDefinitionItem }> =>
     call(() => DesktopAPI.SaveWorkflow(def)),
-  runWorkflow: (workspace: string, workflowID: string, dryRun: boolean): Promise<{ workflow_id: string; run_ids?: string[]; state: string }> =>
+  runWorkflow: (workspace: string, workflowID: string, dryRun: boolean): Promise<WorkflowRunAck> =>
     call(() => DesktopAPI.RunWorkflow(workspace, workflowID, dryRun)),
+  startWorkflowInstance: (request: WorkflowStartRequest): Promise<WorkflowRunAck> =>
+    call(() => DesktopAPI.StartWorkflowInstance(request)),
+  listWorkflowInstances: (request: WorkspaceRequest): Promise<WorkflowInstanceView[]> =>
+    call(() => DesktopAPI.ListWorkflowInstances(request)),
+  controlWorkflow: (request: WorkflowControlRequest): Promise<WorkflowControlResult> =>
+    call(() => DesktopAPI.ControlWorkflow(request)),
   listMemories: (request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>> =>
     call(() => DesktopAPI.ListMemories(request)),
   listModelCatalog: (request: ModelCatalogRequest = {}): Promise<ModelCatalogView> =>
