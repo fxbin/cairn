@@ -1,3 +1,8 @@
+// [INPUT]: 依赖会话、队列、回退和控制台斜杠入口。
+// [OUTPUT]: 提供斜杠命令分派与会话查询。
+// [POS]: 输入态将具名操作交给各 App 适配入口。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 队列、Steering 与会话树展示。
 // Author: fxbin
 package tui
@@ -362,6 +367,10 @@ func (console *RunConsole) runCommand(task string) (bool, tea.Cmd) {
 		console.mode = consoleModelWizard
 		console.appendLine(dimStyle.Render("进入模型配置向导（Ctrl+C 取消返回）"))
 		return true, relayWizardCmd(wizard.Init(), console.wizardGeneration)
+	case "/task":
+		return true, console.taskSlash(remainder)
+	case "/workflow":
+		return true, console.workflowSlash(remainder)
 	case "/sessions":
 		console.appendActiveSession()
 		console.appendLine(dimStyle.Render("正在读取当前工作区持久化历史…"))

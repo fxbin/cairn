@@ -1,3 +1,8 @@
+// [INPUT]: 依赖 App、键盘消息及运行事件通道。
+// [OUTPUT]: 提供主控制台状态与运行消息分派。
+// [POS]: 前台命令共用取消域。业务事实来自 App。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // run.go 实现单任务运行闭环的终端主界面：任务输入、已持久化事件的实时滚
 // 动摘要、在线审批（等待审批错误 → 用户决定 → 恢复）、取消与终态展示。
 // 本文件只做展示与输入编排——运行、审批、取消与恢复全部复用 app.Service
@@ -296,6 +301,9 @@ func (console RunConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return console, nil
+	}
+	if workload, ok := msg.(workloadResultMsg); ok {
+		return console.receiveWorkload(workload)
 	}
 	if loaded, isSessionHistory := msg.(sessionHistoryLoadedMsg); isSessionHistory {
 		console.showSessionHistory(loaded)
@@ -753,65 +761,6 @@ func (console RunConsole) receiveRewindResult(finished rewindFinishedMsg) (tea.M
 		console.appendLine(dimStyle.Render("回退 run " + string(console.result.ID) + "（cairn inspect 查证）"))
 	}
 	return console, nil
-}
-
-// beginOperation 为一次 Run、Resume 或 Rewind 创建独立取消域；调用方必须
-// 在启动异步命令前调用，已有操作会先释放。操作继承调用方取消源，但消息泵
-// 保持独立，确保外部取消后仍能按 FIFO 消费已持久化事件与最终结果。
-func (console *RunConsole) beginOperation() {
-	console.finishOperation()
-	console.operationGeneration++
-	console.operationCtx, console.operationCancel = context.WithCancel(console.operationParent)
-}
-
-// operationContext 返回当前操作 context；未建立操作时返回根 context，供
-// 异常状态失败关闭而不制造脱离控制台生命周期的后台工作。
-func (console RunConsole) operationContext() context.Context {
-	if console.operationCtx != nil {
-		return console.operationCtx
-	}
-	return console.rootCtx
-}
-
-// cancelOperation 只取消当前运行操作，不终止控制台及历史、向导等后续能力。
-func (console RunConsole) cancelOperation() {
-	if console.operationCancel != nil {
-		console.operationCancel()
-	}
-}
-
-// finishOperation 释放当前操作 context，并清除引用以便下一轮建立全新取消域。
-func (console *RunConsole) finishOperation() {
-	if console.operationCancel != nil {
-		console.operationCancel()
-	}
-	console.operationCtx = nil
-	console.operationCancel = nil
-}
-
-// resetRun 清空上一轮运行的展示与统计，保留输入态历史行由滚动缓冲自然
-// 淘汰。
-func (console *RunConsole) resetRun() {
-	console.sessionPromptTokens += console.promptTokens
-	console.sessionOutputTokens += console.outputTokens
-	console.lines = nil
-	console.transcript = nil
-	console.transcriptCursor = 0
-	console.turn = 0
-	console.promptTokens = 0
-	console.outputTokens = 0
-	console.toolCalls = 0
-	console.turnToolCalls, console.turnExecutedTools = 0, 0
-	console.turnPromptTokens, console.turnOutputTokens = 0, 0
-	console.turnOpenedAt = time.Time{}
-	console.waiting = nil
-	console.result = nil
-	console.runErr = nil
-	console.rewinding = nil
-	console.diffLines = nil
-	console.diffCursor = 0
-	console.diffReturn = consoleInput
-	console.stopWait = false
 }
 
 // relayWizardKey 把按键转发给嵌入的配置向导并桥接其命令：非退出命令（如

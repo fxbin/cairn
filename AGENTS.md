@@ -17,7 +17,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | 入口 | 职责 |
 | --- | --- |
 | `cmd/cairn/main.go`、`internal/cli/` | 信号处理、CLI 分发；裸命令进入交互体验，运行、恢复、诊断、Provider、记忆和评测命令以帮助为准 |
-| `internal/tui/` | 配置向导、任务输入、会话与事件展示、审批及补丁差异查看；业务动作调用应用层 |
+| `internal/tui/` | 配置向导、会话、审批、差异查看及持久任务/工作流命令；业务动作调用应用层 |
 | `studio/` | Wails 桌面端：`main.go` 壳与 `frontend/` 前端；`studio/backend/` 承载桌面桥接 API、事件出口与偏好存储 |
 | `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退 |
 | `internal/core/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |

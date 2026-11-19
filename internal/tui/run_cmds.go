@@ -1,9 +1,15 @@
+// [INPUT]: 依赖 App 运行入口、Bubble Tea 消息与操作上下文。
+// [OUTPUT]: 提供运行命令、异步查询及前台操作取消域。
+// [POS]: App 结果按事件顺序回到主控制台。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 运行控制面 tea.Cmd 构造。
 // Author: fxbin
 package tui
 
 import (
 	"context"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fxbin/cairn/internal/app"
@@ -205,3 +211,62 @@ func persistQueueCmd(console RunConsole, items []string) tea.Cmd {
 
 // receiveResult 消费一次运行或恢复的结果：等待审批转入审批模式，终态进入
 // 结果页；其余错误如实展示。
+
+// beginOperation 为一次前台 App 操作创建独立取消域；调用方必须
+// 在启动异步命令前调用，已有操作会先释放。操作继承调用方取消源，但消息泵
+// 保持独立，确保外部取消后仍能按 FIFO 消费已持久化事件与最终结果。
+func (console *RunConsole) beginOperation() {
+	console.finishOperation()
+	console.operationGeneration++
+	console.operationCtx, console.operationCancel = context.WithCancel(console.operationParent)
+}
+
+// operationContext 返回当前操作 context；未建立操作时返回根 context，供
+// 异常状态失败关闭而不制造脱离控制台生命周期的后台工作。
+func (console RunConsole) operationContext() context.Context {
+	if console.operationCtx != nil {
+		return console.operationCtx
+	}
+	return console.rootCtx
+}
+
+// cancelOperation 只取消当前前台操作，不终止控制台及历史、向导等后续能力。
+func (console RunConsole) cancelOperation() {
+	if console.operationCancel != nil {
+		console.operationCancel()
+	}
+}
+
+// finishOperation 释放当前操作 context，并清除引用以便下一轮建立全新取消域。
+func (console *RunConsole) finishOperation() {
+	if console.operationCancel != nil {
+		console.operationCancel()
+	}
+	console.operationCtx = nil
+	console.operationCancel = nil
+}
+
+// resetRun 清空上一轮运行的展示与统计，保留输入态历史行由滚动缓冲自然
+// 淘汰。
+func (console *RunConsole) resetRun() {
+	console.sessionPromptTokens += console.promptTokens
+	console.sessionOutputTokens += console.outputTokens
+	console.lines = nil
+	console.transcript = nil
+	console.transcriptCursor = 0
+	console.turn = 0
+	console.promptTokens = 0
+	console.outputTokens = 0
+	console.toolCalls = 0
+	console.turnToolCalls, console.turnExecutedTools = 0, 0
+	console.turnPromptTokens, console.turnOutputTokens = 0, 0
+	console.turnOpenedAt = time.Time{}
+	console.waiting = nil
+	console.result = nil
+	console.runErr = nil
+	console.rewinding = nil
+	console.diffLines = nil
+	console.diffCursor = 0
+	console.diffReturn = consoleInput
+	console.stopWait = false
+}
