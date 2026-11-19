@@ -9932,6 +9932,30 @@ table.wb-preset-table tr:last-child td {
   flex-wrap: wrap;
 }
 
+.wb-wf-history-record {
+  display: grid;
+  gap: 6px;
+}
+
+.wb-wf-attempts {
+  padding: 8px 14px;
+  color: var(--wb-muted);
+  font-size: 12.5px;
+}
+
+.wb-wf-attempts fieldset {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  min-width: 0;
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+}
+
+.wb-wf-attempts .wb-wf-history-actions {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
 .wb-wf-history-top {
   display: flex;
   align-items: center;

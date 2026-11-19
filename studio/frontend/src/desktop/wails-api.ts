@@ -1,6 +1,8 @@
 /**
- * 对 Wails 生成 bindings 的薄封装。
- * 桌面 WebView 只使用真实 bindings；模拟桥仅允许显式演示/测试入口启用。
+ * [INPUT]: Wails 生成方法与显式演示桥。
+ * [OUTPUT]: 宿主服务绑定和传输选择。
+ * [POS]: 原生与 HTTP 通过同一服务接口。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 // @ts-ignore 生成的 JS bindings 无独立声明文件
@@ -34,6 +36,13 @@ import type {
   SessionTreeView,
   StartRunAck,
   StartRunRequest,
+  WorkflowDefinitionItem,
+  WorkflowStepSpec,
+  WorkflowStartRequest,
+  WorkflowRunAck,
+  WorkflowInstanceView,
+  WorkflowControlRequest,
+  WorkflowControlResult,
   WorkspaceRequest,
   WorkspaceStatus,
 } from "./types";
@@ -77,9 +86,12 @@ interface DesktopBindings {
   UpsertHook(rule: { id?: string; workspace: string; event?: string; enabled?: boolean; actions: Array<{ kind: string; content?: string }> }): Promise<OKResult>;
   DisableHook(id: string): Promise<OKResult>;
   ListProjectInstructions(workspace: string): Promise<{ documents: Array<{ source?: string; path: string; sha256?: string; bytes?: number; excerpt?: string }> }>;
-  ListWorkflows(workspace: string): Promise<Array<{ id: string; name: string; steps: Array<{ task: string }> }>>;
-  SaveWorkflow(def: { id?: string; workspace: string; name: string; steps: Array<{ task: string; model?: string; mode?: string }> }): Promise<OKResult>;
-  RunWorkflow(workspace: string, workflowID: string, dryRun: boolean): Promise<{ workflow_id: string; run_ids?: string[]; state: string }>;
+  ListWorkflows(workspace: string): Promise<WorkflowDefinitionItem[]>;
+  SaveWorkflow(def: { id?: string; workspace: string; name: string; revision?: number; steps: WorkflowStepSpec[] }): Promise<OKResult & { definition?: WorkflowDefinitionItem }>;
+  RunWorkflow(workspace: string, workflowID: string, dryRun: boolean): Promise<WorkflowRunAck>;
+  StartWorkflowInstance(request: WorkflowStartRequest): Promise<WorkflowRunAck>;
+  ListWorkflowInstances(request: WorkspaceRequest): Promise<WorkflowInstanceView[]>;
+  ControlWorkflow(request: WorkflowControlRequest): Promise<WorkflowControlResult>;
   ListMemories(request: WorkspaceRequest): Promise<Array<{ id: string; kind: string; run_id?: string; outcome: string; status: string; trusted_verification: boolean; created_at?: string }>>;
   ListModelCatalog(request: ModelCatalogRequest): Promise<ModelCatalogView>;
   ListProviderPresets(request: WorkspaceRequest): Promise<ProviderPresetView[]>;

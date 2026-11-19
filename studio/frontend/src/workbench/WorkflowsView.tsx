@@ -1,27 +1,31 @@
 /**
- * INPUT: 当前工作区路径、运行列表、工作流触发绑定与对话编排回调。
- * OUTPUT: 以“对话创建/调试、此处只读检视与触发”为核心的 Cairn Studio 工作流目录门户（兼容独立单测模式）。
- * POS: studio/frontend/src/workbench 工作流导航页视图，不越权绕过对话审查与后端执行边界。
+ * [INPUT]: 当前工作区、App 定义和实例、显式对话及控制回调。
+ * [OUTPUT]: 定义目录、运行历史和显式控制。创建与编辑从对话入口确认。
+ * [POS]: studio/frontend/src/workbench 工作流导航页视图，不越权绕过对话审查与后端执行边界。
  *
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 import { useEffect, useMemo, useState } from "react";
 import { desktop } from "../desktop/client";
-import type { RunHistoryView } from "../desktop/types";
+import type { WorkflowInstanceView } from "../desktop/types";
+import { WorkflowInstanceControls, type WorkflowControl } from "./WorkflowInstanceControls";
 import {
   STARTER_WORKFLOW_PROMPTS,
   resolveWorkflowExecution,
   type ResolvedWorkflowExecution,
   type WorkflowDefinitionItem,
-  type WorkflowSessionBinding,
+  workflowPhaseLabel,
+  workflowStepLabel,
   type WorkflowStepSpec,
 } from "./workflowConversation";
 
 export interface WorkflowsViewProps {
   workspace: string;
   notify: (message: string) => void;
-  runs?: RunHistoryView[];
-  bindings?: WorkflowSessionBinding[];
+  instances?: WorkflowInstanceView[];
+  onControl?: WorkflowControl;
+  historyError?: string;
   focusedWorkflowId?: string | null;
   onConverseCreate?: (initialPrompt?: string) => void;
   onConverseEdit?: (wf: WorkflowDefinitionItem, note?: string) => void;
@@ -33,7 +37,9 @@ export interface WorkflowsViewProps {
  * 将步骤规范化为 SaveWorkflow 所需的纯净载荷，省略空的 model/mode。
  */
 function normalizeStepForSave(step: WorkflowStepSpec): WorkflowStepSpec {
-  const normalized: WorkflowStepSpec = { task: step.task.trim() };
+  const normalized: WorkflowStepSpec = { ...step, task: step.task.trim() };
+  delete normalized.model;
+  delete normalized.mode;
   if (step.model && step.model.trim()) {
     normalized.model = step.model.trim();
   }
@@ -47,8 +53,8 @@ function normalizeStepForSave(step: WorkflowStepSpec): WorkflowStepSpec {
  * 切换兼容编辑器中单个步骤的运行模式。
  */
 function applyStepMode(step: WorkflowStepSpec, nextMode: string): WorkflowStepSpec {
-  const updated: WorkflowStepSpec = { task: step.task };
-  if (step.model) updated.model = step.model;
+  const updated: WorkflowStepSpec = { ...step };
+  delete updated.mode;
   if (nextMode.trim()) updated.mode = nextMode.trim();
   return updated;
 }
@@ -60,8 +66,9 @@ function applyStepMode(step: WorkflowStepSpec, nextMode: string): WorkflowStepSp
 export default function WorkflowsView({
   workspace,
   notify,
-  runs = [],
-  bindings = [],
+  instances = [],
+  onControl,
+  historyError,
   focusedWorkflowId,
   onConverseCreate,
   onConverseEdit,
@@ -109,14 +116,14 @@ export default function WorkflowsView({
 
   const resolvedExecutions = useMemo(() => {
     const byWorkflow = new Map<string, ResolvedWorkflowExecution[]>();
-    for (const binding of bindings) {
-      const resolved = resolveWorkflowExecution(binding, runs);
-      const list = byWorkflow.get(binding.workflowId) ?? [];
+    for (const instance of instances) {
+      const resolved = resolveWorkflowExecution(instance);
+      const list = byWorkflow.get(resolved.workflowId) ?? [];
       list.push(resolved);
-      byWorkflow.set(binding.workflowId, list);
+      byWorkflow.set(resolved.workflowId, list);
     }
     return byWorkflow;
-  }, [bindings, runs]);
+  }, [instances]);
 
   const perform = async (job: () => Promise<unknown>, message?: string) => {
     if (busy) return;
@@ -136,17 +143,15 @@ export default function WorkflowsView({
     const selected = items.find((w) => w.id === selectedId) ?? items[0];
     const selectedExecs = selected ? resolvedExecutions.get(selected.id) ?? [] : [];
     const activeExec = selectedExecs.find(
-      (exec) => exec.status === "running" || exec.status === "waiting_approval",
+      (exec) => !exec.instance.finished,
     );
 
     return (
       <div className="wb-workflows wb-workflow-portal" data-testid="workflows-view">
         <div className="wb-workflow-portal-hero">
           <div className="wb-workflow-portal-copy">
-            <strong>通过对话自然编排、调试与演进工作流</strong>
-            <p>
-              不再需要手填步骤表单。直接向 Agent 描述需求或失败现象，运行跑通后即可在对话内保存；此处仅用于只读检视流程结构、核查运行历史与一键触发执行。
-            </p>
+            <strong>工作流目录</strong>
+            <p>创建或调整定义后，在这里选择修订、启动实例或处理人工操作。</p>
           </div>
           <button
             type="button"
@@ -194,7 +199,7 @@ export default function WorkflowsView({
                 {items.map((wf) => {
                   const execs = resolvedExecutions.get(wf.id) ?? [];
                   const isRunning = execs.some(
-                    (e) => e.status === "running" || e.status === "waiting_approval",
+                    (e) => !e.instance.finished,
                   );
                   const isSelected = selected?.id === wf.id;
                   return (
@@ -250,18 +255,12 @@ export default function WorkflowsView({
                       className={
                         "wb-wf-status-pill " +
                         (activeExec
-                          ? activeExec.status === "waiting_approval"
-                            ? "is-warn"
-                            : "is-running"
+                          ? activeExec.status === "running" ? "is-running" : "is-warn"
                           : "is-ready")
                       }
                     >
                       <i aria-hidden="true" />
-                      {activeExec
-                        ? activeExec.status === "waiting_approval"
-                          ? "待人工授权"
-                          : "运行中"
-                        : "已就绪 · 只读检视"}
+                      {activeExec ? workflowPhaseLabel(activeExec.status) : "已就绪"}
                     </span>
                   </div>
 
@@ -279,7 +278,9 @@ export default function WorkflowsView({
                       disabled={busy}
                       onClick={() =>
                         void perform(
-                          () => desktop.runWorkflow(workspace, selected.id, true),
+                          () => typeof desktop.startWorkflowInstance === "function"
+                            ? desktop.startWorkflowInstance({ workspace, definition_id: selected.id, revision: selected.revision ?? 0, dry_run: true })
+                            : desktop.runWorkflow(workspace, selected.id, true),
                           "已完成顺序计划预演（未执行实际运行）。",
                         )
                       }
@@ -299,6 +300,7 @@ export default function WorkflowsView({
                         ) {
                           return;
                         }
+                        setDetailTab("history");
                         if (onLaunchWorkflow) {
                           void perform(() => Promise.resolve(onLaunchWorkflow(selected)));
                         } else {
@@ -316,7 +318,7 @@ export default function WorkflowsView({
 
                 <div className="wb-wf-inspector-meta">
                   <h3>{selected.name}</h3>
-                  <span className="wb-hash-pill">{selected.id}</span>
+                  <span className="wb-hash-pill">{selected.revision ? `修订 ${selected.revision}` : "旧版模板"}</span>
                 </div>
 
                 {detailTab === "definition" ? (
@@ -336,13 +338,13 @@ export default function WorkflowsView({
                             >
                               {step.mode === "read-only"
                                 ? "只读探索 (read-only)"
-                                : "默认审批 ask"}
+                                : "按工作区权限"}
                             </span>
                             {step.model && (
                               <span className="wb-hash-pill">{step.model}</span>
                             )}
                           </div>
-                          <p>{step.task}</p>
+                          <p>{workflowStepLabel(step)}</p>
                         </div>
                       ))}
                     </div>
@@ -352,35 +354,26 @@ export default function WorkflowsView({
                   </>
                 ) : (
                   <div className="wb-wf-history-list">
-                    {selectedExecs.length === 0 ? (
+                    {historyError ? <p role="alert">无法读取工作流历史。{historyError}</p> : null}
+                    {!historyError && selectedExecs.length === 0 ? (
                       <div className="wb-wf-history-empty">
-                        尚无通过工作台触发的运行记录；点击「▷ 立即运行」后，完整阶段流水线与对话记录会同步汇总于此。
+                        这个工作流暂无持久化实例。
                       </div>
                     ) : (
                       selectedExecs.map((exec) => {
-                        const tone =
-                          exec.status === "completed"
-                            ? "is-ok"
-                            : exec.status === "failed" || exec.status === "waiting_approval"
-                              ? "is-warn"
-                              : "is-accent";
-                        const label =
-                          exec.status === "completed"
-                            ? "已完成"
-                            : exec.status === "waiting_approval"
-                              ? "待授权"
-                              : exec.status === "failed"
-                                ? "已中断"
-                                : "运行中";
+                        const tone = exec.status === "completed" ? "is-ok" : exec.status === "running" ? "is-accent" : "is-warn";
+                        const label = workflowPhaseLabel(exec.status);
                         return (
-                          <div className="wb-wf-history-row" key={exec.binding.firstRunId}>
+                          <div className="wb-wf-history-record" key={exec.instance.workflow_id}>
+                          <div className="wb-wf-history-row">
                             <div className="wb-wf-history-main">
                               <div className="wb-wf-history-top">
                                 <span className={"wb-badge " + tone}>{label}</span>
-                                <span className="wb-hash-pill">{exec.latestRunId}</span>
+                                <span className="wb-hash-pill">{exec.instance.workflow_id}</span>
+                                {exec.instance.definition && <span>修订 {exec.instance.definition.revision}</span>}
                                 <span className="wb-wf-history-time">
-                                  {exec.binding.startedAt
-                                    ? new Date(exec.binding.startedAt).toLocaleString("zh-CN", {
+                                  {exec.instance.created_at
+                                    ? new Date(exec.instance.created_at).toLocaleString("zh-CN", {
                                         month: "numeric",
                                         day: "numeric",
                                         hour: "2-digit",
@@ -408,7 +401,7 @@ export default function WorkflowsView({
                                   💬 基于此运行调试
                                 </button>
                               )}
-                              {onOpenRun && (
+                              {onOpenRun && exec.latestRunId && (
                                 <button
                                   type="button"
                                   className="wb-secondary"
@@ -419,6 +412,20 @@ export default function WorkflowsView({
                                 </button>
                               )}
                             </div>
+                          </div>
+                            {onControl && !historyError && (
+                              <WorkflowInstanceControls
+                                key={[
+                                  exec.instance.sequence,
+                                  exec.instance.pending_approval?.operation_id,
+                                  exec.instance.pending_reconcile?.operation_id,
+                                ].join(":")}
+                                workspace={workspace}
+                                instance={exec.instance}
+                                onControl={onControl}
+                                onOpenRun={onOpenRun}
+                              />
+                            )}
                           </div>
                         );
                       })

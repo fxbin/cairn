@@ -1,25 +1,14 @@
 /**
- * INPUT: 用户原始输入、当前工作流编排上下文、工作区工作流列表与 RunHistoryView 运行序列。
- * OUTPUT: 对话式工作流意图探测/协议展开、cairn-workflow 草案 JSON 解析与多阶段执行进度投影纯函数。
- * POS: studio/frontend/src/workbench 对话创建/调试/编辑工作流的核心协调模型，不改变后端授权与验证边界。
+ * [INPUT]: 用户原始输入、用户选择的编排上下文、工作区定义和 App 实例投影。
+ * [OUTPUT]: 对话式工作流意图探测/协议展开、cairn-workflow 草案 JSON 解析与多节点草案校验与实例展示。
+ * [POS]: studio/frontend/src/workbench 对话创建/调试/编辑工作流的核心协调模型，不改变后端授权与验证边界。
  *
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
-import type { RunHistoryView } from "../desktop/types";
+import type { WorkflowDefinitionItem, WorkflowInstanceView, WorkflowNodeKind, WorkflowStepSpec } from "../desktop/types";
 
-export interface WorkflowStepSpec {
-  task: string;
-  model?: string;
-  mode?: string;
-}
-
-export interface WorkflowDefinitionItem {
-  id: string;
-  workspace?: string;
-  name: string;
-  steps: WorkflowStepSpec[];
-  max_steps?: number;
-}
+export type { WorkflowDefinitionItem, WorkflowStepSpec } from "../desktop/types";
 
 export interface WorkflowBlueprintSpec {
   id?: string;
@@ -33,37 +22,21 @@ export interface WorkflowComposeContext {
   note?: string;
 }
 
-export interface WorkflowSessionBinding {
-  workflowId: string;
-  workflowName: string;
-  workspace: string;
-  firstRunId: string;
-  sessionId?: string;
-  steps: WorkflowStepSpec[];
-  startedAt: string;
-}
-
-export type WorkflowStageRuntimeStatus =
-  | "done"
-  | "running"
-  | "waiting_approval"
-  | "failed"
-  | "pending";
+export type WorkflowStageRuntimeStatus = "done" | "running" | "waiting_approval" | "waiting_reconcile" | "failed" | "pending";
 
 export interface WorkflowStageRuntime {
   index: number;
-  step: WorkflowStepSpec;
-  run?: RunHistoryView;
+  label: string;
+  runId?: string;
   status: WorkflowStageRuntimeStatus;
 }
 
 export interface ResolvedWorkflowExecution {
-  binding: WorkflowSessionBinding;
+  instance: WorkflowInstanceView;
   workflowId: string;
   workflowName: string;
-  sessionId?: string;
   latestRunId: string;
-  status: "running" | "waiting_approval" | "completed" | "failed";
+  status: string;
   completedCount: number;
   activeStepIndex: number;
   stages: WorkflowStageRuntime[];
@@ -78,9 +51,7 @@ export interface StarterWorkflowTemplate {
 }
 
 const WORKFLOW_PROTOCOL_MARKER = "\n\n[工作流编排约定]";
-const WORKFLOW_BINDINGS_STORAGE_KEY = "cairn.gui.workflowBindings.v1";
-const MAX_STORED_BINDINGS = 30;
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const WORKFLOW_NODE_KINDS: readonly WorkflowNodeKind[] = ["execute", "script", "verify", "accept"];
 
 /**
  * STARTER_WORKFLOW_PROMPTS 提供对话创建工作流的推荐起手模板。
@@ -136,7 +107,8 @@ export function expandTaskWithWorkflowProtocol(
   const lines: string[] = [
     "[工作流编排约定]",
     "你正在协助用户通过对话设计、调试并迭代 Cairn 受控工作流（最多 8 个顺序阶段）。",
-    "每个阶段字段为 { \"task\": string, \"mode\"?: \"read-only\" | \"default\", \"model\"?: string }。",
+    "kind 可为 execute（Agent，须 task）、script（固定 argv 数组）、verify（运行宿主验证）或 accept（人工门）。",
+    "可用 id 标识节点、inputs 引用此前产物、max_attempts 设 1 到 4 次尝试、retry_from 指定此前返工起点。",
     "安全边界：只读分析阶段建议设置 mode: \"read-only\"；涉及文件写入、命令运行或外部修改的阶段必须使用默认模式（执行时仍走完整审批与 Verifier 验证链）。",
     "当步骤设计清晰或根据用户反馈修改完成时，请在回复末尾附带一个单独的 ```cairn-workflow 代码块，格式如下：",
     "```cairn-workflow",
@@ -214,201 +186,110 @@ export function parseCairnWorkflowBlock(rawCode: string): WorkflowBlueprintSpec 
     return null;
   }
 
+  if (Object.keys(rec).some((key) => key !== "id" && key !== "name" && key !== "steps")) return null;
+  if (rec.id !== undefined && typeof rec.id !== "string") return null;
+
   const steps: WorkflowStepSpec[] = [];
   for (const item of rec.steps) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      return null;
-    }
-    const stepObj = item as Record<string, unknown>;
-    const task = typeof stepObj.task === "string" ? stepObj.task.trim() : "";
-    if (!task) {
-      return null;
-    }
-    const step: WorkflowStepSpec = { task };
-    if (typeof stepObj.model === "string" && stepObj.model.trim()) {
-      step.model = stepObj.model.trim();
-    }
-    if (typeof stepObj.mode === "string") {
-      const m = stepObj.mode.trim();
-      if (m === "read-only" || m === "default") {
-        step.mode = m;
-      } else if (m !== "") {
-        return null;
-      }
-    }
+    const step = parseWorkflowStep(item);
+    if (!step) return null;
     steps.push(step);
   }
+  const id = typeof rec.id === "string" ? rec.id.trim() || undefined : undefined;
+  return { id, name, steps };
+}
 
-  const id = typeof rec.id === "string" && rec.id.trim() ? rec.id.trim() : undefined;
+/** 只呈现可见且明确声明的节点字段。宿主再次校验执行与依赖合同。 */
+function parseWorkflowStep(value: unknown): WorkflowStepSpec | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const fields = value as Record<string, unknown>;
+  const supported = new Set(["task", "id", "kind", "model", "mode", "argv", "inputs", "max_attempts", "retry_from"]);
+  if (Object.keys(fields).some((key) => !supported.has(key))) return null;
+  const kind = fields.kind === undefined ? "execute" : fields.kind;
+  if (typeof kind !== "string" || !WORKFLOW_NODE_KINDS.includes(kind as WorkflowNodeKind)) return null;
+  for (const key of ["task", "id", "model", "mode", "retry_from"]) {
+    if (fields[key] !== undefined && typeof fields[key] !== "string") return null;
+  }
+  const task = (fields.task as string | undefined)?.trim() ?? "";
+  const mode = (fields.mode as string | undefined)?.trim();
+  const model = (fields.model as string | undefined)?.trim();
+  if (mode && mode !== "read-only" && mode !== "default") return null;
+  if (kind === "execute" && (!task || fields.argv !== undefined)) return null;
+  if (kind !== "execute" && (mode || model)) return null;
+  if (kind === "script" && (task || !Array.isArray(fields.argv) || !fields.argv.length || fields.argv.some((arg) => typeof arg !== "string"))) return null;
+  if (kind !== "script" && fields.argv !== undefined) return null;
+  if (fields.inputs !== undefined && (!Array.isArray(fields.inputs) || fields.inputs.some((input) => typeof input !== "string"))) return null;
+  if (fields.max_attempts !== undefined && (typeof fields.max_attempts !== "number" || !Number.isInteger(fields.max_attempts) || fields.max_attempts < 1 || fields.max_attempts > 4)) return null;
+
   return {
-    ...(id ? { id } : {}),
-    name,
-    steps,
+    task,
+    kind: kind as WorkflowNodeKind,
+    id: fields.id as string | undefined,
+    model,
+    mode,
+    argv: fields.argv as string[] | undefined,
+    inputs: fields.inputs as string[] | undefined,
+    max_attempts: fields.max_attempts as number | undefined,
+    retry_from: fields.retry_from as string | undefined,
   };
 }
 
-/**
- * 从 localStorage 读取指定工作区最近通过前端触发的工作流运行绑定索引。
- */
-export function loadWorkflowBindings(workspace: string): WorkflowSessionBinding[] {
-  if (!workspace || typeof localStorage === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(WORKFLOW_BINDINGS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is WorkflowSessionBinding =>
-        Boolean(item) &&
-        typeof item === "object" &&
-        (item as WorkflowSessionBinding).workspace === workspace &&
-        typeof (item as WorkflowSessionBinding).firstRunId === "string" &&
-        Array.isArray((item as WorkflowSessionBinding).steps),
-    );
-  } catch {
-    return [];
+/** 宿主合同的阶段名称，供草案与版本详情显示。 */
+export function workflowStepLabel(step: WorkflowStepSpec): string {
+  if (step.kind === "script") return step.argv?.map((arg) => JSON.stringify(arg)).join(" ") || "固定命令";
+  if (step.kind === "verify") return step.task || "独立验证";
+  if (step.kind === "accept") return step.task || "人工验收";
+  return step.task;
+}
+
+/** 应用门面阶段的界面词表。 */
+export function workflowPhaseLabel(phase: string): string {
+  switch (phase) {
+    case "completed":
+    case "succeeded": return "已完成";
+    case "failed": return "执行失败";
+    case "cancelled": return "已取消";
+    case "paused": return "已暂停";
+    case "waiting_approval": return "待工具审批";
+    case "waiting_human": return "待人工验收";
+    case "waiting_reconcile":
+    case "uncertain": return "待副作用对账";
+    case "retry_required": return "待确认返工";
+    case "binding_unconfirmed": return "运行创建待确认";
+    case "created":
+    case "cancelling":
+    case "settling": return "待收尾";
+    case "running": return "运行中";
+    case "unknown": return "状态待确认";
+    default: return "待执行";
   }
 }
 
-/**
- * 持久化更新后的工作区工作流运行绑定列表，自动保留全局最近记录上限。
- */
-export function saveWorkflowBindings(
-  workspace: string,
-  workspaceList: readonly WorkflowSessionBinding[],
-): void {
-  if (!workspace || typeof localStorage === "undefined") return;
-  try {
-    const raw = localStorage.getItem(WORKFLOW_BINDINGS_STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    const otherWorkspaces = Array.isArray(parsed)
-      ? parsed.filter(
-          (item): item is WorkflowSessionBinding =>
-            Boolean(item) &&
-            typeof item === "object" &&
-            (item as WorkflowSessionBinding).workspace !== workspace,
-        )
-      : [];
-
-    const deduped: WorkflowSessionBinding[] = [];
-    const seen = new Set<string>();
-    for (const item of workspaceList) {
-      if (!item.firstRunId || seen.has(item.firstRunId)) continue;
-      seen.add(item.firstRunId);
-      deduped.push(item);
+/** 只使用应用门面的已绑定 Run、步骤状态和实例游标。 */
+export function resolveWorkflowExecution(instance: WorkflowInstanceView): ResolvedWorkflowExecution {
+  const status = instance.finished ? instance.finish_state || "unknown" : instance.phase || "ready";
+  let latestRunId = "";
+  let latestSequence = 0;
+  const stages = instance.steps.map((step, index): WorkflowStageRuntime => {
+    for (const attempt of step.attempts ?? []) {
+      if (attempt.run_id && attempt.started_seq > latestSequence) {
+        latestSequence = attempt.started_seq;
+        latestRunId = attempt.run_id;
+      }
     }
-
-    const merged = [...deduped.slice(0, MAX_STORED_BINDINGS), ...otherWorkspaces].slice(
-      0,
-      MAX_STORED_BINDINGS * 2,
-    );
-    localStorage.setItem(WORKFLOW_BINDINGS_STORAGE_KEY, JSON.stringify(merged));
-  } catch {
-    // 存储配额受限时静默降级，不影响运行事实。
-  }
-}
-
-/**
- * 将 RunHistoryView 列表按工作流绑定关系投影为有序多阶段运行进度与活跃阶段下标。
- */
-export function resolveWorkflowExecution(
-  binding: WorkflowSessionBinding,
-  runs: readonly RunHistoryView[],
-): ResolvedWorkflowExecution {
-  const byId = new Map<string, RunHistoryView>();
-  for (const r of runs) {
-    byId.set(r.run_id, r);
-  }
-
-  const matchedIds = new Set<string>();
-  const firstRun = byId.get(binding.firstRunId);
-  const resolvedSessionId = binding.sessionId || firstRun?.session_id;
-
-  const byChain: RunHistoryView[] = [];
-  if (firstRun) {
-    byChain.push(firstRun);
-    matchedIds.add(firstRun.run_id);
-  }
-
-  // 优先沿 prev_run_id 线性推进链收敛有序步骤，再用同 session_id 兜底补齐。
-  let advanced = true;
-  let safety = 0;
-  while (advanced && safety < 20) {
-    advanced = false;
-    safety += 1;
-    const tail = byChain[byChain.length - 1];
-    if (!tail) break;
-    const nextRun = runs.find(
-      (r) => r.prev_run_id === tail.run_id && !matchedIds.has(r.run_id),
-    );
-    if (nextRun) {
-      matchedIds.add(nextRun.run_id);
-      byChain.push(nextRun);
-      advanced = true;
-    }
-  }
-
-  if (resolvedSessionId) {
-    const sameSession = runs
-      .filter((r) => r.session_id === resolvedSessionId && !matchedIds.has(r.run_id))
-      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-    for (const r of sameSession) {
-      matchedIds.add(r.run_id);
-      byChain.push(r);
-    }
-  }
-
-  const stages: WorkflowStageRuntime[] = binding.steps.map((step, index) => {
-    const run = byChain[index];
-    if (!run) {
-      return { index, step, status: "pending" };
-    }
-    let status: WorkflowStageRuntimeStatus = "running";
-    if (run.waiting_approval || run.waiting_reconcile) {
-      status = "waiting_approval";
-    } else if (run.state === "completed") {
-      status = "done";
-    } else if (run.state === "failed" || run.state === "cancelled") {
-      status = "failed";
-    }
-    return { index, step, run, status };
+    let stageStatus: WorkflowStageRuntimeStatus = "pending";
+    if (step.state === "succeeded") stageStatus = "done";
+    else if (step.run_phase === "waiting_reconcile" || step.state === "uncertain") stageStatus = "waiting_reconcile";
+    else if (step.run_phase === "waiting_approval" || (index === instance.resume_index && status === "waiting_human")) stageStatus = "waiting_approval";
+    else if (step.state === "failed" || step.state === "cancelled") stageStatus = "failed";
+    else if (step.state === "running") stageStatus = "running";
+    return { index, label: step.id, runId: step.run_id, status: stageStatus };
   });
-
-  const completedCount = stages.filter((s) => s.status === "done").length;
-  let activeStepIndex = stages.findIndex(
-    (s) => s.status === "running" || s.status === "waiting_approval",
-  );
-  if (activeStepIndex < 0) {
-    const failedIdx = stages.findIndex((s) => s.status === "failed");
-    activeStepIndex = failedIdx >= 0 ? failedIdx : Math.max(0, stages.length - 1);
-  }
-
-  let overallStatus: ResolvedWorkflowExecution["status"] = "running";
-  if (stages.some((s) => s.status === "waiting_approval")) {
-    overallStatus = "waiting_approval";
-  } else if (stages.some((s) => s.status === "running")) {
-    overallStatus = "running";
-  } else if (stages.some((s) => s.status === "failed")) {
-    overallStatus = "failed";
-  } else if (stages.length > 0 && completedCount === stages.length) {
-    overallStatus = "completed";
-  } else if (byChain.length > 0) {
-    const last = byChain[byChain.length - 1];
-    if (TERMINAL_STATES.has(last.state) && last.state !== "completed") {
-      overallStatus = "failed";
-    }
-  }
-
-  const latestRunId = byChain[byChain.length - 1]?.run_id || binding.firstRunId;
   return {
-    binding: { ...binding, sessionId: resolvedSessionId },
-    workflowId: binding.workflowId,
-    workflowName: binding.workflowName,
-    sessionId: resolvedSessionId,
-    latestRunId,
-    status: overallStatus,
-    completedCount,
-    activeStepIndex,
-    stages,
+    instance, status, stages, latestRunId,
+    workflowId: instance.definition?.id ?? "",
+    workflowName: instance.definition_name || instance.workflow_id,
+    completedCount: stages.filter((step) => step.status === "done").length,
+    activeStepIndex: instance.resume_index < 0 ? Math.max(0, stages.length - 1) : instance.resume_index,
   };
 }

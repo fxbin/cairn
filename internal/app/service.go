@@ -78,6 +78,7 @@ type RunOptions struct {
 	ParentTools []string
 	// workflowScript 只由工作流应用入口指定，并随创建事件冻结。
 	workflowScript *workflowScriptPlan
+	workflowLink   *workflowRunLink
 }
 
 // RunResult 返回运行标识、可呈现的最终回复，以及运行结束后从事件投影的
@@ -281,6 +282,11 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 	if err := validateSessionLink(ctx, boot.Journal, options.StateDir, boot.WorkspaceHash, options); err != nil {
 		return RunResult{}, err
 	}
+	if options.PrevRunID != "" && options.workflowLink == nil {
+		if err := requireStandaloneContinuation(ctx, boot, options); err != nil {
+			return RunResult{}, fmt.Errorf("continue workflow sessions through the instance or fork into a new session: %w", err)
+		}
+	}
 	if options.RequireSessionTail {
 		// RequireSessionTail 只服务同 session 续链：缺少前驱时失败关闭，
 		// 不因 fork_source 或空值静默跳过唯一链尾门禁。
@@ -339,6 +345,12 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 	var taskRef *contract.Ref
 	if options.workflowScript != nil {
 		reference, err := storeWorkflowScriptPlan(boot, *options.workflowScript)
+		if err != nil {
+			return RunResult{}, err
+		}
+		taskRef = &reference
+	} else if options.workflowLink != nil {
+		reference, err := storeWorkflowRunLink(boot, *options.workflowLink)
 		if err != nil {
 			return RunResult{}, err
 		}

@@ -1,3 +1,8 @@
+// [INPUT]: 依赖 App 运行用例、桌面偏好和事件出口。
+// [OUTPUT]: 提供普通 Run 的启停、取消、补充输入和事件转发。
+// [POS]: 运行控制器只追踪进程内活动。历史状态来自 App。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // 运行控制器：启停、取消、Steering 与事件转发。
 // Author: fxbin
 package desktop
@@ -273,6 +278,10 @@ func (controller *RunController) ResumeRun(ctx context.Context, request ResumeRe
 	if err != nil {
 		return StartRunAck{}, err
 	}
+	scope := app.WorkflowScope{Workspace: workspace, StateDir: resolveStateDir(request.StateDir), Config: configuration}
+	if err := controller.service.RequireStandaloneRun(ctx, scope, domain.RunID(request.RunID)); err != nil {
+		return StartRunAck{}, err
+	}
 	// 与启动相同的运行时覆盖优先级：请求显式值 > 已记录覆盖。
 	model, mode := request.Model, request.Mode
 	if controller.prefs != nil {
@@ -329,6 +338,10 @@ func (controller *RunController) AbortRun(ctx context.Context, request AbortRequ
 	if err != nil {
 		return RunStatusView{}, err
 	}
+	scope := app.WorkflowScope{Workspace: workspace, StateDir: resolveStateDir(request.StateDir), Config: configuration}
+	if err := controller.service.RequireStandaloneRun(ctx, scope, domain.RunID(request.RunID)); err != nil {
+		return RunStatusView{}, err
+	}
 	outcome, runErr := controller.service.Abort(ctx, app.AbortOptions{
 		RunID:     domain.RunID(request.RunID),
 		Reason:    request.Reason,
@@ -355,6 +368,10 @@ func (controller *RunController) ResolveReconcile(ctx context.Context, request R
 	}
 	configuration, err := loadConfiguration(workspace, request.StateDir)
 	if err != nil {
+		return RunStatusView{}, err
+	}
+	scope := app.WorkflowScope{Workspace: workspace, StateDir: resolveStateDir(request.StateDir), Config: configuration}
+	if err := controller.service.RequireStandaloneRun(ctx, scope, domain.RunID(request.RunID)); err != nil {
 		return RunStatusView{}, err
 	}
 	outcome, runErr := controller.service.Reconcile(ctx, app.ReconcileOptions{
@@ -697,190 +714,6 @@ func (store *PrefsStore) ResetHookFailure(id string) error {
 		}
 	}
 	return os.ErrNotExist
-}
-
-// WorkflowStep 是有限工作流步骤；仅支持 agent_run。
-type WorkflowStep struct {
-	Task  string `json:"task"`
-	Model string `json:"model,omitempty"`
-	Mode  string `json:"mode,omitempty"`
-}
-
-// WorkflowDefinition 是声明式工作流模板；编辑不改变已运行实例。
-type WorkflowDefinition struct {
-	ID        string         `json:"id"`
-	Workspace string         `json:"workspace"`
-	Name      string         `json:"name"`
-	Steps     []WorkflowStep `json:"steps"`
-	// MaxSteps 硬上限，防止无界循环。
-	MaxSteps int `json:"max_steps,omitempty"`
-}
-
-// validateWorkflow 锁定有限步骤数及已知覆盖模式；预演仅证明计划结构合法。
-func validateWorkflow(def WorkflowDefinition) error {
-	if strings.TrimSpace(def.ID) == "" || strings.TrimSpace(def.Workspace) == "" || strings.TrimSpace(def.Name) == "" {
-		return errInvalid("workflow id/workspace/name required")
-	}
-	const maxWorkflowSteps = 8
-	if len(def.Steps) == 0 {
-		return errInvalid("workflow requires steps")
-	}
-	if def.MaxSteps < 0 || def.MaxSteps > maxWorkflowSteps || len(def.Steps) > maxWorkflowSteps || def.MaxSteps > 0 && len(def.Steps) > def.MaxSteps {
-		return errInvalid("workflow steps exceed limit")
-	}
-	for _, step := range def.Steps {
-		if strings.TrimSpace(step.Task) == "" {
-			return errInvalid("workflow step task required")
-		}
-		if err := validateMode(step.Mode); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// SaveWorkflow 保存结构合法的定义，并复制切片防止后续编辑改变已启动实例。
-func (store *PrefsStore) SaveWorkflow(def WorkflowDefinition) error {
-	if err := validateWorkflow(def); err != nil {
-		return err
-	}
-	def.Steps = append([]WorkflowStep(nil), def.Steps...)
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	for i := range store.data.Workflows {
-		if store.data.Workflows[i].ID == def.ID {
-			store.data.Workflows[i] = def
-			return store.save()
-		}
-	}
-	store.data.Workflows = append(store.data.Workflows, def)
-	return store.save()
-}
-
-// ListWorkflows 列出工作区工作流。
-func (store *PrefsStore) ListWorkflows(workspace string) []WorkflowDefinition {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	out := make([]WorkflowDefinition, 0)
-	for _, def := range store.data.Workflows {
-		if def.Workspace == workspace {
-			def.Steps = append([]WorkflowStep(nil), def.Steps...)
-			out = append(out, def)
-		}
-	}
-	return out
-}
-
-// WorkflowRunAck 是工作流启动回执。
-type WorkflowRunAck struct {
-	WorkflowID string   `json:"workflow_id"`
-	RunIDs     []string `json:"run_ids,omitempty"`
-	State      string   `json:"state"`
-}
-
-// RunWorkflow 按顺序执行工作流中的 agent 步骤；每步走真实 Run 授权链。
-// 预演模式只校验计划，不启动执行。
-func (controller *RunController) RunWorkflow(ctx context.Context, workspace, workflowID string, dryRun bool) (WorkflowRunAck, error) {
-	abs, err := absWorkspace(workspace)
-	if err != nil {
-		return WorkflowRunAck{}, err
-	}
-	if controller.prefs == nil {
-		return WorkflowRunAck{}, errInvalid("preferences store unavailable")
-	}
-	var def *WorkflowDefinition
-	for _, item := range controller.prefs.ListWorkflows(abs) {
-		if item.ID == workflowID {
-			copied := item
-			def = &copied
-			break
-		}
-	}
-	if def == nil {
-		return WorkflowRunAck{}, errInvalid("workflow not found")
-	}
-	if err := validateWorkflow(*def); err != nil {
-		return WorkflowRunAck{}, err
-	}
-	if err := ctx.Err(); err != nil {
-		return WorkflowRunAck{}, err
-	}
-	if dryRun {
-		return WorkflowRunAck{WorkflowID: def.ID, State: "dry_run_ok"}, nil
-	}
-	// 启动前冻结各步骤的有效配置，后续编辑配置或模板不改变当前实例。
-	base, err := loadConfiguration(abs, "")
-	if err != nil {
-		return WorkflowRunAck{}, err
-	}
-	prepared := make([]app.RunOptions, 0, len(def.Steps))
-	sessionID := domain.NewID("session")
-	for _, step := range def.Steps {
-		configuration := base
-		if err := applyRuntimeOverrides(&configuration, step.Model, step.Mode); err != nil {
-			return WorkflowRunAck{}, err
-		}
-		if err := config.Validate(configuration); err != nil {
-			return WorkflowRunAck{}, err
-		}
-		prepared = append(prepared, app.RunOptions{
-			Task: step.Task, Workspace: abs, StateDir: resolveStateDir(""), Config: configuration,
-			PreassignedRunID: domain.NewRunID(), SessionID: sessionID, Steering: app.NewSteeringBridge(),
-		})
-	}
-	runCtx, cancel, err := controller.runContext()
-	if err != nil {
-		return WorkflowRunAck{}, err
-	}
-	firstID := string(prepared[0].PreassignedRunID)
-	if err := controller.registerRun(firstID, sessionID, cancel, prepared[0].Steering); err != nil {
-		cancel()
-		return WorkflowRunAck{}, err
-	}
-	if err := controller.launch(func() {
-		defer cancel()
-		defer controller.unregisterRun(firstID)
-		var previous domain.RunID
-		for index, options := range prepared {
-			if err := runCtx.Err(); err != nil {
-				return
-			}
-			runID := string(options.PreassignedRunID)
-			if index > 0 {
-				options.PrevRunID = previous
-				options.RequireSessionTail = true
-				if err := controller.registerRun(runID, sessionID, cancel, options.Steering); err != nil {
-					controller.push(StreamEvent{Workspace: abs, Kind: "error", RunID: runID, Error: mapErrorBody(err)})
-					return
-				}
-			}
-			step := def.Steps[index]
-			if err := controller.prefs.SaveRunOverride(RunOverride{RunID: runID, Model: step.Model, Mode: step.Mode}); err != nil {
-				controller.unregisterRun(runID)
-				controller.push(StreamEvent{Workspace: abs, Kind: "error", RunID: runID, Error: mapErrorBody(err)})
-				return
-			}
-			options.OnEvent = controller.eventSink(runID, sessionID, abs)
-			outcome, runErr := controller.service.Run(runCtx, options)
-			controller.finish(runID, outcome, runErr, runScope{abs, options.StateDir, options.Config})
-			controller.unregisterRun(runID)
-			if runErr != nil || outcome.Result == nil || outcome.Result.State != string(domain.RunCompleted) {
-				return
-			}
-			previous = outcome.ID
-		}
-	}); err != nil {
-		controller.unregisterRun(firstID)
-		cancel()
-		return WorkflowRunAck{}, err
-	}
-	return WorkflowRunAck{WorkflowID: def.ID, RunIDs: []string{firstID}, State: "running"}, nil
-}
-
-// mapErrorBody 将错误映射为流错误体。
-func mapErrorBody(err error) *ErrorBody {
-	body := MapError(err)
-	return &body
 }
 
 // ReviewNote 是行级审查反馈（本地展示元数据，不改写 Journal）。

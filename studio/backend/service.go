@@ -1,3 +1,8 @@
+// [INPUT]: 依赖桌面 API 用例和受限绑定 DTO。
+// [OUTPUT]: 为 Wails 注册持久任务、工作流和基础工具门面。
+// [POS]: 前端调用统一经过 API。内部控制器未绑定。
+// [PROTOCOL]: Update this header on change, then check AGENTS.md
+
 // Service 桌面端 Wails 前端桥接门面。
 // Author: fxbin
 package desktop
@@ -211,13 +216,43 @@ func (service *Service) ListWorkflows(ctx context.Context, workspace string) ([]
 }
 
 // SaveWorkflow 保存工作流。
-func (service *Service) SaveWorkflow(ctx context.Context, def WorkflowDefinition) (OKResult, error) {
+func (service *Service) SaveWorkflow(ctx context.Context, def WorkflowDefinition) (WorkflowSaveAck, error) {
 	return service.api.SaveWorkflow(ctx, def)
 }
 
 // RunWorkflow 预演或运行工作流。
 func (service *Service) RunWorkflow(ctx context.Context, workspace, workflowID string, dryRun bool) (WorkflowRunAck, error) {
 	return service.api.RunWorkflow(ctx, workspace, workflowID, dryRun)
+}
+
+// StartWorkflowInstance 预演或按准确修订启动持久化实例。
+func (service *Service) StartWorkflowInstance(ctx context.Context, request WorkflowStartRequest) (WorkflowRunAck, error) {
+	return service.api.StartWorkflowInstance(ctx, request)
+}
+
+// ListWorkflowInstances 返回 App 验证的实例历史与当前状态。
+func (service *Service) ListWorkflowInstances(ctx context.Context, request WorkspaceRequest) ([]app.WorkflowStatusView, error) {
+	return service.api.ListWorkflowInstances(ctx, request)
+}
+
+// ControlWorkflow 转交针对已观察状态的显式 workflow 决定。
+func (service *Service) ControlWorkflow(ctx context.Context, request WorkflowControlRequest) (WorkflowControlAck, error) {
+	return service.api.ControlWorkflow(ctx, request)
+}
+
+// CreateTask 保存新的持久任务。
+func (service *Service) CreateTask(ctx context.Context, request TaskCreateRequest) (app.Task, error) {
+	return service.api.CreateTask(ctx, request)
+}
+
+// GetTask 查询任务事实及已分配运行。
+func (service *Service) GetTask(ctx context.Context, request TaskGetRequest) (app.TaskView, error) {
+	return service.api.GetTask(ctx, request)
+}
+
+// ControlTask 更新任务状态或请求一次执行分配。
+func (service *Service) ControlTask(ctx context.Context, request TaskControlRequest) (TaskControlAck, error) {
+	return service.api.ControlTask(ctx, request)
 }
 
 // ListMemories 列出记忆候选。

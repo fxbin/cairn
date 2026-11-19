@@ -1,6 +1,8 @@
 /**
- * Cairn Studio GUI：主工作台（Workbench）入口。
- * 只消费现有 desktop 桥接与 Journal 投影，不复制任何 Agent 运行逻辑。
+ * [INPUT]: desktop 配置、工作流实例与 Run Journal 投影。
+ * [OUTPUT]: 工作区、对话、显式工作流控制和证据导航。
+ * [POS]: Studio 主工作台入口。流程状态由 App 提供。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 import {
@@ -38,21 +40,19 @@ import SidecarWorkbench, {
   type SidecarTabKind,
 } from "./workbench/SidecarWorkbench";
 import WorkflowsView from "./workbench/WorkflowsView";
+import { WorkflowInstanceControls } from "./workbench/WorkflowInstanceControls";
 import {
   WorkflowBlueprintCard,
   WorkflowExecutionCard,
 } from "./workbench/WorkflowChatCards";
 import {
   expandTaskWithWorkflowProtocol,
-  loadWorkflowBindings,
   parseCairnWorkflowBlock,
   resolveWorkflowExecution,
-  saveWorkflowBindings,
   stripWorkflowProtocolSuffix,
   type WorkflowBlueprintSpec,
   type WorkflowComposeContext,
   type WorkflowDefinitionItem,
-  type WorkflowSessionBinding,
 } from "./workbench/workflowConversation";
 import {
   applyMentionSelection,
@@ -92,6 +92,8 @@ import type {
   RunHistoryView,
   SessionTreeView,
   StreamEvent,
+  WorkflowControlRequest,
+  WorkflowInstanceView,
   WorkspaceStatus,
 } from "./desktop/types";
 
@@ -685,11 +687,13 @@ function inspectMarkdownPreBlock(children: ReactNode): { lang: string; code: str
   };
 }
 
+type SourcedChatBlock = ChatBlock & { sourceRunId?: string };
+
 /** 渲染对话时间线，包含引用文件胶囊、代码块复制栏、工作流草案卡、探索聚合组、补丁卡、知情审批门禁与召回锚点。 */
 function Transcript({
   blocks,
   flashedAnchorId,
-  workflows,
+  workflowEditTargets,
   onApproval,
   onInspectFile,
   onSaveWorkflow,
@@ -697,17 +701,18 @@ function Transcript({
   onRefineWorkflow,
   onOpenWorkflowPortal,
 }: {
-  blocks: ChatBlock[];
+  blocks: SourcedChatBlock[];
   flashedAnchorId?: string | null;
-  workflows: readonly WorkflowDefinitionItem[];
+  workflowEditTargets: ReadonlyMap<string, WorkflowDefinitionItem>;
   onApproval: (approve: boolean, fingerprint: string, runId: string) => void;
   onInspectFile: (targetPath: string) => void;
-  onSaveWorkflow: (spec: WorkflowBlueprintSpec) => Promise<void>;
-  onSaveAndRunWorkflow: (spec: WorkflowBlueprintSpec) => Promise<void>;
-  onRefineWorkflow: (spec: WorkflowBlueprintSpec) => void;
+  onSaveWorkflow: (spec: WorkflowBlueprintSpec, sourceRunId?: string) => Promise<void>;
+  onSaveAndRunWorkflow: (spec: WorkflowBlueprintSpec, sourceRunId?: string) => Promise<void>;
+  onRefineWorkflow: (spec: WorkflowBlueprintSpec, sourceRunId?: string) => void;
   onOpenWorkflowPortal: (workflowId?: string) => void;
 }) {
   const grouped = useMemo(() => groupTranscriptBlocks(blocks), [blocks]);
+  const sourceRuns = useMemo(() => new Map(blocks.map((block) => [block.id, block.sourceRunId])), [blocks]);
   const renderRecallHeading =
     (Tag: "h1" | "h2" | "h3", blockId: string) =>
     ({ children }: { children?: ReactNode }) => {
@@ -801,17 +806,16 @@ function Transcript({
                     if (normalizedLang === "cairn-workflow" || normalizedLang === "workflow") {
                       const wfSpec = parseCairnWorkflowBlock(code);
                       if (wfSpec) {
-                        const matched =
-                          workflows.find((w) => wfSpec.id && w.id === wfSpec.id) ||
-                          workflows.find((w) => w.name === wfSpec.name);
+                        const sourceRunId = sourceRuns.get(block.id);
+                        const matched = sourceRunId ? workflowEditTargets.get(sourceRunId) : undefined;
                         return (
                           <WorkflowBlueprintCard
                             spec={wfSpec}
                             rawJson={code}
                             matchedExistingId={matched?.id}
-                            onSave={onSaveWorkflow}
-                            onSaveAndRun={onSaveAndRunWorkflow}
-                            onRefine={onRefineWorkflow}
+                            onSave={(spec) => onSaveWorkflow(spec, sourceRunId)}
+                            onSaveAndRun={(spec) => onSaveAndRunWorkflow(spec, sourceRunId)}
+                            onRefine={(spec) => onRefineWorkflow(spec, sourceRunId)}
                             onOpenPortal={onOpenWorkflowPortal}
                           />
                         );
@@ -1074,7 +1078,10 @@ export default function App() {
   const [workflows, setWorkflows] = useState<WorkflowDefinitionItem[]>([]);
   const [workflowComposeCtx, setWorkflowComposeCtx] = useState<WorkflowComposeContext | null>(null);
   const [focusedWorkflowId, setFocusedWorkflowId] = useState<string | null>(null);
-  const [workflowBindings, setWorkflowBindings] = useState<WorkflowSessionBinding[]>([]);
+  const [workflowInstances, setWorkflowInstances] = useState<WorkflowInstanceView[]>([]);
+  const [workflowHistoryError, setWorkflowHistoryError] = useState("");
+  const workflowHistoryRequest = useRef(0);
+  const workflowEditTargets = useRef(new Map<string, WorkflowDefinitionItem>());
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window === "undefined" || window.innerWidth > 760,
   );
@@ -1084,7 +1091,7 @@ export default function App() {
   const generationRef = useRef(0);
   const runRef = useRef<string | null>(null);
   const ancestorCacheRef = useRef<Map<string, RunDetail>>(new Map());
-  const autoFollowWorkflowRunRef = useRef<string | null>(null);
+  const followWorkflowId = useRef<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sessionScrollRef = useRef<HTMLDivElement>(null);
@@ -1287,6 +1294,22 @@ export default function App() {
     }
   }, []);
 
+  const refreshWorkflowInstances = useCallback(async (path: string, generation: number) => {
+    if (typeof desktop.listWorkflowInstances !== "function") return;
+    const request = ++workflowHistoryRequest.current;
+    try {
+      const history = await desktop.listWorkflowInstances({ workspace: path });
+      if (generation === generationRef.current && request === workflowHistoryRequest.current) {
+        setWorkflowInstances(history ?? []);
+        setWorkflowHistoryError("");
+      }
+    } catch (err) {
+      if (generation === generationRef.current && request === workflowHistoryRequest.current) {
+        setWorkflowHistoryError(textError(err));
+      }
+    }
+  }, []);
+
   const refreshOpenLocations = useCallback((path: string, generation: number) => {
     if (!path || typeof desktop.listOpenLocations !== "function") {
       setOpenLocations([]);
@@ -1362,8 +1385,10 @@ export default function App() {
       setFocusedWorkflowId(null);
       setProjectCollapsed(false);
       setWorkflows([]);
-      setWorkflowBindings(loadWorkflowBindings(path));
-      autoFollowWorkflowRunRef.current = null;
+      setWorkflowInstances([]);
+      setWorkflowHistoryError("");
+      workflowEditTargets.current.clear();
+      followWorkflowId.current = null;
       autoFollowRef.current = true;
       setChanges(null);
       setSelectedFile("");
@@ -1414,6 +1439,7 @@ export default function App() {
         refreshOpenLocations(path, generation);
         refreshChanges(path, generation);
         void refreshWorkflows(path, generation);
+        void refreshWorkflowInstances(path, generation);
         if (typeof desktop.rememberProject === "function") {
           void desktop.rememberProject(path);
         }
@@ -1421,7 +1447,7 @@ export default function App() {
         if (generation === generationRef.current) setNotice(textError(err));
       }
     },
-    [refreshQueueCount, refreshPresets, refreshOpenLocations, refreshChanges, refreshWorkflows],
+    [refreshQueueCount, refreshPresets, refreshOpenLocations, refreshChanges, refreshWorkflows, refreshWorkflowInstances],
   );
 
   useEffect(() => {
@@ -1455,7 +1481,8 @@ export default function App() {
     refreshQueueCount(workspace, generationRef.current);
   }, [workspace, queueRevision, refreshQueueCount]);
 
-  const selectRun = useCallback((id: string | null) => {
+  const selectRun = useCallback((id: string | null, preserveWorkflowFollow = false) => {
+    if (!preserveWorkflowFollow) followWorkflowId.current = null;
     setForkSource(null);
     setParentRun(null);
     autoFollowRef.current = true;
@@ -1533,9 +1560,18 @@ export default function App() {
         });
       }
       if (evt.kind === "run.event" || evt.kind === "run.status") void refreshRuns(workspace, generation);
+      if (evt.kind === "workflow.status") void refreshWorkflowInstances(workspace, generation);
     });
     return unbind;
-  }, [workspace, epoch, refreshRuns]);
+  }, [workspace, epoch, refreshRuns, refreshWorkflowInstances]);
+
+  const hasLiveWorkflow = workflowInstances.some((item) => !item.finished);
+  useEffect(() => {
+    if (!workspace || (page !== "workflow" && !followWorkflowId.current && !hasLiveWorkflow)) return;
+    const generation = generationRef.current;
+    const timer = window.setInterval(() => void refreshWorkflowInstances(workspace, generation), 2000);
+    return () => window.clearInterval(timer);
+  }, [workspace, page, hasLiveWorkflow, refreshWorkflowInstances]);
 
   useEffect(() => {
     if (panel !== "evidence" || !workspace || !runId) return;
@@ -1564,46 +1600,21 @@ export default function App() {
   const selected = runs.find((run) => run.run_id === runId);
 
   const activeWorkflowExecution = useMemo(() => {
-    if (!runId || workflowBindings.length === 0) return null;
-    for (const binding of workflowBindings) {
-      const exec = resolveWorkflowExecution(binding, runs);
-      const matchesRun =
-        binding.firstRunId === runId ||
-        (Boolean(binding.sessionId) && selected?.session_id === binding.sessionId) ||
-        exec.stages.some((stage) => stage.run?.run_id === runId);
-      if (matchesRun) {
-        return exec;
-      }
-    }
-    return null;
-  }, [runId, runs, selected?.session_id, workflowBindings]);
+    if (!runId) return null;
+    const instance = workflowInstances.find((item) =>
+      item.steps.some((step) => step.run_id === runId || (step.attempts ?? []).some((attempt) => attempt.run_id === runId)),
+    );
+    return instance ? resolveWorkflowExecution(instance) : null;
+  }, [runId, workflowInstances]);
 
   useEffect(() => {
-    if (!workspace || !activeWorkflowExecution) return;
-    const discoveredSession = activeWorkflowExecution.sessionId;
-    if (
-      discoveredSession &&
-      activeWorkflowExecution.binding.sessionId !== discoveredSession
-    ) {
-      setWorkflowBindings((prev) => {
-        const next = prev.map((item) =>
-          item.firstRunId === activeWorkflowExecution.binding.firstRunId
-            ? { ...item, sessionId: discoveredSession }
-            : item,
-        );
-        saveWorkflowBindings(workspace, next);
-        return next;
-      });
-    }
-    if (
-      runId &&
-      autoFollowWorkflowRunRef.current === runId &&
-      activeWorkflowExecution.latestRunId !== runId
-    ) {
-      autoFollowWorkflowRunRef.current = activeWorkflowExecution.latestRunId;
-      selectRun(activeWorkflowExecution.latestRunId);
-    }
-  }, [workspace, runId, activeWorkflowExecution, selectRun]);
+    if (!followWorkflowId.current) return;
+    const instance = workflowInstances.find((item) => item.workflow_id === followWorkflowId.current);
+    if (!instance) return;
+    const nextRunID = resolveWorkflowExecution(instance).latestRunId;
+    if (nextRunID && runId !== nextRunID) selectRun(nextRunID, true);
+    if (instance.finished) followWorkflowId.current = null;
+  }, [workflowInstances, runId, selectRun]);
 
   // 当选中运行已进入 completed 终态时后台静默读取一次 Verifier 证据，支撑对话末尾结案路标卡真实渲染。
   useEffect(() => {
@@ -1731,14 +1742,15 @@ export default function App() {
 
   const blocks = useMemo(() => {
     const historyBlocks = ancestorDetails.flatMap((anc) =>
-      buildChatBlocks(anc.events || []).map((item) => ({ ...item, id: `${anc.run_id}:${item.id}` })),
+      buildChatBlocks(anc.events || []).map((item) => ({ ...item, id: `${anc.run_id}:${item.id}`, sourceRunId: anc.run_id })),
     );
-    const projected = buildChatBlocks(detail?.events || [], liveEvents);
+    const projected: SourcedChatBlock[] = buildChatBlocks(detail?.events || [], liveEvents)
+      .map((item) => ({ ...item, sourceRunId: runId ?? undefined }));
     if (sendingText && !projected.some((block) => block.kind === "user" && block.text === sendingText)) {
       projected.unshift({ kind: "user", id: "pending-user", text: sendingText, at: "" });
     }
     return historyBlocks.length > 0 ? [...historyBlocks, ...projected] : projected;
-  }, [ancestorDetails, detail, liveEvents, sendingText]);
+  }, [ancestorDetails, detail, liveEvents, sendingText, runId]);
 
   const recallStops = useMemo(() => buildSessionRecallStops(blocks), [blocks]);
 
@@ -1894,7 +1906,7 @@ export default function App() {
       return;
     }
     const generation = generationRef.current;
-    const previous = !forkSource && selected && finished.has(selected.state) ? selected : null;
+    const previous = !forkSource && !activeWorkflowExecution && selected && finished.has(selected.state) ? selected : null;
     const pendingChips = attachedFiles;
     const pendingWorkflowCtx = workflowComposeCtx;
     let clearedDraft = false;
@@ -1929,6 +1941,9 @@ export default function App() {
         fork_source_run_id: forkSource || undefined,
       });
       if (generation !== generationRef.current) return;
+      if (pendingWorkflowCtx?.mode === "edit" && pendingWorkflowCtx.workflow?.id) {
+        workflowEditTargets.current.set(ack.run_id, pendingWorkflowCtx.workflow);
+      }
       runRef.current = ack.run_id;
       setRunId(ack.run_id);
       setForkSource(null);
@@ -2001,7 +2016,36 @@ export default function App() {
     }
   };
 
+  const controlWorkflow = async (request: WorkflowControlRequest) => {
+    const generation = generationRef.current;
+    try {
+      const result = await desktop.controlWorkflow(request);
+      if (generation !== generationRef.current) return;
+      if (result.error) setNotice(result.error.message);
+      await Promise.all([refreshRuns(request.workspace, generation), refreshWorkflowInstances(request.workspace, generation)]);
+    } catch (err) {
+      if (generation === generationRef.current) setNotice(textError(err));
+    }
+  };
+
   const decide = async (approve: boolean, fingerprint: string, requestedRunId: string) => {
+    const instance = workflowInstances.find((item) =>
+      item.steps.some((step) => step.run_id === requestedRunId || (step.attempts ?? []).some((attempt) => attempt.run_id === requestedRunId)),
+    );
+    if (instance?.sequence) {
+      const pending = instance.pending_approval;
+      if (pending?.run_id !== requestedRunId || pending.fingerprint !== fingerprint) {
+        setNotice("工作流审批已变化，请刷新后使用当前提议。");
+        return;
+      }
+      await controlWorkflow({
+        workspace, workflow_id: instance.workflow_id, sequence: instance.sequence,
+        action: approve ? "approve" : "reject", step_id: instance.steps[instance.resume_index]?.id,
+        run_id: pending.run_id, operation_id: pending.operation_id, fingerprint,
+        reason: approve ? "Studio 用户批准" : "Studio 用户拒绝",
+      });
+      return;
+    }
     try {
       await desktop.resumeRun({
         workspace,
@@ -2382,72 +2426,56 @@ export default function App() {
   };
 
   const handleSaveWorkflowSpec = async (
-    spec: WorkflowBlueprintSpec,
-  ): Promise<WorkflowDefinitionItem | undefined> => {
-    if (!workspace || typeof desktop.saveWorkflow !== "function") return undefined;
+    spec: WorkflowBlueprintSpec, sourceRunId?: string,
+  ): Promise<WorkflowDefinitionItem> => {
+    if (!workspace || projectRef.current !== workspace || typeof desktop.saveWorkflow !== "function") throw new Error("工作流保存入口不可用。");
     const generation = generationRef.current;
-    try {
-      await desktop.saveWorkflow({
-        id: spec.id || undefined,
-        workspace,
-        name: spec.name,
-        steps: spec.steps,
-      });
-      const updatedList = await refreshWorkflows(workspace, generation);
-      const matched =
-        (spec.id && updatedList.find((w) => w.id === spec.id)) ||
-        updatedList.find((w) => w.name === spec.name) ||
-        updatedList[0];
-      if (matched) setFocusedWorkflowId(matched.id);
-      setNotice(`已保存工作流「${spec.name}」；可随时在「工作流」目录只读检视或一键运行。`);
-      return matched;
-    } catch (err) {
-      setNotice(textError(err));
-      return undefined;
-    }
+    const target = sourceRunId ? workflowEditTargets.current.get(sourceRunId) : undefined;
+    const result = await desktop.saveWorkflow({
+      id: target?.id,
+      revision: target?.revision,
+      workspace,
+      name: spec.name,
+      steps: spec.steps,
+    });
+    if (generation !== generationRef.current) throw new Error("工作区已切换。");
+    if (!result.definition) throw new Error("宿主没有返回已保存的定义修订。");
+    await refreshWorkflows(workspace, generation);
+    if (generation !== generationRef.current || projectRef.current !== workspace) throw new Error("工作区已切换。");
+    setFocusedWorkflowId(result.definition.id);
+    setNotice(`已保存工作流「${result.definition.name}」修订 ${result.definition.revision}。`);
+    return result.definition;
   };
 
   const launchWorkflowInSession = async (wf: WorkflowDefinitionItem) => {
-    if (!workspace || typeof desktop.runWorkflow !== "function") return;
+    if (!workspace || projectRef.current !== workspace || typeof desktop.startWorkflowInstance !== "function") return;
     const generation = generationRef.current;
     try {
-      const ack = await desktop.runWorkflow(workspace, wf.id, false);
-      const firstRunId = ack.run_ids?.[0] || "";
-      if (firstRunId) {
-        const nextBinding: WorkflowSessionBinding = {
-          workflowId: wf.id,
-          workflowName: wf.name,
-          workspace,
-          firstRunId,
-          steps: wf.steps,
-          startedAt: new Date().toISOString(),
-        };
-        setWorkflowBindings((prev) => {
-          const updated = [nextBinding, ...prev.filter((b) => b.firstRunId !== firstRunId)];
-          saveWorkflowBindings(workspace, updated);
-          return updated;
-        });
-        autoFollowWorkflowRunRef.current = firstRunId;
-        selectRun(firstRunId);
-        setPage("home");
-      }
-      await refreshRuns(workspace, generation);
+      const ack = await desktop.startWorkflowInstance({
+        workspace, definition_id: wf.id, revision: wf.revision ?? 0,
+      });
+      if (generation !== generationRef.current) return;
+      followWorkflowId.current = ack.workflow_id;
+      setFocusedWorkflowId(wf.id);
+      await Promise.all([refreshRuns(workspace, generation), refreshWorkflowInstances(workspace, generation)]);
     } catch (err) {
-      setNotice(textError(err));
+      if (generation === generationRef.current) setNotice(textError(err));
     }
   };
 
-  const handleSaveAndRunWorkflowSpec = async (spec: WorkflowBlueprintSpec) => {
-    const saved = await handleSaveWorkflowSpec(spec);
-    if (!saved) return;
-    await launchWorkflowInSession(saved);
+  const handleSaveAndRunWorkflowSpec = async (spec: WorkflowBlueprintSpec, sourceRunId?: string) => {
+    const generation = generationRef.current;
+    const saved = await handleSaveWorkflowSpec(spec, sourceRunId);
+    if (generation === generationRef.current && projectRef.current === workspace) await launchWorkflowInSession(saved);
   };
 
-  const handleRefineWorkflowSpec = (spec: WorkflowBlueprintSpec) => {
+  const handleRefineWorkflowSpec = (spec: WorkflowBlueprintSpec, sourceRunId?: string) => {
+    const target = sourceRunId ? workflowEditTargets.current.get(sourceRunId) : undefined;
     setWorkflowComposeCtx({
       mode: "edit",
       workflow: {
-        id: spec.id || "",
+        id: target?.id ?? "",
+        revision: target?.revision,
         name: spec.name,
         steps: spec.steps,
       },
@@ -4406,7 +4434,7 @@ export default function App() {
                   </span>
                   <span className="wb-toolbar-wf-stage">
                     {activeWorkflowExecution.stages[activeWorkflowExecution.activeStepIndex]
-                      ?.step.task || ""}
+                      ?.label || ""}
                   </span>
                 </button>
               )}
@@ -4725,7 +4753,15 @@ export default function App() {
                         ← 返回父运行 {parentRun}
                       </button>
                     )}
-                    {selected?.waiting_reconcile && runId && (
+                    {selected?.waiting_reconcile && runId && activeWorkflowExecution && (
+                      <WorkflowInstanceControls
+                        key={activeWorkflowExecution.instance.pending_reconcile?.operation_id ?? activeWorkflowExecution.instance.workflow_id}
+                        workspace={workspace}
+                        instance={activeWorkflowExecution.instance}
+                        onControl={controlWorkflow}
+                      />
+                    )}
+                    {selected?.waiting_reconcile && runId && !activeWorkflowExecution && (
                       <>
                         <ReconciliationPanel
                           key={runId}
@@ -4754,10 +4790,10 @@ export default function App() {
                       <Transcript
                         blocks={blocks}
                         flashedAnchorId={flashedRecallId}
-                        workflows={workflows}
+                        workflowEditTargets={workflowEditTargets.current}
                         onApproval={decide}
                         onInspectFile={(targetPath) => void inspectChangedFile(targetPath)}
-                        onSaveWorkflow={(spec) => handleSaveWorkflowSpec(spec).then(() => {})}
+                        onSaveWorkflow={(spec, sourceRun) => handleSaveWorkflowSpec(spec, sourceRun).then(() => {})}
                         onSaveAndRunWorkflow={handleSaveAndRunWorkflowSpec}
                         onRefineWorkflow={handleRefineWorkflowSpec}
                         onOpenWorkflowPortal={(wfId) => {
@@ -4773,7 +4809,7 @@ export default function App() {
                         execution={activeWorkflowExecution}
                         activeRunId={runId}
                         onSelectStageRun={(stageRunId) => {
-                          autoFollowWorkflowRunRef.current = null;
+                          followWorkflowId.current = null;
                           selectRun(stageRunId);
                         }}
                         onOpenPortal={(wfId) => {
@@ -4785,9 +4821,9 @@ export default function App() {
                             workflows.find(
                               (w) => w.id === activeWorkflowExecution.workflowId,
                             ) || {
-                              id: activeWorkflowExecution.workflowId,
+                              id: "",
                               name: activeWorkflowExecution.workflowName,
-                              steps: activeWorkflowExecution.binding.steps,
+                              steps: activeWorkflowExecution.stages.map((stage) => ({ task: stage.label })),
                             };
                           setWorkflowComposeCtx({
                             mode: "edit",
@@ -4902,21 +4938,22 @@ export default function App() {
               <div className="wb-page-head">
                 <span>WORKFLOWS</span>
                 <h1>工作流</h1>
-                <p>通过对话创建、调试与演进工作流；此处用于只读检视流程定义、运行历史与直接触发。</p>
+                <p>查看定义修订、运行历史与当前实例的人工操作。</p>
               </div>
               {workspace ? (
                 <WorkflowsView
                   key={workspace}
                   workspace={workspace}
                   notify={onQueueError}
-                  runs={runs}
-                  bindings={workflowBindings}
+                  instances={workflowInstances}
+                  historyError={workflowHistoryError}
+                  onControl={controlWorkflow}
                   focusedWorkflowId={focusedWorkflowId}
                   onConverseCreate={startConversationalWorkflowCreate}
                   onConverseEdit={startConversationalWorkflowEdit}
                   onLaunchWorkflow={launchWorkflowInSession}
                   onOpenRun={(targetRunId) => {
-                    autoFollowWorkflowRunRef.current = null;
+                    followWorkflowId.current = null;
                     selectRun(targetRunId);
                     setPage("home");
                   }}

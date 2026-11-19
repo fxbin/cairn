@@ -23,6 +23,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	"github.com/fxbin/cairn/internal/domain"
 )
 
 // ErrPersistedContent 表示行可读取，但持久化的事件字段无法解码。
@@ -287,6 +288,27 @@ func (store *Store) ListInstances(ctx context.Context, workspaceHash string) ([]
 	}
 	defer rows.Close()
 	ids := make([]workflow.ID, 0)
+	for rows.Next() {
+		var id workflow.ID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// InstancesWithRun 查询包含指定 Run 的候选实例。应用层继续重放核验绑定。
+func (store *Store) InstancesWithRun(ctx context.Context, workspaceHash string, runID domain.RunID) ([]workflow.ID, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT DISTINCT workflow_id FROM workflow_events
+		WHERE workspace_hash = ? AND event_type = ? AND json_extract(CAST(payload_json AS TEXT), '$.run_id') = ?`,
+		workspaceHash, workflow.EventStepStarted, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []workflow.ID
 	for rows.Next() {
 		var id workflow.ID
 		if err := rows.Scan(&id); err != nil {

@@ -1,6 +1,8 @@
 /**
- * 桥接层共享类型。与 studio/backend DTO 字段名保持一致；
- * 运行事实来自 Go/Journal，此处仅描述传输结构。
+ * [INPUT]: Studio Go 请求和响应合同。
+ * [OUTPUT]: 传输 DTO 与权威实例状态形状。
+ * [POS]: WebView 透传 Journal 和实例视图。
+ * [PROTOCOL]: Update this header on change, then check AGENTS.md
  * Author: fxbin
  */
 
@@ -168,6 +170,9 @@ export interface DomainEvent {
 }
 
 export interface StreamEvent {
+  workflow_id?: string;
+  workflow?: WorkflowInstanceView;
+  next_action?: string;
   workspace?: string;
   kind: string;
   run_id?: string;
@@ -444,4 +449,103 @@ export interface ProviderSetupView {
   catalog_matched: boolean;
   probe_ran: boolean;
   notes?: string[];
+}
+
+export type WorkflowNodeKind = "execute" | "script" | "verify" | "accept";
+
+export interface WorkflowStepSpec {
+  task: string;
+  id?: string;
+  kind?: WorkflowNodeKind;
+  model?: string;
+  mode?: string;
+  argv?: string[];
+  inputs?: string[];
+  max_attempts?: number;
+  retry_from?: string;
+}
+
+export interface WorkflowDefinitionItem {
+  id: string;
+  workspace?: string;
+  name: string;
+  steps: WorkflowStepSpec[];
+  max_steps?: number;
+  revision?: number;
+  legacy?: boolean;
+}
+
+export interface WorkflowAttemptView {
+  number: number;
+  started_seq: number;
+  run_id?: string;
+  state: string;
+  error_class?: string;
+  decision?: string;
+  reason?: string;
+  terminal?: { seq: number; event_hash: string };
+  output?: { ref?: string };
+}
+
+export interface WorkflowInstanceStep {
+  id: string;
+  kind: string;
+  state: string;
+  run_id?: string;
+  run_phase?: string;
+  attempts?: WorkflowAttemptView[];
+}
+
+export interface WorkflowInstanceView {
+  workflow_id: string;
+  definition?: { id: string; revision: number };
+  definition_name?: string;
+  session_id?: string;
+  sequence?: number;
+  phase?: string;
+  created_at: string;
+  finished: boolean;
+  finish_state?: string;
+  finish_reason?: string;
+  resume_index: number;
+  paused?: boolean;
+  retry_targets?: string[];
+  pending_approval?: { run_id: string; operation_id: string; fingerprint: string; summary?: string };
+  pending_reconcile?: { run_id: string; operation_id: string; tool_name: string; side_effect_class: string };
+  steps: WorkflowInstanceStep[];
+}
+
+export type WorkflowAction = "advance" | "pause" | "resume" | "cancel" | "retry" | "approve" | "reject" | "reconcile";
+
+export interface WorkflowControlRequest extends WorkspaceRequest {
+  workflow_id: string;
+  action: WorkflowAction;
+  sequence: number;
+  step_id?: string;
+  run_id?: string;
+  operation_id?: string;
+  fingerprint?: string;
+  reason?: string;
+  verdict?: string;
+  evidence?: string;
+}
+
+export interface WorkflowStartRequest extends WorkspaceRequest {
+  definition_id: string;
+  revision: number;
+  dry_run?: boolean;
+}
+
+export interface WorkflowRunAck {
+  workflow_id: string;
+  state: string;
+  run_ids?: string[];
+  session_id?: string;
+  status?: WorkflowInstanceView;
+}
+
+export interface WorkflowControlResult {
+  view: WorkflowInstanceView;
+  next_action?: string;
+  error?: ErrorBody;
 }
