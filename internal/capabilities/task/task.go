@@ -10,6 +10,7 @@ package task
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,10 +50,13 @@ const (
 	Completed State = "completed"
 )
 
-// Definition 保存冻结的目标和用户提供的验收条件。
+// Definition 保存冻结的目标和用户提供的验收条件。Criteria 是新版结构化
+// 合同；为空表示旧任务，完成时按既有可信验证规则兼容评估。
 type Definition struct {
-	Goal       string   `json:"goal"`
-	Acceptance []string `json:"acceptance"`
+	Goal             string                         `json:"goal"`
+	Acceptance       []string                       `json:"acceptance"`
+	Criteria         []contract.AcceptanceCriterion `json:"criteria,omitempty"`
+	AcceptanceDigest string                         `json:"acceptance_digest,omitempty"`
 }
 
 // Progress 保存用户确认的当前进度与待办。
@@ -61,11 +65,14 @@ type Progress struct {
 	Remaining []string `json:"remaining,omitempty"`
 }
 
-// Evidence 指向 Run Journal 内已经核验的验证事件。
+// Evidence 指向 Run Journal 内已经核验的验证事件，并可选绑定标准级证据
+// 制品与验收合同摘要。旧任务缺少可选字段时按既有可信规则兼容。
 type Evidence struct {
-	RunID     domain.RunID `json:"run_id"`
-	Sequence  uint64       `json:"seq"`
-	EventHash string       `json:"event_hash"`
+	RunID            domain.RunID  `json:"run_id"`
+	Sequence         uint64        `json:"seq"`
+	EventHash        string        `json:"event_hash"`
+	AcceptanceDigest string        `json:"acceptance_digest,omitempty"`
+	EvidenceRef      *contract.Ref `json:"evidence_ref,omitempty"`
 }
 
 // Task 保存工作区作用域、冻结定义和当前任务事实。
@@ -100,16 +107,73 @@ func New(workspaceHash string, definition Definition, now time.Time) (Task, erro
 	if err != nil {
 		return Task{}, fmt.Errorf("task goal: %w", err)
 	}
-	acceptance, err := cleanItems(definition.Acceptance, true)
+	acceptance, criteria, digest, err := freezeDefinition(definition)
 	if err != nil {
-		return Task{}, fmt.Errorf("task acceptance: %w", err)
+		return Task{}, err
 	}
 	return Task{
 		SchemaVersion: SchemaVersion, ID: ID(domain.NewID("task")), WorkspaceHash: workspaceHash,
-		Definition: Definition{Goal: goal, Acceptance: acceptance}, Revision: 1, State: Active,
+		Definition: Definition{Goal: goal, Acceptance: acceptance, Criteria: criteria, AcceptanceDigest: digest}, Revision: 1, State: Active,
 		Progress:  Progress{Remaining: append([]string(nil), acceptance...)},
 		CreatedAt: now, UpdatedAt: now,
 	}, nil
+}
+
+// freezeDefinition 校验并冻结验收条件。结构化标准优先；旧调用方只提供文本时
+// 保留无合同的兼容形态，由应用层决定是否补全检查绑定。
+func freezeDefinition(definition Definition) ([]string, []contract.AcceptanceCriterion, string, error) {
+	if len(definition.Criteria) == 0 {
+		acceptance, err := cleanItems(definition.Acceptance, true)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("task acceptance: %w", err)
+		}
+		return acceptance, nil, "", nil
+	}
+	criteria := contract.CloneAcceptanceCriteria(definition.Criteria)
+	for index := range criteria {
+		criteria[index].Statement = strings.TrimSpace(criteria[index].Statement)
+	}
+	acceptanceContract, err := contract.NewAcceptanceContract(criteria)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("task acceptance contract: %w", err)
+	}
+	statements := make([]string, len(acceptanceContract.Criteria))
+	for index, criterion := range acceptanceContract.Criteria {
+		statements[index] = criterion.Statement
+	}
+	if len(definition.Acceptance) != 0 {
+		provided, err := cleanItems(definition.Acceptance, true)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("task acceptance: %w", err)
+		}
+		if !slices.Equal(provided, statements) {
+			return nil, nil, "", errors.New("task acceptance statements do not match criteria")
+		}
+	}
+	return statements, acceptanceContract.Criteria, acceptanceContract.Digest, nil
+}
+
+// Contract 返回冻结的结构化验收合同。旧任务没有合同时返回 found=false；
+// 摘要或标准正文与存储事实不一致时失败关闭。
+func (current Definition) Contract() (contract.AcceptanceContract, bool, error) {
+	if len(current.Criteria) == 0 {
+		return contract.AcceptanceContract{}, false, nil
+	}
+	acceptanceContract, err := contract.NewAcceptanceContract(current.Criteria)
+	if err != nil {
+		return contract.AcceptanceContract{}, false, err
+	}
+	if current.AcceptanceDigest == "" || acceptanceContract.Digest != current.AcceptanceDigest {
+		return contract.AcceptanceContract{}, false, errors.New("task acceptance digest does not match criteria")
+	}
+	statements := make([]string, len(acceptanceContract.Criteria))
+	for index, criterion := range acceptanceContract.Criteria {
+		statements[index] = criterion.Statement
+	}
+	if !slices.Equal(current.Acceptance, statements) {
+		return contract.AcceptanceContract{}, false, errors.New("task acceptance statements do not match criteria")
+	}
+	return acceptanceContract, true, nil
 }
 
 // RecordProgress 更新用户确认的进度。终态任务保留已验收的快照。
@@ -149,12 +213,44 @@ func (current *Task) Transition(next State, evidence *Evidence) error {
 			evidence == nil || evidence.RunID == "" || evidence.Sequence == 0 || evidence.EventHash == "" {
 			return ErrTransition
 		}
+		if current.Definition.AcceptanceDigest != "" {
+			if evidence.AcceptanceDigest != current.Definition.AcceptanceDigest || evidence.EvidenceRef == nil {
+				return ErrTransition
+			}
+		} else if evidence.AcceptanceDigest != "" || evidence.EvidenceRef != nil {
+			return ErrTransition
+		}
 	default:
 		return ErrTransition
 	}
 	current.State = next
-	current.Completion = evidence
+	current.Completion = cloneEvidence(evidence)
 	return nil
+}
+
+// Equal 按值比较证据锚点，包括解引用后的制品引用；指针相等不能代表同一证据。
+func (evidence Evidence) Equal(other Evidence) bool {
+	if evidence.RunID != other.RunID || evidence.Sequence != other.Sequence || evidence.EventHash != other.EventHash ||
+		evidence.AcceptanceDigest != other.AcceptanceDigest {
+		return false
+	}
+	if (evidence.EvidenceRef == nil) != (other.EvidenceRef == nil) {
+		return false
+	}
+	return evidence.EvidenceRef == nil || *evidence.EvidenceRef == *other.EvidenceRef
+}
+
+// cloneEvidence 复制证据引用，避免调用方后续修改改变任务事实。
+func cloneEvidence(evidence *Evidence) *Evidence {
+	if evidence == nil {
+		return nil
+	}
+	cloned := *evidence
+	if evidence.EvidenceRef != nil {
+		reference := *evidence.EvidenceRef
+		cloned.EvidenceRef = &reference
+	}
+	return &cloned
 }
 
 // Prompt 从任务快照构造本次 Run 的输入。运行权限仍来自冻结配置及审批。
