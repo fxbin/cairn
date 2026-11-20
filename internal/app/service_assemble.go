@@ -195,7 +195,11 @@ func verificationCommands(configuration config.VerificationConfig) ([]agent.Veri
 		if err != nil {
 			return nil, err
 		}
-		commands = append(commands, agent.VerificationCommand{ID: fmt.Sprintf("verification-%d", index+1), Arguments: arguments})
+		commandID := command.ID
+		if commandID == "" {
+			commandID = fmt.Sprintf("verification-%d", index+1)
+		}
+		commands = append(commands, agent.VerificationCommand{ID: commandID, Arguments: arguments})
 	}
 	return commands, nil
 }

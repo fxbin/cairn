@@ -419,8 +419,11 @@ type VerificationConfig struct {
 	AutoAfterPatch bool                  `yaml:"auto_after_patch"`
 }
 
-// VerificationCommand 是独立于模型提议的受控验证命令。
+// VerificationCommand 是独立于模型提议的受控验证命令。ID 是可选的不透明
+// 检查身份，供领域无关的验收合同绑定；缺省时由装配层按序号生成 verification-N，
+// 保持旧配置、指纹与在途 Run 的恢复语义不变。
 type VerificationCommand struct {
+	ID             string            `yaml:"id,omitempty" json:"id,omitempty"`
 	Argv           []string          `yaml:"argv"`
 	CWD            string            `yaml:"cwd"`
 	Timeout        string            `yaml:"timeout"`

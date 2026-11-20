@@ -146,7 +146,17 @@ func Validate(config Config) error {
 		}
 		allowedEnvironment[key] = struct{}{}
 	}
+	checkIDs := make(map[string]struct{}, len(config.Verification.Commands))
 	for index, command := range config.Verification.Commands {
+		if command.ID != "" {
+			if !contract.ValidAcceptanceIdentifier(command.ID) {
+				return fmt.Errorf("verification.commands[%d].id is invalid", index)
+			}
+			if _, duplicate := checkIDs[command.ID]; duplicate {
+				return fmt.Errorf("verification.commands[%d].id %q is duplicated", index, command.ID)
+			}
+			checkIDs[command.ID] = struct{}{}
+		}
 		if len(command.Argv) == 0 || command.Argv[0] == "" {
 			return fmt.Errorf("verification.commands[%d].argv is required", index)
 		}
