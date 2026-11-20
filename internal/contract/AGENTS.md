@@ -37,5 +37,7 @@ verification_evidence.go: VerificationEvidence 核对已持久化的独立验证
 verification_plan.go: VerificationPlan 冻结命令及其摘要。不继承模型工具审批。
 verification_scope.go: VerificationScope 冻结验证对象身份、版本、标准绑定与规则；执行方不得自行缩小范围。
 coverage_manifest.go: CoverageManifest 逐对象状态、分母保护、证据复用与保守失效；覆盖与结论分离。
+finding.go: Finding 结构化发现与复核状态机；高风险复核删除须有依据，不强制代码路径。
+acceptance_evaluation.go: 多级验收结论 Passed/Failed/Unknown/NotApplicable/Waived；Unknown 不转 Passed，Waived 不等于 Passed。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md
