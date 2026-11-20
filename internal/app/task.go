@@ -10,6 +10,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -66,6 +67,23 @@ func (Service) CreateTask(ctx context.Context, scope TaskScope, definition TaskD
 	current, err := task.New(hash, definition, time.Now().UTC())
 	if err != nil {
 		return Task{}, err
+	}
+	if acceptance, found, contractErr := current.Definition.Contract(); contractErr != nil {
+		return Task{}, contractErr
+	} else if found {
+		available := make(map[string]struct{}, len(scope.Config.Verification.Commands))
+		for index, command := range scope.Config.Verification.Commands {
+			id := command.ID
+			if id == "" {
+				id = fmt.Sprintf("verification-%d", index+1)
+			}
+			available[id] = struct{}{}
+		}
+		for _, checkID := range acceptance.RequiredCheckIDs() {
+			if _, ok := available[checkID]; !ok {
+				return Task{}, fmt.Errorf("acceptance check %q has no configured verification command; add one under verification.commands with id %q", checkID, checkID)
+			}
+		}
 	}
 	lock, err := acquireWorkspaceLock(scope.StateDir, hash)
 	if err != nil {
@@ -142,6 +160,17 @@ func (service Service) CompleteTask(ctx context.Context, scope TaskScope, id Tas
 		}
 		latest := view.Assignments[len(view.Assignments)-1]
 		if latest.RunID != runID || !latest.Verification.Trusted || latest.Evidence == nil {
+			return ErrTaskUnverified
+		}
+		acceptance, hasAcceptance, err := view.Definition.Contract()
+		if err != nil {
+			return err
+		}
+		if hasAcceptance {
+			if latest.Acceptance == nil || latest.Evidence.AcceptanceDigest != acceptance.Digest || latest.Evidence.EvidenceRef == nil {
+				return errors.New("task completion requires sufficient acceptance evidence for every required criterion")
+			}
+		} else if latest.Evidence.AcceptanceDigest != "" || latest.Evidence.EvidenceRef != nil {
 			return ErrTaskUnverified
 		}
 		return view.Transition(task.Completed, latest.Evidence)

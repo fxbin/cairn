@@ -376,11 +376,16 @@ type AssistantMessagePayload struct {
 	Text string `json:"text"`
 }
 
-// VerificationFinishedPayload 记录一次验证是否通过。
+// VerificationFinishedPayload 记录一次验证是否通过。V1.1 起携带可选的
+// 标准级证据引用、写入时的变更序号与工作区观察；旧事件缺省合法。可选字段
+// 的存在不代表可信，消费方仍须引用 plan_ref 与哈希链完整核对。
 type VerificationFinishedPayload struct {
-	VerificationID    string `json:"verification_id,omitempty"`
-	OK                bool   `json:"ok"`
-	ResultFingerprint string `json:"result_fingerprint,omitempty"`
+	VerificationID       string          `json:"verification_id,omitempty"`
+	OK                   bool            `json:"ok"`
+	ResultFingerprint    string          `json:"result_fingerprint,omitempty"`
+	EvidenceRef          json.RawMessage `json:"evidence_ref,omitempty"`
+	VerifiedMutationSeq  *uint64         `json:"verified_mutation_seq,omitempty"`
+	WorkspaceObservation string          `json:"workspace_observation,omitempty"`
 }
 
 // ContextCompactedPayload 保存一次可重放的对话检查点及其压缩范围。V1.3 起

@@ -30,6 +30,9 @@ type VerificationPlanSpec struct {
 	LastMutationSeq     uint64                    `json:"last_mutation_seq"`
 	CommandsFingerprint string                    `json:"commands_fingerprint"`
 	Commands            []VerificationCommandSpec `json:"commands"`
+	// Acceptance 是随计划冻结的验收合同；缺省表示旧计划，读取方按既有命令链
+	// 语义处理，不生成也不要求标准级证据。
+	Acceptance *AcceptanceContract `json:"acceptance,omitempty"`
 }
 
 // FingerprintVerificationCommands 先规范化各命令参数，再按既有结构计算整条

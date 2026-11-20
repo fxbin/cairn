@@ -94,6 +94,7 @@ var packageLayers = map[string]packageLayer{
 	"internal/capabilities/task/sqlite":             layerCapability,
 	"internal/capabilities/workflow":                layerCapability,
 	"internal/capabilities/workflow/storage/sqlite": layerCapability,
+	"internal/capabilities/workbench/coding":        layerCapability,
 	// Application。
 	"internal/app": layerApplication,
 	// Studio 与入口。

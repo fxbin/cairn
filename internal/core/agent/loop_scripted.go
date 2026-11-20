@@ -408,7 +408,11 @@ func (loop *Loop) grantScriptedVerification(ctx context.Context, projection *dom
 		}
 		return loop.failCurrentTurn(ctx, projection, input, turnID, err)
 	}
-	if err := loop.runVerificationCommands(ctx, projection, input, turnID, verification.VerificationID, verification.PlanRef, commandsFingerprint, verification.CommandIndex+1); err != nil {
+	startObservation, mutationSeq, bindingErr := verificationStartBinding(events, turnID, verification.VerificationID)
+	if bindingErr != nil {
+		return Result{}, bindingErr
+	}
+	if err := loop.runVerificationCommands(ctx, projection, input, turnID, verification.VerificationID, verification.PlanRef, commandsFingerprint, verification.CommandIndex+1, startObservation, mutationSeq); err != nil {
 		var persistence *verificationPersistenceError
 		if errors.As(err, &persistence) {
 			return Result{RunID: input.RunID}, err

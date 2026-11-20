@@ -63,6 +63,9 @@ type Loop struct {
 	DecisionCheckpointMinTurns int
 	VerificationAutoAfterPatch bool
 	Verification               []VerificationCommand
+	// Acceptance 是任务冻结的结构化验收合同；nil 表示普通 Run，不触发标准级
+	// 证据生成。它由应用层显式注入，Core 不自行发现或放宽标准。
+	Acceptance *contract.AcceptanceContract
 	// VerificationWorkspace 是宿主注入的 verifier 观察端口，与工具工作区刻意
 	// 不同：普通 workspace.ignore 不能掩盖 verifier 产生的副作用。nil 时回退
 	// 授权端口的工具视图观察。
