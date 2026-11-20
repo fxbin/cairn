@@ -28,12 +28,13 @@ type VerificationCommand struct {
 
 // verificationPlan 是持久化为制品并绑定审批的验证计划快照。
 type verificationPlan struct {
-	Version             string                `json:"version"`
-	VerificationID      string                `json:"verification_id"`
-	ConfigFingerprint   string                `json:"config_fingerprint"`
-	LastMutationSeq     uint64                `json:"last_mutation_seq"`
-	CommandsFingerprint string                `json:"commands_fingerprint"`
-	Commands            []VerificationCommand `json:"commands"`
+	Version             string                       `json:"version"`
+	VerificationID      string                       `json:"verification_id"`
+	ConfigFingerprint   string                       `json:"config_fingerprint"`
+	LastMutationSeq     uint64                       `json:"last_mutation_seq"`
+	CommandsFingerprint string                       `json:"commands_fingerprint"`
+	Commands            []VerificationCommand        `json:"commands"`
+	Acceptance          *contract.AcceptanceContract `json:"acceptance,omitempty"`
 }
 
 // verificationProposalPayload 是验证命令提议事件的可回放载荷。
@@ -104,7 +105,7 @@ func (loop *Loop) runVerification(ctx context.Context, projection *domain.RunPro
 	}{VerificationID: verificationID, MutationSeq: projection.LastMutationSeq, PlanRef: planRef, CommandsFingerprint: plan.CommandsFingerprint, WorkspaceObservation: observation})}); err != nil {
 		return err
 	}
-	return loop.runVerificationCommands(ctx, projection, input, turnID, verificationID, planRef, plan.CommandsFingerprint, 0)
+	return loop.runVerificationCommands(ctx, projection, input, turnID, verificationID, planRef, plan.CommandsFingerprint, 0, observation, projection.LastMutationSeq)
 }
 
 // finishUnverifiedRun 处理"有工作区变更但未配置验证命令"的完成（ADR-0017）：
@@ -139,10 +140,32 @@ func (loop *Loop) finishUnverifiedRun(ctx context.Context, projection *domain.Ru
 }
 
 // createVerificationPlan 冻结验证命令及配置指纹，并将计划作为脱敏制品保存。
+// 有验收合同时，必需标准的全部检查必须由已知命令覆盖，否则在写任何验证事件
+// 前失败关闭，避免生成覆盖不完整的证据。
 func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq uint64) (verificationPlan, *contract.Ref, error) {
 	commandsFingerprint, err := fingerprintVerificationCommands(loop.Verification)
 	if err != nil {
 		return verificationPlan{}, nil, err
+	}
+	var acceptance *contract.AcceptanceContract
+	if loop.Acceptance != nil {
+		cloned := loop.Acceptance.Clone()
+		if err := cloned.Validate(); err != nil {
+			return verificationPlan{}, nil, fmt.Errorf("acceptance contract: %w", err)
+		}
+		if len(cloned.RequiredCheckIDs()) == 0 {
+			return verificationPlan{}, nil, errors.New("acceptance contract has no required checks")
+		}
+		known := make(map[string]struct{}, len(loop.Verification))
+		for _, command := range loop.Verification {
+			known[command.ID] = struct{}{}
+		}
+		for _, checkID := range cloned.RequiredCheckIDs() {
+			if _, found := known[checkID]; !found {
+				return verificationPlan{}, nil, fmt.Errorf("acceptance check %q has no verification command", checkID)
+			}
+		}
+		acceptance = &cloned
 	}
 	plan := verificationPlan{
 		Version:             contract.VerificationPlanVersion,
@@ -151,6 +174,7 @@ func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq 
 		LastMutationSeq:     lastMutationSeq,
 		CommandsFingerprint: commandsFingerprint,
 		Commands:            append([]VerificationCommand(nil), loop.Verification...),
+		Acceptance:          acceptance,
 	}
 	if loop.Artifacts == nil {
 		return plan, nil, nil
@@ -167,8 +191,8 @@ func (loop *Loop) createVerificationPlan(verificationID string, lastMutationSeq 
 }
 
 // runVerificationCommands 从指定索引顺序执行冻结计划中的验证命令。
-func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *contract.Ref, commandsFingerprint string, startIndex int) error {
-	commands, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
+func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *contract.Ref, commandsFingerprint string, startIndex int, startObservation string, verifiedMutationSeq uint64) error {
+	commands, acceptance, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
 	if err != nil {
 		return err
 	}
@@ -239,62 +263,146 @@ func (loop *Loop) runVerificationCommands(ctx context.Context, projection *domai
 			return err
 		}
 	}
+	return loop.appendSuccessfulVerification(ctx, projection, input, turnID, verificationID, planRef, commandsFingerprint, commands, acceptance, startObservation, verifiedMutationSeq)
+}
+
+// appendSuccessfulVerification 在一次成功验证的终态写入标准级证据，再落
+// verification_finished。证据制品先于事件写入；任一失败都映射为持久化错误，
+// 绝不产生"事件成功但证据缺失"的可信完成。
+func (loop *Loop) appendSuccessfulVerification(ctx context.Context, projection *domain.RunProjection, input RunInput, turnID domain.TurnID, verificationID string, planRef *contract.Ref, commandsFingerprint string, commands []VerificationCommand, acceptance *contract.AcceptanceContract, startObservation string, verifiedMutationSeq uint64) error {
+	payload := domain.VerificationFinishedPayload{VerificationID: verificationID, OK: true}
+	if acceptance != nil {
+		// 仅在任务验收场景写入可选绑定字段，保持既有脚本化/普通 Run 的事件字节不变。
+		if startObservation != "" {
+			payload.WorkspaceObservation = startObservation
+		}
+		// 验收场景必须写入该字段，包含 0：零变更验证是合法场景，消费端以
+		// 该字段与 verification_started.last_mutation_seq 严格比对，省略会
+		// 让合法任务被误判为状态损坏而永久无法验收。
+		seq := verifiedMutationSeq
+		payload.VerifiedMutationSeq = &seq
+		if loop.Artifacts == nil {
+			return &verificationPersistenceError{cause: errors.New("artifact store is required for acceptance evidence")}
+		}
+		results := make([]contract.AcceptanceCheckResult, 0, len(commands))
+		for _, command := range commands {
+			results = append(results, contract.AcceptanceCheckResult{CheckID: command.ID, Executed: true, Passed: true})
+		}
+		criteria, coverage, conclusion := contract.EvaluateAcceptance(*acceptance, results)
+		evidence := contract.AcceptanceEvidence{
+			Version:          contract.AcceptanceEvidenceVersion,
+			RunID:            string(input.RunID),
+			AcceptanceDigest: acceptance.Digest,
+			Subject:          contract.EvidenceSubject{Kind: contract.EvidenceKindWorkspace, ID: input.WorkspaceHash, Version: startObservation},
+			Producer:         contract.EvidenceProducer{Kind: contract.EvidenceProducerEngine, ID: contract.EvidenceProducerID},
+			Source:           contract.EvidenceSource{VerificationID: verificationID, PlanRef: planRef, CommandsFingerprint: commandsFingerprint},
+			Criteria:         criteria,
+			Coverage:         coverage,
+			Conclusion:       conclusion,
+		}
+		if err := evidence.Validate(); err != nil {
+			return &verificationPersistenceError{cause: fmt.Errorf("build acceptance evidence: %w", err)}
+		}
+		if conclusion != contract.ConclusionPassed {
+			return &verificationPersistenceError{cause: fmt.Errorf("acceptance evidence conclusion is %s", conclusion)}
+		}
+		encoded, err := json.Marshal(evidence)
+		if err != nil {
+			return &verificationPersistenceError{cause: fmt.Errorf("encode acceptance evidence: %w", err)}
+		}
+		reference, err := loop.Artifacts.Put(encoded, "application/json")
+		if err != nil {
+			return &verificationPersistenceError{cause: fmt.Errorf("store acceptance evidence: %w", err)}
+		}
+		payload.EvidenceRef = mustJSON(reference)
+	}
 	commitContext, cancel := loop.commitContext(ctx)
 	defer cancel()
-	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(domain.VerificationFinishedPayload{VerificationID: verificationID, OK: true})}); err != nil {
+	if err := loop.append(commitContext, projection, domain.EventDraft{RunID: input.RunID, WorkspaceHash: input.WorkspaceHash, Type: domain.EventVerificationFinished, TurnID: &turnID, Payload: mustJSON(payload)}); err != nil {
 		return &verificationPersistenceError{cause: err}
 	}
 	return nil
 }
 
-// verificationCommands 从持久化计划恢复冻结命令；没有制品引用时仅在当前
-// 配置摘要与 started 事件一致时兼容恢复，缺少摘要或发生漂移均失败关闭。
-func (loop *Loop) verificationCommands(verificationID string, planRef *contract.Ref, commandsFingerprint string) ([]VerificationCommand, error) {
+// verificationCommands 从持久化计划恢复冻结命令与随计划冻结的验收合同；没有
+// 制品引用时仅在当前配置摘要与 started 事件一致时兼容恢复，缺少摘要或发生
+// 漂移均失败关闭。
+func (loop *Loop) verificationCommands(verificationID string, planRef *contract.Ref, commandsFingerprint string) ([]VerificationCommand, *contract.AcceptanceContract, error) {
 	if planRef == nil {
 		commands := append([]VerificationCommand(nil), loop.Verification...)
 		if err := validateVerificationCommands(commands); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if commandsFingerprint == "" {
-			return nil, errors.New("verification plan has neither an artifact reference nor a persisted command fingerprint")
+			return nil, nil, errors.New("verification plan has neither an artifact reference nor a persisted command fingerprint")
 		}
 		currentFingerprint, err := fingerprintVerificationCommands(commands)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if currentFingerprint != commandsFingerprint {
-			return nil, errors.New("current verification commands do not match the persisted command fingerprint")
+			return nil, nil, errors.New("current verification commands do not match the persisted command fingerprint")
 		}
-		return commands, nil
+		return commands, loop.Acceptance, nil
 	}
 	if loop.Artifacts == nil {
-		return nil, errors.New("artifact store is required to resume a frozen verification plan")
+		return nil, nil, errors.New("artifact store is required to resume a frozen verification plan")
 	}
 	content, err := loop.Artifacts.Open(*planRef)
 	if err != nil {
-		return nil, fmt.Errorf("open frozen verification plan: %w", err)
+		return nil, nil, fmt.Errorf("open frozen verification plan: %w", err)
 	}
 	var plan verificationPlan
 	if err := json.Unmarshal(content, &plan); err != nil {
-		return nil, fmt.Errorf("decode frozen verification plan: %w", err)
+		return nil, nil, fmt.Errorf("decode frozen verification plan: %w", err)
 	}
 	if plan.Version != contract.VerificationPlanVersion || plan.VerificationID != verificationID {
-		return nil, errors.New("frozen verification plan identity does not match the persisted verification")
+		return nil, nil, errors.New("frozen verification plan identity does not match the persisted verification")
 	}
 	if err := validateVerificationCommands(plan.Commands); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	actualFingerprint, err := fingerprintVerificationCommands(plan.Commands)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if plan.CommandsFingerprint != actualFingerprint {
-		return nil, errors.New("frozen verification plan command fingerprint mismatch")
+		return nil, nil, errors.New("frozen verification plan command fingerprint mismatch")
 	}
 	if commandsFingerprint != "" && plan.CommandsFingerprint != commandsFingerprint {
-		return nil, errors.New("frozen verification plan does not match the persisted command fingerprint")
+		return nil, nil, errors.New("frozen verification plan does not match the persisted command fingerprint")
 	}
-	return append([]VerificationCommand(nil), plan.Commands...), nil
+	var acceptance *contract.AcceptanceContract
+	if plan.Acceptance != nil {
+		cloned := plan.Acceptance.Clone()
+		if err := cloned.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("frozen acceptance contract: %w", err)
+		}
+		acceptance = &cloned
+	}
+	return append([]VerificationCommand(nil), plan.Commands...), acceptance, nil
+}
+
+// verificationStartBinding 从持久化 started 事件读取证据绑定所需的观测与
+// 变更序号。恢复续跑必须与 started 事件取同一值，否则证据主体版本会与计划
+// 漂移而被任务侧拒绝；缺失或身份不符时失败关闭。
+func verificationStartBinding(events []domain.Event, turnID domain.TurnID, verificationID string) (string, uint64, error) {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != domain.EventVerificationStarted || event.TurnID == nil || *event.TurnID != turnID {
+			continue
+		}
+		var payload struct {
+			VerificationID       string `json:"verification_id"`
+			LastMutationSeq      uint64 `json:"last_mutation_seq"`
+			WorkspaceObservation string `json:"workspace_observation"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.VerificationID != verificationID {
+			continue
+		}
+		return payload.WorkspaceObservation, payload.LastMutationSeq, nil
+	}
+	return "", 0, errors.New("verification start binding not found for persisted verification")
 }
 
 // fingerprintVerificationCommands 为验证命令序列计算稳定摘要，用于在无制品
@@ -325,7 +433,7 @@ func validateVerificationCommands(commands []VerificationCommand) error {
 
 // verificationCommand 返回冻结计划中的指定命令。
 func (loop *Loop) verificationCommand(verificationID string, planRef *contract.Ref, commandsFingerprint string, index int) (VerificationCommand, error) {
-	commands, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
+	commands, _, err := loop.verificationCommands(verificationID, planRef, commandsFingerprint)
 	if err != nil {
 		return VerificationCommand{}, err
 	}
@@ -582,7 +690,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 	if planRef == nil && len(operations) != 0 {
 		planRef = operations[0].proposal.PlanRef
 	}
-	commands, err := loop.verificationCommands(verificationID, planRef, verification.commandsFingerprint)
+	commands, acceptance, err := loop.verificationCommands(verificationID, planRef, verification.commandsFingerprint)
 	if err != nil {
 		return false, err
 	}
@@ -591,7 +699,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 			if err := loop.requireFrozenVerificationObservation(verification, projection); err != nil {
 				return false, err
 			}
-			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, 0)
+			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, 0, verification.workspaceObservation, verification.lastMutationSeq)
 			var failure *ports.VerificationFailureError
 			if errors.As(runErr, &failure) {
 				return true, nil
@@ -695,7 +803,7 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		if runErr != nil {
 			return true, runErr
 		}
-		runErr = loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, latest.proposal.CommandIndex+1)
+		runErr = loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, latest.proposal.CommandIndex+1, verification.workspaceObservation, verification.lastMutationSeq)
 		if errors.As(runErr, &failure) {
 			return true, nil
 		}
@@ -718,23 +826,15 @@ func (loop *Loop) repairIncompleteVerification(ctx context.Context, projection *
 		}
 		nextIndex := latest.proposal.CommandIndex + 1
 		if nextIndex < len(commands) {
-			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, nextIndex)
+			runErr := loop.runVerificationCommands(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, nextIndex, verification.workspaceObservation, verification.lastMutationSeq)
 			var failure *ports.VerificationFailureError
 			if errors.As(runErr, &failure) {
 				return true, nil
 			}
 			return true, runErr
 		}
-		commitContext, cancel := loop.commitContext(ctx)
-		defer cancel()
-		if err := loop.append(commitContext, projection, domain.EventDraft{
-			RunID:         input.RunID,
-			WorkspaceHash: input.WorkspaceHash,
-			Type:          domain.EventVerificationFinished,
-			TurnID:        &verification.turnID,
-			Payload:       mustJSON(domain.VerificationFinishedPayload{VerificationID: verificationID, OK: true}),
-		}); err != nil {
-			return false, &verificationPersistenceError{cause: err}
+		if err := loop.appendSuccessfulVerification(ctx, projection, input, verification.turnID, verificationID, planRef, verification.commandsFingerprint, commands, acceptance, verification.workspaceObservation, verification.lastMutationSeq); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
