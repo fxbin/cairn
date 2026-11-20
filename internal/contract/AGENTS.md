@@ -35,5 +35,7 @@ tool_policy_contract.go: ToolPolicy 定义命令、补丁、会话和本地授�
 tool_result.go: ToolResult 定义成功与失败回执。编码顺序绑定历史数据。
 verification_evidence.go: VerificationEvidence 核对已持久化的独立验证链。不执行验证。
 verification_plan.go: VerificationPlan 冻结命令及其摘要。不继承模型工具审批。
+verification_scope.go: VerificationScope 冻结验证对象身份、版本、标准绑定与规则；执行方不得自行缩小范围。
+coverage_manifest.go: CoverageManifest 逐对象状态、分母保护、证据复用与保守失效；覆盖与结论分离。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md
