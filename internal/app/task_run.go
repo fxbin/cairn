@@ -41,6 +41,9 @@ type TaskAssignmentView struct {
 	Phase        string                      `json:"phase"`
 	Verification contract.CompletionEvidence `json:"verification"`
 	Evidence     *task.Evidence              `json:"evidence,omitempty"`
+	// Acceptance 是从 Run 证据制品校验通过的标准级证据，仅用于完成判定，
+	// 不写入任务库也不出现在展示 JSON 中。
+	Acceptance *contract.AcceptanceEvidence `json:"-"`
 }
 
 // RunTask 以同一分配 ID 重试请求时返回原绑定。已提交绑定但缺少创建事实时失败关闭。
@@ -63,13 +66,21 @@ func (service Service) RunTask(ctx context.Context, scope TaskScope, id TaskID, 
 	if err := view.canAssign(options.Revision); err != nil {
 		return view, err
 	}
+	acceptance, hasAcceptance, err := view.Definition.Contract()
+	if err != nil {
+		return TaskView{}, fmt.Errorf("task acceptance contract: %w", err)
+	}
 	runID := domain.NewRunID()
-	bound := false
-	_, runErr := service.run(ctx, RunOptions{
+	runOptions := RunOptions{
 		Task: view.Prompt(), Workspace: scope.Workspace, StateDir: scope.StateDir, Config: scope.Config,
 		SessionID: options.SessionID, PrevRunID: options.PreviousRunID, RequireSessionTail: options.PreviousRunID != "",
 		PreassignedRunID: runID, OnEvent: options.OnEvent,
-	}, func(boot *Boot, draft *domain.EventDraft) error {
+	}
+	if hasAcceptance {
+		runOptions.Acceptance = &acceptance
+	}
+	bound := false
+	_, runErr := service.run(ctx, runOptions, func(boot *Boot, draft *domain.EventDraft) error {
 		if boot.WorkspaceHash != view.WorkspaceHash {
 			return ErrTaskConflict
 		}
@@ -215,7 +226,7 @@ func projectTaskView(ctx context.Context, current task.Task, assignments []task.
 	}
 	view := TaskView{Task: current, Assignments: make([]TaskAssignmentView, 0, len(assignments))}
 	for index, assignment := range assignments {
-		item, err := projectTaskAssignment(ctx, journal, assignment, stateDir, hash)
+		item, err := projectTaskAssignment(ctx, journal, assignment, stateDir, hash, current.Definition)
 		if err != nil {
 			return TaskView{}, err
 		}
@@ -232,7 +243,7 @@ func projectTaskView(ctx context.Context, current task.Task, assignments []task.
 	case task.Completed:
 		if len(view.Assignments) > 0 && current.Completion != nil && len(current.Progress.Remaining) == 0 {
 			latest := view.Assignments[len(view.Assignments)-1]
-			if latest.Verification.Trusted && latest.Evidence != nil && *latest.Evidence == *current.Completion {
+			if latest.Verification.Trusted && latest.Evidence != nil && latest.Evidence.Equal(*current.Completion) {
 				return view, nil
 			}
 		}
@@ -241,7 +252,7 @@ func projectTaskView(ctx context.Context, current task.Task, assignments []task.
 }
 
 // projectTaskAssignment 从既有严格投影读取阶段和验证证据，不把运行终态写回任务库。
-func projectTaskAssignment(ctx context.Context, journal ports.Journal, assignment task.Assignment, stateDir, hash string) (TaskAssignmentView, error) {
+func projectTaskAssignment(ctx context.Context, journal ports.Journal, assignment task.Assignment, stateDir, hash string, definition task.Definition) (TaskAssignmentView, error) {
 	view := TaskAssignmentView{Assignment: assignment, Phase: "binding_unconfirmed"}
 	if journal == nil {
 		return view, nil
@@ -272,6 +283,29 @@ func projectTaskAssignment(ctx context.Context, journal ports.Journal, assignmen
 			return view, fmt.Errorf("%w: task run %s invalid verification anchor", ErrStateCorrupt, assignment.RunID)
 		}
 		view.Evidence = &task.Evidence{RunID: assignment.RunID, Sequence: seq, EventHash: events[seq-1].EventHash}
+		acceptance, hasAcceptance, err := definition.Contract()
+		if err != nil {
+			return view, fmt.Errorf("%w: task run %s: %w", ErrStateCorrupt, assignment.RunID, err)
+		}
+		if hasAcceptance {
+			evidence, err := acceptanceEvidenceFromRun(events, seq, stateDir, hash, acceptance)
+			if err != nil {
+				return view, fmt.Errorf("%w: task run %s: %w", ErrStateCorrupt, assignment.RunID, err)
+			}
+			if evidence != nil {
+				view.Acceptance = evidence
+				view.Evidence.AcceptanceDigest = acceptance.Digest
+				// 证据引用取 verification_finished 中的制品引用；其格式已由
+				// acceptanceEvidenceFromRun 校验，这里只做一次解析绑定。
+				var finished domain.VerificationFinishedPayload
+				if json.Unmarshal(events[seq-1].Payload, &finished) == nil {
+					var reference contract.Ref
+					if json.Unmarshal(finished.EvidenceRef, &reference) == nil {
+						view.Evidence.EvidenceRef = &reference
+					}
+				}
+			}
+		}
 	}
 	return view, nil
 }

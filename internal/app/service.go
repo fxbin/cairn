@@ -49,6 +49,10 @@ type RunOptions struct {
 	StateDir  string
 	Config    config.Config
 	OnEvent   EventSink
+	// Acceptance 是任务冻结的结构化验收合同；仅任务运行携带。Core 不自行发现
+	// 标准，缺省时为普通 Run，不生成标准级证据。恢复路径从冻结计划取回合同，
+	// 不依赖此处再次注入。
+	Acceptance *contract.AcceptanceContract
 	// DisableUserInstructions 供受控评测排除宿主用户规约；项目规约与历史快照仍保持原合同。
 	DisableUserInstructions bool
 	// 会话链关系（ADR-0018）：显式携带时写入创建事件并注入前情；空值时
@@ -246,6 +250,10 @@ func (service Service) run(ctx context.Context, options RunOptions, bind func(*B
 		return RunResult{}, err
 	}
 	defer func() { err = errors.Join(err, boot.Close()) }()
+	if options.Acceptance != nil {
+		cloned := options.Acceptance.Clone()
+		boot.Loop.Acceptance = &cloned
+	}
 	attachTelemetryStatsRecorder(runtime, options.StateDir, boot.WorkspaceHash)
 
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
