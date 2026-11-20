@@ -12,15 +12,18 @@ import (
 	"strings"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
-// TaskCreateRequest 携带交给 App 保存的目标和验收标准。
+// TaskCreateRequest 携带交给 App 保存的目标和验收标准。Criteria 为可选的
+// 结构化合同；缺省时按旧自由文本验收兼容。
 type TaskCreateRequest struct {
-	Workspace  string   `json:"workspace"`
-	StateDir   string   `json:"state_dir,omitempty"`
-	Goal       string   `json:"goal"`
-	Acceptance []string `json:"acceptance"`
+	Workspace  string                         `json:"workspace"`
+	StateDir   string                         `json:"state_dir,omitempty"`
+	Goal       string                         `json:"goal"`
+	Acceptance []string                       `json:"acceptance"`
+	Criteria   []contract.AcceptanceCriterion `json:"criteria,omitempty"`
 }
 
 // TaskGetRequest 标识当前工作区内的持久任务。
@@ -58,7 +61,7 @@ func (api *API) CreateTask(ctx context.Context, request TaskCreateRequest) (app.
 	if err != nil {
 		return app.Task{}, err
 	}
-	return api.service.CreateTask(ctx, app.TaskScope(scope), app.TaskDefinition{Goal: request.Goal, Acceptance: request.Acceptance})
+	return api.service.CreateTask(ctx, app.TaskScope(scope), app.TaskDefinition{Goal: request.Goal, Acceptance: request.Acceptance, Criteria: request.Criteria})
 }
 
 // GetTask 查询任务及同一工作区内已核验的分配。

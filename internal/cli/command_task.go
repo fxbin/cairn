@@ -9,10 +9,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/fxbin/cairn/internal/app"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -43,11 +45,16 @@ func (command Command) taskScope(flags *appCommandFlags) (app.TaskScope, error) 
 	return app.TaskScope{Workspace: flags.workspace, StateDir: flags.stateDir, Config: configuration}, err
 }
 
-// taskCreate 保存用户提供的目标和验收条件。
+// taskCreate 保存用户提供的目标、验收条件和可选的结构化检查绑定。
 func (command Command) taskCreate(ctx context.Context, arguments []string) int {
-	flags := command.appFlags("task create", "<goal> --accept <condition> [--accept <condition> ...]")
+	flags := command.appFlags("task create", "<goal> --accept <condition> [--accept <condition> ...] [--check <ids> ... | --coding] [--criterion-id <id> ...]")
 	var acceptance stringListFlag
+	var checks stringListFlag
+	var criterionIDs stringListFlag
+	useCoding := flags.Bool("coding", false, "bind acceptance to standard Coding checks (build/test/lint/diff) by position; requires verification commands with matching id in config")
 	flags.Var(&acceptance, "accept", "acceptance condition (repeatable)")
+	flags.Var(&checks, "check", "comma-separated verification check ids bound to the acceptance at the same position")
+	flags.Var(&criterionIDs, "criterion-id", "stable criterion id at the same position (auto-generated when absent)")
 	if !flags.parse(arguments, 1) {
 		return ExitUsage
 	}
@@ -55,13 +62,65 @@ func (command Command) taskCreate(ctx context.Context, arguments []string) int {
 		flags.Usage()
 		return ExitUsage
 	}
+	selectedChecks := []string(checks)
+	if *useCoding {
+		if len(checks) != 0 {
+			fmt.Fprintln(command.Stderr, "acceptance error: --coding cannot be combined with --check")
+			return ExitUsage
+		}
+		standard := app.CodingCheckIDs()
+		if len(acceptance) > len(standard) {
+			fmt.Fprintln(command.Stderr, "acceptance error: more criteria than standard Coding checks")
+			return ExitUsage
+		}
+		selectedChecks = standard[:len(acceptance)]
+	}
+	criteria, err := buildAcceptanceCriteria(acceptance, selectedChecks, criterionIDs)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "acceptance error:", err)
+		return ExitUsage
+	}
 	scope, err := command.taskScope(flags)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
 		return ExitUsage
 	}
-	current, err := command.Service.CreateTask(ctx, scope, app.TaskDefinition{Goal: flags.Arg(0), Acceptance: acceptance})
+	definition := app.TaskDefinition{Goal: flags.Arg(0), Acceptance: acceptance}
+	if len(criteria) != 0 {
+		definition.Criteria = criteria
+	}
+	current, err := command.Service.CreateTask(ctx, scope, definition)
 	return command.reportTask("task create", flags.jsonOutput, &current, nil, err)
+}
+
+// buildAcceptanceCriteria 把并列的 --accept/--check/--criterion-id 参数组装为
+// 结构化合同。未提供任何 --check 时返回空切片，保持旧任务的自由文本兼容。
+func buildAcceptanceCriteria(acceptance, checks, criterionIDs []string) ([]contract.AcceptanceCriterion, error) {
+	if len(checks) == 0 {
+		if len(criterionIDs) != 0 {
+			return nil, errors.New("--criterion-id requires --check")
+		}
+		return nil, nil
+	}
+	if len(checks) != len(acceptance) {
+		return nil, errors.New("--check count must match --accept count")
+	}
+	if len(criterionIDs) != 0 && len(criterionIDs) != len(acceptance) {
+		return nil, errors.New("--criterion-id count must match --accept count")
+	}
+	criteria := make([]contract.AcceptanceCriterion, 0, len(acceptance))
+	for index, statement := range acceptance {
+		id := fmt.Sprintf("criterion-%d", index+1)
+		if len(criterionIDs) != 0 {
+			id = strings.TrimSpace(criterionIDs[index])
+		}
+		bound := strings.Split(checks[index], ",")
+		for position, check := range bound {
+			bound[position] = strings.TrimSpace(check)
+		}
+		criteria = append(criteria, contract.AcceptanceCriterion{ID: id, Statement: statement, Required: true, Checks: bound})
+	}
+	return criteria, nil
 }
 
 // taskGet 展示任务当前修订及持久分配的运行历史。
@@ -192,6 +251,12 @@ func (command Command) printTask(current app.Task) {
 	fmt.Fprintf(command.Stdout, "task: %s\nstate: %s\nrevision: %d\ngoal: %s\n", current.ID, current.State, current.Revision, current.Definition.Goal)
 	for _, item := range current.Definition.Acceptance {
 		fmt.Fprintf(command.Stdout, "  acceptance: %s\n", item)
+	}
+	if current.Definition.AcceptanceDigest != "" {
+		fmt.Fprintf(command.Stdout, "acceptance_digest: %s\n", current.Definition.AcceptanceDigest)
+		for _, criterion := range current.Definition.Criteria {
+			fmt.Fprintf(command.Stdout, "  criterion: %s required=%t checks=%s\n", criterion.ID, criterion.Required, strings.Join(criterion.Checks, ","))
+		}
 	}
 	if current.Progress.Summary != "" {
 		fmt.Fprintf(command.Stdout, "progress: %s\n", current.Progress.Summary)
