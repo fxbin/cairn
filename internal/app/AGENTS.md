@@ -86,6 +86,11 @@ subagent_progress_test.go: 回归 SubagentProgress 投影父子进展与细节�
 subagent_resume.go: SubagentResume 重建已分派子运行。历史关联阻止重复委派。
 subagent_resume_test.go: 回归 SubagentResume 重建已分派子运行。历史关联阻止重复委派。
 subagent_review.go: SubagentReview 区分产出与独立验收来源。角色标签不能授予权限。
+verifier.go: 从父配置派生只读 Verifier 配置，解析子 Run 结构化输出为待核验 Finding。
+verifier_run.go: 主动发起独立只读 Verifier 子运行，复用委派与子运行语义。
+finding_validation.go: Finding 程序核验（真实制品库证据校验）、去重与保守状态推进；验证失败不得解释为没问题。
+verifier_findings.go: 组合门面，使用真实制品库校验器核验 Verifier 输出。
+rework.go: 确认 Finding 驱动的有界返工资格检查，复用 workflow.RetryStep。
 subagent_review_test.go: 回归 SubagentReview 区分产出与独立验收来源。角色标签不能授予权限。
 subagent_start.go: SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_start_test.go: 回归 SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
