@@ -44,6 +44,9 @@ type TaskAssignmentView struct {
 	// Acceptance 是从 Run 证据制品校验通过的标准级证据，仅用于完成判定，
 	// 不写入任务库也不出现在展示 JSON 中。
 	Acceptance *contract.AcceptanceEvidence `json:"-"`
+	// Evaluation 是由 Acceptance + Coverage 派生的多级验收结论；同样只用于
+	// 完成判定，不持久化、不展示。
+	Evaluation *contract.AcceptanceEvaluation `json:"-"`
 }
 
 // RunTask 以同一分配 ID 重试请求时返回原绑定。已提交绑定但缺少创建事实时失败关闭。
@@ -294,6 +297,11 @@ func projectTaskAssignment(ctx context.Context, journal ports.Journal, assignmen
 			}
 			if evidence != nil {
 				view.Acceptance = evidence
+				evaluation, evalErr := evaluationFromEvidence(acceptance, evidence)
+				if evalErr != nil {
+					return view, fmt.Errorf("%w: task run %s: %w", ErrStateCorrupt, assignment.RunID, evalErr)
+				}
+				view.Evaluation = &evaluation
 				view.Evidence.AcceptanceDigest = acceptance.Digest
 				// 证据引用取 verification_finished 中的制品引用；其格式已由
 				// acceptanceEvidenceFromRun 校验，这里只做一次解析绑定。

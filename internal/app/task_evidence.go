@@ -77,6 +77,29 @@ func acceptanceEvidenceFromRun(events []domain.Event, verificationSeq uint64, st
 	return &evidence, nil
 }
 
+// evaluationFromEvidence 从已校验证据与冻结合同计算多级验收结论。当前没有独立
+// Verifier 的 Finding 源，Findings 为空；这不等于"没有问题"，只表示本 Run 尚无
+// 结构化发现。Coverage 从证据自带的覆盖计数派生，不重新引入第二事实源。
+func evaluationFromEvidence(acceptance contract.AcceptanceContract, evidence *contract.AcceptanceEvidence) (contract.AcceptanceEvaluation, error) {
+	if evidence == nil {
+		return contract.AcceptanceEvaluation{}, errors.New("acceptance evidence is required for evaluation")
+	}
+	coverage := contract.CoverageSummary{
+		Total:                len(acceptance.Criteria),
+		Required:             evidence.Coverage.Required,
+		Covered:              evidence.Coverage.Covered,
+		Executed:             evidence.Coverage.Passed,
+		AuthorizedExceptions: 0,
+		UncoveredRequired:    []string{},
+		Complete:             evidence.Coverage.Complete,
+	}
+	return contract.EvaluateAcceptanceVerdict(contract.EvaluationInput{
+		Acceptance: acceptance,
+		Coverage:   coverage,
+		Evidence:   evidence,
+	})
+}
+
 // verificationStartRecord 保存验证开始事件中供证据校验的绑定字段。
 type verificationStartRecord struct {
 	verificationID       string

@@ -154,6 +154,48 @@ func TestAcceptanceEvidenceFromRunRejectsBindingDrift(t *testing.T) {
 	}
 }
 
+// TestEvaluationFromEvidence 锁定证据到多级结论的派生：通过的证据得到 Passed，
+// 失败证据得到 Failed/非 Passed。这是 CompleteTask 验收门禁的上游。
+func TestEvaluationFromEvidence(t *testing.T) {
+	accepted, err := contract.NewAcceptanceContract([]contract.AcceptanceCriterion{
+		{ID: "compile", Statement: "项目可编译", Required: true, Checks: []string{"build"}},
+	})
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	passedCriteria, passedCoverage, passedConclusion := contract.EvaluateAcceptance(accepted, []contract.AcceptanceCheckResult{
+		{CheckID: "build", Executed: true, Passed: true},
+	})
+	passedEvidence := &contract.AcceptanceEvidence{
+		Version: contract.AcceptanceEvidenceVersion, RunID: "run-1", AcceptanceDigest: accepted.Digest,
+		Subject:  contract.EvidenceSubject{Kind: contract.EvidenceKindWorkspace, ID: "ws", Version: "sha256:obs"},
+		Producer: contract.EvidenceProducer{Kind: contract.EvidenceProducerEngine, ID: contract.EvidenceProducerID},
+		Source:   contract.EvidenceSource{VerificationID: "v1", CommandsFingerprint: "sha256:fp"},
+		Criteria: passedCriteria, Coverage: passedCoverage, Conclusion: passedConclusion,
+	}
+	evaluation, err := evaluationFromEvidence(accepted, passedEvidence)
+	if err != nil {
+		t.Fatalf("evaluation from passed evidence: %v", err)
+	}
+	if evaluation.Verdict != contract.VerdictPassed {
+		t.Fatalf("verdict = %s, want passed", evaluation.Verdict)
+	}
+	failedCriteria, failedCoverage, failedConclusion := contract.EvaluateAcceptance(accepted, []contract.AcceptanceCheckResult{
+		{CheckID: "build", Executed: true, Passed: false},
+	})
+	failedEvidence := *passedEvidence
+	failedEvidence.Criteria = failedCriteria
+	failedEvidence.Coverage = failedCoverage
+	failedEvidence.Conclusion = failedConclusion
+	failedEval, err := evaluationFromEvidence(accepted, &failedEvidence)
+	if err != nil {
+		t.Fatalf("evaluation from failed evidence: %v", err)
+	}
+	if failedEval.Verdict == contract.VerdictPassed {
+		t.Fatalf("failed evidence produced passed verdict: %s", failedEval.Verdict)
+	}
+}
+
 func repeatHex(character byte, count int) string {
 	result := make([]byte, count)
 	for index := range result {

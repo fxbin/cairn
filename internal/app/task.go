@@ -17,6 +17,7 @@ import (
 	"github.com/fxbin/cairn/internal/capabilities/task"
 	tasksqlite "github.com/fxbin/cairn/internal/capabilities/task/sqlite"
 	"github.com/fxbin/cairn/internal/config"
+	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 )
 
@@ -169,6 +170,9 @@ func (service Service) CompleteTask(ctx context.Context, scope TaskScope, id Tas
 		if hasAcceptance {
 			if latest.Acceptance == nil || latest.Evidence.AcceptanceDigest != acceptance.Digest || latest.Evidence.EvidenceRef == nil {
 				return errors.New("task completion requires sufficient acceptance evidence for every required criterion")
+			}
+			if latest.Evaluation == nil || latest.Evaluation.Verdict != contract.VerdictPassed {
+				return errors.New("task completion requires a passed acceptance evaluation")
 			}
 		} else if latest.Evidence.AcceptanceDigest != "" || latest.Evidence.EvidenceRef != nil {
 			return ErrTaskUnverified
