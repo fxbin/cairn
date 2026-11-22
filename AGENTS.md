@@ -34,7 +34,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `internal/capabilities/telemetry/` | 可选语义观测：只消费已持久化事件的聚合、关联跨度与导出；默认关闭，不参与事实判定 |
 | `internal/capabilities/decision/` | 项目决策账本的合同与状态机（ADR-0023）；**当前无运行时消费方，不得宣称已注入上下文** |
 | `internal/capabilities/task/` | 跨会话任务生命周期、版本比较与分配；应用层连接 Run Journal 的运行和验收证据 |
-| `internal/capabilities/workflow/` | 不可变定义、版本化实例、步骤尝试及独立 SQLite 事件链；应用层装配 Agent、固定脚本、独立验证、人工门和有界返工，Scheduler 尚未接线 |
+| `internal/capabilities/workflow/` | 不可变定义、版本化实例、步骤尝试及独立 SQLite 事件链；应用层装配 Agent、固定脚本、程序验证、独立审查、人工门和有界返工，Scheduler 尚未接线 |
 
 ## 不可绕过的边界
 

@@ -81,8 +81,13 @@ func (service Service) Resume(ctx context.Context, options ResumeOptions) (outco
 	if err := enforceAdmissionGate(options.StateDir, boot.WorkspaceHash, options.Config); err != nil {
 		return RunResult{ID: options.RunID}, err
 	}
+	if options.verificationSubject != "" {
+		if err := requireWorkflowVerificationVersion(boot, options.verificationSubject); err != nil {
+			return RunResult{ID: options.RunID}, err
+		}
+	}
 	// 工作流脚本和验证只运行创建事件所绑定的计划。原审批决定继续绑定提议。
-	if calls, scripted, err := workflowScriptCallsOfRun(events[0], boot.Artifacts); err != nil {
+	if calls, scripted, err := workflowScriptCallsOfRun(events[0], boot, true); err != nil {
 		return RunResult{ID: options.RunID}, err
 	} else if scripted {
 		return service.driveWorkflowScriptRun(ctx, boot, events[0], options, calls)
@@ -190,7 +195,7 @@ func (service Service) Reconcile(ctx context.Context, options ReconcileOptions) 
 			return RunResult{ID: options.RunID}, err
 		}
 		var planErr error
-		workflowCalls, isWorkflowScript, planErr = workflowScriptCallsOfRun(events[0], boot.Artifacts)
+		workflowCalls, isWorkflowScript, planErr = workflowScriptCallsOfRun(events[0], boot, false)
 		if planErr != nil {
 			return RunResult{ID: options.RunID}, planErr
 		}

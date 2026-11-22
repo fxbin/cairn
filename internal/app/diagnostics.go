@@ -403,6 +403,9 @@ func presetToolsWithCallbacks(workspace tools.Workspace, execTool tools.ExecComm
 		available = append(available, tools.Browser{Driver: &tools.LazyBrowserDriver{}})
 	}
 	if preset == config.PresetReadOnly {
+		if options.VerificationFilesOnly {
+			return available[:3:3]
+		}
 		readOnly := append([]tools.Tool(nil), available[:7]...)
 		readOnly = append(readOnly, memory.MemoryRecall{Explain: explain})
 		if options.LspDiagnostics {

@@ -21,7 +21,7 @@ func (execution workflowExecution) decideWorkflowRunApproval(ctx context.Context
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
-	run, _, err := execution.loadVersionedStepRun(ctx, snapshot.SessionID, attempt)
+	run, _, err := execution.loadVersionedStepRun(ctx, workflowAttemptSession(snapshot.SessionID, node.Kind), attempt)
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
@@ -30,7 +30,7 @@ func (execution workflowExecution) decideWorkflowRunApproval(ctx context.Context
 		pending.OperationID != options.OperationID || pending.Fingerprint != options.Fingerprint {
 		return WorkflowOutcome{}, errors.New("workflow decision does not match the current run approval")
 	}
-	configuration, err := workflowNodeConfig(execution.configuration, node)
+	configuration, err := workflowConfiguredNode(execution.configuration, execution.definition, node)
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
@@ -39,7 +39,7 @@ func (execution workflowExecution) decideWorkflowRunApproval(ctx context.Context
 		Config: configuration, OnEvent: execution.onEvent, ExpectedApprovalOperationID: pending.OperationID,
 		Approval: ports.Approval{Fingerprint: pending.Fingerprint, Approve: approve, Reason: reason},
 	})
-	if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, snapshot.SessionID, runErr); err != nil {
+	if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr); err != nil {
 		return execution.versionedWorkflowOutcome(ctx, snapshot.WorkflowID, "", err)
 	}
 	return execution.advance(ctx, snapshot.WorkflowID)
@@ -52,7 +52,7 @@ func (service Service) ReconcileWorkflowStep(ctx context.Context, options Workfl
 		if err != nil {
 			return WorkflowOutcome{}, err
 		}
-		run, _, err := execution.loadVersionedStepRun(ctx, snapshot.SessionID, attempt)
+		run, _, err := execution.loadVersionedStepRun(ctx, workflowAttemptSession(snapshot.SessionID, node.Kind), attempt)
 		if err != nil {
 			return WorkflowOutcome{}, err
 		}
@@ -62,7 +62,7 @@ func (service Service) ReconcileWorkflowStep(ctx context.Context, options Workfl
 		if snapshot.Paused && options.Verdict != "abort_run" {
 			return WorkflowOutcome{}, errors.New("continue the paused workflow before reconciling with execution")
 		}
-		configuration, err := workflowNodeConfig(execution.configuration, node)
+		configuration, err := workflowConfiguredNode(execution.configuration, execution.definition, node)
 		if err != nil {
 			return WorkflowOutcome{}, err
 		}
@@ -70,7 +70,7 @@ func (service Service) ReconcileWorkflowStep(ctx context.Context, options Workfl
 			RunID: run.ID, OperationID: options.OperationID, Verdict: options.Verdict, Note: reason, Evidence: options.Evidence,
 			Workspace: execution.workspacePath, StateDir: execution.stateDir, Config: configuration, OnEvent: execution.onEvent,
 		})
-		if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, snapshot.SessionID, runErr); err != nil {
+		if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr); err != nil {
 			return execution.versionedWorkflowOutcome(ctx, snapshot.WorkflowID, "", err)
 		}
 		return execution.advance(ctx, snapshot.WorkflowID)

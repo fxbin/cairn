@@ -1,6 +1,6 @@
 /*
  * [INPUT]: 依赖domain 身份与冻结二进制哈希编码。
- * [OUTPUT]: 提供工作流事件、链校验与 Snapshot 投影。
+ * [OUTPUT]: 提供工作流事件、链校验与 Snapshot 投影。审查步骤仅绑定版本化实例。
  * [POS]: 能力的事实合同；SQLite 叶子和 App 共用同一重放。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
@@ -85,11 +85,15 @@ type StepSpec struct {
 	Inputs      []string `json:"inputs,omitempty"`
 }
 
-// 步骤种类约束：执行、验证与人工审批门；其他值失败关闭。
 const (
+	// StepKindExecute 表示执行任务的 Agent 节点。
 	StepKindExecute = "execute"
-	StepKindVerify  = "verify"
-	StepKindAccept  = "accept"
+	// StepKindVerify 表示执行冻结检查的程序验证节点。
+	StepKindVerify = "verify"
+	// StepKindReview 表示绑定宿主验证上下文的独立只读审查节点。
+	StepKindReview = "review"
+	// StepKindAccept 表示需要显式决定的人工验收节点。
+	StepKindAccept = "accept"
 )
 
 // RunCreatedPayload 是 workflow_run_created 的负载。Task 为可选的任务制品
@@ -258,9 +262,9 @@ func validatePayload(eventType EventType, payload json.RawMessage) error {
 			}
 			switch spec.Kind {
 			case StepKindExecute, StepKindVerify, StepKindAccept:
-			case StepKindScript:
+			case StepKindScript, StepKindReview:
 				if created.Definition == nil {
-					return errors.New("workflow script step requires a versioned definition")
+					return fmt.Errorf("workflow %s step requires a versioned definition", spec.Kind)
 				}
 			default:
 				return fmt.Errorf("workflow step %q has unknown kind %q", spec.ID, spec.Kind)

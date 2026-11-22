@@ -1,7 +1,7 @@
 /*
- * [INPUT]: 依赖工作流步骤种类、共享制品和凭据脱敏合同。
+ * [INPUT]: 依赖工作流步骤种类、验收合同与制品引用。
  * [OUTPUT]: 提供定义草案、不可变修订、节点和制品锚点。
- * [POS]: 领域层校验线性依赖与返工边界。应用层验证实际运行权限。
+ * [POS]: 能力层冻结线性依赖、验证节点和返工边界。应用层核对执行权限。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
 // 本文件定义可经宿主保存的工作流模板。
@@ -47,19 +47,21 @@ type DefinitionID string
 
 // DefinitionDraft 是宿主收到的待校验模板。首次保存允许宿主生成标识。
 type DefinitionDraft struct {
-	ID    DefinitionID `json:"id,omitempty"`
-	Name  string       `json:"name"`
-	Nodes []Node       `json:"nodes"`
+	ID           DefinitionID                 `json:"id,omitempty"`
+	Name         string                       `json:"name"`
+	Nodes        []Node                       `json:"nodes"`
+	Verification *contract.AcceptanceContract `json:"verification,omitempty"`
 }
 
 // Definition 是不可变模板修订。工作区哈希与版本随正文进入内容摘要。
 type Definition struct {
-	SchemaVersion int          `json:"schema_version"`
-	WorkspaceHash string       `json:"workspace_hash"`
-	ID            DefinitionID `json:"id"`
-	Revision      uint64       `json:"revision"`
-	Name          string       `json:"name"`
-	Nodes         []Node       `json:"nodes"`
+	SchemaVersion int                          `json:"schema_version"`
+	WorkspaceHash string                       `json:"workspace_hash"`
+	ID            DefinitionID                 `json:"id"`
+	Revision      uint64                       `json:"revision"`
+	Name          string                       `json:"name"`
+	Nodes         []Node                       `json:"nodes"`
+	Verification  *contract.AcceptanceContract `json:"verification,omitempty"`
 }
 
 // DefinitionRef 锚定工作流运行采用的模板修订及其正文制品。
@@ -113,6 +115,10 @@ func NewDefinition(workspaceHash string, draft DefinitionDraft, revision uint64)
 		Name:          strings.TrimSpace(string(contract.Redact([]byte(draft.Name)))),
 		Nodes:         nodes,
 	}
+	if draft.Verification != nil {
+		verification := draft.Verification.Clone()
+		definition.Verification = &verification
+	}
 	if err := definition.Validate(); err != nil {
 		return Definition{}, err
 	}
@@ -139,6 +145,9 @@ func (definition Definition) Validate() error {
 	if len(definition.Nodes) == 0 || len(definition.Nodes) > maxDefinitionNodes {
 		return errors.New("invalid workflow node count")
 	}
+	if err := definition.validateVerification(); err != nil {
+		return err
+	}
 	prior := make(map[string]string, len(definition.Nodes))
 	for index, node := range definition.Nodes {
 		if !validDefinitionID(node.ID) || prior[node.ID] != "" {
@@ -150,6 +159,36 @@ func (definition Definition) Validate() error {
 		prior[node.ID] = node.Kind
 	}
 	return nil
+}
+
+// validateVerification 确认独立审查只在冻结验收合同的线性定义中使用。
+func (definition Definition) validateVerification() error {
+	kinds := make([]string, 0, len(definition.Nodes))
+	for _, node := range definition.Nodes {
+		kinds = append(kinds, node.Kind)
+	}
+	if definition.Verification == nil {
+		if slices.Contains(kinds, StepKindReview) {
+			return errors.New("independent review requires a frozen acceptance contract")
+		}
+		return nil
+	}
+	if err := definition.Verification.Validate(); err != nil {
+		return fmt.Errorf("workflow acceptance contract: %w", err)
+	}
+	if !validVerificationPipeline(kinds) || definition.Nodes[0].ReadOnly {
+		return errors.New("verification workflow requires a writable agent, program verification, independent review and optional human acceptance")
+	}
+	if len(kinds) == 4 && definition.Nodes[3].RetryFrom != "" {
+		return errors.New("verification workflow rework must originate at program verification or independent review")
+	}
+	return nil
+}
+
+// validVerificationPipeline 检查冻结验证有序节点。人工验收只能在独立审查之后出现。
+func validVerificationPipeline(kinds []string) bool {
+	return (len(kinds) == 3 || (len(kinds) == 4 && kinds[3] == StepKindAccept)) &&
+		kinds[0] == StepKindExecute && kinds[1] == StepKindVerify && kinds[2] == StepKindReview
 }
 
 // Valid 判断定义标识是否符合存储与界面的单一词元约束。
@@ -186,6 +225,10 @@ func (node Node) validate(prior map[string]string) error {
 		}
 		if err := validateWorkflowArgv(node.Argv); err != nil {
 			return err
+		}
+	case StepKindReview:
+		if node.Prompt != "" || len(node.Argv) != 0 || node.Model != "" || node.ReadOnly || len(node.Inputs) != 0 {
+			return errors.New("independent review inputs and protection are bound by the host")
 		}
 	case StepKindVerify, StepKindAccept:
 		if len(node.Argv) != 0 || node.Model != "" || node.ReadOnly {

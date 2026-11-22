@@ -155,6 +155,11 @@ func prepareWorkflowStart(ctx context.Context, options StartWorkflowOptions) (Wo
 	if err != nil {
 		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
 	}
+	if definition.Verification != nil {
+		if err := requireIsolatedVerificationState(scope.Workspace, scope.StateDir); err != nil {
+			return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
+		}
+	}
 	if err := validateWorkflowRuntime(definition, scope.Config); err != nil {
 		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
 	}
@@ -221,13 +226,33 @@ func (service Service) decideWorkflowGate(ctx context.Context, options WorkflowD
 	if _, err := execution.readWorkflowDependencies(dependencies); err != nil {
 		return WorkflowOutcome{}, err
 	}
-	if _, err := execution.appendDraft(ctx, options.WorkflowID, workflow.EventGateDecided, workflow.GateDecidedPayload{
+	if err := execution.recordWorkflowHumanDecision(ctx, snapshot, workflow.GateDecidedPayload{
 		StepID: options.StepID, Attempt: len(snapshot.Attempts[options.StepID]) + 1,
 		Decision: decision, Reason: reason, Dependencies: dependencies,
 	}); err != nil {
 		return WorkflowOutcome{}, err
 	}
 	return execution.advance(ctx, options.WorkflowID)
+}
+
+// recordWorkflowHumanDecision 将验证工作流的批准绑定到当前工作区及报告版本。
+func (execution workflowExecution) recordWorkflowHumanDecision(ctx context.Context, snapshot *workflow.Snapshot, payload workflow.GateDecidedPayload) error {
+	if execution.definition.Verification != nil && payload.Decision == workflow.GateApproved {
+		lease, err := acquireWorkspaceLock(execution.stateDir, execution.workspaceHash)
+		if err != nil {
+			return err
+		}
+		defer lease.Release()
+		view, err := execution.workflowStatusView(ctx, snapshot)
+		if err != nil {
+			return err
+		}
+		if err := requireCurrentWorkflowVerification(execution.workspacePath, execution.configuration, view.Verification); err != nil {
+			return err
+		}
+	}
+	_, err := execution.appendDraft(ctx, snapshot.WorkflowID, workflow.EventGateDecided, payload)
+	return err
 }
 
 // openWorkflowMutation 取得实例锁并校验冻结的定义及有效配置。
@@ -284,6 +309,11 @@ func (execution *workflowExecution) prepareVersionedWorkflow(ctx context.Context
 	definition, err := verificationBoundDefinition(execution.stateDir, execution.workspaceHash, snapshot)
 	if err != nil {
 		return err
+	}
+	if definition.Verification != nil {
+		if err := requireIsolatedVerificationState(execution.workspacePath, execution.stateDir); err != nil {
+			return err
+		}
 	}
 	if err := validateWorkflowRuntime(definition, execution.configuration); err != nil {
 		return err

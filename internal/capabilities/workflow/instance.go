@@ -1,5 +1,5 @@
 // [INPUT]: 版本化定义引用、工作流事件与 Run 标识。
-// [OUTPUT]: 从版本化事件链投影尝试、人工决定与步骤依赖。
+// [OUTPUT]: 从版本化事件链投影尝试、人工决定、步骤依赖及独立审查顺序。
 // [POS]: 工作流能力的版本化重放规则。应用层核验 Run Journal 和制品。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
@@ -90,7 +90,9 @@ func validateInstanceSpecs(created RunCreatedPayload) error {
 		return errors.New("versioned workflow requires definition and session binding")
 	}
 	previous := make(map[string]string, len(created.Steps))
+	kinds := make([]string, 0, len(created.Steps))
 	for _, step := range created.Steps {
+		kinds = append(kinds, step.Kind)
 		if step.MaxAttempts < 1 || step.MaxAttempts > maxNodeAttempts {
 			return fmt.Errorf("workflow step %q has invalid attempt limit", step.ID)
 		}
@@ -108,6 +110,14 @@ func validateInstanceSpecs(created RunCreatedPayload) error {
 			seen[input] = struct{}{}
 		}
 		previous[step.ID] = step.Kind
+	}
+	if slices.Contains(kinds, StepKindReview) {
+		if !validVerificationPipeline(kinds) || len(created.Steps[2].Inputs) != 0 {
+			return errors.New("invalid versioned verification workflow steps")
+		}
+		if len(kinds) == 4 && created.Steps[3].RetryFrom != "" {
+			return errors.New("verification workflow rework must originate at program verification or independent review")
+		}
 	}
 	return nil
 }
