@@ -39,7 +39,7 @@ describe("Workbench workflow editor parity",()=>{
   mock.listWorkflows.mockResolvedValue([]);
   const onOpenRun=vi.fn();
   render(<WorkflowsView workspace="/tmp/a" notify={vi.fn()} onConverseCreate={vi.fn()} onOpenRun={onOpenRun} instances={[{
-   workflow_id:"wf-task",task_id:"task-1",created_at:"",finished:true,finish_state:"failed",resume_index:2,steps:[],
+   workflow_id:"wf-task",task_id:"task-1",task_state:"active",created_at:"",finished:true,finish_state:"failed",resume_index:2,steps:[],
    verification_criteria:[{id:"behavior",statement:"计算结果符合单测"}],
    verification:{
     worker_run_id:"worker-1",program_run_id:"program-1",review_run_id:"review-1",
@@ -54,6 +54,23 @@ describe("Workbench workflow editor parity",()=>{
   fireEvent.click(report.getByRole("button",{name:"查看独立审查"}));
   expect(onOpenRun).toHaveBeenCalledWith("review-1");
   expect(screen.queryByText("这个工作流暂无持久化实例。")).not.toBeInTheDocument();
+ });
+ it("keeps a passed workflow in explicit Task acceptance until the Task state changes",async()=>{
+  mock.listWorkflows.mockResolvedValue([]);
+  const instance = {
+   workflow_id:"wf-task",task_id:"task-1",task_state:"active",created_at:"",finished:true,finish_state:"completed",resume_index:-1,steps:[],
+   verification:{
+    worker_run_id:"worker-1",program_run_id:"program-1",review_run_id:"review-1",
+    evaluation:{verdict:"passed",criteria:[]},coverage:{entries:[]},findings:{},
+   },
+  };
+  const config = {workspace:"/tmp/a", notify:vi.fn(), onConverseCreate:vi.fn()};
+  const {rerender}=render(<WorkflowsView {...config} instances={[instance]}/>);
+  expect(await screen.findByText("待人工验收")).toBeInTheDocument();
+  expect(screen.queryByText("已验收")).not.toBeInTheDocument();
+  rerender(<WorkflowsView {...config} instances={[{...instance,task_state:"completed"}]}/>);
+  expect(await screen.findByText("已验收")).toBeInTheDocument();
+  expect(screen.queryByText("待人工验收")).not.toBeInTheDocument();
  });
  it("requires explicit confirmation before workflow execution, not for dry run",async()=>{
   const confirm=vi.spyOn(window,"confirm").mockReturnValue(false);

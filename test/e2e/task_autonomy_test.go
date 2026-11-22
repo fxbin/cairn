@@ -201,14 +201,14 @@ func TestDouble(t *testing.T) {
 	fixture.approve(t, unchanged, 0)
 	reviewed := fixture.get(t, created.ID)
 	report := reviewed.Workflow.Verification
-	if reviewed.State != "active" || report == nil || report.Evaluation.Verdict != contract.VerdictPassed ||
+	if reviewed.State != "active" || reviewed.Workflow.TaskState != "active" || report == nil || report.Evaluation.Verdict != contract.VerdictPassed ||
 		report.ProgramRunID == "" || report.ReviewRunID == "" || report.WorkerRunID == "" {
 		t.Fatalf("task did not reach explicit acceptance: %+v", report)
 	}
 	fixture.run(t, 0, "task", "complete", string(created.ID), "--revision", strconv.FormatUint(reviewed.Revision, 10),
 		"--run", string(report.ReviewRunID))
 	completed := fixture.get(t, created.ID)
-	if completed.State != "completed" || completed.Completion == nil || len(completed.Progress.Remaining) != 0 ||
+	if completed.State != "completed" || completed.Workflow.TaskState != "completed" || completed.Completion == nil || len(completed.Progress.Remaining) != 0 ||
 		completed.Completion.RunID != report.ReviewRunID || completed.Workflow.Sequence != reviewed.Workflow.Sequence {
 		t.Fatal("explicit acceptance did not replay the same passed evidence")
 	}

@@ -60,6 +60,20 @@ function applyStepMode(step: WorkflowStepSpec, nextMode: string): WorkflowStepSp
   return updated;
 }
 
+/** 任务验收状态来自 Task。流程结束本身不代表已验收。 */
+function taskWorkflowStatus(instance: WorkflowInstanceView): string {
+  switch (instance.task_state) {
+    case "completed": return "已验收";
+    case "cancelled": return "任务已取消";
+    case "paused": return "任务已暂停";
+    case "active":
+      if (instance.finished && instance.finish_state === "completed" && instance.verification?.evaluation.verdict === "passed") {
+        return "待人工验收";
+      }
+  }
+  return `工作流 · ${workflowPhaseLabel(instance.finish_state ?? instance.phase ?? "ready")}`;
+}
+
 /**
  * 渲染工作流目录：当接入主工作台时为纯只读检视/运行历史/触发门户，创建与编辑统一跳转对话；
  * 独立无回调挂载时保留只用单测使用的基础回退表单。
@@ -171,12 +185,12 @@ export default function WorkflowsView({
               <article className="wb-wf-history-record" key={instance.workflow_id}>
                 <div className="wb-wf-history-top">
                   <strong>{instance.definition_name || instance.task_id}</strong>
-                  <span className="wb-badge">{workflowPhaseLabel(instance.finish_state ?? instance.phase ?? "ready")}</span>
+                  <span className="wb-badge">{taskWorkflowStatus(instance)}</span>
                   <span className="wb-hash-pill">{instance.task_id}</span>
                 </div>
                 {instance.finish_reason && <p>{instance.finish_reason}</p>}
                 {instance.verification && <WorkflowVerificationSummary report={instance.verification} criteria={instance.verification_criteria} onOpenRun={onOpenRun} />}
-                {onControl && !historyError && (
+                {onControl && !historyError && instance.task_state === "active" && (
                   <WorkflowInstanceControls
                     key={instance.sequence}
                     workspace={workspace}

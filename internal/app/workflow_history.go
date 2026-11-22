@@ -81,6 +81,11 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 	if err := execution.projectWorkflowAttempts(ctx, snapshot, definition, &view); err != nil {
 		return WorkflowStatusView{}, err
 	}
+	taskState, err := execution.workflowTaskState(ctx, snapshot, definition, view)
+	if err != nil {
+		return WorkflowStatusView{}, err
+	}
+	view.TaskState = taskState
 	switch {
 	case view.Finished:
 		view.Phase = view.FinishState

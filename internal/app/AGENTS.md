@@ -121,7 +121,7 @@ workflow_control.go: 按实例链头追加暂停、继续、取消及有界返�
 workflow_operation.go: 复用已绑定 Run 的指纹审批和对账。版本漂移保留原审批。
 workflow_run_owner.go: 从 Run Journal 识别绑定归属，旧实例从工作流链查询。普通续链保留原工作区约束。
 workflow_history.go: 从持久化实例与 Run Journal 核验历史、产物和审批阶段。
-workflow_query.go: 只读投影实例、冻结标准及验收报告。查询不推进实例。
+workflow_query.go: 只读投影实例、Task 状态、冻结标准及验收报告。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
 
 workflow_store.go: 连接能力 SQLite 叶子与制品。路径、只读打开和链头 CAS 保持。

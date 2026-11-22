@@ -59,6 +59,7 @@ type WorkflowReconcileView struct {
 type WorkflowStatusView struct {
 	WorkflowID           string                         `json:"workflow_id"`
 	TaskID               string                         `json:"task_id,omitempty"`
+	TaskState            string                         `json:"task_state,omitempty"`
 	WorkspaceHash        string                         `json:"workspace_hash"`
 	ConfigFingerprint    string                         `json:"config_fingerprint"`
 	PlanSHA256           string                         `json:"plan_sha256"`

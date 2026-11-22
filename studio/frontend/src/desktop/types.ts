@@ -522,6 +522,7 @@ interface WorkflowFindingView {
 export interface WorkflowInstanceView {
   workflow_id: string;
   task_id?: string;
+  task_state?: string;
   verification?: WorkflowVerificationView;
   verification_criteria?: Array<{ id: string; statement: string }>;
   definition?: { id: string; revision: number };

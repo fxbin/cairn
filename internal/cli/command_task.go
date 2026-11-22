@@ -353,7 +353,7 @@ func (command Command) printTaskWorkflow(view app.WorkflowStatusView) {
 		fmt.Fprintf(command.Stdout, "  coverage %s · %s\n", entry.ObjectID, entry.Status)
 	}
 	fmt.Fprintf(command.Stdout, "  evidence runs · worker %s · program %s · review %s\n", report.WorkerRunID, report.ProgramRunID, report.ReviewRunID)
-	if report.ReviewRunID != "" && report.Evaluation.Verdict == contract.VerdictPassed {
+	if view.TaskState == "active" && report.ReviewRunID != "" && report.Evaluation.Verdict == contract.VerdictPassed {
 		fmt.Fprintln(command.Stdout, "  use the Review run ID for explicit task completion")
 	}
 }

@@ -379,33 +379,64 @@ func (service Service) driveTaskWorkflow(ctx context.Context, scope TaskScope, v
 	return latest, runErr
 }
 
+// taskWorkflowOwner 只读取 Task 库并核对双向身份。工作流报告不推断任务状态。
+func (execution workflowExecution) taskWorkflowOwner(ctx context.Context, snapshot *workflow.Snapshot, definition *WorkflowDefinition) (Task, error) {
+	store, err := tasksqlite.Open(ctx, (TaskScope{StateDir: execution.stateDir}).databasePath(execution.workspaceHash), true)
+	if err != nil {
+		return Task{}, fmt.Errorf("%w: read owning task: %w", ErrStateCorrupt, err)
+	}
+	defer store.Close()
+	current, _, err := store.Read(ctx, TaskID(snapshot.TaskID))
+	if err != nil {
+		return Task{}, fmt.Errorf("%w: read owning task: %w", ErrStateCorrupt, err)
+	}
+	if err := validateTaskWorkflowBinding(current); err != nil {
+		return Task{}, err
+	}
+	if err := validateTaskWorkflowSnapshot(current, snapshot); err != nil {
+		return Task{}, err
+	}
+	if err := validateTaskWorkflowDefinition(current, definition); err != nil {
+		return Task{}, err
+	}
+	return current, nil
+}
+
 // requireActiveTaskWorkflow 在推进前交叉核对已有 Task 归属与用户授权。
 func (execution workflowExecution) requireActiveTaskWorkflow(ctx context.Context, snapshot *workflow.Snapshot) error {
 	if snapshot.TaskID == "" {
 		return nil
 	}
-	store, err := tasksqlite.Open(ctx, (TaskScope{StateDir: execution.stateDir}).databasePath(execution.workspaceHash), true)
+	current, err := execution.taskWorkflowOwner(ctx, snapshot, execution.definition)
 	if err != nil {
-		return fmt.Errorf("%w: read owning task: %w", ErrStateCorrupt, err)
-	}
-	defer store.Close()
-	current, _, err := store.Read(ctx, TaskID(snapshot.TaskID))
-	if err != nil {
-		return fmt.Errorf("%w: read owning task: %w", ErrStateCorrupt, err)
-	}
-	if err := validateTaskWorkflowBinding(current); err != nil {
-		return err
-	}
-	if err := validateTaskWorkflowSnapshot(current, snapshot); err != nil {
-		return err
-	}
-	if err := validateTaskWorkflowDefinition(current, execution.definition); err != nil {
 		return err
 	}
 	if current.State != task.Active || !current.WorkflowBinding.Attached {
 		return ErrTaskTransition
 	}
 	return nil
+}
+
+// workflowTaskState 返回任务所有者的状态。已验收结论还需匹配读取到的终态。
+func (execution workflowExecution) workflowTaskState(ctx context.Context, snapshot *workflow.Snapshot, definition *WorkflowDefinition, view WorkflowStatusView) (string, error) {
+	if snapshot.TaskID == "" {
+		return "", nil
+	}
+	current, err := execution.taskWorkflowOwner(ctx, snapshot, definition)
+	if err != nil {
+		return "", err
+	}
+	if current.State == task.Completed {
+		if !snapshot.Finished {
+			// 此次读取的工作流快照早于其他进程写入的任务验收。
+			return "", nil
+		}
+		evidence, err := taskWorkflowCompletion(TaskView{Task: current, Workflow: &view}, execution.stateDir)
+		if err != nil || current.Completion == nil || !current.Completion.Equal(*evidence) {
+			return "", fmt.Errorf("%w: workflow task completion evidence mismatch", ErrStateCorrupt)
+		}
+	}
+	return string(current.State), nil
 }
 
 // taskWorkflowCompletion 固定通过报告的审查终态和输出制品。
