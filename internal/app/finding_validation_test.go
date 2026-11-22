@@ -80,15 +80,18 @@ func TestValidateFindingInconclusiveWithoutEvidence(t *testing.T) {
 	}
 }
 
-func TestValidateFindingLowRiskWithLocation(t *testing.T) {
-	// 低风险且有定位信息可由程序核验确认。
-	finding := proposedFindingWith("f-1", contract.SeverityLow, "obj-1:10", nil)
-	validation, err := ValidateFinding(finding, "validator-1", acceptKnownEvidence)
-	if err != nil {
-		t.Fatalf("validate finding: %v", err)
-	}
-	if validation.Finding.Status != contract.FindingConfirmed {
-		t.Fatalf("status = %s, want confirmed", validation.Finding.Status)
+func TestValidateFindingLocationIsNotEvidence(t *testing.T) {
+	for _, severity := range []contract.FindingSeverity{contract.SeverityLow, contract.SeverityMedium, contract.SeverityHigh, contract.SeverityCritical} {
+		t.Run(string(severity), func(t *testing.T) {
+			finding := proposedFindingWith("f-1", severity, "obj-1:10", nil)
+			validation, err := ValidateFinding(finding, "validator-1", acceptKnownEvidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if validation.Finding.Status != contract.FindingInconclusive || len(BlockingFindingIDs([]contract.Finding{validation.Finding})) != 0 {
+				t.Fatalf("location without evidence produced a confirmed finding: %+v", validation)
+			}
+		})
 	}
 }
 
