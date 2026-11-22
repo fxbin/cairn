@@ -12,6 +12,7 @@ import (
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -139,5 +140,32 @@ func TestWorkflowVerificationPersistsProgramAndIndependentReview(t *testing.T) {
 				t.Fatal("review ran without program evidence")
 			}
 		})
+	}
+}
+
+func TestWorkflowReviewCannotCoverUnknownMutationAlongsidePatch(t *testing.T) {
+	patch, process := domain.NewOperationID(), domain.NewOperationID()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	worker := []domain.Event{
+		{Type: domain.EventOperationStarted, OperationID: &patch, Payload: mustJSON(t, struct {
+			Class string `json:"side_effect_class"`
+			Path  string `json:"planned_path"`
+			Hash  string `json:"planned_after"`
+		}{"workspace", "changed.txt", digest})},
+		{Type: domain.EventOperationSucceeded, OperationID: &patch},
+	}
+	review := []domain.Event{{Type: domain.EventOperationSucceeded, Payload: mustJSON(t, struct {
+		Name   string              `json:"tool_name"`
+		Result contract.ToolResult `json:"result"`
+	}{"read_file", contract.ToolResult{OK: true, SHA256: digest, Data: json.RawMessage(`{"path":"changed.txt","offset":0}`)}})}}
+	if !workflowReviewReadFiles(review, worker) {
+		t.Fatal("exactly matching complete read was not credited")
+	}
+	worker = append(worker, domain.Event{
+		Type: domain.EventOperationStarted, OperationID: &process,
+		Payload: json.RawMessage(`{"tool_name":"exec_command","side_effect_class":"process","mutation_barrier":true}`),
+	}, domain.Event{Type: domain.EventOperationSucceeded, OperationID: &process})
+	if workflowReviewReadFiles(review, worker) {
+		t.Fatal("review of one patch incorrectly covered an untracked command mutation")
 	}
 }

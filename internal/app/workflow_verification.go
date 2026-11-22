@@ -309,8 +309,10 @@ func (execution workflowExecution) workflowReviewEvidence(run domain.RunProjecti
 // 或读不全时保留为证据不足。搜索结果不计为完整文件审查。
 func workflowReviewReadFiles(reviewEvents, workerEvents []domain.Event) bool {
 	type changedFile struct {
-		Path   string `json:"planned_path"`
-		Digest string `json:"planned_after"`
+		Path            string `json:"planned_path"`
+		Digest          string `json:"planned_after"`
+		SideEffectClass string `json:"side_effect_class"`
+		MutationBarrier bool   `json:"mutation_barrier"`
 	}
 	changes := make(map[string]string)
 	started := make(map[domain.OperationID]changedFile)
@@ -321,7 +323,13 @@ func workflowReviewReadFiles(reviewEvents, workerEvents []domain.Event) bool {
 		switch event.Type {
 		case domain.EventOperationStarted:
 			var file changedFile
-			if json.Unmarshal(event.Payload, &file) == nil && file.Path != "" && file.Digest != "" {
+			if json.Unmarshal(event.Payload, &file) != nil {
+				return false
+			}
+			if file.SideEffectClass == "workspace" || file.SideEffectClass == "process" && file.MutationBarrier {
+				if file.Path == "" || file.Digest == "" {
+					return false
+				}
 				started[*event.OperationID] = file
 			}
 		case domain.EventOperationSucceeded, domain.EventOperationReconciled:
