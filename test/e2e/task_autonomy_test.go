@@ -106,13 +106,18 @@ type taskCLI struct {
 	binary, workspace, state, config string
 }
 
+func (fixture taskCLI) command(ctx context.Context, args ...string) *exec.Cmd {
+	args = append(args, "--workspace", fixture.workspace, "--state-dir", fixture.state, "--config", fixture.config, "--json")
+	command := exec.CommandContext(ctx, fixture.binary, args...)
+	command.Env = append(os.Environ(), "CAIRN_E2E_SIGNAL_KEY=e2e-task-fixture")
+	return command
+}
+
 func (fixture taskCLI) run(t *testing.T, expected int, args ...string) []byte {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	args = append(args, "--workspace", fixture.workspace, "--state-dir", fixture.state, "--config", fixture.config, "--json")
-	command := exec.CommandContext(ctx, fixture.binary, args...)
-	command.Env = append(os.Environ(), "CAIRN_E2E_SIGNAL_KEY=e2e-task-fixture")
+	command := fixture.command(ctx, args...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
@@ -210,5 +215,71 @@ func TestDouble(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(workspace, "double.go"))
 	if err != nil || string(content) != fixedDouble {
 		t.Fatalf("repair did not produce the tested Go source: %v", err)
+	}
+}
+
+func TestAutonomousTaskRequiresReconcileAfterProcessLoss(t *testing.T) {
+	workspace, state, control := t.TempDir(), t.TempDir(), t.TempDir()
+	started, release := filepath.Join(control, "started"), filepath.Join(control, "release")
+	check := buildBinary(t, "cairn-autonomous-check", "", `package main
+import ("os"; "time")
+func main() {
+	f, err := os.OpenFile(os.Args[1], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil { panic(err) }
+	if _, err := f.WriteString("started\n"); err != nil { panic(err) }
+	if err := f.Close(); err != nil { panic(err) }
+	deadline := time.Now().Add(30*time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(os.Args[2]); err == nil { return }
+		time.Sleep(25*time.Millisecond)
+	}
+}
+`)
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
+	configPath := filepath.Join(control, "config.yaml")
+	configuration := baseSignalConfig(autonomousProvider(t)) + fmt.Sprintf(
+		"\npolicy:\n  write: allow\n  exec: allow\nverification:\n  commands:\n    - id: check\n      argv: [%q, %q, %q]\n", check, started, release)
+	if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := taskCLI{buildCairnBinary(t), workspace, state, configPath}
+	var current app.Task
+	if err := json.Unmarshal(fixture.run(t, 0, "task", "create", "实现 Go 函数", "--accept", "固定检查通过", "--check", "check"), &current); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := fixture.command(ctx, "task", "automate", string(current.ID), "--revision", "1", "--rework-attempts", "1")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	waitForFile(t, started, "program operation wrote its marker")
+	if err := command.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("interrupted process unexpectedly exited normally")
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		fixture.run(t, cli.ExitReconcile, "task", "continue", string(current.ID))
+		view := fixture.get(t, current.ID)
+		if view.Workflow == nil || view.Workflow.PendingReconcile == nil ||
+			len(view.Workflow.Steps[0].Attempts) != 1 || len(view.Workflow.Steps[1].Attempts) != 1 ||
+			len(view.Workflow.Steps[2].Attempts) != 0 {
+			t.Fatal("recovery replayed a side effect or started a later attempt")
+		}
+	}
+	markers, err := os.ReadFile(started)
+	if err != nil || string(markers) != "started\n" {
+		t.Fatalf("verified only one actual check dispatch: %q, %v", markers, err)
 	}
 }
