@@ -259,16 +259,13 @@ func (execution workflowExecution) resumeVersionedStepRun(ctx context.Context, s
 	if run.Phase() != "running" {
 		return execution.settleVersionedAttempt(ctx, snapshot.WorkflowID, node, attempt, run, events, nil)
 	}
-	var reviewVersion string
-	if node.Kind == workflow.StepKindReview {
-		_, reviewVersion, err = execution.workflowReviewPrompt(ctx, snapshot)
-		if err != nil {
-			return err
-		}
+	resumeSubject, err := execution.workflowResumeSubject(ctx, snapshot, node, run)
+	if err != nil {
+		return err
 	}
 	_, runErr := execution.service.Resume(ctx, ResumeOptions{
 		RunID: run.ID, Workspace: execution.workspacePath, StateDir: execution.stateDir,
-		Config: configuration, OnEvent: execution.onEvent, verificationSubject: reviewVersion,
+		Config: configuration, OnEvent: execution.onEvent, verificationSubject: resumeSubject,
 	})
 	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr)
 }

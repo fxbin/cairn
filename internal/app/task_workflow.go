@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/fxbin/cairn/internal/capabilities/task"
@@ -26,6 +27,7 @@ const (
 	// MaxTaskWorkflowReworkAttempts 限制一次用户授权可追加的 Worker 尝试次数。
 	MaxTaskWorkflowReworkAttempts = 3
 	taskWorkflowDefinitionPrefix  = "wfl_task_"
+	taskWorkflowTitleBytes        = 160
 	taskWorkerStepID              = "worker"
 	taskProgramStepID             = "program"
 	taskReviewStepID              = "review"
@@ -105,6 +107,9 @@ func (service Service) attachTaskWorkflow(ctx context.Context, scope TaskScope, 
 		if err := view.canAssign(options.Revision); err != nil {
 			return view, false, err
 		}
+		if len(view.Assignments) != 0 {
+			return view, false, fmt.Errorf("%w: autonomous workflow requires a task without manual assignments", ErrTaskTransition)
+		}
 		if err := validateHookConfiguration(scope.Config); err != nil {
 			return view, false, err
 		}
@@ -166,8 +171,9 @@ func freezeTaskWorkflow(scope TaskScope, current task.Task, rework int) (task.Wo
 	if rework > 0 {
 		nodes[1].RetryFrom = taskWorkerStepID
 	}
+	title := boundWorkflowOutput(strings.Join(strings.Fields(current.Definition.Goal), " "), taskWorkflowTitleBytes)
 	definition, err := checkedWorkflowDraft(current.WorkspaceHash, WorkflowDefinitionDraft{
-		ID: taskWorkflowDefinitionID(current.ID), Name: "Task workflow", Nodes: nodes, Verification: &acceptance,
+		ID: taskWorkflowDefinitionID(current.ID), Name: title, Nodes: nodes, Verification: &acceptance,
 	})
 	if err != nil {
 		return task.WorkflowBinding{}, err
@@ -326,12 +332,13 @@ func projectTaskWorkflow(ctx context.Context, stateDir, hash string, current tas
 	if current.WorkflowBinding == nil {
 		return nil, nil
 	}
+	if !current.WorkflowBinding.Attached {
+		// 准备投影不跨两个库读取。其他进程可以在本次读取后确认并推进实例。
+		return nil, validateTaskWorkflowBinding(current)
+	}
 	snapshot, err := readTaskWorkflowSnapshot(ctx, stateDir, hash, current)
 	if errors.Is(err, ErrWorkflowNotFound) {
-		if current.WorkflowBinding.Attached {
-			return nil, fmt.Errorf("%w: attached task workflow is missing", ErrStateCorrupt)
-		}
-		return nil, nil
+		return nil, fmt.Errorf("%w: attached task workflow is missing", ErrStateCorrupt)
 	}
 	if err != nil {
 		return nil, err

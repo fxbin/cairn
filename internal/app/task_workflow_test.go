@@ -164,6 +164,21 @@ func TestTaskWorkflowColdAttachment(t *testing.T) {
 	}
 }
 
+func TestTaskWorkflowRejectsPriorManualAssignments(t *testing.T) {
+	ctx := context.Background()
+	service, scope, current := newTaskWorkflowFixture(t)
+	view, err := service.RunTask(ctx, scope, current.ID, TaskRunOptions{
+		Revision: current.Revision, AssignmentID: "manual-assignment", SessionID: "manual-session",
+	})
+	if err != nil || len(view.Assignments) != 1 || !view.Assignments[0].settled() {
+		t.Fatalf("manual task assignment failed: %v", err)
+	}
+	result, err := service.StartTaskWorkflow(ctx, scope, current.ID, TaskWorkflowOptions{Revision: view.Revision})
+	if !errors.Is(err, ErrTaskTransition) || result.WorkflowBinding != nil {
+		t.Fatalf("already assigned task entered autonomous execution: %v", err)
+	}
+}
+
 // taskReworkProvider 第一次写入错误内容。在返工任务中按夹具结果修复或继续失败。
 type taskReworkProvider struct {
 	initial, rework bool

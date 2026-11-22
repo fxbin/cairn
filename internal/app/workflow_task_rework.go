@@ -15,6 +15,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/domain"
 )
 
 const workflowReworkPromptBytes = 4 << 10
@@ -62,6 +63,19 @@ func (execution workflowExecution) autoReworkTaskWorkflow(ctx context.Context, s
 		return false, err
 	}
 	return true, nil
+}
+
+// workflowResumeSubject 仅在独立审查或返工尚未自己变更工作区时重验原版本。
+func (execution workflowExecution) workflowResumeSubject(ctx context.Context, snapshot *workflow.Snapshot, node WorkflowNode, run domain.RunProjection) (string, error) {
+	if node.Kind == workflow.StepKindReview {
+		_, version, err := execution.workflowReviewPrompt(ctx, snapshot)
+		return version, err
+	}
+	if run.LastMutationSeq == 0 {
+		_, version, err := execution.taskWorkflowReworkInput(snapshot, node, "")
+		return version, err
+	}
+	return "", nil
 }
 
 // taskWorkflowReworkInput 读取历史失败报告。返工只有在工作区仍是该版本时才启动。
