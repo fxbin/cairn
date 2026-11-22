@@ -161,7 +161,7 @@ func (execution workflowExecution) closeWorkflowAttempt(ctx context.Context, sna
 	if err != nil {
 		return err
 	}
-	run, events, err := execution.loadVersionedStepRun(ctx, snapshot.SessionID, attempt)
+	run, events, err := execution.loadVersionedStepRun(ctx, workflowAttemptSession(snapshot.SessionID, node.Kind), attempt)
 	if err != nil {
 		return err
 	}
@@ -171,7 +171,7 @@ func (execution workflowExecution) closeWorkflowAttempt(ctx context.Context, sna
 	if run.PendingOperation != nil {
 		return fmt.Errorf("%w: reconcile operation %s before cancelling", ErrWaitingReconcile, run.PendingOperation.ID)
 	}
-	configuration, err := workflowNodeConfig(execution.configuration, node)
+	configuration, err := workflowConfiguredNode(execution.configuration, execution.definition, node)
 	if err != nil {
 		return err
 	}
@@ -179,5 +179,5 @@ func (execution workflowExecution) closeWorkflowAttempt(ctx context.Context, sna
 		RunID: run.ID, Reason: reason, Workspace: execution.workspacePath,
 		StateDir: execution.stateDir, Config: configuration, OnEvent: execution.onEvent,
 	})
-	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, snapshot.SessionID, runErr)
+	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr)
 }

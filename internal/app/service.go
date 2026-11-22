@@ -108,6 +108,8 @@ type ResumeOptions struct {
 	Steering *agent.SteeringBridge
 	// ExpectedApprovalOperationID 将上层明确决定绑定锁内的同一个挂起操作。
 	ExpectedApprovalOperationID domain.OperationID
+	// verificationSubject 由工作流提供。恢复独立审查前在锁内核对观察。
+	verificationSubject string
 }
 
 // ReconcileOptions 描述人工记录悬而未决副作用判定的输入。

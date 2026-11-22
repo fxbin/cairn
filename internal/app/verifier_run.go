@@ -47,6 +47,9 @@ func (service Service) RunVerifier(ctx context.Context, request VerifierRequest)
 		return VerifierResult{}, err
 	}
 	request.Workspace = workspace.Root
+	if err := requireIsolatedVerificationState(request.Workspace, request.StateDir); err != nil {
+		return VerifierResult{}, err
+	}
 	targetJournal, err := openReadOnlyJournal(request.StateDir, hash)
 	if err != nil {
 		return VerifierResult{}, fmt.Errorf("%w: %w", ErrVerifierTarget, err)

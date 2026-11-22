@@ -56,7 +56,8 @@ func verifierConfig(base config.Config) (config.Config, error) {
 	child.Verification.Commands = nil
 	child.Verification.AutoAfterPatch = false
 	// 子运行不得再委派，也不得携带依赖外部写权限的可选能力。
-	child.Tools = config.ToolsConfig{}
+	child.Tools = config.ToolsConfig{VerificationFilesOnly: true}
+	child.Workspace.Ignore = append(slices.Clone(base.Workspace.Ignore), base.Verification.VolatilePaths...)
 	child.Hooks = nil
 	child.Skills = nil
 	child.MCP = nil
@@ -140,8 +141,13 @@ func parseVerifierOutput(text string, request VerifierRequest) ([]contract.Findi
 	for _, criterion := range criteria {
 		allowed[criterion.ID] = struct{}{}
 	}
+	seen := make(map[string]bool, len(output.Findings))
 	for index := range output.Findings {
 		finding := &output.Findings[index]
+		if seen[finding.ID] {
+			return nil, fmt.Errorf("%w: repeated finding id %q", ErrVerifierOutput, finding.ID)
+		}
+		seen[finding.ID] = true
 		finding.Version = contract.FindingVersion
 		// Verifier 提出的发现一律是待核验 Proposed；模型自报的
 		// Confirmed/Rejected 不被信任，必须经过 Finding Validation 才能推进。

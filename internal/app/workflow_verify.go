@@ -24,7 +24,6 @@ import (
 	"github.com/fxbin/cairn/internal/core/agent"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
-	"github.com/fxbin/cairn/internal/runtime/artifact"
 )
 
 // startWorkflowVerifyRun 装配 Boot、手工创建验证步骤 run（task_ref 绑定验
@@ -105,11 +104,13 @@ const (
 
 // workflowScriptPlan 固定一次工作流 Run 的执行方式、节点身份和实参。
 type workflowScriptPlan struct {
-	Version    int      `json:"version"`
-	Kind       string   `json:"kind"`
-	WorkflowID string   `json:"workflow_id"`
-	StepID     string   `json:"step_id"`
-	Argv       []string `json:"argv,omitempty"`
+	Version        int                          `json:"version"`
+	Kind           string                       `json:"kind"`
+	WorkflowID     string                       `json:"workflow_id"`
+	StepID         string                       `json:"step_id"`
+	Argv           []string                     `json:"argv,omitempty"`
+	Acceptance     *contract.AcceptanceContract `json:"acceptance,omitempty"`
+	SubjectVersion string                       `json:"subject_version,omitempty"`
 }
 
 // runWithWorkflowScript 通过普通运行装配创建脚本或验证 Run。
@@ -128,6 +129,10 @@ func (service Service) runWithWorkflowScript(ctx context.Context, options RunOpt
 		return RunResult{}, errors.New("workflow scripts are unavailable in the read-only preset")
 	}
 	plan.Argv = slices.Clone(plan.Argv)
+	if plan.Acceptance != nil {
+		acceptance := plan.Acceptance.Clone()
+		plan.Acceptance, options.Acceptance = &acceptance, &acceptance
+	}
 	options.workflowScript = &plan
 	return service.run(ctx, options, bind)
 }
@@ -148,8 +153,21 @@ func (plan workflowScriptPlan) calls() ([]ports.ToolCall, error) {
 		if len(plan.Argv) != 0 {
 			return nil, errors.New("workflow verification plan cannot contain a scripted command")
 		}
+		if plan.Acceptance != nil {
+			if err := plan.Acceptance.Validate(); err != nil {
+				return nil, err
+			}
+			if plan.SubjectVersion == "" {
+				return nil, errors.New("workflow acceptance requires an observed subject version")
+			}
+		} else if plan.SubjectVersion != "" {
+			return nil, errors.New("workflow verification subject requires an acceptance contract")
+		}
 		return nil, nil
 	case workflowScriptPlanKind:
+		if plan.Acceptance != nil || plan.SubjectVersion != "" {
+			return nil, errors.New("workflow script cannot carry an acceptance contract")
+		}
 		if len(plan.Argv) == 0 || len(plan.Argv) > workflowScriptMaxArguments || strings.TrimSpace(plan.Argv[0]) == "" {
 			return nil, errors.New("workflow script requires a bounded argv")
 		}
@@ -184,6 +202,11 @@ func (plan workflowScriptPlan) calls() ([]ports.ToolCall, error) {
 func storeWorkflowScriptPlan(boot *Boot, plan workflowScriptPlan) (contract.Ref, error) {
 	if plan.Kind == workflowScriptPlanKind && !slices.Contains(boot.Registry.Names(), workflowScriptExecTool) {
 		return contract.Ref{}, errors.New("workflow script requires the exec_command tool")
+	}
+	if plan.SubjectVersion != "" {
+		if err := requireWorkflowVerificationVersion(boot, plan.SubjectVersion); err != nil {
+			return contract.Ref{}, err
+		}
 	}
 	content, err := json.Marshal(plan)
 	if err != nil {
@@ -221,7 +244,7 @@ func (service Service) driveWorkflowScriptRun(ctx context.Context, boot *Boot, f
 
 // workflowScriptCallsOfRun 解引用冻结计划。通用引用兼容旧 CLI 验证制品。
 // 已绑定制品缺失或可识别计划格式错误时禁止模型续跑。
-func workflowScriptCallsOfRun(first domain.Event, artifacts *artifact.Store) ([]ports.ToolCall, bool, error) {
+func workflowScriptCallsOfRun(first domain.Event, boot *Boot, checkSubject bool) ([]ports.ToolCall, bool, error) {
 	var payload struct {
 		TaskRef *contract.Ref `json:"task_ref"`
 	}
@@ -235,9 +258,9 @@ func workflowScriptCallsOfRun(first domain.Event, artifacts *artifact.Store) ([]
 	var content []byte
 	var err error
 	if tagged {
-		content, err = artifacts.OpenBounded(*payload.TaskRef, workflowScriptPlanMaxBytes)
+		content, err = boot.Artifacts.OpenBounded(*payload.TaskRef, workflowScriptPlanMaxBytes)
 	} else {
-		content, err = artifacts.Open(*payload.TaskRef)
+		content, err = boot.Artifacts.Open(*payload.TaskRef)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: read run task artifact: %w", ErrStateCorrupt, err)
@@ -258,6 +281,14 @@ func workflowScriptCallsOfRun(first domain.Event, artifacts *artifact.Store) ([]
 	calls, err := plan.calls()
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: %w", ErrStateCorrupt, err)
+	}
+	if checkSubject && plan.SubjectVersion != "" {
+		if err := requireWorkflowVerificationVersion(boot, plan.SubjectVersion); err != nil {
+			return nil, false, err
+		}
+	}
+	if plan.Acceptance != nil {
+		boot.Loop.Acceptance = plan.Acceptance
 	}
 	return calls, true, nil
 }

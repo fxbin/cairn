@@ -34,9 +34,10 @@ var ErrWorkflowAttemptUnconfirmed = errors.New("workflow attempt has no confirme
 
 // workflowRunOutput 是由某次尝试产出的有界正文，可作为下游输入。
 type workflowRunOutput struct {
-	RunID     domain.RunID `json:"run_id"`
-	Response  string       `json:"response"`
-	Truncated bool         `json:"truncated,omitempty"`
+	RunID        domain.RunID                `json:"run_id"`
+	Response     string                      `json:"response"`
+	Truncated    bool                        `json:"truncated,omitempty"`
+	Verification *WorkflowVerificationReport `json:"verification,omitempty"`
 }
 
 // validateWorkflowRuntime 验证宿主支持及每个节点使用的执行配置。
@@ -47,7 +48,7 @@ func validateWorkflowRuntime(definition WorkflowDefinition, configuration config
 	for _, node := range definition.Nodes {
 		switch node.Kind {
 		case workflow.StepKindExecute:
-			if _, err := workflowNodeConfig(configuration, node); err != nil {
+			if _, err := workflowConfiguredNode(configuration, &definition, node); err != nil {
 				return fmt.Errorf("workflow step %q: %w", node.ID, err)
 			}
 		case workflow.StepKindScript:
@@ -61,6 +62,21 @@ func validateWorkflowRuntime(definition WorkflowDefinition, configuration config
 			}
 			if len(commands) == 0 {
 				return fmt.Errorf("workflow verification step %q requires frozen verification commands", node.ID)
+			}
+			if definition.Verification != nil {
+				known := make(map[string]bool, len(commands))
+				for _, command := range commands {
+					known[command.ID] = true
+				}
+				for _, checkID := range definition.Verification.RequiredCheckIDs() {
+					if !known[checkID] {
+						return fmt.Errorf("required workflow acceptance check %q has no frozen command", checkID)
+					}
+				}
+			}
+		case workflow.StepKindReview:
+			if _, err := verifierConfig(configuration); err != nil {
+				return err
 			}
 		case workflow.StepKindAccept:
 		default:
@@ -117,7 +133,7 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	if err := ctx.Err(); err != nil {
 		return true, "", err
 	}
-	configuration, err := workflowNodeConfig(execution.configuration, node)
+	configuration, err := workflowConfiguredNode(execution.configuration, execution.definition, node)
 	if err != nil {
 		return true, "", err
 	}
@@ -147,6 +163,14 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 		PreassignedRunID: runID, OnEvent: execution.onEvent,
 		workflowLink: &workflowRunLink{WorkflowID: string(snapshot.WorkflowID), StepID: node.ID},
 	}
+	var reviewVersion string
+	if node.Kind == workflow.StepKindReview {
+		input.SessionID, input.PrevRunID = "", ""
+		input.Task, reviewVersion, err = execution.workflowReviewPrompt(ctx, snapshot)
+		if err != nil {
+			return err
+		}
+	}
 	attempt := workflow.StepStartedPayload{
 		StepID: node.ID, Attempt: len(snapshot.Attempts[node.ID]) + 1, RunID: string(runID), CreationEventID: domain.NewID("evt"),
 		Dependencies: dependencies, ConfigFingerprint: configuration.Fingerprint(),
@@ -155,6 +179,11 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	bind := func(boot *Boot, draft *domain.EventDraft) error {
 		if draft.RunID != runID || boot.WorkspaceHash != execution.workspaceHash {
 			return fmt.Errorf("%w: workflow run scope mismatch", ErrStateCorrupt)
+		}
+		if reviewVersion != "" {
+			if err := requireWorkflowVerificationVersion(boot, reviewVersion); err != nil {
+				return err
+			}
 		}
 		if _, err := execution.appendDraftAt(ctx, snapshot.WorkflowID, snapshot.LastSeq, workflow.EventStepStarted, attempt); err != nil {
 			return err
@@ -171,9 +200,21 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 		if node.Kind == workflow.StepKindVerify {
 			kind, input.Task = workflowVerifyPlanKind, "工作流独立验证："+node.ID
 		}
-		_, runErr = execution.service.runWithWorkflowScript(ctx, input, bind, workflowScriptPlan{
+		plan := workflowScriptPlan{
 			Version: workflowScriptPlanVersion, Kind: kind, WorkflowID: string(snapshot.WorkflowID), StepID: node.ID, Argv: node.Argv,
-		})
+		}
+		if kind == workflowVerifyPlanKind && execution.definition.Verification != nil {
+			worker, events, err := execution.workflowVerificationSource(ctx, snapshot, workflowVerificationWorker)
+			if err != nil {
+				return err
+			}
+			version, err := workflowObservedRunVersion(worker, events)
+			if err != nil {
+				return err
+			}
+			plan.Acceptance, plan.SubjectVersion = execution.definition.Verification, version
+		}
+		_, runErr = execution.service.runWithWorkflowScript(ctx, input, bind, plan)
 	default:
 		_, runErr = execution.service.run(ctx, input, bind)
 	}
@@ -185,25 +226,32 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	}
 	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, workflow.Attempt{
 		Number: attempt.Attempt, RunID: runID, CreationEventID: attempt.CreationEventID, ConfigFingerprint: attempt.ConfigFingerprint, State: workflow.StepRunning,
-	}, snapshot.SessionID, runErr)
+	}, input.SessionID, runErr)
 }
 
 // resumeVersionedStepRun 先重放已绑定的运行。窗口缺失时禁止再启动。
 func (execution workflowExecution) resumeVersionedStepRun(ctx context.Context, snapshot *workflow.Snapshot, node WorkflowNode, configuration config.Config) error {
 	attempts := snapshot.Attempts[node.ID]
 	attempt := attempts[len(attempts)-1]
-	run, events, err := execution.loadVersionedStepRun(ctx, snapshot.SessionID, attempt)
+	run, events, err := execution.loadVersionedStepRun(ctx, workflowAttemptSession(snapshot.SessionID, node.Kind), attempt)
 	if err != nil {
 		return err
 	}
 	if run.Phase() != "running" {
 		return execution.settleVersionedAttempt(ctx, snapshot.WorkflowID, node, attempt, run, events, nil)
 	}
+	var reviewVersion string
+	if node.Kind == workflow.StepKindReview {
+		_, reviewVersion, err = execution.workflowReviewPrompt(ctx, snapshot)
+		if err != nil {
+			return err
+		}
+	}
 	_, runErr := execution.service.Resume(ctx, ResumeOptions{
 		RunID: run.ID, Workspace: execution.workspacePath, StateDir: execution.stateDir,
-		Config: configuration, OnEvent: execution.onEvent,
+		Config: configuration, OnEvent: execution.onEvent, verificationSubject: reviewVersion,
 	})
-	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, snapshot.SessionID, runErr)
+	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr)
 }
 
 // observeVersionedStepRun 在前台调用返回后从 Journal 回填，含调用上下文取消的情形。
@@ -316,7 +364,14 @@ func (execution workflowExecution) settleVersionedAttempt(ctx context.Context, i
 		state, classification = workflow.StepFailed, workflow.ReconciliationAborted
 	}
 	last := events[len(events)-1]
-	output, err := execution.storeWorkflowRunOutput(run, node, events)
+	report, classification, err := execution.workflowVerificationReport(ctx, id, node, run, events, classification)
+	if err != nil {
+		return err
+	}
+	if node.Kind == workflow.StepKindReview && classification != "" && state == workflow.StepSucceeded {
+		state = workflow.StepFailed
+	}
+	output, err := execution.storeWorkflowRunOutput(run, node, events, report)
 	if err != nil {
 		return err
 	}
@@ -344,7 +399,7 @@ func workflowRunReconciliationAborted(events []domain.Event) bool {
 }
 
 // storeWorkflowRunOutput 保存可供下游读取的脱敏正文。终态证据仍在 Journal。
-func (execution workflowExecution) storeWorkflowRunOutput(run domain.RunProjection, node WorkflowNode, events []domain.Event) (workflow.StepIO, error) {
+func (execution workflowExecution) storeWorkflowRunOutput(run domain.RunProjection, node WorkflowNode, events []domain.Event, report *WorkflowVerificationReport) (workflow.StepIO, error) {
 	artifacts, err := openArtifactStore(execution.stateDir, execution.workspaceHash, execution.configuration.Output)
 	if err != nil {
 		return workflow.StepIO{}, err
@@ -357,7 +412,7 @@ func (execution workflowExecution) storeWorkflowRunOutput(run domain.RunProjecti
 	}
 	response := boundWorkflowOutput(text, workflowOutputMaxBytes)
 	ref, err := artifacts.Put(contract.MustEncodeRedactedJSON(workflowRunOutput{
-		RunID: run.ID, Response: response, Truncated: response != text,
+		RunID: run.ID, Response: response, Truncated: response != text, Verification: report,
 	}), "application/json")
 	if err != nil {
 		return workflow.StepIO{}, err
@@ -447,7 +502,10 @@ func boundWorkflowOutput(text string, maximum int) string {
 // lastWorkflowAttemptRun 返回会话内时间顺序最后一个已绑定 Run。
 func lastWorkflowAttemptRun(snapshot *workflow.Snapshot) domain.RunID {
 	var latest workflow.Attempt
-	for _, attempts := range snapshot.Attempts {
+	for stepID, attempts := range snapshot.Attempts {
+		if snapshot.Kinds[stepID] == workflow.StepKindReview {
+			continue
+		}
 		for _, attempt := range attempts {
 			if attempt.RunID != "" && attempt.StartedSeq > latest.StartedSeq {
 				latest = attempt

@@ -52,6 +52,10 @@ func Validate(config Config) error {
 	default:
 		return fmt.Errorf("unknown preset %q (supported: %s, %s, %s, %s)", config.Preset, PresetMinimal, PresetCoding, PresetReadOnly, PresetBenchmark)
 	}
+	if config.Tools.VerificationFilesOnly && (config.Preset != PresetReadOnly ||
+		config.Tools != (ToolsConfig{VerificationFilesOnly: true}) || config.Skills != nil || config.MCP != nil) {
+		return fmt.Errorf("independent verification requires the isolated file-only tool surface")
+	}
 	if config.Preset == PresetReadOnly {
 		if config.Policy.Write != "deny" || config.Policy.Exec != "deny" || len(config.Verification.Commands) != 0 {
 			return fmt.Errorf("read-only preset requires deny policies and no verification commands")

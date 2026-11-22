@@ -56,28 +56,29 @@ type WorkflowReconcileView struct {
 
 // WorkflowStatusView 是工作流链重放后的对外只读状态视图。
 type WorkflowStatusView struct {
-	WorkflowID        string                 `json:"workflow_id"`
-	WorkspaceHash     string                 `json:"workspace_hash"`
-	ConfigFingerprint string                 `json:"config_fingerprint"`
-	PlanSHA256        string                 `json:"plan_sha256"`
-	Authorization     string                 `json:"authorization_source"`
-	CreatedAt         time.Time              `json:"created_at"`
-	Finished          bool                   `json:"finished"`
-	FinishState       string                 `json:"finish_state,omitempty"`
-	ResumeIndex       int                    `json:"resume_index"`
-	RequiresReconcile []string               `json:"requires_reconcile,omitempty"`
-	Steps             []WorkflowStepView     `json:"steps"`
-	Definition        *WorkflowDefinitionRef `json:"definition,omitempty"`
-	DefinitionName    string                 `json:"definition_name,omitempty"`
-	SessionID         string                 `json:"session_id,omitempty"`
-	Sequence          uint64                 `json:"sequence,omitempty"`
-	Phase             string                 `json:"phase,omitempty"`
-	PendingApproval   *WorkflowApprovalView  `json:"pending_approval,omitempty"`
-	Paused            bool                   `json:"paused,omitempty"`
-	RetryTargets      []string               `json:"retry_targets,omitempty"`
-	LastRetry         *workflow.RetryPayload `json:"last_retry,omitempty"`
-	FinishReason      string                 `json:"finish_reason,omitempty"`
-	PendingReconcile  *WorkflowReconcileView `json:"pending_reconcile,omitempty"`
+	WorkflowID        string                      `json:"workflow_id"`
+	WorkspaceHash     string                      `json:"workspace_hash"`
+	ConfigFingerprint string                      `json:"config_fingerprint"`
+	PlanSHA256        string                      `json:"plan_sha256"`
+	Authorization     string                      `json:"authorization_source"`
+	CreatedAt         time.Time                   `json:"created_at"`
+	Finished          bool                        `json:"finished"`
+	FinishState       string                      `json:"finish_state,omitempty"`
+	ResumeIndex       int                         `json:"resume_index"`
+	RequiresReconcile []string                    `json:"requires_reconcile,omitempty"`
+	Steps             []WorkflowStepView          `json:"steps"`
+	Definition        *WorkflowDefinitionRef      `json:"definition,omitempty"`
+	DefinitionName    string                      `json:"definition_name,omitempty"`
+	SessionID         string                      `json:"session_id,omitempty"`
+	Sequence          uint64                      `json:"sequence,omitempty"`
+	Phase             string                      `json:"phase,omitempty"`
+	PendingApproval   *WorkflowApprovalView       `json:"pending_approval,omitempty"`
+	Paused            bool                        `json:"paused,omitempty"`
+	RetryTargets      []string                    `json:"retry_targets,omitempty"`
+	LastRetry         *workflow.RetryPayload      `json:"last_retry,omitempty"`
+	FinishReason      string                      `json:"finish_reason,omitempty"`
+	PendingReconcile  *WorkflowReconcileView      `json:"pending_reconcile,omitempty"`
+	Verification      *WorkflowVerificationReport `json:"verification,omitempty"`
 }
 
 // WorkflowStatus 只读重放指定工作流链并返回状态视图；存储缺失、链损坏

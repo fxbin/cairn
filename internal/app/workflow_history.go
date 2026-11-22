@@ -9,11 +9,15 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
 )
 
@@ -71,7 +75,7 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 		view.RetryTargets = snapshot.RetryTargets()
 	}
 	view.Phase = "ready"
-	if err := execution.projectWorkflowAttempts(ctx, snapshot, &view); err != nil {
+	if err := execution.projectWorkflowAttempts(ctx, snapshot, definition, &view); err != nil {
 		return WorkflowStatusView{}, err
 	}
 	switch {
@@ -98,7 +102,7 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 }
 
 // projectWorkflowAttempts 核验已绑定的 Run、终态锚点和产物引用。
-func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, snapshot *workflow.Snapshot, view *WorkflowStatusView) error {
+func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, snapshot *workflow.Snapshot, definition *WorkflowDefinition, view *WorkflowStatusView) error {
 	var journal ports.Journal
 	for index, step := range view.Steps {
 		for _, attempt := range step.Attempts {
@@ -118,7 +122,7 @@ func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, 
 				defer opened.Close()
 				journal = opened
 			}
-			run, events, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, snapshot.SessionID, attempt)
+			run, events, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, workflowAttemptSession(snapshot.SessionID, step.Kind), attempt)
 			if err != nil {
 				if current && errors.Is(err, ErrWorkflowAttemptUnconfirmed) {
 					view.Steps[index].RunPhase = "binding_unconfirmed"
@@ -138,10 +142,14 @@ func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, 
 					return fmt.Errorf("%w: successful workflow verification has no trusted run evidence", ErrStateCorrupt)
 				}
 			}
-			if err := execution.checkWorkflowAttemptOutput(attempt); err != nil {
+			report, err := execution.checkWorkflowAttemptOutput(ctx, journal, snapshot, definition, step.Kind, attempt)
+			if err != nil {
 				return err
 			}
 			if step.RunID == attempt.RunID {
+				if report != nil {
+					view.Verification = report
+				}
 				view.Steps[index].RunPhase = run.Phase()
 				if index == view.ResumeIndex && run.Phase() == "waiting_reconcile" && run.PendingOperation != nil {
 					pending := run.PendingOperation
@@ -161,17 +169,102 @@ func (execution workflowExecution) projectWorkflowAttempts(ctx context.Context, 
 	return nil
 }
 
-// checkWorkflowAttemptOutput 核对输出引用只能属于本尝试的 Run。
-func (execution workflowExecution) checkWorkflowAttemptOutput(attempt workflow.Attempt) error {
+// checkWorkflowAttemptOutput 核对输出引用与报告内覆盖证据。
+func (execution workflowExecution) checkWorkflowAttemptOutput(ctx context.Context, journal ports.Journal, snapshot *workflow.Snapshot, definition *WorkflowDefinition, kind string, attempt workflow.Attempt) (*WorkflowVerificationReport, error) {
 	if attempt.Output.Ref == "" {
-		return nil
+		return nil, nil
 	}
-	output, err := execution.readWorkflowDependencies([]workflow.Dependency{{Output: attempt.Output}})
+	outputs, err := execution.readWorkflowDependencies([]workflow.Dependency{{Output: attempt.Output}})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if output[0].RunID != attempt.RunID {
-		return fmt.Errorf("%w: workflow output run mismatch", ErrStateCorrupt)
+	output := outputs[0]
+	if output.RunID != attempt.RunID {
+		return nil, fmt.Errorf("%w: workflow output run mismatch", ErrStateCorrupt)
+	}
+	report := output.Verification
+	if report == nil {
+		return nil, nil
+	}
+	if definition.Verification == nil || (kind != workflow.StepKindVerify && kind != workflow.StepKindReview) ||
+		report.Coverage.ValidateAgainst(report.Scope) != nil || report.Evaluation.Validate() != nil ||
+		report.Evaluation.AcceptanceDigest != report.Scope.AcceptanceDigest || report.Scope.AcceptanceDigest != definition.Verification.Digest {
+		return nil, fmt.Errorf("%w: workflow attempt verification report does not match its anchors", ErrStateCorrupt)
+	}
+	worker := precedingWorkflowAttempt(snapshot, definition.Nodes[workflowVerificationWorker].ID, attempt.StartedSeq)
+	program := attempt
+	if kind == workflow.StepKindReview {
+		program = precedingWorkflowAttempt(snapshot, definition.Nodes[workflowVerificationProgram].ID, attempt.StartedSeq)
+	}
+	if worker.RunID == "" || report.WorkerRunID != worker.RunID || report.ProgramRunID != program.RunID ||
+		kind == workflow.StepKindReview && report.ReviewRunID != attempt.RunID ||
+		kind == workflow.StepKindVerify && report.ReviewRunID != "" {
+		return nil, fmt.Errorf("%w: verification report refers to the wrong attempts", ErrStateCorrupt)
+	}
+	workerRun, workerEvents, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, snapshot.SessionID, worker)
+	if err != nil {
+		return nil, err
+	}
+	version, err := workflowObservedRunVersion(workerRun, workerEvents)
+	if err != nil {
+		return nil, err
+	}
+	if err := execution.checkWorkflowReportCoverage(ctx, journal, snapshot.SessionID, program, attempt, report, version); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// precedingWorkflowAttempt 返回报告来源阶段在当时最近的尝试。
+func precedingWorkflowAttempt(snapshot *workflow.Snapshot, stepID string, before uint64) workflow.Attempt {
+	attempts := snapshot.Attempts[stepID]
+	for index := len(attempts) - 1; index >= 0; index-- {
+		if attempts[index].StartedSeq < before {
+			return attempts[index]
+		}
+	}
+	return workflow.Attempt{}
+}
+
+// checkWorkflowReportCoverage 校验证据制品与来源 Run 的终态或验证事件。
+func (execution workflowExecution) checkWorkflowReportCoverage(ctx context.Context, journal ports.Journal, sessionID string, program, current workflow.Attempt, report *WorkflowVerificationReport, version string) error {
+	root := manifestArtifactRoot(execution.stateDir, execution.workspaceHash)
+	for _, object := range report.Scope.Objects {
+		if object.Version != version {
+			return fmt.Errorf("%w: verification scope references the wrong workspace version", ErrStateCorrupt)
+		}
+	}
+	for _, entry := range report.Coverage.Entries {
+		if entry.EvidenceRef == nil {
+			continue
+		}
+		content, err := readArtifactContent(root, *entry.EvidenceRef)
+		if err != nil {
+			return fmt.Errorf("%w: workflow coverage evidence: %w", ErrStateCorrupt, err)
+		}
+		switch entry.ObjectID {
+		case workflowProgramCoverageID:
+			run, events, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, sessionID, program)
+			if err != nil {
+				return err
+			}
+			var finish domain.VerificationFinishedPayload
+			var ref contract.Ref
+			if !run.VerificationSucceeded || run.LastVerificationSeq == 0 ||
+				json.Unmarshal(events[run.LastVerificationSeq-1].Payload, &finish) != nil ||
+				json.Unmarshal(finish.EvidenceRef, &ref) != nil || ref.SHA256 != entry.EvidenceRef.SHA256 {
+				return fmt.Errorf("%w: program evidence has no matching verification event", ErrStateCorrupt)
+			}
+		case workflowReviewCoverageID:
+			var receipt workflowReviewReceipt
+			if json.Unmarshal(content, &receipt) != nil || current.Terminal == nil ||
+				receipt.Terminal != *current.Terminal || receipt.RunID != report.ReviewRunID ||
+				receipt.SubjectVersion != version || !reflect.DeepEqual(receipt.Findings, report.Findings) {
+				return fmt.Errorf("%w: review evidence has no matching terminal run", ErrStateCorrupt)
+			}
+		default:
+			return fmt.Errorf("%w: unknown workflow coverage object", ErrStateCorrupt)
+		}
 	}
 	return nil
 }

@@ -86,7 +86,7 @@ subagent_progress_test.go: 回归 SubagentProgress 投影父子进展与细节�
 subagent_resume.go: SubagentResume 重建已分派子运行。历史关联阻止重复委派。
 subagent_resume_test.go: 回归 SubagentResume 重建已分派子运行。历史关联阻止重复委派。
 subagent_review.go: SubagentReview 区分产出与独立验收来源。角色标签不能授予权限。
-verifier.go: 派生只读配置。冻结标准选择与结构化输出共用同一合同。
+verifier.go: 派生隔离文件工具。冻结标准选择与结构化输出共用同一合同。
 verifier_test.go: 回归只读配置、标准选择与结构化输出失败关闭。
 verifier_context.go: 核对目标 Run 终态及历史工作区观察。只传有界验收上下文。
 verifier_run.go: 先核验目标身份，再委派只读 Run。校验子终态与工作区版本。
@@ -120,6 +120,10 @@ workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动�
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
 
 workflow_store.go: 连接能力 SQLite 叶子与制品。路径、只读打开和链头 CAS 保持。
-workflow_verify.go: 将旧验证和新固定脚本绑定到可恢复的脚本化 Run；现有策略、沙箱及验证不变。
+workflow_verify.go: 冻结脚本、验收合同与目标版本。程序验证复用原授权、沙箱及恢复入口。
+workflow_verification.go: 连接 Worker、Program、独立审查与报告制品。所有阶段核对同一工作区版本。
+workflow_verification_test.go: 通过真实工具验证程序证据、隔离审查及报告重放。
+workflow_verification_report.go: 绑定冻结范围、覆盖事实、Finding 与逐标准验收结论。
+workflow_verification_report_test.go: 回归缺失证据和独立发现不会产生错误通过。
 
 [PROTOCOL]: Update this header on change, then check AGENTS.md

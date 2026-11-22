@@ -346,6 +346,8 @@ type ToolsConfig struct {
 	RunTests bool `yaml:"run_tests"`
 	// LspDiagnostics 启用 lsp_diagnostics 只读诊断。
 	LspDiagnostics bool `yaml:"lsp_diagnostics"`
+	// VerificationFilesOnly 由 App 派生。独立审查只装配文件读取面。
+	VerificationFilesOnly bool `yaml:"-" json:"verification_files_only,omitempty"`
 }
 
 // HookConfig 单条工作区钩子（YAML 形状与 hooks.Rule 对齐）。
