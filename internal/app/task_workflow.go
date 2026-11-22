@@ -351,7 +351,7 @@ func projectTaskWorkflow(ctx context.Context, stateDir, hash string, current tas
 		return nil, err
 	}
 	execution := workflowExecution{stateDir: stateDir, workspaceHash: hash, definition: &definition}
-	view, err := execution.workflowStatusView(ctx, snapshot)
+	view, err := execution.workflowStatusViewForTask(ctx, snapshot, &current)
 	return &view, err
 }
 
@@ -418,25 +418,28 @@ func (execution workflowExecution) requireActiveTaskWorkflow(ctx context.Context
 }
 
 // workflowTaskState 返回任务所有者的状态。已验收结论还需匹配读取到的终态。
-func (execution workflowExecution) workflowTaskState(ctx context.Context, snapshot *workflow.Snapshot, definition *WorkflowDefinition, view WorkflowStatusView) (string, error) {
+func (execution workflowExecution) workflowTaskState(ctx context.Context, snapshot *workflow.Snapshot, definition *WorkflowDefinition, view WorkflowStatusView, known *Task) (string, error) {
 	if snapshot.TaskID == "" {
 		return "", nil
 	}
-	current, err := execution.taskWorkflowOwner(ctx, snapshot, definition)
-	if err != nil {
-		return "", err
+	if known == nil {
+		current, err := execution.taskWorkflowOwner(ctx, snapshot, definition)
+		if err != nil {
+			return "", err
+		}
+		known = &current
 	}
-	if current.State == task.Completed {
+	if known.State == task.Completed {
 		if !snapshot.Finished {
 			// 此次读取的工作流快照早于其他进程写入的任务验收。
 			return "", nil
 		}
-		evidence, err := taskWorkflowCompletion(TaskView{Task: current, Workflow: &view}, execution.stateDir)
-		if err != nil || current.Completion == nil || !current.Completion.Equal(*evidence) {
+		evidence, err := taskWorkflowCompletion(TaskView{Task: *known, Workflow: &view}, execution.stateDir)
+		if err != nil || known.Completion == nil || len(known.Progress.Remaining) != 0 || !known.Completion.Equal(*evidence) {
 			return "", fmt.Errorf("%w: workflow task completion evidence mismatch", ErrStateCorrupt)
 		}
 	}
-	return string(current.State), nil
+	return string(known.State), nil
 }
 
 // taskWorkflowCompletion 固定通过报告的审查终态和输出制品。

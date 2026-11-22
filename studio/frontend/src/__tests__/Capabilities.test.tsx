@@ -71,6 +71,9 @@ describe("Workbench workflow editor parity",()=>{
   rerender(<WorkflowsView {...config} instances={[{...instance,task_state:"completed"}]}/>);
   expect(await screen.findByText("已验收")).toBeInTheDocument();
   expect(screen.queryByText("待人工验收")).not.toBeInTheDocument();
+  rerender(<WorkflowsView {...config} historyError="验收证据暂时不可读" instances={[{...instance,task_state:"completed"}]}/>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("验收证据暂时不可读");
+  expect(screen.getByText("上次读取 · 已验收")).toBeInTheDocument();
  });
  it("requires explicit confirmation before workflow execution, not for dry run",async()=>{
   const confirm=vi.spyOn(window,"confirm").mockReturnValue(false);

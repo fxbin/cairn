@@ -57,6 +57,11 @@ func (Service) WorkflowHistory(ctx context.Context, scope WorkflowScope) ([]Work
 
 // workflowStatusView 核验冻结定义和 Run 历史后给出当前阶段。
 func (execution workflowExecution) workflowStatusView(ctx context.Context, snapshot *workflow.Snapshot) (WorkflowStatusView, error) {
+	return execution.workflowStatusViewForTask(ctx, snapshot, nil)
+}
+
+// workflowStatusViewForTask 复用 Task 查询已经读取的任务快照。
+func (execution workflowExecution) workflowStatusViewForTask(ctx context.Context, snapshot *workflow.Snapshot, current *Task) (WorkflowStatusView, error) {
 	view := workflowViewFromSnapshot(snapshot)
 	if snapshot.Definition == nil {
 		return view, nil
@@ -81,7 +86,7 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 	if err := execution.projectWorkflowAttempts(ctx, snapshot, definition, &view); err != nil {
 		return WorkflowStatusView{}, err
 	}
-	taskState, err := execution.workflowTaskState(ctx, snapshot, definition, view)
+	taskState, err := execution.workflowTaskState(ctx, snapshot, definition, view, current)
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}

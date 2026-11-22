@@ -178,6 +178,13 @@ export default function WorkflowsView({
           </button>
         </div>
 
+        {historyError && (
+          <p role="alert">
+            无法核验当前运行历史。{historyError}
+            {instances.length > 0 && "以下显示上次读取结果。"}
+          </p>
+        )}
+
         {taskInstances.length > 0 && (
           <section className="wb-wf-history-list" aria-label="自主任务">
             <h3>自主任务</h3>
@@ -185,7 +192,9 @@ export default function WorkflowsView({
               <article className="wb-wf-history-record" key={instance.workflow_id}>
                 <div className="wb-wf-history-top">
                   <strong>{instance.definition_name || instance.task_id}</strong>
-                  <span className="wb-badge">{taskWorkflowStatus(instance)}</span>
+                  <span className="wb-badge">
+                    {historyError ? "上次读取 · " : ""}{taskWorkflowStatus(instance)}
+                  </span>
                   <span className="wb-hash-pill">{instance.task_id}</span>
                 </div>
                 {instance.finish_reason && <p>{instance.finish_reason}</p>}
@@ -396,7 +405,6 @@ export default function WorkflowsView({
                   </>
                 ) : (
                   <div className="wb-wf-history-list">
-                    {historyError ? <p role="alert">无法读取工作流历史。{historyError}</p> : null}
                     {!historyError && selectedExecs.length === 0 ? (
                       <div className="wb-wf-history-empty">
                         这个工作流暂无持久化实例。
