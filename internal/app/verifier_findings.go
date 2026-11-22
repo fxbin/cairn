@@ -1,13 +1,17 @@
-// [INPUT]: 依赖 Verifier 子运行输出与工作区制品库的证据校验。
-// [OUTPUT]: 返回经真实证据核验、去重与状态推进的 Finding 清单。
-// [POS]: 组合门面；证据必须在真实制品库在档，确认结果驱动有界返工。
+// [INPUT]: 依赖 Verifier 输出与宿主校验的目标 Run。
+// [OUTPUT]: 返回去重后的未定论 Finding 清单。
+// [POS]: 模型提交的制品引用只供调查，确定性核验负责确认。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 本文件组合独立验证与 Finding 核验。
 // Author: fxbin
 package app
 
-import "github.com/fxbin/cairn/internal/contract"
+import (
+	"errors"
+
+	"github.com/fxbin/cairn/internal/contract"
+)
 
 // ValidatedFindings 是一次独立验证经核验后的结果。只有 Confirmed 且阻塞的
 // 发现才驱动返工；Inconclusive 保留为待调查，不等于没有问题。
@@ -18,11 +22,15 @@ type ValidatedFindings struct {
 	BlockingIDs  []string           `json:"blocking_ids"`
 }
 
-// ValidateVerifierFindings 把 Verifier 产出的待核验 Finding 与真实工作区制品库
-// 绑定后逐条核验。证据引用必须在制品库在档且摘要一致，否则不得确认。
-func ValidateVerifierFindings(result VerifierResult, stateDir, workspaceHash, validator string) (ValidatedFindings, error) {
-	verify := WorkspaceEvidenceVerifier(stateDir, workspaceHash)
-	confirmed, inconclusive, rejected, err := DeduplicateAndValidate(result.Findings, validator, verify)
+// ValidateVerifierFindings 收束独立只读审查的待核验发现。制品存在只证明
+// 引用真实，不能证明具体缺陷；未经确定性复核的发现一律保留为未定论。
+func ValidateVerifierFindings(result VerifierResult, validator string) (ValidatedFindings, error) {
+	for _, finding := range result.Findings {
+		if result.target.TargetRunID == "" || finding.TargetID != string(result.target.TargetRunID) {
+			return ValidatedFindings{}, errors.New("finding does not belong to the verified target")
+		}
+	}
+	confirmed, inconclusive, rejected, err := DeduplicateAndValidate(result.Findings, validator, nil)
 	if err != nil {
 		return ValidatedFindings{}, err
 	}

@@ -16,18 +16,9 @@ import (
 	"github.com/fxbin/cairn/internal/contract"
 )
 
-// EvidenceVerifier 校验一条证据引用是否真实存在且摘要匹配。由应用层注入
-// 内容寻址制品存储；nil 表示无制品来源，此时任何证据都不能用于确认发现。
+// EvidenceVerifier 由确定性核验器提供。返回 nil 表示引用包含支持待核验
+// 发现的证据。制品库可读只证明引用完整，不能单独充当核验器。
 type EvidenceVerifier func(ref contract.Ref) error
-
-// WorkspaceEvidenceVerifier 返回一个绑定具体工作区制品库的证据校验器：引用
-// 必须在档且内容摘要一致才算有效，模型凭空编造的摘要会被拒绝。
-func WorkspaceEvidenceVerifier(stateDir, workspaceHash string) EvidenceVerifier {
-	root := manifestArtifactRoot(stateDir, workspaceHash)
-	return func(ref contract.Ref) error {
-		return checkArtifactReference(root, ref)
-	}
-}
 
 // FindingValidation 是一次复核决定。原始发现与证据始终保留，没有被删除。
 type FindingValidation struct {
@@ -40,8 +31,8 @@ type FindingValidation struct {
 // 规则保守：
 //   - 结构非法 → Inconclusive（不可当作没问题）；
 //   - 证据引用必须在真实制品库通过摘要校验；格式合法但制品不存在不计入；
-//   - 无有效证据的高风险发现或无定位发现 → Inconclusive；
-//   - 有已核验证据的定位类发现 → Confirmed。
+//   - 任何严重度的发现都需要有效证据，定位只用于寻找证据；
+//   - 确认复核只引用已核验的证据。
 func ValidateFinding(finding contract.Finding, validator string, verifyEvidence EvidenceVerifier) (FindingValidation, error) {
 	if finding.Status != contract.FindingProposed {
 		return FindingValidation{}, errors.New("only proposed findings can be validated")
@@ -59,40 +50,39 @@ func ValidateFinding(finding contract.Finding, validator string, verifyEvidence 
 		return FindingValidation{Finding: finding, Validator: validator, Rationale: "structural validation failed"}, nil
 	}
 	// 证据必须在真实制品库校验通过；模型凭空编造的摘要不计为有效证据。
-	validEvidence := countVerifiedEvidence(finding.EvidenceRefs, verifyEvidence)
-	highRisk := finding.Severity == contract.SeverityHigh || finding.Severity == contract.SeverityCritical
-	switch {
-	case validEvidence == 0 && (highRisk || finding.Location == ""):
+	verified := verifiedFindingEvidence(finding.EvidenceRefs, verifyEvidence)
+	if len(verified) == 0 {
 		finding.Status = contract.FindingInconclusive
 		finding.Reviews = append(finding.Reviews, contract.FindingReview{
 			ReviewerID: validator, Outcome: contract.FindingInconclusive,
 			Rationale: "insufficient verifiable evidence to confirm or reject",
 		})
 		return FindingValidation{Finding: finding, Validator: validator, Rationale: "insufficient evidence"}, nil
-	default:
-		finding.Status = contract.FindingConfirmed
-		finding.Reviews = append(finding.Reviews, contract.FindingReview{
-			ReviewerID: validator, Outcome: contract.FindingConfirmed,
-			Rationale:    fmt.Sprintf("confirmed with %d verified evidence references", validEvidence),
-			EvidenceRefs: append([]contract.Ref(nil), finding.EvidenceRefs...),
-		})
-		return FindingValidation{Finding: finding, Validator: validator, Rationale: "confirmed with verified evidence"}, nil
 	}
+	finding.Status = contract.FindingConfirmed
+	finding.Reviews = append(finding.Reviews, contract.FindingReview{
+		ReviewerID: validator, Outcome: contract.FindingConfirmed,
+		Rationale:    fmt.Sprintf("confirmed with %d verified evidence references", len(verified)),
+		EvidenceRefs: verified,
+	})
+	return FindingValidation{Finding: finding, Validator: validator, Rationale: "confirmed with verified evidence"}, nil
 }
 
-// countVerifiedEvidence 统计通过真实制品校验的证据引用。verify 为 nil 时没有
-// 任何可核验证据，防止模型编造摘要把发现程序确认为真并驱动返工。
-func countVerifiedEvidence(refs []contract.Ref, verify EvidenceVerifier) int {
+// verifiedFindingEvidence 返回通过校验的不同证据。原始引用仍保留在发现中。
+func verifiedFindingEvidence(refs []contract.Ref, verify EvidenceVerifier) []contract.Ref {
 	if verify == nil {
-		return 0
+		return nil
 	}
-	count := 0
+	var verified []contract.Ref
+	seen := make(map[string]bool, len(refs))
 	for _, ref := range refs {
-		if verify(ref) == nil {
-			count++
+		if !seen[ref.SHA256] && verify(ref) == nil {
+			seen[ref.SHA256] = true
+			ref.TruncatedPreview = ""
+			verified = append(verified, ref)
 		}
 	}
-	return count
+	return verified
 }
 
 // RejectFinding 记录一条有依据的拒绝复核。高风险发现必须提供理由或证据，

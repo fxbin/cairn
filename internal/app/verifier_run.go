@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/fxbin/cairn/internal/contract"
@@ -23,6 +24,7 @@ type VerifierResult struct {
 	VerifierRunID domain.RunID
 	Findings      []contract.Finding
 	FinalText     string
+	target        verifierContext
 }
 
 // RunVerifier 主动发起独立只读 Verifier 子运行。它先写父 Journal 的委派事实，
@@ -36,8 +38,33 @@ func (service Service) RunVerifier(ctx context.Context, request VerifierRequest)
 	if err != nil {
 		return VerifierResult{}, err
 	}
-	// 打开父 Journal 供预算钳制与委派事实共用；工作区哈希必须与子 Run 一致。
-	hash := verifierWorkspaceHash(request)
+	workspace, hash, err := workspaceFor(request.Workspace, request.Config)
+	if err != nil {
+		return VerifierResult{}, err
+	}
+	request.StateDir, err = filepath.Abs(request.StateDir)
+	if err != nil {
+		return VerifierResult{}, err
+	}
+	request.Workspace = workspace.Root
+	targetJournal, err := openReadOnlyJournal(request.StateDir, hash)
+	if err != nil {
+		return VerifierResult{}, fmt.Errorf("%w: %w", ErrVerifierTarget, err)
+	}
+	observation := workspace.ObservationView(request.Config.Verification.VolatilePaths)
+	before, err := observation.Observation()
+	if err != nil {
+		targetJournal.Close()
+		return VerifierResult{}, err
+	}
+	target, targetErr := loadVerifierContext(ctx, targetJournal, hash, before, request)
+	if err := errors.Join(targetErr, targetJournal.Close()); err != nil {
+		return VerifierResult{}, err
+	}
+	prompt, err := verifierTaskPrompt(target)
+	if err != nil {
+		return VerifierResult{}, err
+	}
 	journal, err := openJournal(request.StateDir, hash)
 	if err != nil {
 		return VerifierResult{}, err
@@ -59,7 +86,6 @@ func (service Service) RunVerifier(ctx context.Context, request VerifierRequest)
 		}
 	}
 	childID := domain.NewRunID()
-	prompt := verifierTaskPrompt(request)
 	// 委派事实先于子 Run 落盘：validateSubagentRunParent 要求父 Journal 中
 	// 存在该子身份的 delegated 事实，否则子运行启动失败。
 	if _, err := RecordSubagentDelegated(ctx, journal, request.ParentRunID, hash, DelegateOptions{
@@ -87,6 +113,18 @@ func (service Service) RunVerifier(ctx context.Context, request VerifierRequest)
 	if loadErr != nil {
 		return VerifierResult{}, loadErr
 	}
+	child, err := domain.Replay(events)
+	if err != nil || child.ID != childID || child.WorkspaceHash != hash ||
+		child.ParentRunID != request.ParentRunID || child.State != domain.RunCompleted {
+		return VerifierResult{}, fmt.Errorf("%w: verifier run did not complete successfully", ErrVerifierOutput)
+	}
+	after, err := observation.Observation()
+	if err != nil {
+		return VerifierResult{}, err
+	}
+	if before != after {
+		return VerifierResult{}, fmt.Errorf("%w: workspace changed during independent verification", ErrVerifierTarget)
+	}
 	finalText := verifierFinalText(events)
 	if finalText == "" {
 		return VerifierResult{}, fmt.Errorf("%w: no final text from verifier run", ErrVerifierOutput)
@@ -95,7 +133,7 @@ func (service Service) RunVerifier(ctx context.Context, request VerifierRequest)
 	if parseErr != nil {
 		return VerifierResult{}, parseErr
 	}
-	return VerifierResult{VerifierRunID: childID, Findings: findings, FinalText: finalText}, nil
+	return VerifierResult{VerifierRunID: childID, Findings: findings, FinalText: finalText, target: target}, nil
 }
 
 // validateVerifierRequest 校验主动验证请求的必需绑定，缺一失败关闭。
@@ -112,15 +150,6 @@ func validateVerifierRequest(request VerifierRequest) error {
 	if len(request.ParentTools) == 0 {
 		return errors.New("verifier request requires the parent tool surface")
 	}
-	return nil
-}
-
-// verifierWorkspaceHash 复用 workspaceFor 的哈希口径，保证委派事实与子 Run
-// 绑定同一工作区身份。
-func verifierWorkspaceHash(request VerifierRequest) string {
-	_, hash, err := workspaceFor(request.Workspace, request.Config)
-	if err != nil {
-		return ""
-	}
-	return hash
+	_, err := verifierCriteria(request)
+	return err
 }

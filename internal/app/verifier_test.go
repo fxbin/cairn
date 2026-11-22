@@ -4,7 +4,6 @@
 package app
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -54,6 +53,7 @@ func TestVerifierConfigForcesReadOnlyFromWritableBase(t *testing.T) {
 	configuration := withTestProvider(config.Defaults())
 	configuration.Policy.Write = "allow"
 	configuration.Policy.Exec = "allow"
+	configuration.Tools.LspDiagnostics = true
 	child, err := verifierConfig(configuration)
 	if err != nil {
 		t.Fatalf("verifier config: %v", err)
@@ -61,13 +61,14 @@ func TestVerifierConfigForcesReadOnlyFromWritableBase(t *testing.T) {
 	if child.Policy.Write != "deny" || child.Policy.Exec != "deny" {
 		t.Fatalf("writable base leaked into verifier config: %+v", child.Policy)
 	}
+	if child.Tools.LspDiagnostics {
+		t.Fatal("independent verifier inherited host diagnostics")
+	}
 }
 
 func TestParseVerifierOutput(t *testing.T) {
 	request := verifierTestRequest(t)
-	raw := `这里是可忽略的说明
-{"findings":[{"id":"f-1","target_id":"obj-1","category":"correctness","severity":"high","description":"发现问题","status":"confirmed","criterion_id":"compile","evidence_refs":[{"sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"media_type":"application/json","truncated_preview":""}]}]}
-`
+	raw := "```json\n" + `{"findings":[{"id":"f-1","target_id":"obj-1","category":"correctness","severity":"high","description":"发现问题","status":"confirmed","criterion_id":"compile","evidence_refs":[{"sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"media_type":"application/json","truncated_preview":""}]}]}` + "\n```"
 	findings, err := parseVerifierOutput(raw, request)
 	if err != nil {
 		t.Fatalf("parse findings: %v", err)
@@ -132,6 +133,11 @@ func TestParseVerifierOutputFailsClosed(t *testing.T) {
 		text string
 	}{
 		{"empty", ""},
+		{"missing findings array", `{}`},
+		{"null findings array", `{"findings":null}`},
+		{"multiple objects", `{"findings":[]} {"findings":[]}`},
+		{"repeated findings array", `{"findings":[],"findings":[]}`},
+		{"array instead of object", `[{"findings":[]}]`},
 		{"no json", "just text"},
 		{"bad json", `{"findings":[`},
 		{"unbound criterion", `{"findings":[{"id":"f","target_id":"o","category":"c","severity":"low","description":"d","status":"proposed","criterion_id":"unknown"}]}`},
@@ -157,11 +163,12 @@ func TestVerifierFinalTextPrefersRunCompleted(t *testing.T) {
 	}
 }
 
-func TestExtractJSONObjectHandlesNestedBraces(t *testing.T) {
-	text := `prefix {"a":{"b":1},"c":"}"} suffix`
-	object := extractJSONObject(text)
-	var value map[string]any
-	if err := json.Unmarshal([]byte(object), &value); err != nil {
-		t.Fatalf("extracted object invalid: %v (%q)", err, object)
+func TestVerifierCriteriaRejectsUnknownOrRepeatedSelection(t *testing.T) {
+	request := verifierTestRequest(t)
+	for _, ids := range [][]string{{"unknown"}, {"compile", "compile"}} {
+		request.CriterionIDs = ids
+		if _, err := verifierCriteria(request); err == nil {
+			t.Fatalf("invalid criterion selection accepted: %v", ids)
+		}
 	}
 }
