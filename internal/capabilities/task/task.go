@@ -1,6 +1,6 @@
 // [INPUT]: 依赖运行标识与共享脱敏合同。
-// [OUTPUT]: 提供跨会话任务、分配、完成证据锚点与生命周期迁移。
-// [POS]: 定义任务事实。应用层从 Run Journal 核验分配与证据。
+// [OUTPUT]: 提供任务生命周期、分配、工作流绑定与完成证据锚点。
+// [POS]: 定义任务事实。应用层交叉核验 Run Journal 与工作流证据。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // Package task 定义持久任务生命周期。
@@ -65,28 +65,29 @@ type Progress struct {
 	Remaining []string `json:"remaining,omitempty"`
 }
 
-// Evidence 指向 Run Journal 内已经核验的验证事件，并可选绑定标准级证据
-// 制品与验收合同摘要。旧任务缺少可选字段时按既有可信规则兼容。
+// Evidence 固定已核验的 Run 事件与证据制品。自主任务另绑定工作流身份和报告。
 type Evidence struct {
 	RunID            domain.RunID  `json:"run_id"`
 	Sequence         uint64        `json:"seq"`
 	EventHash        string        `json:"event_hash"`
 	AcceptanceDigest string        `json:"acceptance_digest,omitempty"`
 	EvidenceRef      *contract.Ref `json:"evidence_ref,omitempty"`
+	WorkflowID       string        `json:"workflow_id,omitempty"`
 }
 
 // Task 保存工作区作用域、冻结定义和当前任务事实。
 type Task struct {
-	SchemaVersion int        `json:"schema_version"`
-	ID            ID         `json:"id"`
-	WorkspaceHash string     `json:"workspace_hash"`
-	Definition    Definition `json:"definition"`
-	Revision      uint64     `json:"revision"`
-	State         State      `json:"state"`
-	Progress      Progress   `json:"progress"`
-	Completion    *Evidence  `json:"completion,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	SchemaVersion   int              `json:"schema_version"`
+	ID              ID               `json:"id"`
+	WorkspaceHash   string           `json:"workspace_hash"`
+	Definition      Definition       `json:"definition"`
+	Revision        uint64           `json:"revision"`
+	State           State            `json:"state"`
+	Progress        Progress         `json:"progress"`
+	Completion      *Evidence        `json:"completion,omitempty"`
+	WorkflowBinding *WorkflowBinding `json:"workflow_binding,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
 // Assignment 冻结一次请求到会话与 Run 创建事件的绑定，早于 Run Journal 提交。
@@ -213,6 +214,13 @@ func (current *Task) Transition(next State, evidence *Evidence) error {
 			evidence == nil || evidence.RunID == "" || evidence.Sequence == 0 || evidence.EventHash == "" {
 			return ErrTransition
 		}
+		if current.WorkflowBinding != nil {
+			if !current.WorkflowBinding.Attached || evidence.WorkflowID != current.WorkflowBinding.WorkflowID {
+				return ErrTransition
+			}
+		} else if evidence.WorkflowID != "" {
+			return ErrTransition
+		}
 		if current.Definition.AcceptanceDigest != "" {
 			if evidence.AcceptanceDigest != current.Definition.AcceptanceDigest || evidence.EvidenceRef == nil {
 				return ErrTransition
@@ -231,7 +239,7 @@ func (current *Task) Transition(next State, evidence *Evidence) error {
 // Equal 按值比较证据锚点，包括解引用后的制品引用；指针相等不能代表同一证据。
 func (evidence Evidence) Equal(other Evidence) bool {
 	if evidence.RunID != other.RunID || evidence.Sequence != other.Sequence || evidence.EventHash != other.EventHash ||
-		evidence.AcceptanceDigest != other.AcceptanceDigest {
+		evidence.AcceptanceDigest != other.AcceptanceDigest || evidence.WorkflowID != other.WorkflowID {
 		return false
 	}
 	if (evidence.EvidenceRef == nil) != (other.EvidenceRef == nil) {

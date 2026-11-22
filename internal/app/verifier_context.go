@@ -41,6 +41,7 @@ type verifierContext struct {
 
 // verifierArtifact 将制品引用锚定到目标 Journal 的具体事件。
 type verifierArtifact struct {
+	RunID         domain.RunID     `json:"run_id"`
 	EventSequence uint64           `json:"event_sequence"`
 	EventType     domain.EventType `json:"event_type"`
 	Path          string           `json:"path,omitempty"`
@@ -159,11 +160,11 @@ func verifierTargetArtifacts(events []domain.Event, root string) ([]verifierArti
 		case domain.EventOperationSucceeded:
 			path, ok := started[*event.OperationID]
 			if ok && payload.ResultRef != nil {
-				candidates = append(candidates, verifierArtifact{EventSequence: event.Seq, EventType: event.Type, Path: path, Ref: *payload.ResultRef})
+				candidates = append(candidates, verifierArtifact{RunID: event.RunID, EventSequence: event.Seq, EventType: event.Type, Path: path, Ref: *payload.ResultRef})
 			}
 		case domain.EventVerificationFinished:
 			if payload.EvidenceRef != nil {
-				candidates = append(candidates, verifierArtifact{EventSequence: event.Seq, EventType: event.Type, Ref: *payload.EvidenceRef})
+				candidates = append(candidates, verifierArtifact{RunID: event.RunID, EventSequence: event.Seq, EventType: event.Type, Ref: *payload.EvidenceRef})
 			}
 		}
 	}

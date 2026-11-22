@@ -112,6 +112,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	if snapshot.Paused {
 		return true, "waiting for explicit continuation", nil
 	}
+	if err := execution.requireActiveTaskWorkflow(ctx, snapshot); err != nil {
+		return true, "", err
+	}
 	if snapshot.ResumeIndex < 0 {
 		return false, "", execution.appendRunFinished(ctx, snapshot.WorkflowID, workflow.RunStateCompleted, -1)
 	}
@@ -120,6 +123,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	node := execution.definition.Nodes[index]
 	switch step.State {
 	case workflow.StepFailed:
+		if progressed, err := execution.autoReworkTaskWorkflow(ctx, snapshot); err != nil || progressed {
+			return false, "", err
+		}
 		if len(snapshot.RetryTargets()) != 0 {
 			return true, "waiting for authorized retry or rework", nil
 		}
@@ -163,6 +169,11 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 		PreassignedRunID: runID, OnEvent: execution.onEvent,
 		workflowLink: &workflowRunLink{WorkflowID: string(snapshot.WorkflowID), StepID: node.ID},
 	}
+	var reworkVersion string
+	input.Task, reworkVersion, err = execution.taskWorkflowReworkInput(snapshot, node, input.Task)
+	if err != nil {
+		return err
+	}
 	var reviewVersion string
 	if node.Kind == workflow.StepKindReview {
 		input.SessionID, input.PrevRunID = "", ""
@@ -179,6 +190,14 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	bind := func(boot *Boot, draft *domain.EventDraft) error {
 		if draft.RunID != runID || boot.WorkspaceHash != execution.workspaceHash {
 			return fmt.Errorf("%w: workflow run scope mismatch", ErrStateCorrupt)
+		}
+		if err := execution.requireActiveTaskWorkflow(ctx, snapshot); err != nil {
+			return err
+		}
+		if reworkVersion != "" {
+			if err := requireWorkflowVerificationVersion(boot, reworkVersion); err != nil {
+				return err
+			}
 		}
 		if reviewVersion != "" {
 			if err := requireWorkflowVerificationVersion(boot, reviewVersion); err != nil {
@@ -240,16 +259,13 @@ func (execution workflowExecution) resumeVersionedStepRun(ctx context.Context, s
 	if run.Phase() != "running" {
 		return execution.settleVersionedAttempt(ctx, snapshot.WorkflowID, node, attempt, run, events, nil)
 	}
-	var reviewVersion string
-	if node.Kind == workflow.StepKindReview {
-		_, reviewVersion, err = execution.workflowReviewPrompt(ctx, snapshot)
-		if err != nil {
-			return err
-		}
+	resumeSubject, err := execution.workflowResumeSubject(ctx, snapshot, node, run)
+	if err != nil {
+		return err
 	}
 	_, runErr := execution.service.Resume(ctx, ResumeOptions{
 		RunID: run.ID, Workspace: execution.workspacePath, StateDir: execution.stateDir,
-		Config: configuration, OnEvent: execution.onEvent, verificationSubject: reviewVersion,
+		Config: configuration, OnEvent: execution.onEvent, verificationSubject: resumeSubject,
 	})
 	return execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr)
 }

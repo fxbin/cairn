@@ -1,6 +1,6 @@
 // [INPUT]: 依赖版本化定义、工作流 SQLite 与既有 Run 应用入口。
-// [OUTPUT]: 提供实例启动、精确人工门决策和实例推进锁。
-// [POS]: 负责从已保存修订创建实例。人工决定只改变工作流链。
+// [OUTPUT]: 提供普通实例创建、任务实例追加、人工门决策与实例推进锁。
+// [POS]: 普通实例读取保存的修订。任务实例使用任务先行持久化的身份。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 本文件装配版本化工作流实例。
@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	workflowsqlite "github.com/fxbin/cairn/internal/capabilities/workflow/storage/sqlite"
@@ -55,20 +56,32 @@ func (Service) CreateWorkflowInstance(ctx context.Context, options StartWorkflow
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}
+	return createWorkflowInstanceAt(ctx, scope, hash, definition, ref, workflow.NewID(), "")
+}
+
+// createWorkflowInstanceAt 以预期空链追加创建事件。任务负责先持久化指定实例身份。
+func createWorkflowInstanceAt(ctx context.Context, scope WorkflowScope, hash string, definition WorkflowDefinition, ref WorkflowDefinitionRef, id workflow.ID, taskID string) (WorkflowStatusView, error) {
+	if strings.HasPrefix(string(ref.ID), taskWorkflowDefinitionPrefix) != (taskID != "") ||
+		taskID != "" && ref.ID != taskWorkflowDefinitionID(TaskID(taskID)) {
+		return WorkflowStatusView{}, errors.New("task workflow definitions require their owning task")
+	}
 	store, err := workflowsqlite.Open(workflowDBPath(scope.StateDir, hash))
 	if err != nil {
 		return WorkflowStatusView{}, err
 	}
 	defer store.Close()
-	id := workflow.NewID()
+	authorization := workflowDefinitionAuthorization
+	if taskID != "" {
+		authorization = workflow.TaskWorkflowAuthorization
+	}
 	fingerprint := scope.Config.Fingerprint()
 	specs := workflowStepSpecs(definition)
 	created, err := store.Append(ctx, 0, workflow.EventDraft{
 		WorkflowID: id, WorkspaceHash: hash, Type: workflow.EventRunCreated,
 		Payload: contract.MustEncodeRedactedJSON(workflow.RunCreatedPayload{
 			Steps: specs, PlanSHA256: workflowPlanDigest(specs, ref.Artifact.SHA256, fingerprint),
-			ConfigFingerprint: fingerprint, AuthorizationSource: workflowDefinitionAuthorization,
-			Definition: &ref, SessionID: domain.NewID("session"),
+			ConfigFingerprint: fingerprint, AuthorizationSource: authorization,
+			Definition: &ref, SessionID: domain.NewID("session"), TaskID: taskID,
 		}),
 	})
 	if err != nil {
@@ -147,6 +160,9 @@ func prepareWorkflowStart(ctx context.Context, options StartWorkflowOptions) (Wo
 	}
 	if options.Revision == 0 {
 		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, errors.New("workflow start requires an explicitly selected definition revision")
+	}
+	if strings.HasPrefix(string(options.DefinitionID), taskWorkflowDefinitionPrefix) {
+		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, errors.New("task workflow definitions require their owning task")
 	}
 	if err := validateHookConfiguration(scope.Config); err != nil {
 		return WorkflowScope{}, "", WorkflowDefinition{}, WorkflowDefinitionRef{}, err
@@ -319,6 +335,9 @@ func (execution *workflowExecution) prepareVersionedWorkflow(ctx context.Context
 		return err
 	}
 	execution.definition = &definition
+	if err := execution.requireActiveTaskWorkflow(ctx, snapshot); err != nil {
+		return err
+	}
 	_, err = execution.workflowStatusView(ctx, snapshot)
 	return err
 }

@@ -212,6 +212,21 @@ func (execution workflowExecution) checkWorkflowAttemptOutput(ctx context.Contex
 	if err := execution.checkWorkflowReportCoverage(ctx, journal, snapshot.SessionID, program, attempt, report, version); err != nil {
 		return nil, err
 	}
+	if len(report.Findings.Confirmed) > 0 {
+		run, events, err := readWorkflowAttempt(ctx, journal, execution.workspaceHash, snapshot.SessionID, program)
+		if err != nil {
+			return nil, err
+		}
+		confirmed, err := execution.workflowProgramFailureFindings(run, events, workflowVerificationInputs{
+			Acceptance: *definition.Verification, WorkerRunID: worker.RunID, ProgramRunID: program.RunID, WorkspaceVersion: version,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !reflect.DeepEqual(confirmed, report.Findings.Confirmed) {
+			return nil, fmt.Errorf("%w: confirmed findings differ from program evidence", ErrStateCorrupt)
+		}
+	}
 	return report, nil
 }
 

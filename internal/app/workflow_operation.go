@@ -34,10 +34,15 @@ func (execution workflowExecution) decideWorkflowRunApproval(ctx context.Context
 	if err != nil {
 		return WorkflowOutcome{}, err
 	}
+	resumeSubject, err := execution.workflowResumeSubject(ctx, snapshot, node, run)
+	if err != nil {
+		return WorkflowOutcome{}, err
+	}
 	_, runErr := execution.service.Resume(ctx, ResumeOptions{
 		RunID: run.ID, Workspace: execution.workspacePath, StateDir: execution.stateDir,
 		Config: configuration, OnEvent: execution.onEvent, ExpectedApprovalOperationID: pending.OperationID,
-		Approval: ports.Approval{Fingerprint: pending.Fingerprint, Approve: approve, Reason: reason},
+		verificationSubject: resumeSubject,
+		Approval:            ports.Approval{Fingerprint: pending.Fingerprint, Approve: approve, Reason: reason},
 	})
 	if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr); err != nil {
 		return execution.versionedWorkflowOutcome(ctx, snapshot.WorkflowID, "", err)

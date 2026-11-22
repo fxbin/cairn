@@ -102,6 +102,11 @@ subagent_start_test.go: 回归 SubagentStart 校验先有委派事实再启动�
 subagent_test.go: 回归 Subagent 合同绑定父子身份与预算。委派不能扩大父权限。
 task.go: 装配 Task SQLite。应用门面按版本推进工作区任务与用户验收。
 task_run.go: 在创建 Run 前持久化分配。执行阶段与证据从 Run Journal 读取。
+task_workflow.go: 先固定自主实例身份，再确认创建。显式验收绑定审查报告。
+task_workflow_test.go: 回归冷恢复、重复授权、显式验收与有界返工。
+workflow_task_rework.go: 从已确认的程序检查失败推进冻结额度内的返工。
+workflow_program_finding.go: 核对冻结检查与实际退出制品。无法核验时保留待定。
+workflow_program_finding_test.go: 回归真实非零退出、对账、信号与制品错配。
 telemetry.go: 显式装配遥测能力并收束资源。Doctor共用接线判定，导出失败不改变运行事实。
 telemetry_test.go: 回归 Telemetry 装配可选导出并收束资源。导出失败不改变运行事实。
 trial_activation.go: TrialActivation 只读解析显式试运行变体。不改变生产默认配置。
