@@ -106,6 +106,11 @@ func requireWorkflowVerificationVersion(boot *Boot, expected string) error {
 	return nil
 }
 
+// requireWorkflowSubjectVersion 核对当前工作区是否仍是被程序核验的版本。
+func (execution workflowExecution) requireWorkflowSubjectVersion(expected string) error {
+	return requireObservedWorkflowVersion(execution.workspacePath, execution.configuration, expected)
+}
+
 // requireCurrentWorkflowVerification 供持有工作区锁的显式验收核对报告。
 func requireCurrentWorkflowVerification(workspacePath string, configuration config.Config, report *WorkflowVerificationReport) error {
 	if report == nil || report.Evaluation.Verdict != contract.VerdictPassed {
@@ -115,6 +120,11 @@ func requireCurrentWorkflowVerification(workspacePath string, configuration conf
 	if !ok {
 		return fmt.Errorf("%w: no independent review subject", ErrVerifierTarget)
 	}
+	return requireObservedWorkflowVersion(workspacePath, configuration, subject.Version)
+}
+
+// requireObservedWorkflowVersion 对比工作区观察。写入方必须持有工作区锁。
+func requireObservedWorkflowVersion(workspacePath string, configuration config.Config, expected string) error {
 	workspace, _, err := workspaceFor(workspacePath, configuration)
 	if err != nil {
 		return err
@@ -123,8 +133,8 @@ func requireCurrentWorkflowVerification(workspacePath string, configuration conf
 	if err != nil {
 		return err
 	}
-	if actual != subject.Version {
-		return fmt.Errorf("%w: workspace changed after independent verification", ErrVerifierTarget)
+	if expected == "" || actual != expected {
+		return fmt.Errorf("%w: workspace changed after verification", ErrVerifierTarget)
 	}
 	return nil
 }
@@ -137,6 +147,20 @@ func (execution workflowExecution) workflowVerificationSource(ctx context.Contex
 		return domain.RunProjection{}, nil, fmt.Errorf("%w: verification source %q did not settle successfully", ErrVerifierTarget, node.ID)
 	}
 	return execution.loadVersionedStepRun(ctx, workflowAttemptSession(snapshot.SessionID, node.Kind), attempts[len(attempts)-1])
+}
+
+// workflowWorkerHistory 读取截至当前 Worker 的所有尝试。返工仍复核先前保留的变更。
+func (execution workflowExecution) workflowWorkerHistory(ctx context.Context, snapshot *workflow.Snapshot) ([]domain.Event, error) {
+	node := execution.definition.Nodes[workflowVerificationWorker]
+	var history []domain.Event
+	for _, attempt := range snapshot.Attempts[node.ID] {
+		_, events, err := execution.loadVersionedStepRun(ctx, snapshot.SessionID, attempt)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, events...)
+	}
+	return history, nil
 }
 
 // workflowObservedRunVersion 从该 Run 最后的验证事件取工作区观察。
@@ -175,8 +199,12 @@ func (execution workflowExecution) workflowReviewPrompt(ctx context.Context, sna
 	if err != nil || len(criteria) == 0 {
 		return "", "", errors.Join(errors.New("workflow program verification has no bound criterion evidence"), err)
 	}
+	history, err := execution.workflowWorkerHistory(ctx, snapshot)
+	if err != nil {
+		return "", "", err
+	}
 	refRoot := manifestArtifactRoot(execution.stateDir, execution.workspaceHash)
-	artifacts, limited, err := verifierTargetArtifacts(workerEvents, refRoot)
+	artifacts, limited, err := verifierTargetArtifacts(history, refRoot)
 	if err != nil {
 		return "", "", err
 	}
@@ -223,10 +251,18 @@ func (execution workflowExecution) workflowVerificationReport(ctx context.Contex
 	}
 	if input.ProgramEvidence == nil {
 		input.ProgramError = "program verification has no sufficient terminal evidence"
+		input.Findings.Confirmed, err = execution.workflowProgramFailureFindings(program, programEvents, input)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	if node.Kind == workflow.StepKindReview {
 		input.ReviewRunID = run.ID
-		input.ReviewRef, input.Findings, err = execution.workflowReviewEvidence(run, events, workerEvents, input)
+		history, err := execution.workflowWorkerHistory(ctx, snapshot)
+		if err != nil {
+			return nil, "", err
+		}
+		input.ReviewRef, input.Findings, err = execution.workflowReviewEvidence(run, events, history, input)
 		if err != nil {
 			return nil, "", err
 		}

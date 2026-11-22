@@ -57,7 +57,7 @@ func TestWorkflowVerificationPersistsProgramAndIndependentReview(t *testing.T) {
 		{"uncorroborated", "/usr/bin/true", `{"findings":[{"id":"f-1","category":"correctness","severity":"medium","criterion_id":"build","description":"Unproven","location":"created.txt:1"}]}`, contract.VerdictUnknown, "failed"},
 		{"unrelated_file", "/usr/bin/true", `{"findings":[]}`, contract.VerdictUnknown, "failed"},
 		{"stale_gate", "/usr/bin/true", `{"findings":[]}`, contract.VerdictPassed, ""},
-		{"program_failed", "/usr/bin/false", "", contract.VerdictUnknown, "failed"},
+		{"program_failed", "/usr/bin/false", "", contract.VerdictFailed, "failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

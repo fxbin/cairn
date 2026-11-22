@@ -104,14 +104,20 @@ func (service Service) RetryStep(ctx context.Context, options WorkflowRetryOptio
 		if snapshot.Paused || !slices.Contains(snapshot.RetryTargets(), options.StepID) {
 			return WorkflowOutcome{}, errors.New("workflow retry target is not authorized by the frozen plan")
 		}
-		failed := snapshot.Steps[snapshot.ResumeIndex].ID
-		if _, err := execution.appendDraftAt(ctx, options.WorkflowID, snapshot.LastSeq, workflow.EventRetryAuthorized, workflow.RetryPayload{
-			FailedStepID: failed, FailedAttempt: len(snapshot.Attempts[failed]), FromStepID: options.StepID, Reason: reason,
-		}); err != nil {
+		if err := execution.recordWorkflowRetry(ctx, snapshot, options.StepID, reason); err != nil {
 			return WorkflowOutcome{}, err
 		}
 		return execution.advance(ctx, options.WorkflowID)
 	})
+}
+
+// recordWorkflowRetry 按链头追加返工，重放仍强制目标与尝试预算。
+func (execution workflowExecution) recordWorkflowRetry(ctx context.Context, snapshot *workflow.Snapshot, stepID, reason string) error {
+	failed := snapshot.Steps[snapshot.ResumeIndex].ID
+	_, err := execution.appendDraftAt(ctx, snapshot.WorkflowID, snapshot.LastSeq, workflow.EventRetryAuthorized, workflow.RetryPayload{
+		FailedStepID: failed, FailedAttempt: len(snapshot.Attempts[failed]), FromStepID: stepID, Reason: reason,
+	})
+	return err
 }
 
 // changeWorkflow 在实例互斥区内重新核对客户端链头。

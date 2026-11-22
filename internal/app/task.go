@@ -1,6 +1,6 @@
 // [INPUT]: 依赖跨会话任务合同、SQLite 存储与工作区排他锁。
-// [OUTPUT]: 提供任务创建、查询、进度、暂停、恢复、取消与验收。
-// [POS]: 应用门面核验 Journal 证据后推进任务。最小配置不打开任务库。
+// [OUTPUT]: 提供任务创建、查询、进度、暂停、恢复、取消与显式验收。
+// [POS]: 应用门面核验关联运行或工作流报告。最小配置不打开任务库。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
 // 本文件装配持久任务生命周期。
@@ -31,7 +31,7 @@ var (
 	// ErrTaskAssignmentUnconfirmed 表示任务有分配，但缺少对应的 Run 创建事实。
 	ErrTaskAssignmentUnconfirmed = errors.New("task assignment has no confirmed run; automatic execution is blocked")
 	// ErrTaskUnverified 表示提交的 Run 不能作为任务验收依据。
-	ErrTaskUnverified = errors.New("task completion requires trusted verification from its latest assignment")
+	ErrTaskUnverified = errors.New("task completion requires trusted verification evidence")
 )
 
 // TaskScope 指定任务作用域与同一工作区的运行配置。
@@ -57,6 +57,7 @@ type Task = task.Task
 type TaskView struct {
 	Task
 	Assignments []TaskAssignmentView `json:"assignments"`
+	Workflow    *WorkflowStatusView  `json:"workflow,omitempty"`
 }
 
 // CreateTask 在工作区内保存独立任务。创建不启动 Run。
@@ -150,11 +151,14 @@ func (service Service) CancelTask(ctx context.Context, scope TaskScope, id TaskI
 	})
 }
 
-// CompleteTask 是显式验收命令。验收固定到最新分配的可信验证事件。
+// CompleteTask 显式验收可信分配证据，或当前工作区上通过的独立审查报告。
 func (service Service) CompleteTask(ctx context.Context, scope TaskScope, id TaskID, revision uint64, runID domain.RunID) (Task, error) {
 	return service.changeTask(ctx, scope, id, revision, func(view *TaskView) error {
 		if err := view.requireSettledAssignments(); err != nil {
 			return err
+		}
+		if view.WorkflowBinding != nil {
+			return completeTaskFromWorkflow(scope, view, runID)
 		}
 		if len(view.Assignments) == 0 {
 			return ErrTaskUnverified

@@ -112,6 +112,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	if snapshot.Paused {
 		return true, "waiting for explicit continuation", nil
 	}
+	if err := execution.requireActiveTaskWorkflow(ctx, snapshot); err != nil {
+		return true, "", err
+	}
 	if snapshot.ResumeIndex < 0 {
 		return false, "", execution.appendRunFinished(ctx, snapshot.WorkflowID, workflow.RunStateCompleted, -1)
 	}
@@ -120,6 +123,9 @@ func (execution workflowExecution) advanceVersionedStep(ctx context.Context, sna
 	node := execution.definition.Nodes[index]
 	switch step.State {
 	case workflow.StepFailed:
+		if progressed, err := execution.autoReworkTaskWorkflow(ctx, snapshot); err != nil || progressed {
+			return false, "", err
+		}
 		if len(snapshot.RetryTargets()) != 0 {
 			return true, "waiting for authorized retry or rework", nil
 		}
@@ -163,6 +169,11 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 		PreassignedRunID: runID, OnEvent: execution.onEvent,
 		workflowLink: &workflowRunLink{WorkflowID: string(snapshot.WorkflowID), StepID: node.ID},
 	}
+	var reworkVersion string
+	input.Task, reworkVersion, err = execution.taskWorkflowReworkInput(snapshot, node, input.Task)
+	if err != nil {
+		return err
+	}
 	var reviewVersion string
 	if node.Kind == workflow.StepKindReview {
 		input.SessionID, input.PrevRunID = "", ""
@@ -179,6 +190,14 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	bind := func(boot *Boot, draft *domain.EventDraft) error {
 		if draft.RunID != runID || boot.WorkspaceHash != execution.workspaceHash {
 			return fmt.Errorf("%w: workflow run scope mismatch", ErrStateCorrupt)
+		}
+		if err := execution.requireActiveTaskWorkflow(ctx, snapshot); err != nil {
+			return err
+		}
+		if reworkVersion != "" {
+			if err := requireWorkflowVerificationVersion(boot, reworkVersion); err != nil {
+				return err
+			}
 		}
 		if reviewVersion != "" {
 			if err := requireWorkflowVerificationVersion(boot, reviewVersion); err != nil {

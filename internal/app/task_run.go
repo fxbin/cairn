@@ -1,5 +1,5 @@
 // [INPUT]: 依赖任务分配存储、普通 Run 创建入口与 Journal 只读投影。
-// [OUTPUT]: 提供幂等任务分配、执行历史及验证事件引用。
+// [OUTPUT]: 提供幂等任务分配、关联工作流、执行历史及证据引用。
 // [POS]: 在 Run 的排他锁内先提交任务绑定，再允许写 Run 创建事实。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
@@ -18,6 +18,7 @@ import (
 
 	"github.com/fxbin/cairn/internal/capabilities/task"
 	tasksqlite "github.com/fxbin/cairn/internal/capabilities/task/sqlite"
+	"github.com/fxbin/cairn/internal/capabilities/workflow"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -164,7 +165,7 @@ func (view TaskView) canAssign(revision uint64) error {
 	if view.Revision != revision {
 		return ErrTaskConflict
 	}
-	if view.State != task.Active {
+	if view.State != task.Active || view.WorkflowBinding != nil {
 		return ErrTaskTransition
 	}
 	return view.requireSettledAssignments()
@@ -178,6 +179,13 @@ func (view TaskView) requireSettledAssignments() error {
 		}
 		if !assignment.settled() {
 			return fmt.Errorf("%w: %s (%s)", ErrActiveRun, assignment.RunID, assignment.Phase)
+		}
+	}
+	if view.Workflow != nil {
+		for _, step := range view.Workflow.Steps {
+			if step.State == string(workflow.StepRunning) || step.State == string(workflow.StepUncertain) {
+				return fmt.Errorf("%w: workflow step %s (%s)", ErrActiveRun, step.ID, step.RunPhase)
+			}
 		}
 	}
 	return nil
@@ -238,12 +246,27 @@ func projectTaskView(ctx context.Context, current task.Task, assignments []task.
 		}
 		view.Assignments = append(view.Assignments, item)
 	}
+	related, err := projectTaskWorkflow(ctx, stateDir, hash, current)
+	if err != nil {
+		return TaskView{}, err
+	}
+	view.Workflow = related
 	switch current.State {
 	case task.Active, task.Paused, task.Cancelled:
 		if current.Completion == nil {
 			return view, nil
 		}
 	case task.Completed:
+		if current.WorkflowBinding != nil {
+			evidence, err := taskWorkflowCompletion(view, stateDir)
+			if err != nil {
+				return TaskView{}, fmt.Errorf("%w: completed task workflow: %w", ErrStateCorrupt, err)
+			}
+			if current.Completion != nil && len(current.Progress.Remaining) == 0 && evidence.Equal(*current.Completion) {
+				return view, nil
+			}
+			return TaskView{}, fmt.Errorf("%w: completed task workflow evidence mismatch", ErrStateCorrupt)
+		}
 		if len(view.Assignments) > 0 && current.Completion != nil && len(current.Progress.Remaining) == 0 {
 			latest := view.Assignments[len(view.Assignments)-1]
 			if latest.Verification.Trusted && latest.Evidence != nil && latest.Evidence.Equal(*current.Completion) {

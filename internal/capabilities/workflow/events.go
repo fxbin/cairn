@@ -1,6 +1,6 @@
 /*
  * [INPUT]: 依赖domain 身份与冻结二进制哈希编码。
- * [OUTPUT]: 提供工作流事件、链校验与 Snapshot 投影。审查步骤仅绑定版本化实例。
+ * [OUTPUT]: 提供工作流事件、任务身份锚点、链校验与 Snapshot 投影。
  * [POS]: 能力的事实合同；SQLite 叶子和 App 共用同一重放。
  * [PROTOCOL]: Update this header on change, then check AGENTS.md
  */
@@ -25,6 +25,9 @@ import (
 
 // SchemaVersion 是工作流事件链的当前模式版本；读取端只拒绝更新版本。
 const SchemaVersion = 1
+
+// TaskWorkflowAuthorization 标记用户显式授权的任务工作流创建。
+const TaskWorkflowAuthorization = "user:task-workflow"
 
 // GenesisHash 是工作流哈希链起点之前的空摘要占位，与运行事件链一致。
 const GenesisHash = domain.GenesisHash
@@ -106,6 +109,7 @@ type RunCreatedPayload struct {
 	Task                StepIO         `json:"task,omitempty"`
 	Definition          *DefinitionRef `json:"definition,omitempty"`
 	SessionID           string         `json:"session_id,omitempty"`
+	TaskID              string         `json:"task_id,omitempty"`
 }
 
 // StepStartedPayload 是 workflow_step_started 的负载。RunID 可选绑定驱动该
@@ -248,6 +252,10 @@ func validatePayload(eventType EventType, payload json.RawMessage) error {
 		if created.PlanSHA256 == "" || created.ConfigFingerprint == "" || created.AuthorizationSource == "" {
 			return errors.New("workflow_run_created requires plan digest, config fingerprint and authorization source")
 		}
+		if created.TaskID == "" && created.AuthorizationSource == TaskWorkflowAuthorization ||
+			created.TaskID != "" && (created.Definition == nil || !validDefinitionID(created.TaskID) || created.AuthorizationSource != TaskWorkflowAuthorization) {
+			return errors.New("task workflow requires a versioned task binding and authorization")
+		}
 		seen := make(map[string]struct{}, len(created.Steps))
 		for index, spec := range created.Steps {
 			if spec.ID == "" {
@@ -360,6 +368,7 @@ type Snapshot struct {
 	LastSeq           uint64
 	Definition        *DefinitionRef
 	SessionID         string
+	TaskID            string
 	Specs             []StepSpec
 	Attempts          map[string][]Attempt
 	Paused            bool
@@ -405,7 +414,7 @@ func Project(events []Event) (*Snapshot, error) {
 		StepRuns:            make(map[string]string, len(created.Steps)),
 		ResumeIndex:         -1,
 		Definition:          created.Definition, SessionID: created.SessionID, Specs: created.Steps,
-		Attempts: make(map[string][]Attempt, len(created.Steps)),
+		TaskID: created.TaskID, Attempts: make(map[string][]Attempt, len(created.Steps)),
 	}
 	stepIndex := make(map[string]int, len(created.Steps))
 	for index, spec := range created.Steps {

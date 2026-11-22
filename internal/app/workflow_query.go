@@ -57,6 +57,7 @@ type WorkflowReconcileView struct {
 // WorkflowStatusView 是工作流链重放后的对外只读状态视图。
 type WorkflowStatusView struct {
 	WorkflowID        string                      `json:"workflow_id"`
+	TaskID            string                      `json:"task_id,omitempty"`
 	WorkspaceHash     string                      `json:"workspace_hash"`
 	ConfigFingerprint string                      `json:"config_fingerprint"`
 	PlanSHA256        string                      `json:"plan_sha256"`
@@ -109,6 +110,7 @@ func (service Service) WorkflowStatus(ctx context.Context, workspacePath, stateD
 func workflowViewFromSnapshot(snapshot *workflow.Snapshot) WorkflowStatusView {
 	view := WorkflowStatusView{
 		WorkflowID:        string(snapshot.WorkflowID),
+		TaskID:            snapshot.TaskID,
 		WorkspaceHash:     snapshot.WorkspaceHash,
 		ConfigFingerprint: snapshot.ConfigFingerprint,
 		PlanSHA256:        snapshot.PlanSHA256,
