@@ -1,5 +1,5 @@
 // [INPUT]: 依赖持久任务应用门面、运行身份和 CLI 配置解析。
-// [OUTPUT]: 暴露任务定义、进度、会话分配及生命周期命令。
+// [OUTPUT]: 暴露任务定义、会话分配、自主推进和验收报告。
 // [POS]: CLI 仅提交显式修订和身份。状态与证据来自应用层。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 
@@ -21,7 +21,7 @@ import (
 // taskCommand 分派持久任务查询、分配和生命周期命令。
 func (command Command) taskCommand(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "task requires a subcommand: create, get, progress, run, pause, resume, cancel, complete")
+		fmt.Fprintln(command.Stderr, "task requires a subcommand: create, get, progress, run, automate, continue, pause, resume, cancel, complete")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -31,6 +31,8 @@ func (command Command) taskCommand(ctx context.Context, arguments []string) int 
 		return command.taskGet(ctx, arguments[1:])
 	case "run":
 		return command.taskRun(ctx, arguments[1:])
+	case "automate", "continue":
+		return command.taskWorkflow(ctx, arguments[0], arguments[1:])
 	case "progress", "pause", "resume", "cancel", "complete":
 		return command.taskChange(ctx, arguments[0], arguments[1:])
 	default:
@@ -47,7 +49,9 @@ func (command Command) taskScope(flags *appCommandFlags) (app.TaskScope, error) 
 
 // taskCreate 保存用户提供的目标、验收条件和可选的结构化检查绑定。
 func (command Command) taskCreate(ctx context.Context, arguments []string) int {
-	flags := command.appFlags("task create", "<goal> --accept <condition> [--accept <condition> ...] [--check <ids> ... | --coding] [--criterion-id <id> ...]")
+	flags := command.appFlags("task create", "<goal> --accept <condition> [--accept <condition> ...] [--check <ids> ... | --coding] [--criterion-id <id> ...] [--autonomous --rework-attempts <n>]")
+	autonomous := flags.Bool("autonomous", false, "create and start a persistent verification workflow")
+	attempts := flags.Int("rework-attempts", 0, "explicit maximum automatic rework attempts")
 	var acceptance stringListFlag
 	var checks stringListFlag
 	var criterionIDs stringListFlag
@@ -80,6 +84,10 @@ func (command Command) taskCreate(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(command.Stderr, "acceptance error:", err)
 		return ExitUsage
 	}
+	if *attempts < 0 || *attempts > app.MaxTaskWorkflowReworkAttempts || (!*autonomous && *attempts != 0) || (*autonomous && len(criteria) == 0) {
+		fmt.Fprintln(command.Stderr, "autonomous task creation requires structured acceptance; rework attempts must be explicitly bounded")
+		return ExitUsage
+	}
 	scope, err := command.taskScope(flags)
 	if err != nil {
 		fmt.Fprintln(command.Stderr, "configuration error:", err)
@@ -90,6 +98,15 @@ func (command Command) taskCreate(ctx context.Context, arguments []string) int {
 		definition.Criteria = criteria
 	}
 	current, err := command.Service.CreateTask(ctx, scope, definition)
+	if err == nil && *autonomous {
+		view, startErr := command.Service.StartTaskWorkflow(ctx, scope, current.ID, app.TaskWorkflowOptions{
+			Revision: current.Revision, ReworkAttempts: *attempts,
+		})
+		if view.ID == "" {
+			return command.reportTask("task create", flags.jsonOutput, &current, nil, startErr)
+		}
+		return command.reportTaskExecution("task create", flags.jsonOutput, view, startErr)
+	}
 	return command.reportTask("task create", flags.jsonOutput, &current, nil, err)
 }
 
@@ -163,6 +180,58 @@ func (command Command) taskRun(ctx context.Context, arguments []string) int {
 	return command.reportTask("task run", flags.jsonOutput, nil, &view, err)
 }
 
+// taskWorkflow 通过任务门面启动或恢复同一个持久工作流。
+func (command Command) taskWorkflow(ctx context.Context, action string, arguments []string) int {
+	label := "task " + action
+	signature := "<task-id>"
+	var revision uint64
+	var attempts int
+	if action == "automate" {
+		signature += " --revision <n> [--rework-attempts <n>]"
+	}
+	flags := command.appFlags(label, signature)
+	if action == "automate" {
+		flags.Uint64Var(&revision, "revision", 0, "expected task revision")
+		flags.IntVar(&attempts, "rework-attempts", 0, "explicit maximum automatic rework attempts")
+	}
+	if !flags.parse(arguments, 1) {
+		return ExitUsage
+	}
+	if action == "automate" && (revision == 0 || attempts < 0 || attempts > app.MaxTaskWorkflowReworkAttempts) {
+		flags.Usage()
+		return ExitUsage
+	}
+	scope, err := command.taskScope(flags)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	id := app.TaskID(flags.Arg(0))
+	var view app.TaskView
+	if action == "automate" {
+		view, err = command.Service.StartTaskWorkflow(ctx, scope, id, app.TaskWorkflowOptions{Revision: revision, ReworkAttempts: attempts})
+	} else {
+		view, err = command.Service.ContinueTaskWorkflow(ctx, scope, id, nil)
+	}
+	return command.reportTaskExecution(label, flags.jsonOutput, view, err)
+}
+
+// reportTaskExecution 区分读取任务成功与自主执行的失败终态。
+func (command Command) reportTaskExecution(label string, jsonOutput bool, view app.TaskView, err error) int {
+	code := command.reportTask(label, jsonOutput, nil, &view, err)
+	if code != ExitOK || view.Workflow == nil {
+		return code
+	}
+	switch view.Workflow.FinishState {
+	case "failed":
+		return ExitFailed
+	case "cancelled":
+		return ExitCancelled
+	default:
+		return ExitOK
+	}
+}
+
 // taskChange 提交绑定所见修订的状态迁移或进度替换。
 func (command Command) taskChange(ctx context.Context, action string, arguments []string) int {
 	label := "task " + action
@@ -232,6 +301,9 @@ func (command Command) reportTask(label string, jsonOutput bool, current *app.Ta
 		} else {
 			command.printTask(*current)
 			if view != nil {
+				if view.Workflow != nil {
+					command.printTaskWorkflow(*view.Workflow)
+				}
 				for _, assignment := range view.Assignments {
 					fmt.Fprintf(command.Stdout, "  assignment %s · run %s · session %s · %s\n",
 						assignment.ID, assignment.RunID, assignment.SessionID, assignment.Phase)
@@ -244,6 +316,46 @@ func (command Command) reportTask(label string, jsonOutput bool, current *app.Ta
 		return exitFor(err)
 	}
 	return ExitOK
+}
+
+// printTaskWorkflow 展示阶段、逐标准结论及能回溯到 Journal 的 Run 标识。
+func (command Command) printTaskWorkflow(view app.WorkflowStatusView) {
+	fmt.Fprintf(command.Stdout, "workflow: %s · %s\n", view.WorkflowID, view.Phase)
+	if view.FinishReason != "" {
+		fmt.Fprintln(command.Stdout, "  reason:", view.FinishReason)
+	}
+	for _, step := range view.Steps {
+		fmt.Fprintf(command.Stdout, "  %s · %s · %d attempt(s)\n", step.ID, step.State, len(step.Attempts))
+	}
+	if view.ResumeIndex >= 0 && view.ResumeIndex < len(view.Steps) {
+		step := view.Steps[view.ResumeIndex].ID
+		if pending := view.PendingApproval; pending != nil {
+			fmt.Fprintf(command.Stdout, "  approval · step %s · seq %d · run %s · operation %s · fingerprint %s\n",
+				step, view.Sequence, pending.RunID, pending.OperationID, pending.Fingerprint)
+		}
+		if pending := view.PendingReconcile; pending != nil {
+			fmt.Fprintf(command.Stdout, "  reconcile · step %s · seq %d · run %s · operation %s\n", step, view.Sequence, pending.RunID, pending.OperationID)
+		}
+	}
+	report := view.Verification
+	if report == nil {
+		return
+	}
+	fmt.Fprintln(command.Stdout, "verification:", report.Evaluation.Verdict)
+	for _, criterion := range report.Evaluation.Criteria {
+		fmt.Fprintf(command.Stdout, "  %s · %s", criterion.CriterionID, criterion.Verdict)
+		if criterion.Reason != "" {
+			fmt.Fprintf(command.Stdout, " · %s", criterion.Reason)
+		}
+		fmt.Fprintln(command.Stdout)
+	}
+	for _, entry := range report.Coverage.Entries {
+		fmt.Fprintf(command.Stdout, "  coverage %s · %s\n", entry.ObjectID, entry.Status)
+	}
+	fmt.Fprintf(command.Stdout, "  evidence runs · worker %s · program %s · review %s\n", report.WorkerRunID, report.ProgramRunID, report.ReviewRunID)
+	if report.ReviewRunID != "" && report.Evaluation.Verdict == contract.VerdictPassed {
+		fmt.Fprintln(command.Stdout, "  use the Review run ID for explicit task completion")
+	}
 }
 
 // printTask 展示持久任务的目标、进度与已记录验收依据。

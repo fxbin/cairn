@@ -70,6 +70,9 @@ func (execution workflowExecution) workflowStatusView(ctx context.Context, snaps
 		definition = &loaded
 	}
 	view.DefinitionName, view.Sequence = definition.Name, snapshot.LastSeq
+	if definition.Verification != nil {
+		view.VerificationCriteria = contract.CloneAcceptanceCriteria(definition.Verification.Criteria)
+	}
 	view.Paused, view.LastRetry, view.FinishReason = snapshot.Paused, snapshot.LastRetry, snapshot.FinishReason
 	if !snapshot.Paused {
 		view.RetryTargets = snapshot.RetryTargets()

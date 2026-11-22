@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { desktop } from "../desktop/client";
 import type { WorkflowInstanceView } from "../desktop/types";
 import { WorkflowInstanceControls, type WorkflowControl } from "./WorkflowInstanceControls";
+import { WorkflowVerificationSummary } from "./WorkflowVerificationSummary";
 import {
   STARTER_WORKFLOW_PROMPTS,
   resolveWorkflowExecution,
@@ -142,6 +143,7 @@ export default function WorkflowsView({
   if (portalMode) {
     const selected = items.find((w) => w.id === selectedId) ?? items[0];
     const selectedExecs = selected ? resolvedExecutions.get(selected.id) ?? [] : [];
+    const taskInstances = instances.filter((instance) => instance.task_id);
     const activeExec = selectedExecs.find(
       (exec) => !exec.instance.finished,
     );
@@ -162,7 +164,33 @@ export default function WorkflowsView({
           </button>
         </div>
 
-        {items.length === 0 ? (
+        {taskInstances.length > 0 && (
+          <section className="wb-wf-history-list" aria-label="自主任务">
+            <h3>自主任务</h3>
+            {taskInstances.map((instance) => (
+              <article className="wb-wf-history-record" key={instance.workflow_id}>
+                <div className="wb-wf-history-top">
+                  <strong>{instance.definition_name || instance.task_id}</strong>
+                  <span className="wb-badge">{workflowPhaseLabel(instance.finish_state ?? instance.phase ?? "ready")}</span>
+                  <span className="wb-hash-pill">{instance.task_id}</span>
+                </div>
+                {instance.finish_reason && <p>{instance.finish_reason}</p>}
+                {instance.verification && <WorkflowVerificationSummary report={instance.verification} criteria={instance.verification_criteria} onOpenRun={onOpenRun} />}
+                {onControl && !historyError && (
+                  <WorkflowInstanceControls
+                    key={instance.sequence}
+                    workspace={workspace}
+                    instance={instance}
+                    onControl={onControl}
+                    onOpenRun={onOpenRun}
+                  />
+                )}
+              </article>
+            ))}
+          </section>
+        )}
+
+        {items.length === 0 ? (taskInstances.length > 0 ? null : (
           <div className="wb-wf-empty-stage">
             <div className="wb-wf-how-strip" aria-label="对话工作流三步法">
               <span>1. 对话说明目标或贴入现有脚本</span>
@@ -189,7 +217,7 @@ export default function WorkflowsView({
               ))}
             </div>
           </div>
-        ) : (
+        )) : (
           <div className="wb-wf-portal-grid">
             <aside className="wb-wf-directory" aria-label="已保存工作流列表">
               <div className="wb-wf-directory-head">
@@ -413,6 +441,7 @@ export default function WorkflowsView({
                               )}
                             </div>
                           </div>
+                            {exec.instance.verification && <WorkflowVerificationSummary report={exec.instance.verification} criteria={exec.instance.verification_criteria} onOpenRun={onOpenRun} />}
                             {onControl && !historyError && (
                               <WorkflowInstanceControls
                                 key={[

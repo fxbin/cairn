@@ -118,10 +118,10 @@ workflow_exec_test.go: 回归 WorkflowExecution 持久化执行、验证和人�
 workflow_instance.go: 装配不可变定义实例。实例锁内校验版本、配置和人工门决定。
 workflow_instance_run.go: 在既有 Run 锁内绑定 Agent、Script 和 Verify 尝试。按 Journal 核验并输出制品。
 workflow_control.go: 按实例链头追加暂停、继续、取消及有界返工授权。
-workflow_operation.go: 在已绑定 Run 上复用指纹审批和副作用对账，不授予额外权限。
+workflow_operation.go: 复用已绑定 Run 的指纹审批和对账。版本漂移保留原审批。
 workflow_run_owner.go: 从 Run Journal 识别绑定归属，旧实例从工作流链查询。普通续链保留原工作区约束。
 workflow_history.go: 从持久化实例与 Run Journal 核验历史、产物和审批阶段。
-workflow_query.go: WorkflowStatus 只读投影能力事件链。查询不启动步骤或调度器。
+workflow_query.go: 只读投影实例、冻结标准及验收报告。查询不推进实例。
 workflow_query_test.go: 回归 WorkflowStatus 只读投影持久化工作流链。查询不启动调度器。
 
 workflow_store.go: 连接能力 SQLite 叶子与制品。路径、只读打开和链头 CAS 保持。

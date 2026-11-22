@@ -19,7 +19,8 @@ SidecarWorkbench.tsx: 侧栏标签与证据视图。
 UsageView.tsx: 从宿主读取用量并展示。
 WorkflowChatCards.tsx: 展示模型草案及权威实例步骤；保存需要用户动作。
 WorkflowInstanceControls.tsx: 用链头、Run 和操作身份提交审批、对账与返工。
-WorkflowsView.tsx: 浏览版本化定义、权威历史与运行尝试。
+WorkflowsView.tsx: 浏览定义、权威历史与自主 Task。复用实例控制。
+WorkflowVerificationSummary.tsx: 投影逐标准报告、覆盖与可追溯 Run。
 composerContext.ts: 将显式引用组织成当前输入。
 workflowConversation.ts: 校验草案形状并按 App 状态展示执行。
 

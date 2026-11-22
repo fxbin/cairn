@@ -44,6 +44,10 @@ func (execution workflowExecution) decideWorkflowRunApproval(ctx context.Context
 		verificationSubject: resumeSubject,
 		Approval:            ports.Approval{Fingerprint: pending.Fingerprint, Approve: approve, Reason: reason},
 	})
+	// 版本拒绝发生在审批提交前。保留原审批，同时返回真实阻塞原因。
+	if errors.Is(runErr, ErrVerifierTarget) {
+		return execution.versionedWorkflowOutcome(ctx, snapshot.WorkflowID, "", runErr)
+	}
 	if err := execution.observeVersionedStepRun(ctx, snapshot.WorkflowID, node, attempt, workflowAttemptSession(snapshot.SessionID, node.Kind), runErr); err != nil {
 		return execution.versionedWorkflowOutcome(ctx, snapshot.WorkflowID, "", err)
 	}

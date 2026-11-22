@@ -13,7 +13,7 @@ command_memory_promotion.go: 晋升、沙箱激活与遥测。
 command_memory_store.go: 记忆捕获、检索与派生检查。
 command_resume_run.go: resume / run 子命令与参数规范化。
 command_app_scope.go: 集中持久任务和工作流的作用域参数。
-command_task.go: 持久任务、进度与 Session 分配命令。验收引用可信 Run。
+command_task.go: 持久任务、分配与自主推进。显示逐标准报告和 Run 锚点。
 command_workflow.go: 维护固定计划接口，分派版本化实例命令。
 command_workflow_control.go: 转交绑定链头的显式控制、审批与对账。
 command_workflow_definition.go: 严格解析定义草案并提交选定修订。
