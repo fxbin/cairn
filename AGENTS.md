@@ -107,5 +107,5 @@ go test ./test/e2e -tags=e2e -count=1
 - [钩子能力](internal/capabilities/hooks/AGENTS.md) 与 [遥测能力](internal/capabilities/telemetry/AGENTS.md)。
 - [持久任务能力](internal/capabilities/task/AGENTS.md)。
 - [MCP 能力](internal/capabilities/mcp/AGENTS.md)、[技能能力](internal/capabilities/skills/AGENTS.md) 与 [工作流能力](internal/capabilities/workflow/AGENTS.md)。
-- [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md)。
+- [CLI 入口](internal/cli/AGENTS.md)、[依赖守卫](test/arch/AGENTS.md) 与 [故障注入](test/fault/AGENTS.md) 与 [端到端验收](test/e2e/AGENTS.md)。
 - 文件头说明 INPUT、OUTPUT 与 POS。变更后检查模块地图和上级入口。

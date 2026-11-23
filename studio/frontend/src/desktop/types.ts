@@ -496,8 +496,35 @@ export interface WorkflowInstanceStep {
   attempts?: WorkflowAttemptView[];
 }
 
+export interface WorkflowVerificationView {
+  worker_run_id: string;
+  program_run_id?: string;
+  review_run_id?: string;
+  evaluation: {
+    verdict: string;
+    criteria: Array<{ criterion_id: string; verdict: string; reason?: string }>;
+  };
+  coverage: {
+    entries: Array<{ object_id: string; status: string; reason?: string }>;
+  };
+  findings: {
+    confirmed?: WorkflowFindingView[] | null;
+    inconclusive?: WorkflowFindingView[] | null;
+  };
+}
+
+interface WorkflowFindingView {
+  id: string;
+  status: string;
+  description: string;
+}
+
 export interface WorkflowInstanceView {
   workflow_id: string;
+  task_id?: string;
+  task_state?: string;
+  verification?: WorkflowVerificationView;
+  verification_criteria?: Array<{ id: string; statement: string }>;
   definition?: { id: string; revision: number };
   definition_name?: string;
   session_id?: string;

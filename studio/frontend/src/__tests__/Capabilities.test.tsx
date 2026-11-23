@@ -1,5 +1,5 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
-import {fireEvent, render, screen, waitFor} from "@testing-library/react";
+import {fireEvent, render, screen, waitFor, within} from "@testing-library/react";
 const mock=vi.hoisted(()=>({
  listWorkflows:vi.fn(),saveWorkflow:vi.fn(),runWorkflow:vi.fn(),
  listSkills:vi.fn(),listHooks:vi.fn(),listMemories:vi.fn(),listCommands:vi.fn(),
@@ -34,6 +34,46 @@ describe("Workbench workflow editor parity",()=>{
   fireEvent.change(screen.getByRole("textbox",{name:"第2步"}),{target:{value:"再生成报告"}});
   fireEvent.click(screen.getByRole("button",{name:"保存工作流"}));
   await waitFor(()=>expect(mock.saveWorkflow).toHaveBeenCalledWith({id:undefined,workspace:"/tmp/a",name:"新任务链",steps:[{task:"先验证代码"},{task:"再生成报告"}]}));
+ });
+ it("shows an authoritative Task report and its evidence without a public workflow template",async()=>{
+  mock.listWorkflows.mockResolvedValue([]);
+  const onOpenRun=vi.fn();
+  render(<WorkflowsView workspace="/tmp/a" notify={vi.fn()} onConverseCreate={vi.fn()} onOpenRun={onOpenRun} instances={[{
+   workflow_id:"wf-task",task_id:"task-1",task_state:"active",created_at:"",finished:true,finish_state:"failed",resume_index:2,steps:[],
+   verification_criteria:[{id:"behavior",statement:"计算结果符合单测"}],
+   verification:{
+    worker_run_id:"worker-1",program_run_id:"program-1",review_run_id:"review-1",
+    evaluation:{verdict:"unknown",criteria:[{criterion_id:"behavior",verdict:"unknown",reason:"需要独立复核"}]},
+    coverage:{entries:[{object_id:"program",status:"completed"},{object_id:"review",status:"failed"}]},
+    findings:{inconclusive:[{id:"finding-1",status:"inconclusive",description:"缺少文件证据"}]},
+   },
+  }]}/>);
+  const report=within(await screen.findByRole("region",{name:"任务验收报告"}));
+  expect(report.getByText(/计算结果符合单测/)).toBeInTheDocument();
+  expect(report.getByText(/缺少文件证据/)).toBeInTheDocument();
+  fireEvent.click(report.getByRole("button",{name:"查看独立审查"}));
+  expect(onOpenRun).toHaveBeenCalledWith("review-1");
+  expect(screen.queryByText("这个工作流暂无持久化实例。")).not.toBeInTheDocument();
+ });
+ it("keeps a passed workflow in explicit Task acceptance until the Task state changes",async()=>{
+  mock.listWorkflows.mockResolvedValue([]);
+  const instance = {
+   workflow_id:"wf-task",task_id:"task-1",task_state:"active",created_at:"",finished:true,finish_state:"completed",resume_index:-1,steps:[],
+   verification:{
+    worker_run_id:"worker-1",program_run_id:"program-1",review_run_id:"review-1",
+    evaluation:{verdict:"passed",criteria:[]},coverage:{entries:[]},findings:{},
+   },
+  };
+  const config = {workspace:"/tmp/a", notify:vi.fn(), onConverseCreate:vi.fn()};
+  const {rerender}=render(<WorkflowsView {...config} instances={[instance]}/>);
+  expect(await screen.findByText("待人工验收")).toBeInTheDocument();
+  expect(screen.queryByText("已验收")).not.toBeInTheDocument();
+  rerender(<WorkflowsView {...config} instances={[{...instance,task_state:"completed"}]}/>);
+  expect(await screen.findByText("已验收")).toBeInTheDocument();
+  expect(screen.queryByText("待人工验收")).not.toBeInTheDocument();
+  rerender(<WorkflowsView {...config} historyError="验收证据暂时不可读" instances={[{...instance,task_state:"completed"}]}/>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("验收证据暂时不可读");
+  expect(screen.getByText("上次读取 · 已验收")).toBeInTheDocument();
  });
  it("requires explicit confirmation before workflow execution, not for dry run",async()=>{
   const confirm=vi.spyOn(window,"confirm").mockReturnValue(false);
