@@ -89,7 +89,7 @@ func openJournal(stateDir, workspaceHash string) (*sqlite.Journal, error) {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
+	directory := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash))
 	return sqlite.Open(filepath.Join(directory, "runs.db"))
 }
 
@@ -98,7 +98,7 @@ func openArtifactStore(stateDir, workspaceHash string, output config.OutputConfi
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	store, err := artifact.New(filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts"), output.MaxPreviewBytes)
+	store, err := artifact.New(filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "artifacts"), output.MaxPreviewBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func openReadOnlyJournal(stateDir, workspaceHash string) (*sqlite.Journal, error
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
+	directory := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash))
 	return sqlite.OpenReadOnly(filepath.Join(directory, "runs.db"))
 }
 
@@ -130,7 +130,7 @@ func openReadOnlyJournalContext(ctx context.Context, stateDir, workspaceHash str
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	directory := filepath.Join(stateDir, "workspaces", workspaceHash)
+	directory := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash))
 	return sqlite.OpenReadOnlyContext(ctx, filepath.Join(directory, "runs.db"))
 }
 
@@ -139,7 +139,7 @@ func acquireWorkspaceLock(stateDir, workspaceHash string) (*lock.Lock, error) {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	return lock.Acquire(filepath.Join(stateDir, "workspaces", workspaceHash, "run.lock"))
+	return lock.Acquire(filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "run.lock"))
 }
 
 // DefaultStateDir 返回平台默认的 Cairn 状态目录；空 stateDir 参数的装配路径

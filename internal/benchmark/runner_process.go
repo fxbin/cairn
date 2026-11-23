@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -94,20 +93,25 @@ func runProcessOutputWithProxy(ctx context.Context, directory string, argv []str
 	command := exec.Command(argv[0], argv[1:]...)
 	command.Dir = directory
 	command.Env = restrictedProcessEnvironment(prepareProxy)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	guard, guardErr := benchmarkPrepareProcess(command)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer benchmarkReleaseProcess(guard)
 	var outputBuffer bytes.Buffer
 	command.Stdout = &outputBuffer
 	command.Stderr = &outputBuffer
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
+	benchmarkAfterStart(command, guard)
 	finished := make(chan error, 1)
 	go func() { finished <- command.Wait() }()
 	var err error
 	select {
 	case err = <-finished:
 	case <-ctx.Done():
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+		benchmarkSignal(command, guard, "term")
 		grace := time.NewTimer(2 * time.Second)
 		select {
 		case <-finished:
@@ -118,7 +122,7 @@ func runProcessOutputWithProxy(ctx context.Context, directory string, argv []str
 				}
 			}
 		case <-grace.C:
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			benchmarkSignal(command, guard, "kill")
 			<-finished
 		}
 		return truncateProcessOutput(outputBuffer.Bytes()), ctx.Err()

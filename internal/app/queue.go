@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
@@ -32,7 +31,7 @@ func queueFileLock(stateDir, workspaceHash string) (func(), error) {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	lockPath := filepath.Join(stateDir, "workspaces", workspaceHash, "queue.lock")
+	lockPath := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "queue.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, err
 	}
@@ -40,12 +39,12 @@ func queueFileLock(stateDir, workspaceHash string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockQueueFile(file); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("queue lock is held by another process: %w", err)
 	}
 	return func() {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		unlockQueueFile(file)
 		_ = file.Close()
 	}, nil
 }

@@ -175,7 +175,7 @@ func OpenDecisionStore(stateDir, workspaceHash string) (*DecisionStore, error) {
 	if stateDir == "" || workspaceHash == "" {
 		return nil, errors.New("decision store requires a state dir and workspace hash")
 	}
-	root := filepath.Join(stateDir, "workspaces", workspaceHash, "provider", decisionDirName)
+	root := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "provider", decisionDirName)
 	if err := openContentAddressedStore(root); err != nil {
 		return nil, fmt.Errorf("open decision store: %w", err)
 	}
@@ -188,7 +188,7 @@ func OpenDecisionStoreReadOnly(stateDir, workspaceHash string) (*DecisionStore, 
 	if stateDir == "" || workspaceHash == "" {
 		return nil, errors.New("decision store requires a state dir and workspace hash")
 	}
-	return &DecisionStore{root: filepath.Join(stateDir, "workspaces", workspaceHash, "provider", decisionDirName)}, nil
+	return &DecisionStore{root: filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "provider", decisionDirName)}, nil
 }
 
 // Append 校验并落盘一条决定；语义同证据存储的 append-only 幂等写入。
@@ -203,7 +203,7 @@ func (store *DecisionStore) Append(decision *ProviderAdmissionDecision) (string,
 		return "", fmt.Errorf("encode decision %s: %w", fingerprint, err)
 	}
 	content := append(encoded, '\n')
-	if err := appendContentAddressed(store.root, fingerprint+".json", content, "decision", fingerprint); err != nil {
+	if err := appendContentAddressed(store.root, safeRecordName(fingerprint)+".json", content, "decision", fingerprint); err != nil {
 		return "", err
 	}
 	return fingerprint, nil
@@ -236,7 +236,7 @@ func (store *DecisionStore) ListPartition(requestProfileFingerprint string) ([]P
 		if err != nil {
 			return nil, newPersistedRecordError("validate admission decision failed", err)
 		}
-		fileFingerprint := entry.Name()[:len(entry.Name())-len(".json")]
+		fileFingerprint := restoreFingerprint(entry.Name()[:len(entry.Name())-len(".json")])
 		if decision.DecisionFingerprint != recomputed || recomputed != fileFingerprint {
 			return nil, errors.New("admission decision carries inconsistent fingerprints")
 		}

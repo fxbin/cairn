@@ -143,7 +143,7 @@ func telemetryStatsPath(stateDir, workspaceHash string) string {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	return filepath.Join(stateDir, "workspaces", workspaceHash, telemetryStatsFileName)
+	return filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), telemetryStatsFileName)
 }
 
 // persistTelemetryStats 原子写入本次运行的导出统计。写入失败只说明统计

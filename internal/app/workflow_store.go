@@ -128,7 +128,7 @@ func workflowDBPath(stateDir, workspaceHash string) string {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	return filepath.Join(stateDir, "workspaces", workspaceHash, "workflow.db")
+	return filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "workflow.db")
 }
 
 // openWorkflowStoreReadOnly 打开既有的工作流存储；尚未创建任何工作流时

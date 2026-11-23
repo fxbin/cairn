@@ -12,7 +12,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +85,7 @@ func OpenReadOnlyContext(ctx context.Context, path string) (*Journal, error) {
 	if info.IsDir() {
 		return nil, errors.New("read-only SQLite journal path is a directory")
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	dsn := readOnlyDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open read-only SQLite journal: %w", err)

@@ -12,10 +12,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-
+	"runtime"
 	"strings"
 	"time"
 
@@ -82,14 +81,18 @@ func OpenReadOnly(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lstat read-only memory directory: %w", err)
 	}
-	if directoryInfo.Mode()&os.ModeSymlink != 0 || !directoryInfo.IsDir() || directoryInfo.Mode().Perm() != 0o700 {
+	// Windows 的 os.FileMode 权限位不反映 POSIX 语义，与 task/sqlite 一致跳过
+	// 0700/0600 位检查；符号链接与非目录/非普通文件检查在所有平台保留。
+	if directoryInfo.Mode()&os.ModeSymlink != 0 || !directoryInfo.IsDir() ||
+		(runtime.GOOS != "windows" && directoryInfo.Mode().Perm() != 0o700) {
 		return nil, errors.New("read-only memory SQLite directory must be a non-symlink 0700 directory")
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, fmt.Errorf("lstat read-only memory SQLite: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
+		(runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		return nil, errors.New("read-only memory SQLite must be a non-symlink regular 0600 file")
 	}
 	if err := preflightLegacyV2(context.Background(), path); err != nil {
@@ -98,7 +101,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	// immutable=1 使 SQLite 不尝试创建 -wal/-shm 辅助文件；只读 recall/doctor
 	// 接受的是一个关闭后可校验的 Memory Store，若文件处于未检查点写入状态应由
 	// 后续完整性校验失败关闭，而不是在诊断路径写入辅助状态。
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	dsn := readOnlyMemoryDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open read-only memory SQLite: %w", err)
@@ -147,7 +150,7 @@ func preflightLegacyV2(ctx context.Context, path string) error {
 	if !info.Mode().IsRegular() {
 		return nil
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	dsn := readOnlyMemoryDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open legacy memory SQLite preflight: %w", err)

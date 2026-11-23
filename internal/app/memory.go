@@ -567,7 +567,7 @@ func memoryDBPath(stateDir, workspaceHash string) string {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	return filepath.Join(stateDir, "workspaces", workspaceHash, "memory.db")
+	return filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "memory.db")
 }
 
 // openMemory 打开可写的独立 Memory Store，仅供 capture/revoke 这类明确写入用例使用。

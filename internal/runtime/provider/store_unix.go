@@ -1,6 +1,5 @@
-//go:build darwin || linux
-
-// 本文件实现 Provider 内容寻址存储在 Unix 平台上的目录持久化与 no-replace 发布。
+// store.go 实现 Provider 内容寻址存储的目录持久化与 no-replace 发布；
+// 目录同步的平台差异由 syncProviderDirectory 的平台实现处理。
 //
 // Author: fxbin
 package provider
@@ -140,17 +139,5 @@ func appendContentAddressed(root, name string, content []byte, recordKind, finge
 	return nil
 }
 
-// syncProviderDirectory 同步目录元数据，并保留同步与关闭两个阶段的错误。
-func syncProviderDirectory(path string) (err error) {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, directory.Close())
-	}()
-	if err := directory.Sync(); err != nil {
-		return err
-	}
-	return nil
-}
+// dirSync.go 中 syncProviderDirectory 由平台实现提供：Unix 同步目录元数据，
+// Windows 目录句柄不支持 FlushFileBuffers，按平台失败关闭原则跳过。

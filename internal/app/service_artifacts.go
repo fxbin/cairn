@@ -118,7 +118,7 @@ func manifestArtifactRoot(stateDir, workspaceHash string) string {
 	if stateDir == "" {
 		stateDir = DefaultStateDir()
 	}
-	return filepath.Join(stateDir, "workspaces", workspaceHash, "artifacts")
+	return filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "artifacts")
 }
 
 // checkArtifactReference 验证单个制品引用的格式、存在性和内容摘要。

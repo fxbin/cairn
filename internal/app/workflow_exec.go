@@ -688,7 +688,7 @@ func (execution workflowExecution) reconcileUncertainStep(ctx context.Context, i
 // requireIdleWorkspace 在启动新步骤 run 前确认工作区没有非终态运行；日志尚
 // 不存在视为空闲，活跃运行返回与其恢复指引一致的错误。
 func (execution workflowExecution) requireIdleWorkspace(ctx context.Context) error {
-	runsPath := filepath.Join(execution.stateRoot(), "workspaces", execution.workspaceHash, "runs.db")
+	runsPath := filepath.Join(execution.stateRoot(), "workspaces", safeWorkspaceDir(execution.workspaceHash), "runs.db")
 	if _, statErr := os.Stat(runsPath); statErr != nil {
 		if os.IsNotExist(statErr) {
 			return nil

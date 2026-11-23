@@ -238,5 +238,5 @@ func (scope TaskScope) resolve() (TaskScope, string, error) {
 
 // databasePath 将独立的任务库放在普通 Run 使用的工作区状态目录内。
 func (scope TaskScope) databasePath(hash string) string {
-	return filepath.Join(scope.StateDir, "workspaces", hash, "tasks.db")
+	return filepath.Join(scope.StateDir, "workspaces", safeWorkspaceDir(hash), "tasks.db")
 }
