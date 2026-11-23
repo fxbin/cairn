@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/fxbin/cairn/internal/contract"
@@ -67,7 +66,6 @@ func (HostRunner) Run(ctx context.Context, request ExecRunRequest) contract.Tool
 	command := exec.Command(request.Arguments.Argv[0], request.Arguments.Argv[1:]...)
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return runProcess(ctx, request.Arguments, ExecBackendHost, command, nil, request.Grace, nil)
 }
 
@@ -105,7 +103,6 @@ func (SeatbeltRunner) Run(ctx context.Context, request ExecRunRequest) contract.
 	command := exec.Command(wrapped[0], wrapped[1:]...)
 	command.Dir = request.WorkingDirectory
 	command.Env = mergedEnvironment(request.EnvAllow, request.Arguments.Env)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if termination != nil {
 		command.ExtraFiles = termination.extraFiles
 	}

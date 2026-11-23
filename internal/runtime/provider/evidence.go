@@ -195,7 +195,7 @@ func OpenEvidenceStore(stateDir, workspaceHash string) (*EvidenceStore, error) {
 	if stateDir == "" || workspaceHash == "" {
 		return nil, errors.New("evidence store requires a state dir and workspace hash")
 	}
-	root := filepath.Join(stateDir, "workspaces", workspaceHash, "provider", evidenceDirName)
+	root := filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "provider", evidenceDirName)
 	if err := openContentAddressedStore(root); err != nil {
 		return nil, fmt.Errorf("open evidence store: %w", err)
 	}
@@ -208,7 +208,7 @@ func OpenEvidenceStoreReadOnly(stateDir, workspaceHash string) (*EvidenceStore, 
 	if stateDir == "" || workspaceHash == "" {
 		return nil, errors.New("evidence store requires a state dir and workspace hash")
 	}
-	return &EvidenceStore{root: filepath.Join(stateDir, "workspaces", workspaceHash, "provider", evidenceDirName)}, nil
+	return &EvidenceStore{root: filepath.Join(stateDir, "workspaces", safeWorkspaceDir(workspaceHash), "provider", evidenceDirName)}, nil
 }
 
 // Append 校验并落盘一条证据：内容指纹回填后以同目录唯一临时文件发布
@@ -224,7 +224,7 @@ func (store *EvidenceStore) Append(evidence *ProviderProbeEvidence) (string, err
 		return "", fmt.Errorf("encode evidence %s: %w", fingerprint, err)
 	}
 	content := append(encoded, '\n')
-	if err := appendContentAddressed(store.root, fingerprint+".json", content, "evidence", fingerprint); err != nil {
+	if err := appendContentAddressed(store.root, safeRecordName(fingerprint)+".json", content, "evidence", fingerprint); err != nil {
 		return "", err
 	}
 	return fingerprint, nil
@@ -236,7 +236,7 @@ func (store *EvidenceStore) Get(fingerprint string) (ProviderProbeEvidence, erro
 	if !sha256DigestShape(fingerprint) {
 		return ProviderProbeEvidence{}, errors.New("evidence lookup requires a valid fingerprint")
 	}
-	encoded, err := os.ReadFile(filepath.Join(store.root, fingerprint+".json"))
+	encoded, err := os.ReadFile(filepath.Join(store.root, safeRecordName(fingerprint)+".json"))
 	if err != nil {
 		return ProviderProbeEvidence{}, newPersistedRecordError("read evidence failed", err)
 	}

@@ -1,6 +1,6 @@
-//go:build darwin || linux
-
-// Package tools 为 MCP stdio 复用工作区、环境、进程组与 Docker 隔离边界。
+// mcp_process.go 为 MCP stdio 复用工作区、环境、进程组与 Docker 隔离边界；
+// 进程组/整树终止由 process_unix.go / process_windows.go 提供。
+//
 // Author: fxbin
 package tools
 
@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -27,6 +26,7 @@ type MCPProcess struct {
 	Reader     io.ReadCloser
 	Writer     io.WriteCloser
 	command    *exec.Cmd
+	group      *processGroup
 	done       chan struct{}
 	grace      time.Duration
 	cleanup    func() error
@@ -88,28 +88,35 @@ func (tool ExecCommand) StartMCP(argv []string, cwd string, environment map[stri
 	default:
 		return nil, errors.New("invalid MCP process backend")
 	}
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	group, groupErr := prepareProcessGroup(command)
+	if groupErr != nil {
+		return nil, groupErr
+	}
 	command.Stderr = io.Discard
 	command.WaitDelay = tool.Grace
 	reader, err := command.StdoutPipe()
 	if err != nil {
+		releaseProcessGroup(group)
 		return nil, errors.New("create MCP stdout failed")
 	}
 	writer, err := command.StdinPipe()
 	if err != nil {
+		releaseProcessGroup(group)
 		_ = reader.Close()
 		return nil, errors.New("create MCP stdin failed")
 	}
 	if err := command.Start(); err != nil {
+		releaseProcessGroup(group)
 		_ = reader.Close()
 		_ = writer.Close()
 		return nil, errors.New("start MCP process failed")
 	}
+	afterProcessStart(command, group)
 	grace := tool.Grace
 	if grace <= 0 {
 		grace = mcpDefaultTerminationGrace
 	}
-	process := &MCPProcess{Reader: reader, Writer: writer, command: command, done: make(chan struct{}), grace: grace, cleanup: cleanup}
+	process := &MCPProcess{Reader: reader, Writer: writer, command: command, group: group, done: make(chan struct{}), grace: grace, cleanup: cleanup}
 	go func() { _ = command.Wait(); close(process.done) }()
 	return process, nil
 }
@@ -122,18 +129,19 @@ func (process *MCPProcess) Close() error {
 		case <-process.done:
 		case <-time.After(process.grace):
 		}
-		_ = syscall.Kill(-process.command.Process.Pid, syscall.SIGTERM)
+		signalGroupTerm(process.command, process.group)
 		select {
 		case <-process.done:
 		case <-time.After(process.grace):
 		}
-		_ = syscall.Kill(-process.command.Process.Pid, syscall.SIGKILL)
+		signalGroupKill(process.command, process.group)
 		select {
 		case <-process.done:
 		case <-time.After(mcpProcessExitConfirmTimeout):
 			process.closeError = errors.New("MCP process exit is unconfirmed")
 		}
 		_ = process.Reader.Close()
+		releaseProcessGroup(process.group)
 		if process.cleanup != nil {
 			if err := process.cleanup(); err != nil {
 				process.closeError = errors.Join(process.closeError, err)

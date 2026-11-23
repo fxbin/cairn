@@ -1,5 +1,7 @@
-//go:build darwin || linux
-
+// exec_command.go 定义 ExecCommand 的跨平台合同与执行链；进程组/整树终止
+// 由 process_unix.go / process_windows.go 提供平台实现。
+//
+// Author: fxbin
 package tools
 
 import (
@@ -13,9 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -163,8 +163,9 @@ func dockerRunArgumentsFor(workspace Workspace, image string, maxPIDs int, argum
 	}
 	command := []string{"run", "--rm", "--name", containerName, "--label", "cairn.exec.id=" + containerName}
 	// 以宿主用户身份运行容器：可写 bind mount 内产出的文件不会变成
-	// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。
-	command = append(command, "--user", strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()))
+	// root 属主，同时与 cap-drop ALL 一起关闭 setuid 提权面。Windows 平台
+	// 不注入 --user，Docker Desktop 的挂载权限模型不同。
+	command = append(command, dockerUserArgs()...)
 	command = append(command, DockerSandboxBaseArgs(maxPIDs, workspace.Root, containerCWD)...)
 	keys := make([]string, 0, len(arguments.Env))
 	for key := range arguments.Env {
@@ -189,7 +190,6 @@ func dockerRunCommand(dockerBinary string, workspace Workspace, image string, ma
 	command := exec.Command(dockerBinary, dockerRunArgumentsFor(workspace, image, maxPIDs, arguments, relativeCWD, containerName)...)
 	command.Dir = workspace.Root
 	command.Env = []string{}
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return command
 }
 
@@ -284,6 +284,14 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 	stderr := &limitedBuffer{limit: arguments.MaxOutputBytes}
 	command.Stdout = stdout
 	command.Stderr = stderr
+	group, groupErr := prepareProcessGroup(command)
+	if groupErr != nil {
+		if termination != nil {
+			termination.close()
+		}
+		return contract.ToolFailure("start", groupErr.Error())
+	}
+	defer releaseProcessGroup(group)
 	started := time.Now()
 	if err := command.Start(); err != nil {
 		if termination != nil {
@@ -291,6 +299,7 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 		}
 		return contract.ToolFailure("start", err.Error())
 	}
+	afterProcessStart(command, group)
 	if termination != nil {
 		termination.afterStart()
 	}
@@ -306,7 +315,7 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 		cancelled = true
 		gracefulDelivered := termination != nil && termination.graceful()
 		if !gracefulDelivered {
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+			signalGroupTerm(command, group)
 		}
 		waitGrace := grace
 		if waitGrace <= 0 {
@@ -315,7 +324,7 @@ func runCommandShared(ctx context.Context, arguments ExecArguments, backend Exec
 		select {
 		case waitErr = <-finished:
 		case <-time.After(waitGrace):
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			signalGroupKill(command, group)
 			var terminationConfirmed bool
 			waitErr, terminationConfirmed = waitForExitAfterKill(finished, 5*time.Second)
 			terminationUnconfirmed = !terminationConfirmed
@@ -449,23 +458,9 @@ func mergedEnvironment(allowed map[string]struct{}, overrides map[string]string)
 	return result
 }
 
-// commandOutcome 将命令等待错误转换为退出码和可选终止信号。
+// commandOutcome 将命令等待错误转换为退出码和可选终止信号，具体解析由平台实现提供。
 func commandOutcome(err error) (int, string) {
-	if err == nil {
-		return 0, ""
-	}
-	var exitError *exec.ExitError
-	if !errors.As(err, &exitError) {
-		return -1, ""
-	}
-	status, ok := exitError.Sys().(syscall.WaitStatus)
-	if !ok {
-		return exitError.ExitCode(), ""
-	}
-	if status.Signaled() {
-		return -1, status.Signal().String()
-	}
-	return status.ExitStatus(), ""
+	return processExitOutcome(err)
 }
 
 // limitedBuffer 收集子进程输出，并在到达上限后仍向调用者报告完整写入长度。

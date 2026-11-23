@@ -60,7 +60,7 @@ func Open(ctx context.Context, path string, readOnly bool) (*Store, error) {
 		return nil, errors.New("task database requires a private regular file")
 	}
 	query := url.Values{"mode": {mode}, "_pragma": {"busy_timeout(5000)", "foreign_keys(ON)"}}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: query.Encode()}).String()
+	dsn := sqliteDSN(path, query.Encode())
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

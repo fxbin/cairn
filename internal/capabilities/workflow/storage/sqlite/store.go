@@ -13,7 +13,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +46,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create workflow store directory: %w", err)
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=rwc&_txlock=immediate&_pragma=busy_timeout(5000)"}).String()
+	dsn := sqliteDSN(path, "mode=rwc&_txlock=immediate&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite workflow store: %w", err)
@@ -78,7 +77,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	if info.IsDir() {
 		return nil, errors.New("read-only SQLite workflow store path is a directory")
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(5000)"}).String()
+	dsn := sqliteDSN(path, "mode=ro&_pragma=busy_timeout(5000)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open read-only SQLite workflow store: %w", err)

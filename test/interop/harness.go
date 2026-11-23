@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -107,11 +106,16 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	guard, guardErr := interopPrepareProcess(command)
+	if guardErr != nil {
+		return processOutcome{}, fmt.Errorf("prepare %s: %w", run.Command, guardErr)
+	}
+	defer interopReleaseProcess(guard)
 
 	if err := command.Start(); err != nil {
 		return processOutcome{}, fmt.Errorf("start %s: %w", run.Command, err)
 	}
+	interopAfterStart(command, guard)
 	started := time.Now()
 	waited := make(chan error, 1)
 	go func() {
@@ -151,7 +155,7 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 		case <-interrupt:
 			interrupted = true
 			interrupt = nil
-			_ = signalProcessGroup(command.Process.Pid, syscall.SIGINT)
+			interopSignal(command, guard, "int")
 			grace := time.NewTimer(3 * time.Second)
 			select {
 			case err := <-waited:
@@ -168,7 +172,7 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 				return outcome, nil
 			case <-grace.C:
 				grace.Stop()
-				_ = signalProcessGroup(command.Process.Pid, syscall.SIGTERM)
+				interopSignal(command, guard, "term")
 				hard := time.NewTimer(3 * time.Second)
 				select {
 				case err := <-waited:
@@ -185,7 +189,7 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 					return outcome, nil
 				case <-hard.C:
 					hard.Stop()
-					_ = signalProcessGroup(command.Process.Pid, syscall.SIGKILL)
+					interopSignal(command, guard, "kill")
 					err := <-waited
 					outcome := processOutcome{
 						Stdout: stdout.String(), Stderr: stderr.String(),
@@ -199,7 +203,7 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 				}
 			}
 		case <-overall.C:
-			_ = signalProcessGroup(command.Process.Pid, syscall.SIGKILL)
+			interopSignal(command, guard, "kill")
 			<-waited
 			return processOutcome{
 				Stdout: stdout.String(), Stderr: stderr.String(),
@@ -207,15 +211,6 @@ func runProcess(ctx context.Context, run HarnessRun) (processOutcome, error) {
 			}, nil
 		}
 	}
-}
-
-// signalProcessGroup 向进程组发送信号，保证子进程树一并被回收。
-func signalProcessGroup(pid int, signal syscall.Signal) error {
-	group := -pid
-	if err := syscall.Kill(group, signal); err != nil {
-		return syscall.Kill(pid, signal)
-	}
-	return nil
 }
 
 // FileSnapshot 是工作区在一次运行前后的文件快照。

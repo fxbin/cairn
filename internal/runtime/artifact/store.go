@@ -198,15 +198,4 @@ func (store *Store) ref(digest string, bytes int64, mediaType string, content []
 	return contract.Ref{SHA256: "sha256:" + digest, Bytes: bytes, MediaType: mediaType, TruncatedPreview: string(preview)}
 }
 
-// syncDirectory 同步目录元数据，使原子重命名后的制品更可靠地落盘。
-func syncDirectory(directory string) error {
-	handle, err := os.Open(directory)
-	if err != nil {
-		return fmt.Errorf("open artifact directory: %w", err)
-	}
-	defer handle.Close()
-	if err := handle.Sync(); err != nil {
-		return fmt.Errorf("sync artifact directory: %w", err)
-	}
-	return nil
-}
+// syncDirectory 由平台实现提供：Unix 同步目录元数据，Windows 目录句柄不支持同步。
