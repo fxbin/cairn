@@ -20,10 +20,11 @@ var seatbeltWriteDenyPattern = regexp.MustCompile(`\(deny file-write[^)]*\(subpa
 
 // TestSeatbeltProfileWriteScopeIsTempRootsAndWorkspace 锁定写范围：放行集合
 // 只能是临时目录根与工作区根。工作区位于真实目录时，其父目录不在放行集合内，
-// 越界写因此被默认拒绝规则挡住。
+// 越界写因此被默认拒绝规则挡住。当前临时目录取固定值且位于系统临时根之下，结论不随
+// 宿主的 TMPDIR 变化；自定义临时目录下的写范围由 sandbox_temp_profile_test.go 锁定。
 func TestSeatbeltProfileWriteScopeIsTempRootsAndWorkspace(t *testing.T) {
 	const root = "/Users/example/project/ws"
-	profile, err := SeatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteWorkspace})
+	profile, err := seatbeltProfile(SeatbeltOptions{WorkspaceRoot: root, WriteMode: SeatbeltWriteWorkspace}, fixedSandboxTempInput("/private/var/folders/ab/T", "/Users/example", identityResolve))
 	if err != nil {
 		t.Fatal(err)
 	}

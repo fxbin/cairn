@@ -77,7 +77,7 @@ func TestSandboxRootEntriesFailsClosed(t *testing.T) {
 // 缺少 /lib64 这类根级条目会让动态链接的解释器在执行期 ENOENT。
 func TestSandboxMountArgsBindsEveryRootEntryReadOnly(t *testing.T) {
 	entries := []string{"bin", "lib", "lib64", "sbin", "usr"}
-	args := sandboxMountArgs(entries, func(string) bool { return false })
+	args := sandboxMountArgs(entries, sandboxFixedTempRoots, func(string) bool { return false })
 	for _, name := range entries {
 		if !hasMount(args, "/"+name) {
 			t.Fatalf("root entry %s missing from %v", name, args)
@@ -91,7 +91,7 @@ func TestSandboxMountArgsBindsEveryRootEntryReadOnly(t *testing.T) {
 // TestSandboxMountArgsBindsExistingTempRootsWritable 锁定临时目录根按存在性
 // 改为可写绑定；缺失时跳过，避免 bwrap 因绑定源不存在而启动失败。
 func TestSandboxMountArgsBindsExistingTempRootsWritable(t *testing.T) {
-	args := sandboxMountArgs(nil, func(path string) bool { return path == "/tmp" })
+	args := sandboxMountArgs(nil, sandboxFixedTempRoots, func(path string) bool { return path == "/tmp" })
 	index := -1
 	for offset := 0; offset+2 < len(args); offset++ {
 		if args[offset] == "--bind" && args[offset+1] == "/tmp" {
@@ -103,6 +103,33 @@ func TestSandboxMountArgsBindsExistingTempRootsWritable(t *testing.T) {
 	}
 	if hasMount(args, "/var/tmp") {
 		t.Fatalf("missing temp root must be skipped: %v", args)
+	}
+}
+
+// TestSandboxMountArgsBindsCustomTempRootWritable 锁定当前进程的临时目录位于固定根之外
+// 时同样成为可写绑定：子进程继承的 TMPDIR 指向别处时，它所在的根级条目只是只读绑定。
+func TestSandboxMountArgsBindsCustomTempRootWritable(t *testing.T) {
+	tempRoots := []string{"/tmp", "/var/tmp", "/srv/tmp"}
+	args := sandboxMountArgs([]string{"srv"}, tempRoots, func(path string) bool { return path == "/srv/tmp" })
+	// 根级条目先只读绑定，自定义临时根随其后以可写绑定叠在其上；缺失的固定根跳过。
+	if strings.Join(args, " ") != "--ro-bind /srv /srv --dev /dev --proc /proc --bind /srv/tmp /srv/tmp" {
+		t.Fatalf("mount args = %v", args)
+	}
+}
+
+// TestRejectReservedTempRoots 锁定落在沙箱保留路径之下的额外临时根被拒绝：这些根级条目
+// 不做普通只读绑定，其下的宿主路径在沙箱里无法用可写绑定表达。
+func TestRejectReservedTempRoots(t *testing.T) {
+	for _, root := range []string{"/workspace/tmp", "/workspace", "/proc/x", "/sys/x"} {
+		if err := rejectReservedTempRoots([]string{root}); err == nil || !strings.Contains(err.Error(), "reserves") {
+			t.Fatalf("保留路径下的临时根 %s 应被拒绝: %v", root, err)
+		}
+	}
+	if err := rejectReservedTempRoots([]string{"/srv/tmp", "/var/cache/tmp", "/dev/shm"}); err != nil {
+		t.Fatalf("其余路径下的临时根不应被拒绝: %v", err)
+	}
+	if err := rejectReservedTempRoots(nil); err != nil {
+		t.Fatalf("没有额外临时根时不应报错: %v", err)
 	}
 }
 
@@ -140,13 +167,29 @@ func TestConfineArgvRemountsRootReadOnly(t *testing.T) {
 			writable++
 		}
 	}
-	tempRoots := 0
-	for _, root := range sandboxWritableTempRoots {
-		if strings.Contains(joined, "--bind "+root+" "+root) {
-			tempRoots++
+	// 可写绑定只能是：存在的固定临时根、至多一个额外的临时根（当前进程的临时目录）、
+	// 工作区。固定根在这里硬编码，不从生产代码取期望值。
+	expected := 1
+	for _, root := range []string{"/tmp", "/var/tmp"} {
+		if hostPathExists(root) {
+			expected++
 		}
 	}
-	if writable != tempRoots+1 {
+	tempInput := currentSandboxTempInput()
+	resolved, err := sandboxTempRoots(sandboxFixedTempRoots, tempInput, linuxTempScopeOf(SeatbeltOptions{WorkspaceRoot: workspaceRoot, WriteMode: SeatbeltWriteWorkspace}, tempInput))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := resolved[len(sandboxFixedTempRoots):]
+	if len(extra) > 1 {
+		t.Fatalf("至多一个额外的临时根: %v", extra)
+	}
+	if writable != expected+len(extra) {
 		t.Fatalf("writable binds must be temp roots plus workspace: %v", argv)
+	}
+	for _, root := range extra {
+		if !strings.Contains(joined, "--bind "+root+" "+root) {
+			t.Fatalf("额外的临时根必须成为可写绑定: %v", argv)
+		}
 	}
 }
