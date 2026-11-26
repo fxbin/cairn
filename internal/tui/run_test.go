@@ -466,9 +466,11 @@ func TestCommandSuggestionsAndCompletion(t *testing.T) {
 	if got := completeCommand(""); got != "" {
 		t.Fatal("空输入不应补全")
 	}
-	// 清单与分发一致性：每个登记命令都必须被分发器接受
+	// 清单与分发一致性：每个登记命令都必须被分发器接受。这里会真的执行每个命令；
+	// /init 与 /export 在工作区为空时回退到当前目录（即包目录）写文件，因此给每次
+	// 执行一个临时工作区，避免把 AGENTS.md 与导出文件落进源码树。
 	for _, command := range consoleCommands {
-		console := NewRunConsole(context.Background(), RunConsoleInput{Config: config.Config{}})
+		console := NewRunConsole(context.Background(), RunConsoleInput{Workspace: t.TempDir(), Config: config.Config{}})
 		if handled, _ := console.runCommand(command.name); !handled {
 			t.Fatalf("清单命令 %s 未被分发器接受（清单与 switch 漂移）", command.name)
 		}
