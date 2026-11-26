@@ -27,10 +27,11 @@ const OSSandboxExecutable = "bwrap"
 // /workspace 是工作区挂载点（随后单独绑定，避免与宿主同名目录冲突）。
 var sandboxRootSkipEntries = []string{"dev", "proc", "sys", "tmp", "workspace"}
 
-// sandboxWritableTempRoots 是始终可写的临时目录根：编译器缓存与验证子进程的
-// 临时写落在这些根之下。与 macOS seatbelt 一致，临时写范围不得被写拒绝规则
-// 覆盖，否则会连带打断依赖临时目录的构建与验证。
-var sandboxWritableTempRoots = []string{"/tmp", "/var/tmp"}
+// sandboxFixedTempRoots 是平台固定的系统临时目录根：编译器缓存与验证子进程的临时写
+// 落在这些根之下。与 macOS seatbelt 一致，临时写范围不得被写拒绝规则覆盖，否则会连带
+// 打断依赖临时目录的构建与验证。当前进程使用其他临时目录时，由 sandboxTempRoots 追加
+// 其规范路径。
+var sandboxFixedTempRoots = []string{"/tmp", "/var/tmp"}
 
 // sandboxRootEntries 列出需要只读映射的宿主根级条目，按字典序返回，跳过
 // sandboxRootSkipEntries。列不出根目录时失败关闭，不退化为可写或空沙箱。
@@ -55,20 +56,20 @@ func sandboxRootEntries(readDir func(string) ([]os.DirEntry, error)) ([]string, 
 
 // sandboxMountArgs 构造沙箱根的挂载参数：根级条目逐一只读绑定，使工作区外的
 // 只读引用（依赖、缓存、构建产物目录）仍然可用；随后重建 /dev 与 /proc，并把
-// 存在的临时目录根改为可写绑定。pathExists 由调用方注入，便于参数层测试。
+// tempRoots 中存在的临时目录根改为可写绑定。pathExists 由调用方注入，便于参数层测试。
 //
 // 这里必须逐条绑定宿主根条目而不是只绑定 /usr、/bin 等少数目录：沙箱根是空
 // tmpfs，未绑定的路径在内核里不存在，动态链接程序会因 PT_INTERP
 // （ubuntu-26.04 runner 上 /usr/bin/dash 为 /lib64/ld-linux-x86-64.so.2）缺失而
 // execvp 返回 ENOENT，表现为 "bwrap: execvp /bin/sh: No such file or directory"。
-func sandboxMountArgs(entries []string, pathExists func(string) bool) []string {
-	args := make([]string, 0, len(entries)*3+len(sandboxWritableTempRoots)*3+4)
+func sandboxMountArgs(entries []string, tempRoots []string, pathExists func(string) bool) []string {
+	args := make([]string, 0, len(entries)*3+len(tempRoots)*3+4)
 	for _, name := range entries {
 		path := "/" + name
 		args = append(args, "--ro-bind", path, path)
 	}
 	args = append(args, "--dev", "/dev", "--proc", "/proc")
-	for _, root := range sandboxWritableTempRoots {
+	for _, root := range tempRoots {
 		if pathExists(root) {
 			args = append(args, "--bind", root, root)
 		}
@@ -80,6 +81,38 @@ func sandboxMountArgs(entries []string, pathExists func(string) bool) []string {
 func hostPathExists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+// sandboxReservedTempRoots 是沙箱保留、无法用可写绑定表达临时根的宿主路径：/workspace 是
+// 工作区挂载点，/proc 与 /sys 由专用挂载重建。/dev 不在此列，见 sandboxProvidedTempRoot。
+var sandboxReservedTempRoots = []string{"/workspace", "/proc", "/sys"}
+
+// sandboxProvidedTempRoot 是 bubblewrap 自己重建的可写 /dev。其下的临时目录（常见的是
+// tmpfs 上的 /dev/shm）在沙箱里已经可用，既不需要也不应再做宿主绑定：做了反而会盖掉
+// 专用挂载。把它声明为“沙箱已提供”，临时根推导就不会为它追加规则，也不会因为主目录
+// 取不到或只读档而拒绝它，行为与没有这条规则时一致。
+const sandboxProvidedTempRoot = "/dev"
+
+// linuxTempScopeOf 整理 bubblewrap 路径上的写入范围：工作区根、写入档位，以及沙箱自己
+// 提供的可写 /dev。
+func linuxTempScopeOf(options SeatbeltOptions, input sandboxTempInput) sandboxTempScope {
+	scope := sandboxTempScopeOf(options.WorkspaceRoot, options.WriteMode == SeatbeltWriteWorkspace, input)
+	scope.ProvidedRoots = []string{sandboxProvidedTempRoot}
+	return scope
+}
+
+// rejectReservedTempRoots 拒绝落在沙箱保留路径之下的额外临时根。这些根级条目不按普通
+// 只读绑定处理，其下的宿主路径在沙箱里要么不存在，要么指向别处，可写绑定无法表达，因此
+// 在启动前失败关闭。
+func rejectReservedTempRoots(extra []string) error {
+	for _, root := range extra {
+		for _, reserved := range sandboxReservedTempRoots {
+			if pathWithin(root, reserved) {
+				return fmt.Errorf("sandbox temp dir %q is under %s, which the bubblewrap sandbox reserves; point TMPDIR at a directory elsewhere", root, reserved)
+			}
+		}
+	}
+	return nil
 }
 
 // OSSandboxAvailable 判断 bwrap 是否在 PATH。
@@ -111,6 +144,14 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 	if entriesErr != nil {
 		return nil, nil, entriesErr
 	}
+	tempInput := currentSandboxTempInput()
+	tempRoots, tempRootsErr := sandboxTempRoots(sandboxFixedTempRoots, tempInput, linuxTempScopeOf(options, tempInput))
+	if tempRootsErr != nil {
+		return nil, nil, tempRootsErr
+	}
+	if reservedErr := rejectReservedTempRoots(tempRoots[len(sandboxFixedTempRoots):]); reservedErr != nil {
+		return nil, nil, reservedErr
+	}
 	args := []string{
 		"--unshare-all",
 		"--die-with-parent",
@@ -118,7 +159,7 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 	if options.ChildPIDFd > 0 {
 		args = append(args, "--info-fd", strconv.Itoa(options.ChildPIDFd))
 	}
-	args = append(args, sandboxMountArgs(entries, hostPathExists)...)
+	args = append(args, sandboxMountArgs(entries, tempRoots, hostPathExists)...)
 	if options.AllowNetwork {
 		args = append(args, "--share-net")
 	}

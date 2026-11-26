@@ -36,7 +36,7 @@ model_search_test.go: 回归 ModelSearch 本地筛选模型目录并限制结果
 observation_parallel_test.go: 验证并行观察摘要稳定且覆盖工具忽略文件。
 ossandbox_darwin.go: OSSandbox 在 macOS 使用 Seatbelt。写范围由宿主策略收窄。
 ossandbox_errors.go: OSSandbox 错误标记缺少原生隔离能力。调用方据此失败关闭。
-ossandbox_linux.go: OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写。
+ossandbox_linux.go: OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写，保留路径下的临时根拒绝。
 ossandbox_linux_test.go: 回归 OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写。
 ossandbox_other.go: OSSandbox 在不支持的平台拒绝宿主约束请求。不伪造隔离。
 ossandbox_types.go: SeatbeltOptions 表达原生沙箱的写档位。数据合同不执行进程。
@@ -57,7 +57,11 @@ registry_test.go: 回归 Registry 静态注册工具并消费通用模型视图�
 review_regression_test.go: 验证内容发布、模板读取和禁用标记的路径边界。
 run_tests.go: RunTests 通过受控执行器运行测试 argv。结果汇总保持结构化。
 run_tests_diagnostics_test.go: 验证测试输出和语言诊断的结构化解析。
-seatbelt_darwin.go: SeatbeltProfile 生成默认拒绝写的原生规则。网络与写权限由策略决定。
+sandbox_temp.go: 决定沙箱始终可写的临时根。固定系统临时根加当前进程的临时目录，过宽则失败关闭；只读档下不得覆盖工作区。
+sandbox_temp_exec_test.go: 验证真实 OS 沙箱下自定义临时目录可写，过宽或只读档下覆盖工作区时启动前失败。
+sandbox_temp_profile_test.go: 验证写范围只多出当前临时目录，过宽时 profile 生成失败。
+sandbox_temp_test.go: 验证可写临时根的追加、保持与失败关闭规则。
+seatbelt_darwin.go: SeatbeltProfile 生成默认拒绝写的原生规则。临时根含当前进程的临时目录，网络与写权限由策略决定。
 seatbelt_darwin_test.go: 回归 SeatbeltProfile 生成默认拒绝写的原生规则。网络与写权限由策略决定。
 seatbelt_other.go: Seatbelt 在非 macOS 返回不支持。不提供伪隔离实现。
 seatbelt_profile_temp_test.go: 验证临时目录的符号链接与规范路径写规则。

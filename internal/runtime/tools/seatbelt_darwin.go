@@ -19,10 +19,15 @@ const SeatbeltExecutable = "/usr/bin/sandbox-exec"
 // SeatbeltProfileVersion 是 seatbelt 配置文件版本头。
 const SeatbeltProfileVersion = "1"
 
-// seatbeltAlwaysWritableRoots 是始终允许写入的目录根：临时目录。编译器缓存
-// 与测试临时写落在这些根之下，写范围因此覆盖整棵临时子树；工作区之外的
-// 其它位置默认不可写。
+// seatbeltAlwaysWritableRoots 是平台固定的系统临时根：macOS 默认的临时目录位于
+// /private/var/folders，/tmp 与 /var 是指向 /private 的符号链接，两种拼写都放行。
+// 编译器缓存与测试临时写落在这些根之下；工作区之外的其它位置默认不可写。当前进程
+// 使用其他临时目录时，由 sandboxTempRoots 追加其规范路径。
 var seatbeltAlwaysWritableRoots = []string{"/private/tmp", "/tmp", "/var/folders", "/private/var/folders"}
+
+// seatbeltUnquotableChars 是无法安全写进 profile 字符串的字符。Seatbelt 对路径中的空白
+// 与引号敏感，工作区根和额外放行的临时目录都先失败关闭，而不是生成错误的 profile。
+const seatbeltUnquotableChars = " \t\n\""
 
 // SeatbeltAvailable 判断 seatbelt 入口是否存在。
 func SeatbeltAvailable() bool {
@@ -32,6 +37,12 @@ func SeatbeltAvailable() bool {
 
 // SeatbeltProfile 生成 sandbox-exec 配置文本：默认拒绝，按档位放行。
 func SeatbeltProfile(options SeatbeltOptions) (string, error) {
+	return seatbeltProfile(options, currentSandboxTempInput())
+}
+
+// seatbeltProfile 是 SeatbeltProfile 的可注入实现：input 提供当前进程的临时目录环境，
+// 测试传入固定值。
+func seatbeltProfile(options SeatbeltOptions, input sandboxTempInput) (string, error) {
 	if strings.TrimSpace(options.WorkspaceRoot) == "" {
 		return "", fmt.Errorf("workspace root is required for seatbelt profile")
 	}
@@ -40,7 +51,7 @@ func SeatbeltProfile(options SeatbeltOptions) (string, error) {
 		return "", fmt.Errorf("workspace root must be absolute")
 	}
 	// Seatbelt 对路径中的空格敏感；先失败关闭而不是生成错误 profile。
-	if strings.ContainsAny(root, " \t\n\"") {
+	if strings.ContainsAny(root, seatbeltUnquotableChars) {
 		return "", fmt.Errorf("workspace root must not contain whitespace or quotes")
 	}
 	var b strings.Builder
@@ -62,9 +73,22 @@ func SeatbeltProfile(options SeatbeltOptions) (string, error) {
 	// 临时目录：编译器/测试缓存常用。内核按符号链接解析后的规范路径匹配
 	// subpath 规则，macOS 用户级临时目录实际位于 /private/var/folders
 	//（/var 是指向 /private/var 的符号链接），仅写 /var/folders 在真实系统
-	// 上不可达，必须同时放行规范路径。
+	// 上不可达，必须同时放行规范路径。子进程继承的 TMPDIR 指向别处时同样放行其
+	// 规范路径，否则它连工作目录都建不出来；过宽的临时目录在此失败关闭。
+	tempRoots, err := sandboxTempRoots(seatbeltAlwaysWritableRoots, input, sandboxTempScopeOf(root, options.WriteMode == SeatbeltWriteWorkspace, input))
+	if err != nil {
+		return "", err
+	}
 	for _, tempRoot := range seatbeltAlwaysWritableRoots {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %q))\n", tempRoot)
+	}
+	// 额外放行的临时目录与工作区根同为用户提供的路径：先按同一口径拒绝无法安全引用的
+	// 字符，再原样写入 profile 字符串。
+	for _, extra := range tempRoots[len(seatbeltAlwaysWritableRoots):] {
+		if strings.ContainsAny(extra, seatbeltUnquotableChars) {
+			return "", fmt.Errorf("sandbox temp dir %q must not contain whitespace or quotes", input.TempDir())
+		}
+		fmt.Fprintf(&b, "(allow file-write* (subpath \"%s\"))\n", extra)
 	}
 	if options.WriteMode == SeatbeltWriteWorkspace {
 		fmt.Fprintf(&b, "(allow file-write* (subpath \"%s\"))\n", root)
