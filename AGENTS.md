@@ -19,11 +19,11 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 | `cmd/cairn/main.go`、`internal/cli/` | 信号处理、CLI 分发；裸命令进入交互体验，运行、恢复、诊断、Provider、记忆和评测命令以帮助为准 |
 | `internal/tui/` | 配置向导、会话、审批、差异查看及持久任务/工作流命令；业务动作调用应用层 |
 | `studio/` | Wails 桌面端：`main.go` 壳与 `frontend/` 前端；`studio/backend/` 承载App 任务/工作流桥接、事件出口与偏好存储 |
-| `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退 |
+| `internal/app/` | `boot.go` 装配与资源生命周期；`service.go` 运行/恢复/对账；`session.go` 前情；`rewind.go` 工作区回退；`task_context.go` 任务上下文的只读读取 |
 | `internal/core/agent/` | 串行单写入者 Loop；模型、工具、审批、预算、压缩、取消及验证 |
 | `internal/capabilities/mcp/` | MCP 历史投影、请求声明、操作授权与释放提议；协议传输仍由显式适配器提供 |
 | `internal/capabilities/skills/` | 技能发现、运行、资源、编辑与原生目录发布；历史投影共用同一能力实例，内容不授予权限 |
-| `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果和失败分类的只读合同投影 |
+| `internal/domain/`、`internal/contract/` | 事件 schema、哈希链与 replay；任务、清单、结果、失败分类与任务上下文的只读合同投影 |
 | `internal/config/`、`internal/runtime/credential/` | 配置解析、指纹与来源；环境变量和本机凭据文件装载 |
 | `internal/runtime/provider/`、`internal/runtime/modelcatalog/`、`internal/ports/` | Provider 身份、证据与准入、模型目录建议、窄端口 |
 | `internal/adapters/` | Journal的SQLite存储与Provider/MCP协议适配 |
@@ -46,6 +46,7 @@ Cairn 是 Go 实现的事件溯源编码 Agent，模块为 `github.com/fxbin/cai
 - 语义观测是可选旁路：只消费已成功持久化的 Journal 事件，导出失败不改变 Run 终态、Replay、Resume 或对账语义；默认关闭，关闭时零网络导出，并尊重 `OTEL_SDK_DISABLED` 全局关闭开关与 `OTEL_TRACES_EXPORTER`/`OTEL_METRICS_EXPORTER` 的 none 语义。指标维度只允许受限枚举，run 标识只作关联属性；Prompt、密钥、原始工具结果、验证证据与绝对路径不得进入观测内容。接线判定只有一处，运行路径与 doctor 共用；doctor 分面报告记忆侧、语义面与 SDK 面，如实区分 disabled、sdk_disabled、no_signal、instrumented 与 config_error，不宣称采集成功。
 - Hooks 在执行及工作流入口先做纯校验，配置错误不得先创建运行状态。应急终止不激活 Hooks，保留既有收尾路径。
 - 持久任务的分配先绑定同一工作区 Run 的创建事件；缺失创建事实时停止分配。任务状态与进度由应用门面写入。运行阶段与验证证据只从 Journal 投影；显式验收引用最新分配的可信验证事件。minimal 不装配持久任务。
+- 任务上下文（TaskContextV1）是既有事实源的只读投影，不是事实源：不缓存、不落库，逐字段带来源、版本锚点与 `known / unknown / blocked`，完整性失败落 `blocked`、尚无事实落 `unknown`，原因只用稳定原因码。它不授予权限、不决定运行终态，交接摘要不携带模型输出与工具结果正文；目前只经 `cairn task context` 读取，尚未注入模型提示。
 - 工作区路径必须经过 `tools.Workspace.Resolve`，禁止符号链接逃逸。`workspace.ignore` 只限制工具视图，不得缩小 verifier 的非敏感、非 volatile 观察范围。
 - 沙箱写范围有界：host 后端默认拒绝，只放行临时目录根与工作区本身；工作区父目录不在任何临时根之下时，写入它因此被拒。临时目录根由平台固定的系统临时根加当前进程实际使用的临时目录组成（取规范路径，与默认传给子进程的 `TMPDIR` 一致）；过宽的临时目录——文件系统根、会吞掉某个固定根或用户主目录（含其上级）的目录——失败关闭，无法核对主目录时同样失败关闭。只读档下，覆盖工作区的临时目录同样失败关闭；可写档下它由临时写规则管辖，与工作区位于系统临时根之下时一致。临时写范围不得被任何拒绝规则覆盖——那会连带拒绝编译器缓存与验证子进程的临时写；粗粒度地拒绝工作区父目录子树曾打断端到端流程，不采用。
 - `apply_patch` 保持确定性单文件操作，更新/删除绑定旧 SHA-256，写入使用临时文件、同步与原子重命名。`exec_command` 只接收 argv，不经过 shell，保留环境白名单、输出/超时限制和进程组取消。

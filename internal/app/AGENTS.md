@@ -102,6 +102,8 @@ subagent_start.go: SubagentStart 校验先有委派事实再启动子运行。�
 subagent_start_test.go: 回归 SubagentStart 校验先有委派事实再启动子运行。工具与预算保持父授权子集。
 subagent_test.go: 回归 Subagent 合同绑定父子身份与预算。委派不能扩大父权限。
 task.go: 装配 Task SQLite。应用门面按版本推进工作区任务与用户验收。
+task_context.go: TaskContext 只读加载任务、工作流链、Journal 与制品事实并交给合同层投影。逐来源映射稳定原因码，完整性失败落 blocked 而不是报错；不写任何文件，不携带模型输出。
+task_context_test.go: 回归任务上下文的确定性、只读、逐字段落状态与制品在位判定。
 task_run.go: 在创建 Run 前持久化分配。执行阶段与证据从 Run Journal 读取。
 task_workflow.go: 先固定自主实例身份，再确认创建。显式验收绑定审查报告。
 task_workflow_test.go: 回归冷恢复、重复授权、显式验收与有界返工。

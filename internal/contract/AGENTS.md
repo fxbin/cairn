@@ -31,6 +31,8 @@ result.go: Result 从 Journal 投影运行结果。不是第二事实源。
 sensitive_key.go: SensitiveKey 统一凭据名称判定。不保存密钥值。
 skill_content.go: SkillContent 定义历史正文快照。内容不能授予权限。
 task.go: TaskSpec 绑定用户任务与冻结输入。运行事实仍归 Journal。
+taskcontext.go: TaskContextV1 从已加载事实只读投影任务上下文。逐字段带来源、锚点与 known/unknown/blocked，摘要确定；不是事实源，不授予权限，不携带模型输出与工具结果正文。
+taskcontext_test.go: 回归任务上下文的逐字段落状态、封闭的锚点与原因码、摘要确定性与交接摘要。
 tool_policy_contract.go: ToolPolicy 定义命令、补丁、会话和本地授权数据。字段绑定原审批指纹。
 tool_result.go: ToolResult 定义成功与失败回执。编码顺序绑定历史数据。
 verification_evidence.go: VerificationEvidence 核对已持久化的独立验证链。不执行验证。

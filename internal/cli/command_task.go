@@ -21,7 +21,7 @@ import (
 // taskCommand 分派持久任务查询、分配和生命周期命令。
 func (command Command) taskCommand(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
-		fmt.Fprintln(command.Stderr, "task requires a subcommand: create, get, progress, run, automate, continue, pause, resume, cancel, complete")
+		fmt.Fprintln(command.Stderr, "task requires a subcommand: create, get, context, progress, run, automate, continue, pause, resume, cancel, complete")
 		return ExitUsage
 	}
 	switch arguments[0] {
@@ -29,6 +29,8 @@ func (command Command) taskCommand(ctx context.Context, arguments []string) int 
 		return command.taskCreate(ctx, arguments[1:])
 	case "get":
 		return command.taskGet(ctx, arguments[1:])
+	case "context":
+		return command.taskContext(ctx, arguments[1:])
 	case "run":
 		return command.taskRun(ctx, arguments[1:])
 	case "automate", "continue":
@@ -153,6 +155,35 @@ func (command Command) taskGet(ctx context.Context, arguments []string) int {
 	}
 	view, err := command.Service.GetTask(ctx, scope, app.TaskID(flags.Arg(0)))
 	return command.reportTask("task get", flags.jsonOutput, nil, &view, err)
+}
+
+// taskContext 以只读方式输出任务上下文：--json 输出一行 NDJSON，默认输出交接摘要。
+// 字段落 blocked 或 unknown 不算失败，投影本身就是产出；任务不存在与状态损坏分别映射
+// 退出码。
+func (command Command) taskContext(ctx context.Context, arguments []string) int {
+	flags := command.appFlags("task context", "<task-id>")
+	if !flags.parse(arguments, 1) {
+		return ExitUsage
+	}
+	scope, err := command.taskScope(flags)
+	if err != nil {
+		fmt.Fprintln(command.Stderr, "configuration error:", err)
+		return ExitUsage
+	}
+	taskContext, err := command.Service.TaskContext(ctx, scope, app.TaskID(flags.Arg(0)))
+	if err != nil {
+		if errors.Is(err, app.ErrTaskNotFound) {
+			fmt.Fprintln(command.Stderr, "task not found:", flags.Arg(0))
+			return ExitFailed
+		}
+		fmt.Fprintln(command.Stderr, "task context failed:", err)
+		return exitFor(err)
+	}
+	if flags.jsonOutput {
+		return command.writeJSONOutput("task context", taskContext)
+	}
+	fmt.Fprint(command.Stdout, contract.RenderTaskHandoff(taskContext))
+	return ExitOK
 }
 
 // taskRun 使用显式分配标识及预期任务修订启动或查回同一请求。
