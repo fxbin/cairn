@@ -174,6 +174,17 @@ func (execution workflowExecution) startVersionedStepRun(ctx context.Context, sn
 	if err != nil {
 		return err
 	}
+	if reworkVersion != "" {
+		// 显式开启交接时，返工 Worker 用任务的交接摘要取代自动生成的上一运行前情卡；
+		// 针对返工的已确认发现仍然在任务提示里。前驱运行不变，会话链不断。
+		handoffRequest := taskHandoffRequest{target: config.TaskHandoffRework}
+		handoff, err := handoffRequest.text(ctx, execution.service,
+			TaskScope{Workspace: execution.workspacePath, StateDir: execution.stateDir, Config: execution.configuration}, TaskID(snapshot.TaskID))
+		if err != nil {
+			return err
+		}
+		input.PriorContext = handoff
+	}
 	var reviewVersion string
 	if node.Kind == workflow.StepKindReview {
 		input.SessionID, input.PrevRunID = "", ""

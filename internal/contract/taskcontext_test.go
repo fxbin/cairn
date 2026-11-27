@@ -587,3 +587,36 @@ func TestTaskHandoffWriterKeepsTheDisclaimerWhenMandatoryLinesOverflow(t *testin
 		t.Fatal("list lines must be dropped before the mandatory line is truncated")
 	}
 }
+
+// TestTaskContextBlockedReasonReportsFirstBlockedField 锁定消费方失败关闭的依据：按字段
+// 顺序返回第一个 blocked 字段的原因码；只有 unknown 或全部 known 时不算 blocked。
+func TestTaskContextBlockedReasonReportsFirstBlockedField(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*TaskContextInput)
+		reason  TaskContextReason
+		blocked bool
+	}{
+		{"everything known", func(input *TaskContextInput) {}, "", false},
+		{"unknown is not blocked", func(input *TaskContextInput) {
+			input.Acceptance, input.AcceptanceFailure = nil, &TaskSourceFailure{Status: TaskFactUnknown, Reason: TaskReasonNoStructuredAcceptance}
+		}, "", false},
+		{"single blocked field", func(input *TaskContextInput) {
+			input.Artifacts[0].Missing = true
+		}, TaskReasonArtifactMissing, true},
+		{"first blocked field wins by field order", func(input *TaskContextInput) {
+			input.Runs, input.RunsFailure = nil, &TaskSourceFailure{Status: TaskFactBlocked, Reason: TaskReasonJournalChainInvalid}
+			input.Reference, input.ReferenceFailure = nil, &TaskSourceFailure{Status: TaskFactBlocked, Reason: TaskReasonReferenceViewInvalid}
+		}, TaskReasonJournalChainInvalid, true},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			input := trustedTaskContextInput(t)
+			testCase.mutate(&input)
+			reason, blocked := composeForTest(t, input).BlockedReason()
+			if blocked != testCase.blocked || reason != testCase.reason {
+				t.Fatalf("BlockedReason = %q, %t; want %q, %t", reason, blocked, testCase.reason, testCase.blocked)
+			}
+		})
+	}
+}
