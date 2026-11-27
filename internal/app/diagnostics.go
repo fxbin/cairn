@@ -45,6 +45,15 @@ type SandboxHealth struct {
 	HostConfined bool `json:"host_confined"`
 	// SeatbeltAvailable 表示平台 OS 沙箱（Seatbelt/bwrap）是否可用。
 	SeatbeltAvailable bool `json:"seatbelt_available"` // alias of OS sandbox
+	// ConfinementReason 非空表示 host 收紧档位下当前工作区无法生成沙箱规则，命令会在启动前
+	// 被拒绝。取值是稳定原因码，不含路径；它只是运行前的提示，不改变就绪判定。
+	ConfinementReason tools.SandboxConfinementReason `json:"confinement_reason,omitempty"`
+}
+
+// ConfinementAdvice 返回规则无法生成时的处置提示；各展示端共用这一份文案，可以生成
+// 规则时返回空串。
+func (health SandboxHealth) ConfinementAdvice() string {
+	return tools.SandboxConfinementAdvice(health.ConfinementReason)
 }
 
 // AdmissionHealth 汇总当前 Provider 绑定的准入模式和只读判定；Error 只使用
@@ -201,9 +210,12 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 		report.Telemetry.SemanticExports = readTelemetryStats(stateDir, hash)
 	}
 	report.Admission, _ = checkAdmissionGate(stateDir, hash, configuration)
-	if _, err := execToolFor(workspace, configuration); err != nil {
+	execTool, err := execToolFor(workspace, configuration)
+	if err != nil {
 		return report, err
 	}
+	// 只做推导：命令会被启动前拒绝的原因在这里提前给出，与真实命令共用同一个执行工具。
+	report.Sandbox.probeConfinement(execTool, workspace)
 	capabilities := toolCapabilities(workspace, configuration.Preset, configuration.Tools)
 	if configuration.Skills != nil && configuration.Skills.Enabled {
 		capabilities = append(capabilities, ToolCapability{Name: "skill", SideEffect: string(contract.SideEffectNone)})
@@ -261,6 +273,19 @@ func (service Service) Doctor(ctx context.Context, workspacePath, stateDir strin
 	}
 	report.probeSandboxAndEvaluateReadiness(configuration)
 	return report, nil
+}
+
+// probeConfinement 在 host 收紧档位下只做沙箱规则的推导，不启动进程也不写文件。工作区
+// 根与写档位取自真实命令使用的执行工具，诊断结论因此与运行路径同源；其他档位不做推导。
+func (health *SandboxHealth) probeConfinement(execTool tools.ExecCommand, workspace tools.Workspace) {
+	if !health.HostConfined {
+		return
+	}
+	writeMode := tools.SeatbeltWriteNone
+	if execTool.HostWrite {
+		writeMode = tools.SeatbeltWriteWorkspace
+	}
+	health.ConfinementReason = tools.OSSandboxConfinementReason(tools.SeatbeltOptions{WorkspaceRoot: workspace.Root, WriteMode: writeMode})
 }
 
 // probeSandboxAndEvaluateReadiness 在本地日志、制品与记忆完整性检查通过后执行

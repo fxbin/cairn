@@ -3,7 +3,7 @@
 // 否则继承自定义 TMPDIR 的命令会在创建工作目录或写临时文件时被沙箱拒绝。
 //
 // [INPUT]: 固定临时根、当前进程的临时目录环境（临时目录、主目录、规范路径解析）、工作区根与写入档位。
-// [OUTPUT]: 可写临时根清单，或失败关闭的错误。
+// [OUTPUT]: 可写临时根清单，或带稳定原因码的失败关闭错误（错误文本不变）。
 // [POS]: 只做路径与字符串判断，不执行进程、不写文件；读取环境与文件系统的动作由 sandboxTempInput 注入。
 // [PROTOCOL]: Update this header on change, then check AGENTS.md
 //
@@ -115,15 +115,16 @@ func sandboxTempRoots(fixed []string, input sandboxTempInput, scope sandboxTempS
 	if pathWithinAny(canonical, fixed) || pathWithinAny(canonical, scope.ProvidedRoots) {
 		return roots, nil
 	}
+	// 三类拒绝都附上同一原因码：错误文本照常给命令结果，只读诊断只取原因码。
 	if reason := broadTempRootReason(canonical, fixed, scope); reason != "" {
-		return nil, fmt.Errorf("sandbox temp dir %q is too broad to be writable inside the sandbox: %s; point TMPDIR at a dedicated directory", tempDir, reason)
+		return nil, newSandboxConfinementError(SandboxConfinementTempDir, "sandbox temp dir %q is too broad to be writable inside the sandbox: %s; point TMPDIR at a dedicated directory", tempDir, reason)
 	}
 	reason, unavailable := homeOverlapReason(canonical, input)
 	if unavailable {
-		return nil, fmt.Errorf("sandbox temp dir %q cannot be granted inside the sandbox: %s; set HOME to an absolute directory other than the filesystem root, or unset the custom TMPDIR", tempDir, reason)
+		return nil, newSandboxConfinementError(SandboxConfinementTempDir, "sandbox temp dir %q cannot be granted inside the sandbox: %s; set HOME to an absolute directory other than the filesystem root, or unset the custom TMPDIR", tempDir, reason)
 	}
 	if reason != "" {
-		return nil, fmt.Errorf("sandbox temp dir %q is too broad to be writable inside the sandbox: %s; point TMPDIR at a dedicated directory", tempDir, reason)
+		return nil, newSandboxConfinementError(SandboxConfinementTempDir, "sandbox temp dir %q is too broad to be writable inside the sandbox: %s; point TMPDIR at a dedicated directory", tempDir, reason)
 	}
 	return append(roots, canonical), nil
 }

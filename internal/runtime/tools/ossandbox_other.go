@@ -7,6 +7,11 @@ package tools
 // OSSandboxAvailable 非桌面 Unix 目标恒为 false。
 func OSSandboxAvailable() bool { return false }
 
+// OSSandboxConfinementReason 在没有原生沙箱的平台上恒为不可用。
+func OSSandboxConfinementReason(SeatbeltOptions) SandboxConfinementReason {
+	return SandboxConfinementUnavailable
+}
+
 // HostConfinementName 返回 unsupported。
 func HostConfinementName() string { return "host-unconfined" }
 

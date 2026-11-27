@@ -20,7 +20,8 @@ delegate_async_test.go: 回归 AsyncDelegateRuntime 跟踪子运行生命周期�
 delegate_run.go: Delegator 在父 Journal 写入委派事实。子预算与工具权限从父运行收窄。
 delegate_run_test.go: 回归 Delegator 在父 Journal 写入委派事实。子预算与工具权限从父运行收窄。
 deliver_run_message.go: RunMessage 将正文存为制品并追加 steering 事实。投递绑定目标 Journal。
-diagnostics.go: Doctor 只读投影配置、Provider 和沙箱就绪状态。不宣称真实调用成功。
+diagnostics.go: Doctor 只读投影配置、Provider 和沙箱就绪状态。不宣称真实调用成功。host 收紧档位下只做规则推导，提前给出命令会被启动前拒绝的稳定原因码，不改变就绪判定。
+diagnostics_confinement_test.go: 验证 Doctor 提前给出沙箱规则无法生成的原因码，报告里不带路径。
 diagnostics_telemetry_test.go: 验证构建身份与可选观测状态的只读投影。
 diagnostics_test.go: 回归 Doctor 只读投影配置、Provider 和沙箱就绪状态。不宣称真实调用成功。
 frozen_registry.go: FrozenToolRegistryFingerprint 与 Boot 共用工具选择。冻结身份不创建运行。

@@ -380,6 +380,10 @@ func (command Command) doctor(ctx context.Context, arguments []string) int {
 	} else {
 		fmt.Fprintf(command.Stdout, "sandbox: %s\n", report.Sandbox.Backend)
 	}
+	// 规则无法生成时命令会在启动前被拒绝：在运行前给出原因码与处置提示。
+	if report.Sandbox.ConfinementReason != "" {
+		fmt.Fprintf(command.Stdout, "sandbox confinement: %s (%s)\n", report.Sandbox.ConfinementReason, report.Sandbox.ConfinementAdvice())
+	}
 	fmt.Fprintf(command.Stdout, "tools: %s\n", strings.Join(report.Tools, ", "))
 	fmt.Fprintf(command.Stdout, "budget: turns %d, tool calls %d, input %d, output %d, wall %s\n", report.Capabilities.Budget.MaxTurns, report.Capabilities.Budget.MaxToolCalls, report.Capabilities.Budget.MaxInputTokens, report.Capabilities.Budget.MaxOutputTokens, report.Capabilities.Budget.MaxWallTime)
 	fmt.Fprintf(command.Stdout, "verification: %d command(s) %s\n", report.Capabilities.Verification.Commands, report.Capabilities.Verification.Fingerprint)

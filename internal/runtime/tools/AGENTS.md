@@ -34,9 +34,9 @@ mcp_process_unix.go: MCPProcess 复用受控双向 stdio 和沙箱。关闭须�
 model_search.go: ModelSearch 本地筛选模型目录并限制结果数。不发网络请求。
 model_search_test.go: 回归 ModelSearch 本地筛选模型目录并限制结果数。不发网络请求。
 observation_parallel_test.go: 验证并行观察摘要稳定且覆盖工具忽略文件。
-ossandbox_darwin.go: OSSandbox 在 macOS 使用 Seatbelt。写范围由宿主策略收窄。
+ossandbox_darwin.go: OSSandbox 在 macOS 使用 Seatbelt。写范围由宿主策略收窄；OSSandboxConfinementReason 只做推导，供诊断提前给出规则无法生成的原因码。
 ossandbox_errors.go: OSSandbox 错误标记缺少原生隔离能力。调用方据此失败关闭。
-ossandbox_linux.go: OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写，保留路径下的临时根拒绝。
+ossandbox_linux.go: OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写，保留路径下的临时根拒绝；OSSandboxConfinementReason 只做推导，供诊断提前给出规则无法生成的原因码。
 ossandbox_linux_test.go: 回归 OSSandbox 在 Linux 使用 bubblewrap。宿主只读，临时根与工作区有界可写。
 ossandbox_other.go: OSSandbox 在不支持的平台拒绝宿主约束请求。不伪造隔离。
 ossandbox_types.go: SeatbeltOptions 表达原生沙箱的写档位。数据合同不执行进程。
@@ -57,6 +57,8 @@ registry_test.go: 回归 Registry 静态注册工具并消费通用模型视图�
 review_regression_test.go: 验证内容发布、模板读取和禁用标记的路径边界。
 run_tests.go: RunTests 通过受控执行器运行测试 argv。结果汇总保持结构化。
 run_tests_diagnostics_test.go: 验证测试输出和语言诊断的结构化解析。
+sandbox_confinement.go: 给沙箱规则无法生成的失败关闭错误附上稳定原因码。错误文本原样给命令结果，原因码不含路径，供只读诊断使用。
+sandbox_confinement_test.go: 验证规则无法生成的错误带原因码，只读推导与真实启动同源。
 sandbox_temp.go: 决定沙箱始终可写的临时根。固定系统临时根加当前进程的临时目录，过宽则失败关闭；只读档下不得覆盖工作区。
 sandbox_temp_exec_test.go: 验证真实 OS 沙箱下自定义临时目录可写，过宽或只读档下覆盖工作区时启动前失败。
 sandbox_temp_profile_test.go: 验证写范围只多出当前临时目录，过宽时 profile 生成失败。

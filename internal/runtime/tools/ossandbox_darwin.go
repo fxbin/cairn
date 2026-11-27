@@ -11,6 +11,16 @@ import (
 // OSSandboxAvailable 表示 macOS Seatbelt 是否可用。
 func OSSandboxAvailable() bool { return SeatbeltAvailable() }
 
+// OSSandboxConfinementReason 只做推导，不启动进程也不写文件：按与真实启动相同的规则
+// 生成工作区的 profile 文本。可以生成时返回空串，否则返回稳定原因码。
+func OSSandboxConfinementReason(options SeatbeltOptions) SandboxConfinementReason {
+	if !SeatbeltAvailable() {
+		return SandboxConfinementUnavailable
+	}
+	_, err := SeatbeltProfile(options)
+	return sandboxConfinementReasonOf(err)
+}
+
 // HostConfinementName 返回当前平台 OS 约束名。
 func HostConfinementName() string { return "host+seatbelt" }
 
