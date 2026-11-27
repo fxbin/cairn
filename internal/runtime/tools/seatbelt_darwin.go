@@ -43,16 +43,17 @@ func SeatbeltProfile(options SeatbeltOptions) (string, error) {
 // seatbeltProfile 是 SeatbeltProfile 的可注入实现：input 提供当前进程的临时目录环境，
 // 测试传入固定值。
 func seatbeltProfile(options SeatbeltOptions, input sandboxTempInput) (string, error) {
+	// 工作区根的三类无效取值附上同一原因码：错误文本照常给命令结果，只读诊断只取原因码。
 	if strings.TrimSpace(options.WorkspaceRoot) == "" {
-		return "", fmt.Errorf("workspace root is required for seatbelt profile")
+		return "", newSandboxConfinementError(SandboxConfinementWorkspaceRoot, "workspace root is required for seatbelt profile")
 	}
 	root := filepath.Clean(options.WorkspaceRoot)
 	if !filepath.IsAbs(root) {
-		return "", fmt.Errorf("workspace root must be absolute")
+		return "", newSandboxConfinementError(SandboxConfinementWorkspaceRoot, "workspace root must be absolute")
 	}
 	// Seatbelt 对路径中的空格敏感；先失败关闭而不是生成错误 profile。
 	if strings.ContainsAny(root, seatbeltUnquotableChars) {
-		return "", fmt.Errorf("workspace root must not contain whitespace or quotes")
+		return "", newSandboxConfinementError(SandboxConfinementWorkspaceRoot, "workspace root must not contain whitespace or quotes")
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "(version %s)\n", SeatbeltProfileVersion)
@@ -86,7 +87,7 @@ func seatbeltProfile(options SeatbeltOptions, input sandboxTempInput) (string, e
 	// 字符，再原样写入 profile 字符串。
 	for _, extra := range tempRoots[len(seatbeltAlwaysWritableRoots):] {
 		if strings.ContainsAny(extra, seatbeltUnquotableChars) {
-			return "", fmt.Errorf("sandbox temp dir %q must not contain whitespace or quotes", input.TempDir())
+			return "", newSandboxConfinementError(SandboxConfinementTempDir, "sandbox temp dir %q must not contain whitespace or quotes", input.TempDir())
 		}
 		fmt.Fprintf(&b, "(allow file-write* (subpath \"%s\"))\n", extra)
 	}

@@ -108,7 +108,7 @@ func rejectReservedTempRoots(extra []string) error {
 	for _, root := range extra {
 		for _, reserved := range sandboxReservedTempRoots {
 			if pathWithin(root, reserved) {
-				return fmt.Errorf("sandbox temp dir %q is under %s, which the bubblewrap sandbox reserves; point TMPDIR at a directory elsewhere", root, reserved)
+				return newSandboxConfinementError(SandboxConfinementTempDir, "sandbox temp dir %q is under %s, which the bubblewrap sandbox reserves; point TMPDIR at a directory elsewhere", root, reserved)
 			}
 		}
 	}
@@ -124,6 +124,17 @@ func OSSandboxAvailable() bool {
 // HostConfinementName 返回当前平台 OS 约束名。
 func HostConfinementName() string { return "host+bwrap" }
 
+// OSSandboxConfinementReason 只做推导，不启动进程也不写文件：用占位 argv 走一遍与真实
+// 启动相同的参数构造，bubblewrap 的参数构造没有副作用。可以生成时返回空串，否则返回
+// 稳定原因码。
+func OSSandboxConfinementReason(options SeatbeltOptions) SandboxConfinementReason {
+	if !OSSandboxAvailable() {
+		return SandboxConfinementUnavailable
+	}
+	_, _, err := ConfineArgv(options, []string{"true"})
+	return sandboxConfinementReasonOf(err)
+}
+
 // ConfineArgv 用 bubblewrap 包装 argv；无独立临时文件。
 //
 // 沙箱根的 tmpfs 保持可写直到工作区挂载点建立完成，随后整体重挂为只读：
@@ -134,7 +145,7 @@ func ConfineArgv(options SeatbeltOptions, argv []string) (wrapped []string, clea
 		return nil, nil, errOSSandboxUnavailable
 	}
 	if options.WorkspaceRoot == "" {
-		return nil, nil, fmt.Errorf("workspace root is required")
+		return nil, nil, newSandboxConfinementError(SandboxConfinementWorkspaceRoot, "workspace root is required")
 	}
 	binary, lookErr := exec.LookPath(OSSandboxExecutable)
 	if lookErr != nil {
