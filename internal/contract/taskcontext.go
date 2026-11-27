@@ -33,6 +33,9 @@ const (
 	TaskHandoffMaxBytes = 8192
 	// TaskHandoffPreviewRunes 是目标在交接摘要里保留的字符数上限。
 	TaskHandoffPreviewRunes = 512
+	// TaskHandoffUnsettledPreview 是交接摘要里未了结操作标识保留的条数上限；这一行是必需
+	// 内容，不设上限就可能把必需行整体顶过体积上限。超出部分只给数量。
+	TaskHandoffUnsettledPreview = 20
 	// TaskHandoffHashRunes 是摘要与哈希在交接摘要里保留的十六进制字符数。
 	TaskHandoffHashRunes = 16
 	// TaskHandoffDisclaimer 是交接摘要末尾的固定说明：记录的审批不授予任何权限。
@@ -977,7 +980,8 @@ func (writer *taskHandoffWriter) size() int {
 	return total
 }
 
-// render 输出最终文本；有省略时在免责说明之前写明省略数量。
+// render 输出最终文本；有省略时在免责说明之前写明省略数量。免责说明是合同的一部分：
+// 必需行本身超限时截断正文给它让位，任何情况下它都完整地留在末尾。
 func (writer *taskHandoffWriter) render() string {
 	var builder strings.Builder
 	for _, line := range writer.lines {
@@ -987,19 +991,18 @@ func (writer *taskHandoffWriter) render() string {
 	if writer.omitted > 0 {
 		fmt.Fprintf(&builder, taskHandoffOmissionFormat, writer.omitted)
 	}
-	builder.WriteString(TaskHandoffDisclaimer)
-	builder.WriteByte('\n')
-	text := builder.String()
-	if len(text) <= TaskHandoffMaxBytes {
-		return text
+	disclaimer := TaskHandoffDisclaimer + "\n"
+	body := builder.String()
+	if len(body)+len(disclaimer) <= TaskHandoffMaxBytes {
+		return body + disclaimer
 	}
-	// 必需行本身超限是异常输入：按字符边界截断并标明，不输出残缺字符。
+	// 必需行本身超限是异常输入：按字符边界截断正文并标明，不输出残缺字符。
 	marker := "... handoff truncated\n"
-	limit := TaskHandoffMaxBytes - len(marker)
-	for limit > 0 && !utf8.RuneStart(text[limit]) {
+	limit := TaskHandoffMaxBytes - len(disclaimer) - len(marker)
+	for limit > 0 && !utf8.RuneStart(body[limit]) {
 		limit--
 	}
-	return text[:limit] + marker
+	return body[:limit] + marker + disclaimer
 }
 
 // taskHandoffStatusLine 把 unknown 与 blocked 渲染成显式标记。
@@ -1049,7 +1052,8 @@ func taskHandoffEvidenceLine(fact TaskFact[TaskEvidenceSummary]) string {
 		evidence.WorkerRunID, evidence.ProgramRunID, evidence.ReviewRunID)
 }
 
-// taskHandoffSideEffectsLine 渲染未了结副作用。
+// taskHandoffSideEffectsLine 渲染未了结副作用。未了结操作只列出前若干个并标出省略数量：
+// 这一列来自任务数据，不设上限时单凭它就能让必需内容超过体积上限。
 func taskHandoffSideEffectsLine(fact TaskFact[TaskSideEffectSummary]) string {
 	if fact.Status != TaskFactKnown {
 		return taskHandoffStatusLine(fact.Status, fact.Reason)
@@ -1057,7 +1061,12 @@ func taskHandoffSideEffectsLine(fact TaskFact[TaskSideEffectSummary]) string {
 	summary := fact.Value
 	unsettled := "none"
 	if len(summary.Unsettled) > 0 {
-		unsettled = strings.Join(summary.Unsettled, ",")
+		shown := summary.Unsettled
+		if len(shown) > TaskHandoffUnsettledPreview {
+			shown = append(append([]string{}, shown[:TaskHandoffUnsettledPreview]...),
+				fmt.Sprintf("...(+%d more)", len(shown)-TaskHandoffUnsettledPreview))
+		}
+		unsettled = strings.Join(shown, ",")
 	}
 	return fmt.Sprintf("started=%d settled=%d unsettled=%s pending_reconcile=%t pending_approval=%t",
 		summary.StartedOperations, summary.Settled, unsettled, summary.PendingReconcile, summary.PendingApproval)

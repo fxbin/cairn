@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 )
@@ -532,5 +533,57 @@ func TestRenderTaskHandoffOnlyUsesKnownLinePrefixes(t *testing.T) {
 		if !matched {
 			t.Fatalf("unexpected handoff line %q", line)
 		}
+	}
+}
+
+// TestRenderTaskHandoffCapsUnsettledOperationList 锁定未了结操作清单有上限：这一行是必需
+// 内容，只列前若干个并标出省略数量，不会单凭它就把必需行整体顶过体积上限。
+func TestRenderTaskHandoffCapsUnsettledOperationList(t *testing.T) {
+	unsettled := make([]string, 0, 2000)
+	for index := 0; index < 2000; index++ {
+		unsettled = append(unsettled, fmt.Sprintf("op-%06d-0123456789abcdef0123456789abcdef", index))
+	}
+	context := composeForTest(t, manualTaskContextInput(t))
+	context.UnresolvedSideEffects = knownTaskFact(TaskSideEffectSummary{Unsettled: unsettled, PendingReconcile: true},
+		TaskFactSourceJournal, *context.UnresolvedSideEffects.Anchor)
+	handoff := RenderTaskHandoff(context)
+	if len(handoff) > TaskHandoffMaxBytes {
+		t.Fatalf("handoff is %d bytes, limit %d", len(handoff), TaskHandoffMaxBytes)
+	}
+	if !strings.Contains(handoff, unsettled[TaskHandoffUnsettledPreview-1]+",...(+1980 more) pending_reconcile=true") {
+		t.Fatalf("unresolved side effects must list the first items and the omitted count:\n%s", handoff)
+	}
+	for _, hidden := range []string{unsettled[TaskHandoffUnsettledPreview], unsettled[len(unsettled)-1]} {
+		if strings.Contains(handoff, hidden+",") || strings.Contains(handoff, hidden+" ") {
+			t.Fatalf("unresolved side effects leaked an omitted operation %q", hidden)
+		}
+	}
+	if strings.Contains(handoff, "\n... handoff truncated\n") {
+		t.Fatal("bounded mandatory lines must not need the last-resort truncation")
+	}
+	if !strings.HasSuffix(handoff, TaskHandoffDisclaimer+"\n") {
+		t.Fatalf("handoff must end with the disclaimer:\n%s", handoff[len(handoff)-200:])
+	}
+}
+
+// TestTaskHandoffWriterKeepsTheDisclaimerWhenMandatoryLinesOverflow 锁定最后的保护性截断
+// 不会截掉免责说明：必需行本身超限时截断的是正文，免责说明完整地留在末尾，且不输出
+// 残缺字符。正文里的省略计数会随正文一起被截掉，“被截断”这个标记已经足够说明摘要不完整。
+func TestTaskHandoffWriterKeepsTheDisclaimerWhenMandatoryLinesOverflow(t *testing.T) {
+	writer := taskHandoffWriter{}
+	writer.required("goal %s", strings.Repeat("长", 9000))
+	writer.optional("  run %s", "run-1")
+	handoff := writer.render()
+	if len(handoff) > TaskHandoffMaxBytes {
+		t.Fatalf("handoff is %d bytes, limit %d", len(handoff), TaskHandoffMaxBytes)
+	}
+	if !utf8.ValidString(handoff) {
+		t.Fatal("truncation split a multi-byte character")
+	}
+	if !strings.HasSuffix(handoff, "... handoff truncated\n"+TaskHandoffDisclaimer+"\n") {
+		t.Fatalf("handoff must keep the disclaimer after the truncated body:\n%s", handoff[len(handoff)-200:])
+	}
+	if strings.Contains(handoff, "run-1") {
+		t.Fatal("list lines must be dropped before the mandatory line is truncated")
 	}
 }
