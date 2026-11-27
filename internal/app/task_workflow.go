@@ -238,6 +238,19 @@ func ensureTaskWorkflowInstance(ctx context.Context, scope TaskScope, current ta
 
 // readTaskWorkflowSnapshot 核对同一工作区的任务、实例、定义和配置锚点。
 func readTaskWorkflowSnapshot(ctx context.Context, stateDir, hash string, current task.Task) (*workflow.Snapshot, error) {
+	snapshot, err := loadTaskWorkflowSnapshot(ctx, stateDir, hash, current)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTaskWorkflowSnapshot(current, snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+// loadTaskWorkflowSnapshot 以只读方式打开工作流库并重放任务绑定的实例链。绑定形状不
+// 合法、库或实例缺失与链损坏各自失败关闭；实例与任务绑定是否一致留给调用方核对。
+func loadTaskWorkflowSnapshot(ctx context.Context, stateDir, hash string, current task.Task) (*workflow.Snapshot, error) {
 	if err := validateTaskWorkflowBinding(current); err != nil {
 		return nil, err
 	}
@@ -247,14 +260,7 @@ func readTaskWorkflowSnapshot(ctx context.Context, stateDir, hash string, curren
 	}
 	defer store.Close()
 	execution := workflowExecution{stateDir: stateDir, workspaceHash: hash, store: store}
-	snapshot, err := execution.reload(ctx, workflow.ID(current.WorkflowBinding.WorkflowID))
-	if err != nil {
-		return nil, err
-	}
-	if err := validateTaskWorkflowSnapshot(current, snapshot); err != nil {
-		return nil, err
-	}
-	return snapshot, nil
+	return execution.reload(ctx, workflow.ID(current.WorkflowBinding.WorkflowID))
 }
 
 // validateTaskWorkflowBinding 核对已保存的绑定形状与版本推进。

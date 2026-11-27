@@ -541,6 +541,7 @@ Usage:
   cairn session continue [--from <run-id>] <task> [run flags] [--json]
   cairn task create <goal> --accept <condition> [--check <id>] [--autonomous --rework-attempts <n>] [scope flags] [--json]
   cairn task get <task-id> [scope flags] [--json]
+  cairn task context <task-id> [scope flags] [--json]
   cairn task progress <task-id> --revision <n> [--summary <text>] [--remaining <item> ...] [scope flags] [--json]
   cairn task run <task-id> --revision <n> --assignment <id> --session <id> [--previous-run <run-id>] [scope flags] [--json]
   cairn task automate <task-id> --revision <n> [--rework-attempts <n>] [scope flags] [--json]

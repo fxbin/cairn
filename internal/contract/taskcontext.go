@@ -109,7 +109,8 @@ const (
 	TaskReasonWorkflowChainInvalid TaskContextReason = "workflow_chain_invalid"
 	// TaskReasonWorkflowMissing 表示已挂接的工作流实例找不到。
 	TaskReasonWorkflowMissing TaskContextReason = "workflow_missing"
-	// TaskReasonBindingMismatch 表示任务绑定与工作流权威投影的身份或指纹不一致。
+	// TaskReasonBindingMismatch 表示绑定不一致：任务绑定与工作流权威投影的身份或指纹对不上，
+	// 或者被引用的运行与工作流尝试、手工分配记录的绑定对不上。
 	TaskReasonBindingMismatch TaskContextReason = "binding_mismatch"
 	// TaskReasonDefinitionMismatch 表示工作流定义与任务的验收合同或授权不一致。
 	TaskReasonDefinitionMismatch TaskContextReason = "definition_mismatch"
