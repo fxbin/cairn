@@ -185,7 +185,52 @@ func taskContextBoundSources(ctx context.Context, stateDir, hash string, current
 	// 工作流链上的“需对账步骤”要等对账动作发生后才会写入；进程在副作用操作进行中被杀
 	// 时链上还没有这条记录，待对账只能从运行的未决操作看出来。两个信号任一成立即算数。
 	workflowInput.RequiresReconcile = workflowInput.RequiresReconcile || view.PendingReconcile != nil
-	input.Reference = taskContextReference(view)
+	if view.Verification != nil {
+		input.Reference = taskContextReferenceOf(snapshot.LastSeq, view.Verification)
+		return
+	}
+	taskContextLatestReport(ctx, execution, snapshot, &definition, input)
+}
+
+// taskContextLatestReport 在当前没有绑定到步骤的验证报告时，退回到最近一份已收束的
+// 验证或审查尝试留下的报告并重新核验。返工决定会解绑上一轮失败的报告，只看当前绑定的
+// 那份会让已经已知的证据与发现因任务推进退回 unknown；任务上下文要求已知不回退。
+// 找不到这样的尝试就保持没有报告；核验失败按参考视图不可信失败关闭。
+func taskContextLatestReport(ctx context.Context, execution workflowExecution, snapshot *workflow.Snapshot, definition *WorkflowDefinition, input *contract.TaskContextInput) {
+	var latest *workflow.Attempt
+	var kind string
+	for _, spec := range snapshot.Specs {
+		if spec.Kind != workflow.StepKindVerify && spec.Kind != workflow.StepKindReview {
+			continue
+		}
+		attempts := snapshot.Attempts[spec.ID]
+		for index := range attempts {
+			attempt := &attempts[index]
+			if attempt.Terminal == nil || attempt.Output.Ref == "" || latest != nil && attempt.StartedSeq <= latest.StartedSeq {
+				continue
+			}
+			latest, kind = attempt, spec.Kind
+		}
+	}
+	if latest == nil {
+		return
+	}
+	journal, err := openReadOnlyJournalContext(ctx, execution.stateDir, execution.workspaceHash)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			input.ReferenceFailure = taskContextBlocked(contract.TaskReasonReferenceViewInvalid)
+		}
+		return
+	}
+	defer journal.Close()
+	report, err := execution.checkWorkflowAttemptOutput(ctx, journal, snapshot, definition, kind, *latest)
+	if err != nil {
+		input.ReferenceFailure = taskContextBlocked(contract.TaskReasonReferenceViewInvalid)
+		return
+	}
+	if report != nil {
+		input.Reference = taskContextReferenceOf(snapshot.LastSeq, report)
+	}
 }
 
 // taskContextLoadFailure 把加载任务工作流时的错误映射为稳定原因码，不带错误原文。
@@ -413,11 +458,8 @@ func taskContextSideEffect(payload json.RawMessage) bool {
 
 // taskContextReference 把应用层参考视图里的验证报告整理成合同层输入。没有报告时返回
 // 空，投影据此落 unknown。
-func taskContextReference(view WorkflowStatusView) *contract.TaskReferenceInput {
-	report := view.Verification
-	if report == nil {
-		return nil
-	}
+// taskContextReferenceOf 把一份已核验的验证报告整理成合同层的参考视图输入。
+func taskContextReferenceOf(sequence uint64, report *WorkflowVerificationReport) *contract.TaskReferenceInput {
 	groups := []struct {
 		status   string
 		findings []contract.Finding
@@ -435,7 +477,7 @@ func taskContextReference(view WorkflowStatusView) *contract.TaskReferenceInput 
 			})
 		}
 	}
-	return &contract.TaskReferenceInput{Sequence: view.Sequence, Report: &contract.TaskReportInput{
+	return &contract.TaskReferenceInput{Sequence: sequence, Report: &contract.TaskReportInput{
 		WorkerRunID: string(report.WorkerRunID), ProgramRunID: string(report.ProgramRunID), ReviewRunID: string(report.ReviewRunID),
 		Verdict: string(report.Evaluation.Verdict), ScopeDigest: report.Scope.Digest, CoverageDigest: report.Coverage.Digest,
 		Criteria: report.Evaluation.Criteria, Findings: findings,

@@ -17,7 +17,9 @@ import (
 
 	"github.com/fxbin/cairn/internal/canonicaljson"
 	tasksqlite "github.com/fxbin/cairn/internal/capabilities/task/sqlite"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
+	"github.com/fxbin/cairn/internal/ports"
 )
 
 // taskContextFixture 是一个“通过但未验收”的自主任务，作用域已解析。
@@ -541,5 +543,109 @@ func TestTaskContextClassifiesArtifactState(t *testing.T) {
 	}
 	if missing := state(); !missing.Missing || missing.Tampered {
 		t.Fatalf("removed artifact = %+v", missing)
+	}
+}
+
+// taskContextProbeReworkProvider 在返工 Worker 第一次请求模型时做一次只读探测。
+type taskContextProbeReworkProvider struct {
+	taskReworkProvider
+	probe func()
+}
+
+// Stream 命中返工提示时先探测一次，再按返工夹具的脚本回应。
+func (provider *taskContextProbeReworkProvider) Stream(ctx context.Context, request ports.ModelRequest, emit func(ports.ModelEvent) error) error {
+	if provider.probe != nil {
+		for _, message := range request.Messages {
+			if message.Role == "user" && strings.Contains(message.Content, "前次固定程序检查。") {
+				probe, release := provider.probe, func() { provider.probe = nil }
+				release()
+				probe()
+				break
+			}
+		}
+	}
+	return provider.taskReworkProvider.Stream(ctx, request, emit)
+}
+
+// TestTaskContextKeepsLatestVerifiedReportWhileReworking 锁定已知不回退：返工决定会解绑
+// 上一轮失败的报告，此时读取任务上下文，证据与发现仍取自最近一份已核验的报告，保持
+// 已知（判定失败、带阻塞的已确认发现），不会退回 unknown。
+func TestTaskContextKeepsLatestVerifiedReportWhileReworking(t *testing.T) {
+	ctx := context.Background()
+	configuration := workflowExecConfig(nil)
+	configuration.Verification.Commands = []config.VerificationCommand{{ID: "check", Argv: []string{"/usr/bin/cmp", "-s", "created.txt", "expected.txt"}}}
+	scope := TaskScope{Workspace: t.TempDir(), StateDir: t.TempDir(), Config: configuration}
+	if err := os.WriteFile(filepath.Join(scope.Workspace, "expected.txt"), []byte("expected"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, hash, err := scope.resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mid contract.TaskContextV1
+	var midErr error
+	var midBlocked []string
+	probed := false
+	worker := &taskContextProbeReworkProvider{taskReworkProvider: taskReworkProvider{repair: true}}
+	reviewer := &workflowReviewFixture{output: `{"findings":[]}`}
+	service := Service{NewProvider: func(cfg config.Config) (ports.Provider, error) {
+		if cfg.Tools.VerificationFilesOnly {
+			return reviewer, nil
+		}
+		return worker, nil
+	}}
+	current, err := service.CreateTask(ctx, scope, TaskDefinition{
+		Goal: "创建与参照文件一致的产物", Criteria: []contract.AcceptanceCriterion{
+			{ID: "content", Statement: "内容与参照文件相同", Required: true, Checks: []string{"check"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerID := current.ID
+	worker.probe = func() {
+		probed = true
+		mid, midErr = (Service{}).TaskContext(context.Background(), TaskScope{Workspace: resolved.Workspace, StateDir: resolved.StateDir, Config: configuration}, workerID)
+	}
+	view, err := service.StartTaskWorkflow(ctx, scope, current.ID, TaskWorkflowOptions{Revision: current.Revision, ReworkAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probed {
+		t.Fatal("the rework worker never started")
+	}
+	if midErr != nil {
+		t.Fatalf("task context while reworking: %v", midErr)
+	}
+	if err := mid.Validate(); err != nil {
+		t.Fatalf("task context is not self-consistent: %v", err)
+	}
+	for name, fact := range map[string]contract.TaskFactStatus{
+		"evidence": mid.Evidence.Status, "findings": mid.Findings.Status, "permissions": mid.Permissions.Status,
+		"runs": mid.Runs.Status, "goal": mid.Goal.Status, "progress": mid.Progress.Status,
+	} {
+		if fact != contract.TaskFactKnown {
+			midBlocked = append(midBlocked, name+"="+string(fact))
+		}
+	}
+	if len(midBlocked) != 0 {
+		t.Fatalf("facts regressed while reworking: %v (evidence %s %s, findings %s %s)", midBlocked,
+			mid.Evidence.Status, mid.Evidence.Reason, mid.Findings.Status, mid.Findings.Reason)
+	}
+	if mid.Evidence.Value.Verdict != string(contract.VerdictFailed) {
+		t.Fatalf("evidence verdict = %q, want failed", mid.Evidence.Value.Verdict)
+	}
+	blocking := 0
+	for _, finding := range *mid.Findings.Value {
+		if finding.Blocking && finding.Status == "confirmed" {
+			blocking++
+		}
+	}
+	if blocking == 0 {
+		t.Fatalf("findings must carry the confirmed blocking program failure: %+v", *mid.Findings.Value)
+	}
+	after := (taskContextFixture{service: service, scope: resolved, hash: hash, id: current.ID, view: view}).read(t)
+	if after.Evidence.Value == nil || after.Evidence.Value.Verdict != string(contract.VerdictPassed) {
+		t.Fatalf("evidence must move on to the repaired report: %+v", after.Evidence)
 	}
 }
