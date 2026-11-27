@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,28 @@ func TestExecCommandRejectsExplicitSecretLikeEnvironmentBeforeDockerLaunch(t *te
 	}
 }
 
+// fakeDockerWarmupTimeout 是预热新建假 docker 的上限；只用于吸收系统对首次执行的
+// 评估耗时，远大于正常取值。到上限仍未退出按假 docker 没有真正运行处理。
+const fakeDockerWarmupTimeout = time.Minute
+
+// warmFakeDocker 先执行一次新建的假 docker 并等待它退出。macOS 在可执行文件首次
+// 执行前做系统评估（签名、公证与恶意软件扫描），新文件要等几百毫秒，主机繁忙时
+// 更久；被取消的首次执行不留评估记录，耗时于是落到后面带固定期限的清理上，让
+// 取消用例随主机负载偶发失败。预热把这段耗时移出被测时序，用例只考察取消与清理。
+func warmFakeDocker(t *testing.T, dockerPath string) {
+	t.Helper()
+	warmupContext, cancel := context.WithTimeout(context.Background(), fakeDockerWarmupTimeout)
+	defer cancel()
+	warmup := exec.CommandContext(warmupContext, dockerPath, "warmup")
+	warmup.Env = []string{}
+	warmup.WaitDelay = dockerCleanupWaitDelay
+	// 假 docker 对未知子命令以非零状态退出；被超时终止的进程没有退出码，不能当作已运行。
+	var exitErr *exec.ExitError
+	if err := warmup.Run(); !errors.As(err, &exitErr) || exitErr.ExitCode() <= 0 {
+		t.Fatalf("fake docker warm-up did not run: %v", err)
+	}
+}
+
 func TestExecCommandDockerTimeoutAttemptsContainerCleanup(t *testing.T) {
 	directory := t.TempDir()
 	cleanupMarker := filepath.Join(directory, "cleanup")
@@ -145,6 +168,7 @@ func TestExecCommandDockerTimeoutAttemptsContainerCleanup(t *testing.T) {
 	if err := os.WriteFile(dockerPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	warmFakeDocker(t, dockerPath)
 	t.Setenv("PATH", directory)
 	workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
 	if err != nil {
@@ -205,6 +229,7 @@ func TestExecCommandDockerCancellationRequiresContainerTerminationConfirmation(t
 			if err := os.WriteFile(filepath.Join(directory, "docker"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			warmFakeDocker(t, filepath.Join(directory, "docker"))
 			t.Setenv("PATH", directory)
 			t.Setenv("DOCKER_HOST", "tcp://must-not-reach-cleanup.invalid:2375")
 			workspace, err := NewWorkspace(t.TempDir(), nil, 1024, 100, 4096)
