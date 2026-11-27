@@ -272,6 +272,10 @@ type ContextConfig struct {
 	// 证据时插入一次说明性反馈。指针 + omitempty：未配置时指纹与旧版逐位
 	// 一致，不影响既有冻结配置。
 	DecisionCheckpoint *DecisionCheckpointConfig `yaml:"decision_checkpoint,omitempty" json:"DecisionCheckpoint,omitempty"`
+	// TaskHandoff 是可选的任务交接：开启后，返工 Worker 与新会话的手工分配在启动时
+	// 收到由任务上下文投影生成的交接摘要，取代自动生成的前情卡。它改变模型输入，必须
+	// 显式开启。指针 + omitempty：未配置时既不注入，配置指纹也与旧版逐位一致。
+	TaskHandoff *TaskHandoffConfig `yaml:"task_handoff,omitempty" json:"task_handoff,omitempty"`
 }
 
 // DecisionCheckpointConfig 控制软决策检查点实验：只反馈、不强制写入。
@@ -283,6 +287,29 @@ type DecisionCheckpointConfig struct {
 
 // DecisionCheckpointMinTurns 是软决策检查点的默认最早触发轮次。
 const DecisionCheckpointMinTurns = 4
+
+// TaskHandoffMode 是任务交接摘要的注入场景；封闭集合，未知取值由 Validate 拒绝。
+type TaskHandoffMode string
+
+const (
+	// TaskHandoffRework 只给返工 Worker。
+	TaskHandoffRework TaskHandoffMode = "rework"
+	// TaskHandoffAssignment 只给新会话里的手工分配。
+	TaskHandoffAssignment TaskHandoffMode = "assignment"
+	// TaskHandoffAll 两种场景都给。
+	TaskHandoffAll TaskHandoffMode = "all"
+)
+
+// TaskHandoffConfig 控制任务交接摘要的自动注入。
+type TaskHandoffConfig struct {
+	// Mode 选择注入场景；写了这段配置就必须显式给出。
+	Mode TaskHandoffMode `yaml:"mode"`
+}
+
+// Covers 判断该模式是否覆盖指定场景。
+func (mode TaskHandoffMode) Covers(target TaskHandoffMode) bool {
+	return mode == TaskHandoffAll || mode == target
+}
 
 // GuardConfig 覆盖循环熔断阈值；指针 + omitempty：未配置时使用默认值且
 // 指纹与旧版逐位一致。提高阈值必须显式配置并进入指纹。

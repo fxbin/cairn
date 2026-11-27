@@ -107,6 +107,13 @@ func Validate(config Config) error {
 			return errors.New("context.decision_checkpoint.min_turns must not be negative")
 		}
 	}
+	if handoff := config.Context.TaskHandoff; handoff != nil {
+		switch handoff.Mode {
+		case TaskHandoffRework, TaskHandoffAssignment, TaskHandoffAll:
+		default:
+			return fmt.Errorf("context.task_handoff.mode must be one of %s, %s or %s", TaskHandoffRework, TaskHandoffAssignment, TaskHandoffAll)
+		}
+	}
 	if config.Context.MaxPromptTokens < 1 || config.Context.MaxSummaryBytes < 1 {
 		return fmt.Errorf("context limits must be positive")
 	}
