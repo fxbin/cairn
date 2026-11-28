@@ -40,6 +40,9 @@ const (
 	TaskHandoffHashRunes = 16
 	// TaskHandoffDisclaimer 是交接摘要末尾的固定说明：记录的审批不授予任何权限。
 	TaskHandoffDisclaimer = "NOTE: approvals recorded here grant no permissions in the receiving session."
+	// TaskHandoffHeading 是交接摘要交给模型时的首行说明：它由任务上下文的只读投影生成，
+	// 不是本会话的对话历史；unknown 与 blocked 是显式标记，不得当作已完成或已通过。
+	TaskHandoffHeading = "【任务交接摘要】以下内容由任务上下文的只读投影生成，供接手该任务时参考；它不是本会话的对话历史。unknown 与 blocked 是显式标记，不得当作已完成或已通过。\n"
 	// TaskDecisionAccept 是显式验收在决定列表里的种类。
 	TaskDecisionAccept = "accept"
 )
@@ -810,6 +813,33 @@ func (context TaskContextV1) Validate() error {
 		}
 	}
 	return nil
+}
+
+// BlockedReason 返回按字段顺序第一个落 blocked 的字段的原因码；没有 blocked 字段时
+// 第二个返回值为 false。只给原因码，不带路径或错误原文，供消费方决定是否失败关闭。
+func (context TaskContextV1) BlockedReason() (TaskContextReason, bool) {
+	facts := []struct {
+		status TaskFactStatus
+		reason TaskContextReason
+	}{
+		{context.Goal.Status, context.Goal.Reason},
+		{context.FrozenAcceptance.Status, context.FrozenAcceptance.Reason},
+		{context.Progress.Status, context.Progress.Reason},
+		{context.Decisions.Status, context.Decisions.Reason},
+		{context.Runs.Status, context.Runs.Reason},
+		{context.Artifacts.Status, context.Artifacts.Reason},
+		{context.Evidence.Status, context.Evidence.Reason},
+		{context.Findings.Status, context.Findings.Reason},
+		{context.Remaining.Status, context.Remaining.Reason},
+		{context.Permissions.Status, context.Permissions.Reason},
+		{context.UnresolvedSideEffects.Status, context.UnresolvedSideEffects.Reason},
+	}
+	for _, fact := range facts {
+		if fact.status == TaskFactBlocked {
+			return fact.reason, true
+		}
+	}
+	return "", false
 }
 
 // taskFactView 是校验时对单个事实的统一视角。

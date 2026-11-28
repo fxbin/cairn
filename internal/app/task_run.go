@@ -19,6 +19,7 @@ import (
 	"github.com/fxbin/cairn/internal/capabilities/task"
 	tasksqlite "github.com/fxbin/cairn/internal/capabilities/task/sqlite"
 	"github.com/fxbin/cairn/internal/capabilities/workflow"
+	"github.com/fxbin/cairn/internal/config"
 	"github.com/fxbin/cairn/internal/contract"
 	"github.com/fxbin/cairn/internal/domain"
 	"github.com/fxbin/cairn/internal/ports"
@@ -83,6 +84,14 @@ func (service Service) RunTask(ctx context.Context, scope TaskScope, id TaskID, 
 	if hasAcceptance {
 		runOptions.Acceptance = &acceptance
 	}
+	// 显式开启交接、调用方没有自带前驱运行、且任务已有历史时，把任务的交接摘要作为前情
+	// 交给新会话里的 Worker。上下文不可信则不启动这次分配。
+	handoffRequest := taskHandoffRequest{target: config.TaskHandoffAssignment, callerProvidesContext: options.PreviousRunID != "", requireHistory: true}
+	handoff, err := handoffRequest.text(ctx, service, scope, id)
+	if err != nil {
+		return TaskView{}, err
+	}
+	runOptions.PriorContext = handoff
 	bound := false
 	_, runErr := service.run(ctx, runOptions, func(boot *Boot, draft *domain.EventDraft) error {
 		if boot.WorkspaceHash != view.WorkspaceHash {
