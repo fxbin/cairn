@@ -139,6 +139,7 @@ func TestTaskHandoffPromptRefusesBlockedContextAndPassesUnknownThrough(t *testin
 func TestTaskHandoffHistoryGuardDoesNotBypassBlockedContext(t *testing.T) {
 	input := contract.TaskContextInput{
 		SchemaVersion: contract.TaskContextSchemaVersion, TaskID: "task-1", Goal: "继续任务", State: "active", Revision: 1,
+		AcceptanceFailure: &contract.TaskSourceFailure{Status: contract.TaskFactUnknown, Reason: contract.TaskReasonNoStructuredAcceptance},
 		RunsFailure: &contract.TaskSourceFailure{Status: contract.TaskFactBlocked, Reason: contract.TaskReasonJournalChainInvalid},
 	}
 	blocked, err := contract.ComposeTaskContext(input)
