@@ -134,6 +134,34 @@ func TestTaskHandoffPromptRefusesBlockedContextAndPassesUnknownThrough(t *testin
 	}
 }
 
+// TestTaskHandoffHistoryGuardDoesNotBypassBlockedContext 回归历史门槛不能绕过
+// fail-closed：运行历史本身不可信时，即使要求已有历史也必须拒绝，而不是静默不注入。
+func TestTaskHandoffHistoryGuardDoesNotBypassBlockedContext(t *testing.T) {
+	input := contract.TaskContextInput{
+		SchemaVersion: contract.TaskContextSchemaVersion, TaskID: "task-1", Goal: "继续任务", State: "active", Revision: 1,
+		RunsFailure: &contract.TaskSourceFailure{Status: contract.TaskFactBlocked, Reason: contract.TaskReasonJournalChainInvalid},
+	}
+	blocked, err := contract.ComposeTaskContext(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := taskHandoffWithHistory(blocked, true)
+	if text != "" || !errors.Is(err, ErrTaskHandoffUntrusted) || !strings.Contains(err.Error(), string(contract.TaskReasonJournalChainInvalid)) {
+		t.Fatalf("blocked run history must refuse to start, got %q, %v", text, err)
+	}
+
+	// 只有缺少历史而非不可信时，才能安静跳过交接。
+	input.RunsFailure = nil
+	fresh, err := contract.ComposeTaskContext(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err = taskHandoffWithHistory(fresh, true)
+	if err != nil || text != "" {
+		t.Fatalf("task without run history should skip injection, got %q, %v", text, err)
+	}
+}
+
 // TestRunTaskHandsOffTaskContextToAssignmentInNewSession 锁定手工分配路径：显式开启
 // assignment 后，新会话里的第二次分配收到交接摘要，创建事件引用的前情制品与模型看到的
 // 正文一致；默认关闭、任务没有历史、调用方自带前驱运行这三种情形都不注入。
