@@ -43,10 +43,20 @@ func (request taskHandoffRequest) text(ctx context.Context, service Service, sco
 	if err != nil {
 		return "", err
 	}
-	if request.requireHistory && (taskContext.Runs.Status != contract.TaskFactKnown || len(*taskContext.Runs.Value) == 0) {
+	return taskHandoffWithHistory(taskContext, request.requireHistory)
+}
+
+// taskHandoffWithHistory 必须先做 blocked 核验，再判断是否有可交接的历史。
+// 不允许因为 runs 自身 blocked 或为空而跳过其它不可信字段的失败关闭。
+func taskHandoffWithHistory(taskContext contract.TaskContextV1, requireHistory bool) (string, error) {
+	handoff, err := taskHandoffPrompt(taskContext)
+	if err != nil {
+		return "", err
+	}
+	if requireHistory && (taskContext.Runs.Status != contract.TaskFactKnown || len(*taskContext.Runs.Value) == 0) {
 		return "", nil
 	}
-	return taskHandoffPrompt(taskContext)
+	return handoff, nil
 }
 
 // taskHandoffPrompt 把投影变成交给模型的文本。任一字段落 blocked 时拒绝：不可信的
